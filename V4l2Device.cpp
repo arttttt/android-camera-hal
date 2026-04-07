@@ -161,11 +161,6 @@ const Vector<V4l2Device::Resolution> & V4l2Device::availableResolutions() {
         while(ioctl(fd, VIDIOC_ENUM_FRAMESIZES, &frmSize) == 0) {
             ALOGD("%s: Found resolution: %dx%d", mDevNode, frmSize.discrete.width, frmSize.discrete.height);
             ++frmSize.index;
-            // FIXME: make it configurable or fix the out of memory problem
-            if(frmSize.discrete.width > 1920 || frmSize.discrete.height > 1080) {
-                ALOGD("    too big, ignoring");
-                continue;
-            }
             formats.add();
             formats.editTop().width = frmSize.discrete.width;
             formats.editTop().height = frmSize.discrete.height;
