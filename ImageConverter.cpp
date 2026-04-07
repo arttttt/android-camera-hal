@@ -24,6 +24,11 @@
 
 #define WORKERS_TASKS_NUM 30
 
+/* kMaxStride was removed in newer libyuv; 4096 pixels * 4 bytes is plenty */
+#ifndef kMaxStride
+#define kMaxStride 16384
+#endif
+
 namespace android {
 
 ImageConverter::ImageConverter() {
@@ -50,7 +55,7 @@ uint8_t *ImageConverter::YUY2ToRGBA(const uint8_t *src, uint8_t *dst, unsigned w
             libyuv::YUY2ToUV422Row_NEON(d->src, rowu, rowv, d->width);
             libyuv::YUY2ToYRow_NEON(d->src, rowy, d->width);
             /* Somehow destination format is swapped (*ABGR converts to RGBA) */
-            libyuv::I422ToABGRRow_NEON(rowy, rowu, rowv, d->dst, d->width);
+            libyuv::I422ToARGBRow_NEON(rowy, rowu, rowv, d->dst, d->width);
             d->src += d->width * 2;
             d->dst += d->width * 4;
         }
@@ -101,7 +106,7 @@ uint8_t *ImageConverter::UYVYToRGBA(const uint8_t *src, uint8_t *dst, unsigned w
             libyuv::UYVYToUV422Row_NEON(d->src, rowu, rowv, d->width);
             libyuv::UYVYToYRow_NEON(d->src, rowy, d->width);
             /* Somehow destination format is swapped (*ABGR converts to RGBA) */
-            libyuv::I422ToABGRRow_NEON(rowy, rowu, rowv, d->dst, d->width);
+            libyuv::I422ToARGBRow_NEON(rowy, rowu, rowv, d->dst, d->width);
             d->src += d->width * 2;
             d->dst += d->width * 4;
         }
