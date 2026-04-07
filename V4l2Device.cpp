@@ -78,6 +78,7 @@ V4l2Device::V4l2Device(const char *devNode)
     , mConnected(false)
     , mStreaming(false)
     , mDevNode(devNode)
+    , mPixelFormat(0)
 {
     memset(&mFormat, 0, sizeof(mFormat));
     mPFd.fd = -1;
@@ -149,8 +150,11 @@ const Vector<V4l2Device::Resolution> & V4l2Device::availableResolutions() {
             return mAvailableResolutions;
         }
 
+        if (!mPixelFormat)
+            negotiatePixelFormat(fd);
+
         struct v4l2_frmsizeenum frmSize;
-        frmSize.pixel_format = V4L2DEVICE_PIXEL_FORMAT;
+        frmSize.pixel_format = mPixelFormat;
         frmSize.index = 0;
 
         errno = 0;
@@ -209,7 +213,7 @@ bool V4l2Device::setResolution(unsigned width, unsigned height) {
         #ifndef V4L2DEVICE_OPEN_ONCE
         disconnect();
         mFormat.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        mFormat.fmt.pix.pixelformat = V4L2DEVICE_PIXEL_FORMAT;
+        mFormat.fmt.pix.pixelformat = mPixelFormat;
         mFormat.fmt.pix.width = width;
         mFormat.fmt.pix.height = height;
         connect();
@@ -219,7 +223,7 @@ bool V4l2Device::setResolution(unsigned width, unsigned height) {
         return true;
     } else {
         mFormat.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        mFormat.fmt.pix.pixelformat = V4L2DEVICE_PIXEL_FORMAT;
+        mFormat.fmt.pix.pixelformat = mPixelFormat;
         mFormat.fmt.pix.width = width;
         mFormat.fmt.pix.height = height;
         return true;
@@ -236,6 +240,51 @@ V4l2Device::Resolution V4l2Device::resolution() {
     return res;
 }
 
+bool V4l2Device::negotiatePixelFormat(int fd) {
+    /* Preferred formats in priority order */
+    static const uint32_t preferred[] = {
+        V4L2_PIX_FMT_UYVY,
+        V4L2_PIX_FMT_YUYV,
+    };
+
+    /* Enumerate all formats the device supports */
+    struct v4l2_fmtdesc fmtDesc;
+    memset(&fmtDesc, 0, sizeof(fmtDesc));
+    fmtDesc.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    fmtDesc.index = 0;
+
+    uint32_t firstFormat = 0;
+    while (ioctl(fd, VIDIOC_ENUM_FMT, &fmtDesc) == 0) {
+        ALOGD("%s: format %d: %.4s (%s)", mDevNode, fmtDesc.index,
+              (const char *)&fmtDesc.pixelformat, fmtDesc.description);
+
+        if (!firstFormat)
+            firstFormat = fmtDesc.pixelformat;
+
+        /* Check if this is a preferred format */
+        for (size_t i = 0; i < sizeof(preferred) / sizeof(preferred[0]); i++) {
+            if (fmtDesc.pixelformat == preferred[i]) {
+                mPixelFormat = fmtDesc.pixelformat;
+                ALOGI("%s: selected format %.4s", mDevNode,
+                      (const char *)&mPixelFormat);
+                return true;
+            }
+        }
+        fmtDesc.index++;
+    }
+
+    /* No preferred format found — use first available */
+    if (firstFormat) {
+        mPixelFormat = firstFormat;
+        ALOGW("%s: no preferred format, using %.4s", mDevNode,
+              (const char *)&mPixelFormat);
+        return true;
+    }
+
+    ALOGE("%s: no formats available", mDevNode);
+    return false;
+}
+
 /**
  * Connects to camera, allocates buffers, starts streaming
  */
@@ -246,6 +295,12 @@ bool V4l2Device::connect() {
     mFd = openFd(mDevNode);
     if(mFd < 0) {
         ALOGE("Could not open %s: %s (%d)", mDevNode, strerror(errno), errno);
+        return false;
+    }
+
+    if (!mPixelFormat && !negotiatePixelFormat(mFd)) {
+        ALOGE("Could not negotiate pixel format for %s", mDevNode);
+        closeFd(&mFd);
         return false;
     }
 
@@ -446,7 +501,7 @@ bool V4l2Device::iocSFmt(unsigned width, unsigned height) {
     memset(&format, 0, sizeof(format));
 
     format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    format.fmt.pix.pixelformat = V4L2DEVICE_PIXEL_FORMAT;
+    format.fmt.pix.pixelformat = mPixelFormat;
     format.fmt.pix.width = width;
     format.fmt.pix.height = height;
 
@@ -531,7 +586,7 @@ bool V4l2Device::setResolutionAndAllocateBuffers(unsigned width, unsigned height
             return false;
         }
 
-        if(!mBuf[i].map(mFd, offset, bufLen[i])) {
+        if(!mBuf[i].map(mFd, offset, bufLen[i], mPixelFormat)) {
             ALOGE("Could not allocate buffer %d (len = %d): %s (%d)", i, bufLen[i], strerror(errno), errno);
             while(i--) mBuf[i].unmap();
             return false;
@@ -574,7 +629,7 @@ V4l2Device::VBuffer::~VBuffer() {
     }
 }
 
-bool V4l2Device::VBuffer::map(int fd, unsigned offset, unsigned len) {
+bool V4l2Device::VBuffer::map(int fd, unsigned offset, unsigned len, uint32_t pixelFormat) {
     assert(!this->buf);
 
     errno = 0;
@@ -584,7 +639,7 @@ bool V4l2Device::VBuffer::map(int fd, unsigned offset, unsigned len) {
     }
     memset(this->buf, 0, len);
     this->len = len;
-    this->pixFmt = V4L2DEVICE_PIXEL_FORMAT;
+    this->pixFmt = pixelFormat;
 
     return true;
 }

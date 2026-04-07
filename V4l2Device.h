@@ -13,11 +13,6 @@
 # define V4L2DEVICE_BUF_COUNT 4
 #endif
 
-#ifndef V4L2DEVICE_PIXEL_FORMAT
-# warning V4L2DEVICE_PIXEL_FORMAT not defined, using default value (V4L2_PIX_FMT_UYVY)
-# define V4L2DEVICE_PIXEL_FORMAT V4L2_PIX_FMT_UYVY
-#endif
-
 namespace android {
 
 class V4l2Device
@@ -38,7 +33,7 @@ public:
         VBuffer(): buf(NULL), len(0) {}
         ~VBuffer();
 
-        bool map(int fd, unsigned offset, unsigned len);
+        bool map(int fd, unsigned offset, unsigned len, uint32_t pixelFormat);
         void unmap();
 
         friend class V4l2Device;
@@ -47,6 +42,7 @@ public:
     V4l2Device(const char *devNode = "/dev/video0");
     ~V4l2Device();
 
+    uint32_t pixelFormat() const { return mPixelFormat; }
     const Vector<V4l2Device::Resolution> & availableResolutions();
     V4l2Device::Resolution sensorResolution();
 
@@ -76,10 +72,13 @@ private:
     bool setResolutionAndAllocateBuffers(unsigned width, unsigned height);
     void cleanup();
 
+    bool negotiatePixelFormat(int fd);
+
     int mFd;
     bool mConnected;
     bool mStreaming;
     const char *mDevNode;
+    uint32_t mPixelFormat;
     Vector<V4l2Device::Resolution> mAvailableResolutions;
     V4l2Device::Resolution mForcedResolution;
     struct v4l2_format mFormat;

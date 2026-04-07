@@ -49,11 +49,11 @@ static bool isV4l2CaptureDevice(const char *path) {
     bool result = false;
     if (ioctl(fd, VIDIOC_QUERYCAP, &cap) == 0) {
         if (cap.capabilities & V4L2_CAP_VIDEO_CAPTURE) {
-            struct v4l2_frmsizeenum frmSize;
-            memset(&frmSize, 0, sizeof(frmSize));
-            frmSize.pixel_format = V4L2DEVICE_PIXEL_FORMAT;
-            frmSize.index = 0;
-            if (ioctl(fd, VIDIOC_ENUM_FRAMESIZES, &frmSize) == 0)
+            /* Check that it supports at least one format */
+            struct v4l2_fmtdesc fmtDesc;
+            memset(&fmtDesc, 0, sizeof(fmtDesc));
+            fmtDesc.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            if (ioctl(fd, VIDIOC_ENUM_FMT, &fmtDesc) == 0)
                 result = true;
         }
     }

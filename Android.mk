@@ -18,10 +18,6 @@ LOCAL_CFLAGS += -DV4L2DEVICE_FPS_LIMIT=60
 
 LOCAL_CFLAGS += -DV4L2DEVICE_BUF_COUNT=4
 
-# Camera color format
-LOCAL_CFLAGS += -DV4L2DEVICE_PIXEL_FORMAT=V4L2_PIX_FMT_UYVY
-#LOCAL_CFLAGS += -DV4L2DEVICE_PIXEL_FORMAT=V4L2_PIX_FMT_YUYV
-
 # Configure and open device once on HAL start
 LOCAL_CFLAGS += -DV4L2DEVICE_OPEN_ONCE
 
@@ -66,17 +62,4 @@ LOCAL_SRC_FILES += \
     Yuv422UyvyToJpegEncoder.cpp
 
 include $(BUILD_SHARED_LIBRARY)
-
-#-----------------------------------------------------------------------------
-# media_profiles.xml
-#-----------------------------------------------------------------------------
-
-include $(CLEAR_VARS)
-
-LOCAL_MODULE := media_profiles.xml
-LOCAL_MODULE_CLASS := ETC
-LOCAL_MODULE_PATH := $(TARGET_OUT_ETC)
-LOCAL_SRC_FILES := media_profiles.xml
-
-include $(BUILD_PREBUILT)
 
