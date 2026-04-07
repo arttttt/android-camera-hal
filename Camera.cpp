@@ -43,9 +43,10 @@ namespace android {
  * is what Android framework talks to.
  */
 
-Camera::Camera()
+Camera::Camera(const char *devNode, int facing)
     : mStaticCharacteristics(NULL)
     , mCallbackOps(NULL)
+    , mFacing(facing)
     , mJpegBufferSize(0) {
     DBGUTILS_AUTOLOGCALL(__func__);
     for(size_t i = 0; i < NELEM(mDefaultRequestSettings); i++) {
@@ -60,7 +61,7 @@ Camera::Camera()
     priv            = NULL;
 
     mValid = true;
-    mDev = new V4l2Device("/dev/video0");
+    mDev = new V4l2Device(devNode);
     if(!mDev) {
         mValid = false;
     }
@@ -76,8 +77,8 @@ Camera::~Camera() {
 status_t Camera::cameraInfo(struct camera_info *info) {
     DBGUTILS_AUTOLOGCALL(__func__);
     Mutex::Autolock lock(mMutex);
-    info->facing = CAMERA_FACING_BACK;
-    info->orientation = 0;
+    info->facing = mFacing;
+    info->orientation = (mFacing == CAMERA_FACING_FRONT) ? 270 : 90;
     info->device_version = CAMERA_DEVICE_API_VERSION_3_0;
     info->static_camera_characteristics = staticCharacteristics();
 
@@ -130,7 +131,8 @@ camera_metadata_t *Camera::staticCharacteristics() {
     static const float lensInfoAvailableFocalLengths[] = {3.30f};
     cm.update(ANDROID_LENS_INFO_AVAILABLE_FOCAL_LENGTHS, lensInfoAvailableFocalLengths, NELEM(lensInfoAvailableFocalLengths));
 
-    static const uint8_t lensFacing = ANDROID_LENS_FACING_BACK;
+    const uint8_t lensFacing = (mFacing == CAMERA_FACING_FRONT)
+        ? ANDROID_LENS_FACING_FRONT : ANDROID_LENS_FACING_BACK;
     cm.update(ANDROID_LENS_FACING, &lensFacing, 1);
     const int32_t sensorInfoPixelArraySize[] = {
         (int32_t)sensorRes.width,

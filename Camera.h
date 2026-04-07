@@ -16,7 +16,7 @@ namespace android {
 
 class Camera: public camera3_device {
 public:
-    Camera();
+    Camera(const char *devNode, int facing);
     virtual ~Camera();
 
     bool isValid() { return mValid; }
@@ -46,6 +46,7 @@ protected:
 
     V4l2Device *mDev;
     bool mValid;
+    int mFacing;
     const camera3_callback_ops_t *mCallbackOps;
 
     size_t mJpegBufferSize;
