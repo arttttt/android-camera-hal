@@ -205,16 +205,21 @@ bool V4l2Device::setResolution(unsigned width, unsigned height) {
 
     ALOGD("New resolution: %dx%d", width, height);
     if(isConnected()) {
-        #ifndef V4L2DEVICE_OPEN_ONCE
-        disconnect();
-        mFormat.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        mFormat.fmt.pix.pixelformat = mPixelFormat;
-        mFormat.fmt.pix.width = width;
-        mFormat.fmt.pix.height = height;
-        connect();
-        #else
-        ALOGD("Resolution change not supported");
-        #endif
+        bool wasStreaming = mStreaming;
+        if(wasStreaming)
+            iocStreamOff();
+
+        for(int i = 0; i < V4L2DEVICE_BUF_COUNT; ++i)
+            mBuf[i].unmap();
+
+        if(!setResolutionAndAllocateBuffers(width, height)) {
+            ALOGE("Could not change resolution to %dx%d", width, height);
+            return false;
+        }
+
+        if(wasStreaming)
+            iocStreamOn();
+
         return true;
     } else {
         mFormat.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
