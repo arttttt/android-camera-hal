@@ -81,6 +81,7 @@ V4l2Device::V4l2Device(const char *devNode)
     , mPixelFormat(0)
 {
     memset(&mFormat, 0, sizeof(mFormat));
+    memset(&mForcedResolution, 0, sizeof(mForcedResolution));
     mPFd.fd = -1;
     mPFd.events = POLLIN | POLLRDNORM;
 
@@ -253,13 +254,23 @@ bool V4l2Device::negotiatePixelFormat(int fd) {
     fmtDesc.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     fmtDesc.index = 0;
 
-    uint32_t firstFormat = 0;
+    uint32_t fallbackFormat = 0;
     while (ioctl(fd, VIDIOC_ENUM_FMT, &fmtDesc) == 0) {
         ALOGD("%s: format %d: %.4s (%s)", mDevNode, fmtDesc.index,
               (const char *)&fmtDesc.pixelformat, fmtDesc.description);
 
-        if (!firstFormat)
-            firstFormat = fmtDesc.pixelformat;
+        /* Check if this format has any frame sizes */
+        struct v4l2_frmsizeenum frmSize;
+        memset(&frmSize, 0, sizeof(frmSize));
+        frmSize.pixel_format = fmtDesc.pixelformat;
+        bool hasFrameSizes = (ioctl(fd, VIDIOC_ENUM_FRAMESIZES, &frmSize) == 0);
+
+        if (!hasFrameSizes) {
+            ALOGD("%s: format %.4s has no frame sizes, skipping", mDevNode,
+                  (const char *)&fmtDesc.pixelformat);
+            fmtDesc.index++;
+            continue;
+        }
 
         /* Check if this is a preferred format */
         for (size_t i = 0; i < sizeof(preferred) / sizeof(preferred[0]); i++) {
@@ -270,18 +281,22 @@ bool V4l2Device::negotiatePixelFormat(int fd) {
                 return true;
             }
         }
+
+        if (!fallbackFormat)
+            fallbackFormat = fmtDesc.pixelformat;
+
         fmtDesc.index++;
     }
 
-    /* No preferred format found — use first available */
-    if (firstFormat) {
-        mPixelFormat = firstFormat;
+    /* No preferred format found — use first with frame sizes */
+    if (fallbackFormat) {
+        mPixelFormat = fallbackFormat;
         ALOGW("%s: no preferred format, using %.4s", mDevNode,
               (const char *)&mPixelFormat);
         return true;
     }
 
-    ALOGE("%s: no formats available", mDevNode);
+    ALOGE("%s: no usable formats available", mDevNode);
     return false;
 }
 
