@@ -652,12 +652,13 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
         switch(srcBuf.stream->format) {
             case HAL_PIXEL_FORMAT_RGBA_8888: {
                 if(!rgbaBuffer) {
-                    BENCHMARK_SECTION("YUV->RGBA") {
-                        /* FIXME: better format detection */
+                    BENCHMARK_SECTION("Raw->RGBA") {
                         if(frame->pixFmt == V4L2_PIX_FMT_UYVY)
                             mConverter.UYVYToRGBA(frame->buf, buf, res.width, res.height);
-                        else
+                        else if(frame->pixFmt == V4L2_PIX_FMT_YUYV)
                             mConverter.YUY2ToRGBA(frame->buf, buf, res.width, res.height);
+                        else
+                            mConverter.BayerToRGBA(frame->buf, buf, res.width, res.height, frame->pixFmt);
                         rgbaBuffer = buf;
                     }
                 } else {
@@ -676,12 +677,21 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
                     }
                     ALOGD("JPEG quality = %u", jpegQuality);
 
-                    /* FIXME: better format detection */
                     uint8_t *bufEnd = NULL;
                     if(frame->pixFmt == V4L2_PIX_FMT_UYVY)
                         bufEnd = mConverter.UYVYToJPEG(frame->buf, buf, res.width, res.height, maxImageSize, jpegQuality);
-                    else
+                    else if(frame->pixFmt == V4L2_PIX_FMT_YUYV)
                         bufEnd = mConverter.YUY2ToJPEG(frame->buf, buf, res.width, res.height, maxImageSize, jpegQuality);
+                    else {
+                        /* Bayer: demosaic to temp RGBA, then encode JPEG */
+                        size_t rgbaSize = res.width * res.height * 4;
+                        uint8_t *rgba = new uint8_t[rgbaSize];
+                        mConverter.BayerToRGBA(frame->buf, rgba, res.width, res.height, frame->pixFmt);
+                        /* TODO: RGBA->JPEG via libjpeg */
+                        ALOGE("JPEG capture from Bayer not yet implemented");
+                        delete[] rgba;
+                        bufEnd = buf;
+                    }
 
                     if(bufEnd != buf) {
                         camera3_jpeg_blob *jpegBlob = reinterpret_cast<camera3_jpeg_blob*>(buf + maxImageSize);

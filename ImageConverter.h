@@ -18,6 +18,8 @@ public:
     uint8_t * UYVYToRGBA(const uint8_t *src, uint8_t *dst, unsigned width, unsigned height);
     uint8_t * UYVYToJPEG(const uint8_t *src, uint8_t *dst, unsigned width, unsigned height, size_t dstLen, uint8_t quality);
 
+    uint8_t * BayerToRGBA(const uint8_t *src, uint8_t *dst, unsigned width, unsigned height, uint32_t pixFmt);
+
 protected:
     uint8_t * splitRunWait(const uint8_t *src, uint8_t *dst, unsigned width, unsigned height, Workers::Task::Function fn);
 
@@ -28,7 +30,10 @@ private:
             const uint8_t  *src;
             uint8_t        *dst;
             size_t          width;
+            size_t          height;
             size_t          linesNum;
+            size_t          startLine;
+            uint32_t        pixFmt;
         } data;
     };
 };

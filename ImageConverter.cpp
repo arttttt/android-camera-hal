@@ -168,4 +168,117 @@ uint8_t * ImageConverter::splitRunWait(const uint8_t *src, uint8_t *dst, unsigne
     return dstPtr;
 }
 
+/*
+ * Simple bilinear Bayer demosaic.
+ * Supports RGGB, BGGR, GRBG, GBRG patterns (8-bit).
+ */
+static inline void demosaicLine(const uint8_t *src, uint8_t *dst,
+        unsigned width, unsigned height, unsigned y, uint32_t pixFmt) {
+    /*
+     * Determine color offsets for this Bayer pattern.
+     * For RGGB: even rows = R G R G, odd rows = G B G B
+     * rX/rY = red pixel offset within 2x2 block
+     */
+    int rX = 0, rY = 0; /* red position in 2x2 tile */
+    switch (pixFmt) {
+        case V4L2_PIX_FMT_SRGGB8: rX = 0; rY = 0; break; /* RGGB */
+        case V4L2_PIX_FMT_SGRBG8: rX = 1; rY = 0; break; /* GRBG */
+        case V4L2_PIX_FMT_SGBRG8: rX = 0; rY = 1; break; /* GBRG */
+        case V4L2_PIX_FMT_SBGGR8: rX = 1; rY = 1; break; /* BGGR */
+        default:                   rX = 0; rY = 0; break;
+    }
+
+    const uint8_t *row  = src + y * width;
+    const uint8_t *rowU = (y > 0)          ? row - width : row;
+    const uint8_t *rowD = (y < height - 1) ? row + width : row;
+    uint8_t *out = dst + y * width * 4;
+
+    for (unsigned x = 0; x < width; x++) {
+        uint8_t r, g, b;
+        int px = x & 1;
+        int py = y & 1;
+
+        uint8_t left  = (x > 0)         ? row[x - 1] : row[x];
+        uint8_t right = (x < width - 1) ? row[x + 1] : row[x];
+        uint8_t up    = rowU[x];
+        uint8_t down  = rowD[x];
+
+        if (py == rY && px == rX) {
+            /* Red pixel */
+            r = row[x];
+            g = ((unsigned)left + right + up + down) / 4;
+            uint8_t uleft  = (x > 0)         ? rowU[x - 1] : rowU[x];
+            uint8_t uright = (x < width - 1) ? rowU[x + 1] : rowU[x];
+            uint8_t dleft  = (x > 0)         ? rowD[x - 1] : rowD[x];
+            uint8_t dright = (x < width - 1) ? rowD[x + 1] : rowD[x];
+            b = ((unsigned)uleft + uright + dleft + dright) / 4;
+        } else if (py != rY && px != rX) {
+            /* Blue pixel */
+            b = row[x];
+            g = ((unsigned)left + right + up + down) / 4;
+            uint8_t uleft  = (x > 0)         ? rowU[x - 1] : rowU[x];
+            uint8_t uright = (x < width - 1) ? rowU[x + 1] : rowU[x];
+            uint8_t dleft  = (x > 0)         ? rowD[x - 1] : rowD[x];
+            uint8_t dright = (x < width - 1) ? rowD[x + 1] : rowD[x];
+            r = ((unsigned)uleft + uright + dleft + dright) / 4;
+        } else {
+            /* Green pixel */
+            g = row[x];
+            if (py == rY) {
+                /* Green on red row */
+                r = ((unsigned)left + right) / 2;
+                b = ((unsigned)up + down) / 2;
+            } else {
+                /* Green on blue row */
+                b = ((unsigned)left + right) / 2;
+                r = ((unsigned)up + down) / 2;
+            }
+        }
+
+        out[0] = r;
+        out[1] = g;
+        out[2] = b;
+        out[3] = 255;
+        out += 4;
+    }
+}
+
+uint8_t *ImageConverter::BayerToRGBA(const uint8_t *src, uint8_t *dst,
+        unsigned width, unsigned height, uint32_t pixFmt) {
+    assert(gWorkers.isRunning());
+    assert(src != NULL);
+    assert(dst != NULL);
+
+    Workers::Task::Function taskFn = [](void *data) {
+        ConvertTask::Data *d = static_cast<ConvertTask::Data *>(data);
+        for (size_t i = 0; i < d->linesNum; ++i) {
+            demosaicLine(d->src, d->dst, d->width, d->height,
+                         d->startLine + i, d->pixFmt);
+        }
+    };
+
+    ConvertTask tasks[WORKERS_TASKS_NUM];
+    const size_t linesPerTask = (height + WORKERS_TASKS_NUM - 1) / WORKERS_TASKS_NUM;
+
+    for (size_t i = 0; i < WORKERS_TASKS_NUM; ++i) {
+        tasks[i].data.src       = src;
+        tasks[i].data.dst       = dst;
+        tasks[i].data.width     = width;
+        tasks[i].data.height    = height;
+        tasks[i].data.startLine = i * linesPerTask;
+        tasks[i].data.linesNum  = linesPerTask;
+        tasks[i].data.pixFmt    = pixFmt;
+        if ((i + 1) * linesPerTask >= height)
+            tasks[i].data.linesNum = height - i * linesPerTask;
+
+        tasks[i].task = Workers::Task(taskFn, (void *)&tasks[i].data);
+        gWorkers.queueTask(&tasks[i].task);
+    }
+
+    for (size_t i = 0; i < WORKERS_TASKS_NUM; ++i)
+        tasks[i].task.waitForCompletion();
+
+    return dst + width * height * 4;
+}
+
 }; /* namespace android */
