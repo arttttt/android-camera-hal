@@ -17,6 +17,7 @@
 #include <YuvToJpegEncoder.h>
 #include <SkStream.h>
 #include <libyuv/row.h>
+#include <linux/videodev2.h>
 
 #include "Yuv422UyvyToJpegEncoder.h"
 #include "ImageConverter.h"
