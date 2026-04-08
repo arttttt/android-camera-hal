@@ -76,7 +76,7 @@ V4l2Device::V4l2Device(const char *devNode)
     : mFd(-1)
     , mConnected(false)
     , mStreaming(false)
-    , mDevNode(devNode)
+    , mDevNode(strdup(devNode))
     , mPixelFormat(0)
 {
     memset(&mFormat, 0, sizeof(mFormat));
@@ -97,6 +97,7 @@ V4l2Device::~V4l2Device() {
         iocStreamOff();
     }
     cleanup();
+    free((void *)mDevNode);
 }
 
 /**
@@ -215,6 +216,14 @@ bool V4l2Device::negotiatePixelFormat(int fd) {
     static const uint32_t preferred[] = {
         V4L2_PIX_FMT_UYVY,
         V4L2_PIX_FMT_YUYV,
+        V4L2_PIX_FMT_SBGGR10,
+        V4L2_PIX_FMT_SRGGB10,
+        V4L2_PIX_FMT_SGRBG10,
+        V4L2_PIX_FMT_SGBRG10,
+        V4L2_PIX_FMT_SBGGR8,
+        V4L2_PIX_FMT_SRGGB8,
+        V4L2_PIX_FMT_SGRBG8,
+        V4L2_PIX_FMT_SGBRG8,
     };
 
     /* Enumerate all formats the device supports */

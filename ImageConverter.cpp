@@ -170,78 +170,97 @@ uint8_t * ImageConverter::splitRunWait(const uint8_t *src, uint8_t *dst, unsigne
 }
 
 /*
+ * Bayer pattern red-pixel position from V4L2 fourcc.
+ * rX/rY = position of red pixel within 2x2 tile.
+ */
+static inline void bayerPattern(uint32_t pixFmt, int *rX, int *rY) {
+    switch (pixFmt) {
+        case V4L2_PIX_FMT_SRGGB8:
+        case V4L2_PIX_FMT_SRGGB10: *rX = 0; *rY = 0; break;
+        case V4L2_PIX_FMT_SGRBG8:
+        case V4L2_PIX_FMT_SGRBG10: *rX = 1; *rY = 0; break;
+        case V4L2_PIX_FMT_SGBRG8:
+        case V4L2_PIX_FMT_SGBRG10: *rX = 0; *rY = 1; break;
+        case V4L2_PIX_FMT_SBGGR8:
+        case V4L2_PIX_FMT_SBGGR10: *rX = 1; *rY = 1; break;
+        default:                    *rX = 0; *rY = 0; break;
+    }
+}
+
+static inline bool bayerIs16bit(uint32_t pixFmt) {
+    switch (pixFmt) {
+        case V4L2_PIX_FMT_SRGGB10:
+        case V4L2_PIX_FMT_SGRBG10:
+        case V4L2_PIX_FMT_SGBRG10:
+        case V4L2_PIX_FMT_SBGGR10:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/*
  * Simple bilinear Bayer demosaic.
- * Supports RGGB, BGGR, GRBG, GBRG patterns (8-bit).
+ * Supports RGGB, BGGR, GRBG, GBRG patterns in 8-bit and 10-bit (16-bit LE).
  */
 static inline void demosaicLine(const uint8_t *src, uint8_t *dst,
         unsigned width, unsigned height, unsigned y, uint32_t pixFmt) {
-    /*
-     * Determine color offsets for this Bayer pattern.
-     * For RGGB: even rows = R G R G, odd rows = G B G B
-     * rX/rY = red pixel offset within 2x2 block
-     */
-    int rX = 0, rY = 0; /* red position in 2x2 tile */
-    switch (pixFmt) {
-        case V4L2_PIX_FMT_SRGGB8: rX = 0; rY = 0; break; /* RGGB */
-        case V4L2_PIX_FMT_SGRBG8: rX = 1; rY = 0; break; /* GRBG */
-        case V4L2_PIX_FMT_SGBRG8: rX = 0; rY = 1; break; /* GBRG */
-        case V4L2_PIX_FMT_SBGGR8: rX = 1; rY = 1; break; /* BGGR */
-        default:                   rX = 0; rY = 0; break;
-    }
+    int rX, rY;
+    bayerPattern(pixFmt, &rX, &rY);
+    bool is16 = bayerIs16bit(pixFmt);
+    unsigned bpp = is16 ? 2 : 1;
+    unsigned stride = width * bpp;
 
-    const uint8_t *row  = src + y * width;
-    const uint8_t *rowU = (y > 0)          ? row - width : row;
-    const uint8_t *rowD = (y < height - 1) ? row + width : row;
+    const uint8_t *rowBytes  = src + y * stride;
+    const uint8_t *rowBytesU = (y > 0)          ? rowBytes - stride : rowBytes;
+    const uint8_t *rowBytesD = (y < height - 1) ? rowBytes + stride : rowBytes;
     uint8_t *out = dst + y * width * 4;
 
+    /* Read one pixel, returning 8-bit value */
+    #define PX(row, x) (is16 ? ((const uint16_t *)(row))[x] >> 2 : (row)[x])
+
     for (unsigned x = 0; x < width; x++) {
-        uint8_t r, g, b;
+        unsigned c  = PX(rowBytes, x);
+        unsigned l  = (x > 0)         ? PX(rowBytes, x - 1) : c;
+        unsigned r  = (x < width - 1) ? PX(rowBytes, x + 1) : c;
+        unsigned u  = PX(rowBytesU, x);
+        unsigned d  = PX(rowBytesD, x);
         int px = x & 1;
         int py = y & 1;
 
-        uint8_t left  = (x > 0)         ? row[x - 1] : row[x];
-        uint8_t right = (x < width - 1) ? row[x + 1] : row[x];
-        uint8_t up    = rowU[x];
-        uint8_t down  = rowD[x];
-
+        uint8_t R, G, B;
         if (py == rY && px == rX) {
             /* Red pixel */
-            r = row[x];
-            g = ((unsigned)left + right + up + down) / 4;
-            uint8_t uleft  = (x > 0)         ? rowU[x - 1] : rowU[x];
-            uint8_t uright = (x < width - 1) ? rowU[x + 1] : rowU[x];
-            uint8_t dleft  = (x > 0)         ? rowD[x - 1] : rowD[x];
-            uint8_t dright = (x < width - 1) ? rowD[x + 1] : rowD[x];
-            b = ((unsigned)uleft + uright + dleft + dright) / 4;
+            R = c;
+            G = (l + r + u + d) / 4;
+            unsigned ul = (x > 0)         ? PX(rowBytesU, x-1) : u;
+            unsigned ur = (x < width - 1) ? PX(rowBytesU, x+1) : u;
+            unsigned dl = (x > 0)         ? PX(rowBytesD, x-1) : d;
+            unsigned dr = (x < width - 1) ? PX(rowBytesD, x+1) : d;
+            B = (ul + ur + dl + dr) / 4;
         } else if (py != rY && px != rX) {
             /* Blue pixel */
-            b = row[x];
-            g = ((unsigned)left + right + up + down) / 4;
-            uint8_t uleft  = (x > 0)         ? rowU[x - 1] : rowU[x];
-            uint8_t uright = (x < width - 1) ? rowU[x + 1] : rowU[x];
-            uint8_t dleft  = (x > 0)         ? rowD[x - 1] : rowD[x];
-            uint8_t dright = (x < width - 1) ? rowD[x + 1] : rowD[x];
-            r = ((unsigned)uleft + uright + dleft + dright) / 4;
+            B = c;
+            G = (l + r + u + d) / 4;
+            unsigned ul = (x > 0)         ? PX(rowBytesU, x-1) : u;
+            unsigned ur = (x < width - 1) ? PX(rowBytesU, x+1) : u;
+            unsigned dl = (x > 0)         ? PX(rowBytesD, x-1) : d;
+            unsigned dr = (x < width - 1) ? PX(rowBytesD, x+1) : d;
+            R = (ul + ur + dl + dr) / 4;
         } else {
             /* Green pixel */
-            g = row[x];
-            if (py == rY) {
-                /* Green on red row */
-                r = ((unsigned)left + right) / 2;
-                b = ((unsigned)up + down) / 2;
-            } else {
-                /* Green on blue row */
-                b = ((unsigned)left + right) / 2;
-                r = ((unsigned)up + down) / 2;
-            }
+            G = c;
+            if (py == rY) { R = (l + r) / 2; B = (u + d) / 2; }
+            else           { B = (l + r) / 2; R = (u + d) / 2; }
         }
 
-        out[0] = r;
-        out[1] = g;
-        out[2] = b;
+        out[0] = R;
+        out[1] = G;
+        out[2] = B;
         out[3] = 255;
         out += 4;
     }
+    #undef PX
 }
 
 uint8_t *ImageConverter::BayerToRGBA(const uint8_t *src, uint8_t *dst,
