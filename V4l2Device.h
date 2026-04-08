@@ -80,7 +80,6 @@ private:
     const char *mDevNode;
     uint32_t mPixelFormat;
     Vector<V4l2Device::Resolution> mAvailableResolutions;
-    V4l2Device::Resolution mForcedResolution;
     struct v4l2_format mFormat;
     VBuffer mBuf[V4L2DEVICE_BUF_COUNT];
     struct pollfd mPFd;

@@ -28,7 +28,6 @@
 #include <errno.h>
 #include <cstdlib>
 #include <utils/misc.h>
-#include <cutils/properties.h>
 #include <utils/Vector.h>
 #include <cassert>
 
@@ -81,34 +80,12 @@ V4l2Device::V4l2Device(const char *devNode)
     , mPixelFormat(0)
 {
     memset(&mFormat, 0, sizeof(mFormat));
-    memset(&mForcedResolution, 0, sizeof(mForcedResolution));
     mPFd.fd = -1;
     mPFd.events = POLLIN | POLLRDNORM;
 
 #if V4L2DEVICE_FPS_LIMIT > 0
     mLastTimestamp = 0;
 #endif
-
-    /* Ignore multiple possible devices for now */
-    char resStr[PROPERTY_VALUE_MAX];
-    int ret;
-    ret = property_get("ro.camera.v4l2device.resolution", resStr, "");
-    if(ret > 0) {
-        /* parse forced resolution as WIDTHxHEIGHT */
-        char *heightStr = strchr(resStr, 'x');
-        if(heightStr)
-            *heightStr++ = '\0';
-
-        errno = 0;
-        mForcedResolution.width = strtoul(resStr, NULL, 10);
-        ret = errno;
-        mForcedResolution.height = strtoul(heightStr, NULL, 10);
-        ret |= errno;
-
-        if(ret) {
-            mForcedResolution.width = mForcedResolution.height = 0;
-        }
-    }
 
 #ifdef V4L2DEVICE_OPEN_ONCE
     connect();
@@ -124,59 +101,51 @@ V4l2Device::~V4l2Device() {
 
 /**
  * Returns array of camera's supported resolutions.
- *
- * Resolution can be forced by setting property ro.camera.v4l2device.resolution to value WIDTHxHEIGHT (e.g. 1920x1080)
  */
 const Vector<V4l2Device::Resolution> & V4l2Device::availableResolutions() {
     if(!mAvailableResolutions.isEmpty()) {
         return mAvailableResolutions;
     }
 
-    if(mForcedResolution.width > 0 && mForcedResolution.height > 0) {
-        ALOGI("Using forced resolution: %ux%u", mForcedResolution.width, mForcedResolution.height);
-        mAvailableResolutions.add(mForcedResolution);
+    int fd;
+    bool fdNeedsClose = false;
+    Vector<V4l2Device::Resolution> formats;
+
+    if(mFd >= 0) {
+        fd = mFd;
     } else {
-        int fd;
-        bool fdNeedsClose = false;
-        Vector<V4l2Device::Resolution> formats;
-
-        if(mFd >= 0) {
-            fd = mFd;
-        } else {
-            fd = openFd(mDevNode);
-            fdNeedsClose = true;
-        }
-        if(fd < 0) {
-            ALOGE("Could not open %s: %s (%d)", mDevNode, strerror(errno), errno);
-            return mAvailableResolutions;
-        }
-
-        if (!mPixelFormat)
-            negotiatePixelFormat(fd);
-
-        struct v4l2_frmsizeenum frmSize;
-        frmSize.pixel_format = mPixelFormat;
-        frmSize.index = 0;
-
-        errno = 0;
-        while(ioctl(fd, VIDIOC_ENUM_FRAMESIZES, &frmSize) == 0) {
-            ALOGD("%s: Found resolution: %dx%d", mDevNode, frmSize.discrete.width, frmSize.discrete.height);
-            ++frmSize.index;
-            formats.add();
-            formats.editTop().width = frmSize.discrete.width;
-            formats.editTop().height = frmSize.discrete.height;
-        }
-        if(errno && errno != EINVAL) {
-            ALOGW("Get available formats: %s (%d)", strerror(errno), errno);
-        }
-
-        if(fdNeedsClose) {
-            closeFd(&fd);
-        }
-
-        mAvailableResolutions = formats;
+        fd = openFd(mDevNode);
+        fdNeedsClose = true;
+    }
+    if(fd < 0) {
+        ALOGE("Could not open %s: %s (%d)", mDevNode, strerror(errno), errno);
+        return mAvailableResolutions;
     }
 
+    if (!mPixelFormat)
+        negotiatePixelFormat(fd);
+
+    struct v4l2_frmsizeenum frmSize;
+    memset(&frmSize, 0, sizeof(frmSize));
+    frmSize.pixel_format = mPixelFormat;
+
+    errno = 0;
+    while(ioctl(fd, VIDIOC_ENUM_FRAMESIZES, &frmSize) == 0) {
+        ALOGD("%s: Found resolution: %dx%d", mDevNode, frmSize.discrete.width, frmSize.discrete.height);
+        ++frmSize.index;
+        formats.add();
+        formats.editTop().width = frmSize.discrete.width;
+        formats.editTop().height = frmSize.discrete.height;
+    }
+    if(errno && errno != EINVAL) {
+        ALOGW("Get available formats: %s (%d)", strerror(errno), errno);
+    }
+
+    if(fdNeedsClose) {
+        closeFd(&fd);
+    }
+
+    mAvailableResolutions = formats;
     return mAvailableResolutions;
 }
 
