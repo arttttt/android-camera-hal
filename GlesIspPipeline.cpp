@@ -200,7 +200,7 @@ bool GlesIspPipeline::init() {
     /* Params SSBO (fixed size) */
     glGenBuffers(1, &mParamSSBO);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, mParamSSBO);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(IspParams), NULL, GL_DYNAMIC_DRAW);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(IspParams), NULL, GL_STREAM_DRAW);
 
     initGamma();
 
@@ -234,11 +234,11 @@ bool GlesIspPipeline::process(const uint8_t *src, uint8_t *dst,
 
         glGenBuffers(1, &mInSSBO);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, mInSSBO);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, inSize, NULL, GL_DYNAMIC_DRAW);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, inSize, NULL, GL_STREAM_DRAW);
 
         glGenBuffers(1, &mOutSSBO);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, mOutSSBO);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, outSize, NULL, GL_DYNAMIC_READ);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, outSize, NULL, GL_STREAM_READ);
 
         mInSize = inSize; mOutSize = outSize;
         mBufWidth = width; mBufHeight = height;
@@ -246,9 +246,16 @@ bool GlesIspPipeline::process(const uint8_t *src, uint8_t *dst,
 
     int64_t t0 = nowMs();
 
-    /* Upload input */
+    /* Upload input via mapped write (avoids driver-side copy in glBufferSubData) */
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, mInSSBO);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, inSize, src);
+    void *inMap = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, inSize,
+        GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+    if (inMap) {
+        memcpy(inMap, src, inSize);
+        glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+    } else {
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, inSize, src);
+    }
 
     /* Fill params */
     IspParams params = {};
@@ -291,7 +298,7 @@ bool GlesIspPipeline::process(const uint8_t *src, uint8_t *dst,
 
     glDispatchCompute((width + 15) / 16, (height + 15) / 16, 1);
     glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
-    glFinish();
+    /* No glFinish — glMapBufferRange(READ) below implicitly waits for GPU */
     int64_t t2 = nowMs();
 
     /* Read back */
