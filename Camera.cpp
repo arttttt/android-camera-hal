@@ -23,6 +23,7 @@
 #include <utils/Log.h>
 #include <hardware/gralloc.h>
 #include <ui/Rect.h>
+#include <ui/GraphicBuffer.h>
 #include <ui/GraphicBufferMapper.h>
 #include <ui/Fence.h>
 #include <assert.h>
@@ -879,18 +880,46 @@ skip_focus:
 
                 if(!rgbaBuffer) {
                     BENCHMARK_SECTION("Raw->RGBA") {
-                        /* Always convert to temp buffer (needed for zoom crop) */
-                        uint8_t *convDst = needZoom ? mRgbaTemp : buf;
-                        if (!needZoom && (res.width != streamW || res.height != streamH))
-                            convDst = mRgbaTemp;
-
-                        if(frame->pixFmt == V4L2_PIX_FMT_UYVY)
-                            mConverter.UYVYToRGBA(frame->buf, convDst, res.width, res.height);
-                        else if(frame->pixFmt == V4L2_PIX_FMT_YUYV)
-                            mConverter.YUY2ToRGBA(frame->buf, convDst, res.width, res.height);
-                        else
-                            mIsp->processFromDmabuf(frame->dmabufFd, frame->buf, convDst, res.width, res.height, frame->pixFmt);
-                        rgbaBuffer = convDst;
+                        if(frame->pixFmt == V4L2_PIX_FMT_UYVY) {
+                            mConverter.UYVYToRGBA(frame->buf, needZoom ? mRgbaTemp : buf, res.width, res.height);
+                            rgbaBuffer = needZoom ? mRgbaTemp : buf;
+                        } else if(frame->pixFmt == V4L2_PIX_FMT_YUYV) {
+                            mConverter.YUY2ToRGBA(frame->buf, needZoom ? mRgbaTemp : buf, res.width, res.height);
+                            rgbaBuffer = needZoom ? mRgbaTemp : buf;
+                        } else if(!needZoom && res.width == streamW && res.height == streamH) {
+                            /* Try GPU direct render to gralloc — no CPU readback */
+                            GraphicBufferMapper::get().unlock(*srcBuf.buffer);
+                            sp<GraphicBuffer> gb = new GraphicBuffer(streamW, streamH,
+                                HAL_PIXEL_FORMAT_RGBA_8888,
+                                GRALLOC_USAGE_HW_RENDER | GRALLOC_USAGE_HW_COMPOSER,
+                                streamW, *srcBuf.buffer, false);
+                            if (mIsp->processToGralloc(frame->buf, gb->getNativeBuffer(),
+                                                        res.width, res.height, streamW, streamH,
+                                                        frame->pixFmt)) {
+                                /* Success — buffer already written by GPU, skip zoom/copy */
+                                rgbaBuffer = buf; /* mark as done */
+                                /* Re-lock so unlock below doesn't fail */
+                                const Rect rect((int)streamW, (int)streamH);
+                                GraphicBufferMapper::get().lock(*srcBuf.buffer,
+                                    GRALLOC_USAGE_SW_WRITE_OFTEN, rect, (void **)&buf);
+                                break; /* skip zoom/copy section */
+                            }
+                            /* Failed — re-lock and fall back to CPU readback */
+                            const Rect rect((int)streamW, (int)streamH);
+                            GraphicBufferMapper::get().lock(*srcBuf.buffer,
+                                GRALLOC_USAGE_SW_WRITE_OFTEN, rect, (void **)&buf);
+                            mIsp->processFromDmabuf(frame->dmabufFd, frame->buf, buf,
+                                                     res.width, res.height, frame->pixFmt);
+                            rgbaBuffer = buf;
+                        } else {
+                            /* Zoom or size mismatch — CPU readback path */
+                            uint8_t *convDst = needZoom ? mRgbaTemp : buf;
+                            if (!needZoom && (res.width != streamW || res.height != streamH))
+                                convDst = mRgbaTemp;
+                            mIsp->processFromDmabuf(frame->dmabufFd, frame->buf, convDst,
+                                                     res.width, res.height, frame->pixFmt);
+                            rgbaBuffer = convDst;
+                        }
                     }
                 }
 

@@ -31,6 +31,18 @@ public:
         return process(cpuFallback, dst, width, height, pixFmt);
     }
 
+    /* Process Bayer and blit result directly to gralloc buffer (no CPU readback).
+     * nativeBuffer: ANativeWindowBuffer* cast to void*.
+     * Returns false if not supported — caller falls back to process(). */
+    virtual bool processToGralloc(const uint8_t *src, void *nativeBuffer,
+                                   unsigned srcW, unsigned srcH,
+                                   unsigned dstW, unsigned dstH,
+                                   uint32_t pixFmt) {
+        (void)src; (void)nativeBuffer; (void)srcW; (void)srcH;
+        (void)dstW; (void)dstH; (void)pixFmt;
+        return false;
+    }
+
     /* AWB gains (Q8: 256 = 1.0x) */
     void setWbGains(unsigned r, unsigned g, unsigned b) {
         mWbR = r; mWbG = g; mWbB = b;

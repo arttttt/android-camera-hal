@@ -11,7 +11,21 @@ static inline int64_t nowMs() {
     return ts.tv_sec * 1000LL + ts.tv_nsec / 1000000;
 }
 
+#include <system/window.h>
 #include "GlesIspPipeline.h"
+
+/* EGL/GL extension function pointers */
+static PFNEGLCREATEIMAGEKHRPROC eglCreateImageKHR_fn = NULL;
+static PFNEGLDESTROYIMAGEKHRPROC eglDestroyImageKHR_fn = NULL;
+static PFNGLEGLIMAGETARGETTEXTURE2DOESPROC glEGLImageTargetTexture2DOES_fn = NULL;
+
+static void loadExtFunctions() {
+    if (!eglCreateImageKHR_fn) {
+        eglCreateImageKHR_fn = (PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");
+        eglDestroyImageKHR_fn = (PFNEGLDESTROYIMAGEKHRPROC)eglGetProcAddress("eglDestroyImageKHR");
+        glEGLImageTargetTexture2DOES_fn = (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)eglGetProcAddress("glEGLImageTargetTexture2DOES");
+    }
+}
 
 namespace android {
 
@@ -111,6 +125,7 @@ GlesIspPipeline::GlesIspPipeline()
     : mReady(false), mBufWidth(0), mBufHeight(0)
     , mDisplay(EGL_NO_DISPLAY), mContext(EGL_NO_CONTEXT), mSurface(EGL_NO_SURFACE)
     , mProgram(0), mInTex(0), mParamSSBO(0), mOutTex(0), mFbo(0)
+    , mGrallocTex(0), mGrallocFbo(0), mGrallocImage(EGL_NO_IMAGE_KHR), mGrallocHandle(NULL)
     , mInSize(0), mIs16bit(false) {}
 
 GlesIspPipeline::~GlesIspPipeline() { destroy(); }
@@ -204,59 +219,42 @@ bool GlesIspPipeline::init() {
     return true;
 }
 
-bool GlesIspPipeline::process(const uint8_t *src, uint8_t *dst,
-                               unsigned width, unsigned height,
-                               uint32_t pixFmt) {
-    if (!mReady) return false;
-
-    /* Bind context once on capture thread, keep bound */
-    if (eglGetCurrentContext() != mContext)
-        eglMakeCurrent(mDisplay, mSurface, mSurface, mContext);
-
-    bool is16 = (pixFmt == V4L2_PIX_FMT_SRGGB10 || pixFmt == V4L2_PIX_FMT_SGRBG10 ||
-                 pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SBGGR10);
-
+bool GlesIspPipeline::ensureInput(unsigned width, unsigned height, bool is16) {
     size_t inSize = width * height * (is16 ? 2 : 1);
-    size_t outSize = width * height * 4;
 
-    /* Resize buffers if needed */
-    if (mInSize < inSize || mBufWidth != width || mBufHeight != height || mIs16bit != is16) {
-        if (mInTex) glDeleteTextures(1, &mInTex);
-        if (mOutTex) glDeleteTextures(1, &mOutTex);
-        if (mFbo) glDeleteFramebuffers(1, &mFbo);
+    if (mInSize >= inSize && mBufWidth == width && mBufHeight == height && mIs16bit == is16)
+        return true;
 
-        /* Input as texture — uses texture cache for spatial reads in demosaic */
-        glGenTextures(1, &mInTex);
-        glBindTexture(GL_TEXTURE_2D, mInTex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        if (is16)
-            glTexStorage2D(GL_TEXTURE_2D, 1, GL_R16UI, width, height);
-        else
-            glTexStorage2D(GL_TEXTURE_2D, 1, GL_R8UI, width, height);
+    if (mInTex) glDeleteTextures(1, &mInTex);
+    if (mOutTex) glDeleteTextures(1, &mOutTex);
+    if (mFbo) glDeleteFramebuffers(1, &mFbo);
 
-        /* Output texture + FBO for glReadPixels readback */
-        glGenTextures(1, &mOutTex);
-        glBindTexture(GL_TEXTURE_2D, mOutTex);
-        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, width, height);
+    glGenTextures(1, &mInTex);
+    glBindTexture(GL_TEXTURE_2D, mInTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    if (is16)
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_R16UI, width, height);
+    else
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_R8UI, width, height);
 
-        glGenFramebuffers(1, &mFbo);
-        glBindFramebuffer(GL_FRAMEBUFFER, mFbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, mOutTex, 0);
+    glGenTextures(1, &mOutTex);
+    glBindTexture(GL_TEXTURE_2D, mOutTex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, width, height);
 
-        GLenum fbStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-        if (fbStatus != GL_FRAMEBUFFER_COMPLETE)
-            ALOGE("FBO incomplete: 0x%x", fbStatus);
+    glGenFramebuffers(1, &mFbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, mFbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, mOutTex, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    mInSize = inSize; mIs16bit = is16;
+    mBufWidth = width; mBufHeight = height;
+    return true;
+}
 
-        mInSize = inSize; mIs16bit = is16;
-        mBufWidth = width; mBufHeight = height;
-    }
-
-    int64_t t0 = nowMs();
-
-    /* Upload input via texture (DMA path + texture cache for spatial reads) */
+void GlesIspPipeline::dispatchCompute(const uint8_t *src, unsigned width, unsigned height,
+                                       bool is16, uint32_t pixFmt) {
+    /* Upload input */
     glBindTexture(GL_TEXTURE_2D, mInTex);
     if (is16)
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
@@ -267,8 +265,7 @@ bool GlesIspPipeline::process(const uint8_t *src, uint8_t *dst,
 
     /* Fill params */
     IspParams params = {};
-    params.width = width;
-    params.height = height;
+    params.width = width; params.height = height;
     params.is16bit = is16 ? 1 : 0;
     params.doIsp = mEnabled ? 1 : 0;
     params.wbR = mWbR; params.wbG = mWbG; params.wbB = mWbB;
@@ -297,25 +294,41 @@ bool GlesIspPipeline::process(const uint8_t *src, uint8_t *dst,
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, mParamSSBO);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(IspParams), &params);
 
-    /* Bind and dispatch */
+    /* Dispatch */
     glUseProgram(mProgram);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, mInTex);
     glBindImageTexture(1, mOutTex, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, mParamSSBO);
-    int64_t t1 = nowMs();
-
     glDispatchCompute((width + 15) / 16, (height + 15) / 16, 1);
     glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-    int64_t t2 = nowMs();
+}
 
-    /* Read back via FBO + glReadPixels (uses tiled memory + DMA path) */
+bool GlesIspPipeline::process(const uint8_t *src, uint8_t *dst,
+                               unsigned width, unsigned height,
+                               uint32_t pixFmt) {
+    if (!mReady) return false;
+
+    if (eglGetCurrentContext() != mContext)
+        eglMakeCurrent(mDisplay, mSurface, mSurface, mContext);
+
+    bool is16 = (pixFmt == V4L2_PIX_FMT_SRGGB10 || pixFmt == V4L2_PIX_FMT_SGRBG10 ||
+                 pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SBGGR10);
+
+    if (!ensureInput(width, height, is16))
+        return false;
+
+    int64_t t0 = nowMs();
+    dispatchCompute(src, width, height, is16, pixFmt);
+    int64_t t1 = nowMs();
+
+    /* Read back via FBO + glReadPixels */
     glBindFramebuffer(GL_READ_FRAMEBUFFER, mFbo);
     glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, dst);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-    int64_t t3 = nowMs();
+    int64_t t2 = nowMs();
 
-    ALOGD("GLES: upload=%lld gpu=%lld readback=%lldms", t1 - t0, t2 - t1, t3 - t2);
+    ALOGD("GLES: compute=%lld readback=%lldms total=%lld", t1 - t0, t2 - t1, t2 - t0);
 
     /* AWB from raw input */
     if (mEnabled) {
@@ -356,12 +369,121 @@ bool GlesIspPipeline::process(const uint8_t *src, uint8_t *dst,
     return true;
 }
 
+bool GlesIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
+                                        unsigned srcW, unsigned srcH,
+                                        unsigned dstW, unsigned dstH,
+                                        uint32_t pixFmt) {
+    if (!mReady || !nativeBuffer) return false;
+    loadExtFunctions();
+    if (!eglCreateImageKHR_fn || !glEGLImageTargetTexture2DOES_fn) return false;
+
+    if (eglGetCurrentContext() != mContext)
+        eglMakeCurrent(mDisplay, mSurface, mSurface, mContext);
+
+    bool is16 = (pixFmt == V4L2_PIX_FMT_SRGGB10 || pixFmt == V4L2_PIX_FMT_SGRBG10 ||
+                 pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SBGGR10);
+
+    if (!ensureInput(srcW, srcH, is16))
+        return false;
+
+    /* Import gralloc buffer as EGLImage → texture → FBO (cached) */
+    if (mGrallocHandle != nativeBuffer) {
+        if (mGrallocImage != EGL_NO_IMAGE_KHR)
+            eglDestroyImageKHR_fn(mDisplay, mGrallocImage);
+        if (mGrallocFbo) { glDeleteFramebuffers(1, &mGrallocFbo); mGrallocFbo = 0; }
+        if (mGrallocTex) { glDeleteTextures(1, &mGrallocTex); mGrallocTex = 0; }
+
+        EGLint attrs[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
+        mGrallocImage = eglCreateImageKHR_fn(mDisplay, EGL_NO_CONTEXT,
+            EGL_NATIVE_BUFFER_ANDROID,
+            (EGLClientBuffer)nativeBuffer, attrs);
+        if (mGrallocImage == EGL_NO_IMAGE_KHR) {
+            ALOGE("eglCreateImageKHR failed: 0x%x", eglGetError());
+            mGrallocHandle = NULL;
+            return false;
+        }
+
+        glGenTextures(1, &mGrallocTex);
+        glBindTexture(GL_TEXTURE_2D, mGrallocTex);
+        glEGLImageTargetTexture2DOES_fn(GL_TEXTURE_2D, mGrallocImage);
+
+        glGenFramebuffers(1, &mGrallocFbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, mGrallocFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, mGrallocTex, 0);
+
+        GLenum s = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (s != GL_FRAMEBUFFER_COMPLETE) {
+            ALOGE("Gralloc FBO incomplete: 0x%x", s);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            mGrallocHandle = NULL;
+            return false;
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        mGrallocHandle = nativeBuffer;
+        ALOGD("Gralloc buffer imported as EGLImage OK (%ux%u)", dstW, dstH);
+    }
+
+    int64_t t0 = nowMs();
+    dispatchCompute(src, srcW, srcH, is16, pixFmt);
+    int64_t t1 = nowMs();
+
+    /* Blit from mOutTex FBO → gralloc FBO (GPU-internal, no CPU readback) */
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, mFbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, mGrallocFbo);
+    glBlitFramebuffer(0, 0, srcW, srcH, 0, 0, dstW, dstH,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glFinish(); /* ensure GPU completes before buffer returns to framework */
+    int64_t t2 = nowMs();
+
+    ALOGD("GLES gralloc: compute=%lld blit=%lldms total=%lld", t1 - t0, t2 - t1, t2 - t0);
+
+    /* AWB from raw input */
+    if (mEnabled) {
+        uint64_t sR = 0, sG = 0, sB = 0, nR = 0, nG = 0, nB = 0;
+        unsigned rX = (pixFmt == V4L2_PIX_FMT_SGRBG10 || pixFmt == V4L2_PIX_FMT_SGRBG8 ||
+                       pixFmt == V4L2_PIX_FMT_SBGGR10 || pixFmt == V4L2_PIX_FMT_SBGGR8) ? 1 : 0;
+        unsigned rY = (pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SGBRG8 ||
+                       pixFmt == V4L2_PIX_FMT_SBGGR10 || pixFmt == V4L2_PIX_FMT_SBGGR8) ? 1 : 0;
+        for (unsigned y = 0; y < srcH; y += 7) {
+            for (unsigned x = 0; x < srcW; x += 7) {
+                unsigned val = is16 ? ((const uint16_t *)src)[y * srcW + x] >> 2
+                                    : src[y * srcW + x];
+                unsigned px = x & 1, py = y & 1;
+                if (py == rY && px == rX) { sR += val; nR++; }
+                else if (py != rY && px != rX) { sB += val; nB++; }
+                else { sG += val; nG++; }
+            }
+        }
+        if (nR && nG && nB) {
+            uint64_t avgR = sR / nR, avgG = sG / nG, avgB = sB / nB;
+            uint64_t avg = (avgR + avgG + avgB) / 3;
+            unsigned r = avgR ? (unsigned)((avg * 256ULL) / avgR) : 256;
+            unsigned g = avgG ? (unsigned)((avg * 256ULL) / avgG) : 256;
+            unsigned b = avgB ? (unsigned)((avg * 256ULL) / avgB) : 256;
+            if (r < 128) r = 128; if (r > 1024) r = 1024;
+            if (g < 128) g = 128; if (g > 1024) g = 1024;
+            if (b < 128) b = 128; if (b > 1024) b = 1024;
+            mWbR = r; mWbG = g; mWbB = b;
+        }
+    }
+
+    return true;
+}
+
 void GlesIspPipeline::destroy() {
     if (!mReady && mDisplay == EGL_NO_DISPLAY)
         return;
 
     if (mDisplay != EGL_NO_DISPLAY) {
         eglMakeCurrent(mDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, mContext);
+        if (mGrallocFbo) { glDeleteFramebuffers(1, &mGrallocFbo); mGrallocFbo = 0; }
+        if (mGrallocTex) { glDeleteTextures(1, &mGrallocTex); mGrallocTex = 0; }
+        if (mGrallocImage != EGL_NO_IMAGE_KHR && eglDestroyImageKHR_fn)
+            { eglDestroyImageKHR_fn(mDisplay, mGrallocImage); mGrallocImage = EGL_NO_IMAGE_KHR; }
+        mGrallocHandle = NULL;
         if (mInTex) { glDeleteTextures(1, &mInTex); mInTex = 0; }
         if (mParamSSBO) { glDeleteBuffers(1, &mParamSSBO); mParamSSBO = 0; }
         if (mFbo) { glDeleteFramebuffers(1, &mFbo); mFbo = 0; }
