@@ -3,6 +3,13 @@
 #include <cstring>
 #include <linux/videodev2.h>
 #include <math.h>
+#include <time.h>
+
+static inline int64_t nowMs() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000LL + ts.tv_nsec / 1000000;
+}
 
 #include "GlesIspPipeline.h"
 
@@ -149,6 +156,17 @@ bool GlesIspPipeline::init() {
         return false;
     }
 
+    /* Log EGL/GL extensions for dmabuf import capability check */
+    const char *eglExts = eglQueryString(mDisplay, EGL_EXTENSIONS);
+    if (eglExts) {
+        ALOGD("EGL extensions: %s", eglExts);
+        if (strstr(eglExts, "EGL_EXT_image_dma_buf_import"))
+            ALOGD("EGL_EXT_image_dma_buf_import: AVAILABLE");
+    }
+    const char *glExts = (const char *)glGetString(GL_EXTENSIONS);
+    if (glExts && strstr(glExts, "GL_OES_EGL_image"))
+        ALOGD("GL_OES_EGL_image: AVAILABLE");
+
     /* Compile compute shader — needs current context */
     GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
     glShaderSource(shader, 1, &kComputeShaderSrc, NULL);
@@ -226,6 +244,8 @@ bool GlesIspPipeline::process(const uint8_t *src, uint8_t *dst,
         mBufWidth = width; mBufHeight = height;
     }
 
+    int64_t t0 = nowMs();
+
     /* Upload input */
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, mInSSBO);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, inSize, src);
@@ -267,8 +287,12 @@ bool GlesIspPipeline::process(const uint8_t *src, uint8_t *dst,
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, mInSSBO);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, mOutSSBO);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, mParamSSBO);
+    int64_t t1 = nowMs();
+
     glDispatchCompute((width + 15) / 16, (height + 15) / 16, 1);
     glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    glFinish();
+    int64_t t2 = nowMs();
 
     /* Read back */
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, mOutSSBO);
@@ -277,6 +301,9 @@ bool GlesIspPipeline::process(const uint8_t *src, uint8_t *dst,
         memcpy(dst, mapped, outSize);
         glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
     }
+    int64_t t3 = nowMs();
+
+    ALOGD("GLES: upload=%lld gpu=%lld readback=%lldms", t1 - t0, t2 - t1, t3 - t2);
 
     /* AWB from raw input */
     if (mEnabled) {
