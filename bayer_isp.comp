@@ -1,0 +1,133 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+/* Bayer input: 16-bit per pixel (10-bit in lower bits) */
+layout(set = 0, binding = 0) buffer InputBuf {
+    uint data[];  /* packed: 2 pixels per uint for 16-bit */
+} inBuf;
+
+/* RGBA8 output: packed uint per pixel */
+layout(set = 0, binding = 1) buffer OutputBuf {
+    uint data[];
+} outBuf;
+
+/* ISP parameters — std430 for tightly packed arrays */
+layout(std430, set = 0, binding = 2) buffer Params {
+    uint width;
+    uint height;
+    uint bayerPhase; /* 0=RGGB, 1=GRBG, 2=GBRG, 3=BGGR */
+    uint is16bit;
+    /* AWB gains Q8 (256 = 1.0) */
+    uint wbR;
+    uint wbG;
+    uint wbB;
+    uint doIsp;
+    /* CCM Q10 (1024 = 1.0), 3x3 row-major, stored as int */
+    int ccm[9];
+    /* sRGB gamma LUT (256 entries, packed 4 per uint) */
+    uint gammaLut[64];
+} params;
+
+/* Read one pixel from Bayer buffer, return 8-bit value */
+uint readPixel(uint x, uint y) {
+    if (params.is16bit != 0u) {
+        uint idx = y * params.width + x;
+        /* Each pixel is 16-bit LE, stored as 2 bytes.
+         * Buffer is uint[], so 2 pixels per uint. */
+        uint wordIdx = idx >> 1;
+        uint word = inBuf.data[wordIdx];
+        uint val = ((idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16);
+        return val >> 2; /* 10-bit to 8-bit */
+    } else {
+        uint idx = y * params.width + x;
+        uint wordIdx = idx >> 2;
+        uint word = inBuf.data[wordIdx];
+        uint byteIdx = idx & 3u;
+        return (word >> (byteIdx * 8u)) & 0xFFu;
+    }
+}
+
+/* Gamma lookup */
+uint gammaLookup(uint val) {
+    if (val > 255u) val = 255u;
+    uint wordIdx = val >> 2;
+    uint byteIdx = val & 3u;
+    return (params.gammaLut[wordIdx] >> (byteIdx * 8u)) & 0xFFu;
+}
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+
+    if (x >= params.width || y >= params.height)
+        return;
+
+    /* Bilinear demosaic */
+    uint c = readPixel(x, y);
+    uint l = (x > 0u) ? readPixel(x - 1u, y) : c;
+    uint r = (x < params.width - 1u) ? readPixel(x + 1u, y) : c;
+    uint u = (y > 0u) ? readPixel(x, y - 1u) : c;
+    uint d = (y < params.height - 1u) ? readPixel(x, y + 1u) : c;
+
+    uint px = x & 1u;
+    uint py = y & 1u;
+
+    /* Bayer phase: determine red pixel position */
+    uint rX = params.bayerPhase & 1u;
+    uint rY = (params.bayerPhase >> 1) & 1u;
+
+    int R, G, B;
+
+    if (py == rY && px == rX) {
+        /* Red pixel */
+        R = int(c);
+        G = int((l + r + u + d) / 4u);
+        uint ul = (x > 0u && y > 0u) ? readPixel(x-1u, y-1u) : u;
+        uint ur = (x < params.width-1u && y > 0u) ? readPixel(x+1u, y-1u) : u;
+        uint dl = (x > 0u && y < params.height-1u) ? readPixel(x-1u, y+1u) : d;
+        uint dr = (x < params.width-1u && y < params.height-1u) ? readPixel(x+1u, y+1u) : d;
+        B = int((ul + ur + dl + dr) / 4u);
+    } else if (py != rY && px != rX) {
+        /* Blue pixel */
+        B = int(c);
+        G = int((l + r + u + d) / 4u);
+        uint ul = (x > 0u && y > 0u) ? readPixel(x-1u, y-1u) : u;
+        uint ur = (x < params.width-1u && y > 0u) ? readPixel(x+1u, y-1u) : u;
+        uint dl = (x > 0u && y < params.height-1u) ? readPixel(x-1u, y+1u) : d;
+        uint dr = (x < params.width-1u && y < params.height-1u) ? readPixel(x+1u, y+1u) : d;
+        R = int((ul + ur + dl + dr) / 4u);
+    } else {
+        /* Green pixel */
+        G = int(c);
+        if (py == rY) { R = int((l + r) / 2u); B = int((u + d) / 2u); }
+        else           { B = int((l + r) / 2u); R = int((u + d) / 2u); }
+    }
+
+    if (params.doIsp != 0u) {
+        /* AWB */
+        R = (R * int(params.wbR)) >> 8;
+        G = (G * int(params.wbG)) >> 8;
+        B = (B * int(params.wbB)) >> 8;
+        R = clamp(R, 0, 255);
+        G = clamp(G, 0, 255);
+        B = clamp(B, 0, 255);
+
+        /* CCM (Q10) */
+        int rr = (params.ccm[0]*R + params.ccm[1]*G + params.ccm[2]*B) >> 10;
+        int gg = (params.ccm[3]*R + params.ccm[4]*G + params.ccm[5]*B) >> 10;
+        int bb = (params.ccm[6]*R + params.ccm[7]*G + params.ccm[8]*B) >> 10;
+        rr = clamp(rr, 0, 255);
+        gg = clamp(gg, 0, 255);
+        bb = clamp(bb, 0, 255);
+
+        /* Gamma */
+        R = int(gammaLookup(uint(rr)));
+        G = int(gammaLookup(uint(gg)));
+        B = int(gammaLookup(uint(bb)));
+    }
+
+    /* Pack RGBA8 */
+    uint pixel = uint(R) | (uint(G) << 8) | (uint(B) << 16) | (255u << 24);
+    outBuf.data[y * params.width + x] = pixel;
+}
