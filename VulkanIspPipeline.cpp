@@ -338,7 +338,7 @@ bool VulkanIspPipeline::init() {
     /* Shader module — use GLSL via VK_NV_glsl_shader if available (avoids SPIR-V compiler crash) */
     static const char *kGlslShaderSrc =
         "#version 450\n"
-        "layout(local_size_x = 16, local_size_y = 16) in;\n"
+        "layout(local_size_x = 8, local_size_y = 8) in;\n"
         "layout(std430, binding = 0) buffer InputBuf  { uint data[]; } inBuf;\n"
         "layout(std430, binding = 1) buffer OutputBuf { uint data[]; } outBuf;\n"
         "layout(std430, binding = 2) buffer Params {\n"
@@ -574,7 +574,8 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
         mBufWidth = width; mBufHeight = height;
     }
 
-    /* Always update descriptors — binding 0 may have been overridden by dmabuf path */
+    if (!recreate) return true;
+
     VkDescriptorBufferInfo bufInfos[3] = {};
     bufInfos[0].buffer = mInBuf;  bufInfos[0].range = mInSize;
     bufInfos[1].buffer = mOutBuf; bufInfos[1].range = mOutSize;
@@ -639,10 +640,10 @@ bool VulkanIspPipeline::process(const uint8_t *src, uint8_t *dst,
     vkCmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
     vkCmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
                             mPipeLayout, 0, 1, &mDescSet, 0, NULL);
-    vkCmdDispatch(mCmdBuf, (width + 15) / 16, (height + 15) / 16, 1);
+    vkCmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
     vkEndCommandBuffer(mCmdBuf);
 
-    /* Submit and wait */
+    /* Submit */
     VkSubmitInfo si = {};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
@@ -652,7 +653,7 @@ bool VulkanIspPipeline::process(const uint8_t *src, uint8_t *dst,
     vkQueueWaitIdle(mQueue);
     int64_t t2 = nowMs();
 
-    /* Invalidate output for CPU read (no-op on coherent memory) */
+    /* Invalidate output for CPU read */
     VkMappedMemoryRange outRange = {};
     outRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
     outRange.memory = mOutMem;
@@ -733,7 +734,7 @@ bool VulkanIspPipeline::processFromDmabuf(int dmabufFd, const uint8_t *cpuFallba
     vkCmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
     vkCmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
                             mPipeLayout, 0, 1, &mDescSet, 0, NULL);
-    vkCmdDispatch(mCmdBuf, (width + 15) / 16, (height + 15) / 16, 1);
+    vkCmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
     vkEndCommandBuffer(mCmdBuf);
 
     VkSubmitInfo si = {};
