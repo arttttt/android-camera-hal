@@ -28,9 +28,10 @@ public:
         uint8_t *buf;
         uint32_t len;
         uint32_t pixFmt;
+        int dmabufFd;  /* EXPBUF fd for zero-copy GPU access */
 
     private:
-        VBuffer(): buf(NULL), len(0) {}
+        VBuffer(): buf(NULL), len(0), dmabufFd(-1) {}
         ~VBuffer();
 
         bool map(int fd, unsigned offset, unsigned len, uint32_t pixelFormat);
@@ -59,6 +60,13 @@ public:
     const VBuffer * readLock();
     bool unlock(const VBuffer *buf);
 
+    bool setControl(uint32_t id, int32_t value);
+
+    /* Focuser subdev control */
+    bool openFocuser(const char *subdevPath);
+    bool setFocusPosition(int32_t position);
+    void closeFocuser();
+
 private:
     bool queueBuffer(unsigned id);
     int dequeueBuffer();
@@ -67,6 +75,7 @@ private:
     bool iocStreamOn();
     bool iocSFmt(unsigned width, unsigned height);
     bool iocReqBufs(unsigned *count);
+    bool iocReleaseBufs();
     bool iocQueryBuf(unsigned id, unsigned *offset, unsigned *len);
 
     bool setResolutionAndAllocateBuffers(unsigned width, unsigned height);
@@ -83,6 +92,7 @@ private:
     struct v4l2_format mFormat;
     VBuffer mBuf[V4L2DEVICE_BUF_COUNT];
     struct pollfd mPFd;
+    int mFocuserFd;
 
 #if V4L2DEVICE_FPS_LIMIT > 0
     nsecs_t mLastTimestamp;

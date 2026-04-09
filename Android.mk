@@ -14,7 +14,7 @@ LOCAL_CFLAGS += -fno-short-enums
 LOCAL_CFLAGS += -Wno-unused-parameter -Wno-missing-field-initializers
 LOCAL_CFLAGS += -pthread
 
-LOCAL_CFLAGS += -DV4L2DEVICE_FPS_LIMIT=60
+LOCAL_CFLAGS += -DV4L2DEVICE_FPS_LIMIT=0
 
 LOCAL_CFLAGS += -DV4L2DEVICE_BUF_COUNT=4
 
@@ -51,7 +51,8 @@ LOCAL_C_INCLUDES += \
 LOCAL_C_INCLUDES += \
     external/skia/include/core/ \
     frameworks/base/core/jni/android/graphics \
-    frameworks/native/include
+    frameworks/native/include \
+    prebuilts/ndk/current/platforms/android-24/arch-arm/usr/include
 
 LOCAL_SRC_FILES += \
     HalModule.cpp \
@@ -59,7 +60,11 @@ LOCAL_SRC_FILES += \
     V4l2Device.cpp \
     ImageConverter.cpp \
     Workers.cpp \
-    Yuv422UyvyToJpegEncoder.cpp
+    Yuv422UyvyToJpegEncoder.cpp \
+    VulkanIspPipeline.cpp \
+    GlesIspPipeline.cpp
+
+LOCAL_SHARED_LIBRARIES += libvulkan libEGL libGLESv2
 
 include $(BUILD_SHARED_LIBRARY)
 

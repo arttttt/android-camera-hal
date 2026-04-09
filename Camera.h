@@ -10,6 +10,7 @@
 
 #include "Workers.h"
 #include "ImageConverter.h"
+#include "IspPipeline.h"
 #include "DbgUtils.h"
 
 namespace android {
@@ -51,8 +52,24 @@ protected:
 
     size_t mJpegBufferSize;
 
+    bool mSoftIspEnabled;
+
+    /* Temp RGBA buffer for resolution-mismatch conversion */
+    uint8_t *mRgbaTemp;
+    size_t mRgbaTempSize;
+    unsigned mV4l2Width;
+    unsigned mV4l2Height;
+
+    /* Autofocus state */
+    int32_t mFocusPosition;
+    bool mAfSweepActive;
+    int32_t mAfSweepPos;
+    int32_t mAfSweepBestPos;
+    uint64_t mAfSweepBestScore;
+
 private:
     ImageConverter mConverter;
+    IspPipeline *mIsp;
     Mutex mMutex;
 
     /* STATIC WRAPPERS */

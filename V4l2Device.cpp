@@ -78,6 +78,7 @@ V4l2Device::V4l2Device(const char *devNode)
     , mStreaming(false)
     , mDevNode(strdup(devNode))
     , mPixelFormat(0)
+    , mFocuserFd(-1)
 {
     memset(&mFormat, 0, sizeof(mFormat));
     mPFd.fd = -1;
@@ -96,8 +97,44 @@ V4l2Device::~V4l2Device() {
     if(isStreaming()) {
         iocStreamOff();
     }
+    closeFocuser();
     cleanup();
     free((void *)mDevNode);
+}
+
+bool V4l2Device::openFocuser(const char *subdevPath) {
+    if (mFocuserFd >= 0)
+        return true;
+    mFocuserFd = open(subdevPath, O_RDWR);
+    if (mFocuserFd < 0) {
+        ALOGW("openFocuser(%s): %s (%d)", subdevPath, strerror(errno), errno);
+        return false;
+    }
+    ALOGD("Focuser opened: %s fd=%d", subdevPath, mFocuserFd);
+    return true;
+}
+
+bool V4l2Device::setFocusPosition(int32_t position) {
+    if (mFocuserFd < 0)
+        return false;
+
+    struct v4l2_control ctrl;
+    memset(&ctrl, 0, sizeof(ctrl));
+    ctrl.id = V4L2_CID_FOCUS_ABSOLUTE;
+    ctrl.value = position;
+
+    if (ioctl(mFocuserFd, VIDIOC_S_CTRL, &ctrl) < 0) {
+        ALOGW("setFocusPosition(%d): %s (%d)", position, strerror(errno), errno);
+        return false;
+    }
+    return true;
+}
+
+void V4l2Device::closeFocuser() {
+    if (mFocuserFd >= 0) {
+        close(mFocuserFd);
+        mFocuserFd = -1;
+    }
 }
 
 /**
@@ -132,8 +169,21 @@ const Vector<V4l2Device::Resolution> & V4l2Device::availableResolutions() {
 
     errno = 0;
     while(ioctl(fd, VIDIOC_ENUM_FRAMESIZES, &frmSize) == 0) {
-        ALOGD("%s: Found resolution: %dx%d", mDevNode, frmSize.discrete.width, frmSize.discrete.height);
         ++frmSize.index;
+
+        /* Skip duplicate resolutions (sensor may list same size at different FPS) */
+        bool dup = false;
+        for (size_t i = 0; i < formats.size(); i++) {
+            if (formats[i].width == frmSize.discrete.width &&
+                formats[i].height == frmSize.discrete.height) {
+                dup = true;
+                break;
+            }
+        }
+        if (dup)
+            continue;
+
+        ALOGD("%s: Found resolution: %dx%d", mDevNode, frmSize.discrete.width, frmSize.discrete.height);
         formats.add();
         formats.editTop().width = frmSize.discrete.width;
         formats.editTop().height = frmSize.discrete.height;
@@ -458,6 +508,24 @@ int V4l2Device::dequeueBuffer() {
     return (int)bufInfo.index;
 }
 
+bool V4l2Device::setControl(uint32_t id, int32_t value) {
+    if(mFd < 0)
+        return false;
+
+    struct v4l2_control ctrl;
+    memset(&ctrl, 0, sizeof(ctrl));
+    ctrl.id = id;
+    ctrl.value = value;
+
+    if(ioctl(mFd, VIDIOC_S_CTRL, &ctrl) < 0) {
+        ALOGE("setControl(0x%x, %d) FAILED: %s (%d)", id, value,
+              strerror(errno), errno);
+        return false;
+    }
+    ALOGD("setControl(0x%x, %d) OK", id, value);
+    return true;
+}
+
 bool V4l2Device::iocStreamOff() {
     assert(mFd >= 0);
     assert(mFormat.type);
@@ -529,6 +597,22 @@ bool V4l2Device::iocReqBufs(unsigned *count) {
     return !errno;
 }
 
+bool V4l2Device::iocReleaseBufs() {
+    assert(mFd >= 0);
+
+    struct v4l2_requestbuffers bufRequest;
+    memset(&bufRequest, 0, sizeof(bufRequest));
+    bufRequest.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    bufRequest.memory = V4L2_MEMORY_MMAP;
+    bufRequest.count = 0;
+
+    errno = 0;
+    if(ioctl(mFd, VIDIOC_REQBUFS, &bufRequest) != 0) {
+        ALOGV("%s: %s (%d)", __FUNCTION__, strerror(errno), errno);
+    }
+    return !errno;
+}
+
 bool V4l2Device::iocQueryBuf(unsigned id, unsigned *offset, unsigned *len) {
     assert(mFd >= 0);
     assert(offset);
@@ -559,6 +643,9 @@ bool V4l2Device::setResolutionAndAllocateBuffers(unsigned width, unsigned height
         mBuf[i].unmap();
     }
 
+    /* Release kernel-side buffers before S_FMT — vb2 returns EBUSY otherwise */
+    iocReleaseBufs();
+
     if(!iocSFmt(width, height)) {
         ALOGE("Could not set pixel format to %dx%d: %s (%d)", width, height, strerror(errno), errno);
         return false;
@@ -583,6 +670,16 @@ bool V4l2Device::setResolutionAndAllocateBuffers(unsigned width, unsigned height
             ALOGE("Could not allocate buffer %d (len = %d): %s (%d)", i, bufLen[i], strerror(errno), errno);
             while(i--) mBuf[i].unmap();
             return false;
+        }
+
+        /* Export as dmabuf fd for zero-copy GPU access */
+        struct v4l2_exportbuffer expbuf;
+        memset(&expbuf, 0, sizeof(expbuf));
+        expbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        expbuf.index = i;
+        if (ioctl(mFd, VIDIOC_EXPBUF, &expbuf) == 0) {
+            mBuf[i].dmabufFd = expbuf.fd;
+            ALOGD("Buffer %d: dmabuf fd=%d", i, expbuf.fd);
         }
 
         if(!queueBuffer(i)) {
@@ -642,6 +739,10 @@ void V4l2Device::VBuffer::unmap() {
         munmap(buf, len);
         buf         = NULL;
         len         = 0;
+    }
+    if (dmabufFd >= 0) {
+        close(dmabufFd);
+        dmabufFd = -1;
     }
 }
 

@@ -26,10 +26,17 @@
 #include <ui/GraphicBufferMapper.h>
 #include <ui/Fence.h>
 #include <assert.h>
+#include <linux/videodev2.h>
+#include <libyuv/scale_argb.h>
+#include <cutils/properties.h>
 
 #include "DbgUtils.h"
 #include "Camera.h"
 #include "ImageConverter.h"
+#include "CpuIspPipeline.h"
+#include "VulkanIspPipeline.h"
+#include "GlesIspPipeline.h"
+#include "IspCalibration.h"
 
 extern camera_module_t HAL_MODULE_INFO_SYM;
 
@@ -47,7 +54,17 @@ Camera::Camera(const char *devNode, int facing)
     : mStaticCharacteristics(NULL)
     , mCallbackOps(NULL)
     , mFacing(facing)
-    , mJpegBufferSize(0) {
+    , mJpegBufferSize(0)
+    , mRgbaTemp(NULL)
+    , mRgbaTempSize(0)
+    , mV4l2Width(0)
+    , mV4l2Height(0)
+    , mSoftIspEnabled(true)
+    , mFocusPosition(140)
+    , mAfSweepActive(false)
+    , mAfSweepPos(0)
+    , mAfSweepBestPos(140)
+    , mAfSweepBestScore(0) {
     DBGUTILS_AUTOLOGCALL(__func__);
     for(size_t i = 0; i < NELEM(mDefaultRequestSettings); i++) {
         mDefaultRequestSettings[i] = NULL;
@@ -61,6 +78,7 @@ Camera::Camera(const char *devNode, int facing)
     priv            = NULL;
 
     mValid = true;
+    mIsp = NULL;
     mDev = new V4l2Device(devNode);
     if(!mDev) {
         mValid = false;
@@ -70,8 +88,10 @@ Camera::Camera(const char *devNode, int facing)
 Camera::~Camera() {
     DBGUTILS_AUTOLOGCALL(__func__);
     gWorkers.stop();
+    if (mIsp) { mIsp->destroy(); delete mIsp; }
     mDev->disconnect();
     delete mDev;
+    free(mRgbaTemp);
 }
 
 status_t Camera::cameraInfo(struct camera_info *info) {
@@ -90,6 +110,10 @@ int Camera::openDevice(hw_device_t **device) {
     Mutex::Autolock lock(mMutex);
     mDev->connect();
     *device = &common;
+
+    /* Open focuser for back camera */
+    if (mFacing == CAMERA_FACING_BACK)
+        mDev->openFocuser("/dev/v4l-subdev0");
 
     gWorkers.start();
 
@@ -130,6 +154,15 @@ camera_metadata_t *Camera::staticCharacteristics() {
     /* fake */
     static const float lensInfoAvailableFocalLengths[] = {3.30f};
     cm.update(ANDROID_LENS_INFO_AVAILABLE_FOCAL_LENGTHS, lensInfoAvailableFocalLengths, NELEM(lensInfoAvailableFocalLengths));
+
+    /* Minimum focus distance > 0 tells framework this lens can focus */
+    if (mFacing == CAMERA_FACING_BACK) {
+        static const float lensInfoMinFocusDistance = 10.0f; /* 1/10m = 10cm macro */
+        cm.update(ANDROID_LENS_INFO_MINIMUM_FOCUS_DISTANCE, &lensInfoMinFocusDistance, 1);
+    } else {
+        static const float lensInfoMinFocusDistance = 0.0f; /* fixed focus */
+        cm.update(ANDROID_LENS_INFO_MINIMUM_FOCUS_DISTANCE, &lensInfoMinFocusDistance, 1);
+    }
 
     const uint8_t lensFacing = (mFacing == CAMERA_FACING_FRONT)
         ? ANDROID_LENS_FACING_FRONT : ANDROID_LENS_FACING_BACK;
@@ -239,13 +272,13 @@ camera_metadata_t *Camera::staticCharacteristics() {
     };
     cm.update(ANDROID_JPEG_AVAILABLE_THUMBNAIL_SIZES, jpegAvailableThumbnailSizes, NELEM(jpegAvailableThumbnailSizes));
 
-    static const int32_t sensorOrientation = 90;
+    const int32_t sensorOrientation = (mFacing == CAMERA_FACING_FRONT) ? 270 : 90;
     cm.update(ANDROID_SENSOR_ORIENTATION, &sensorOrientation, 1);
 
     static const uint8_t flashInfoAvailable = ANDROID_FLASH_INFO_AVAILABLE_FALSE;
     cm.update(ANDROID_FLASH_INFO_AVAILABLE, &flashInfoAvailable, 1);
 
-    static const float scalerAvailableMaxDigitalZoom = 1;
+    static const float scalerAvailableMaxDigitalZoom = 4;
     cm.update(ANDROID_SCALER_AVAILABLE_MAX_DIGITAL_ZOOM, &scalerAvailableMaxDigitalZoom, 1);
 
     static const uint8_t statisticsFaceDetectModes[] = {
@@ -285,7 +318,9 @@ camera_metadata_t *Camera::staticCharacteristics() {
     cm.update(ANDROID_CONTROL_AE_COMPENSATION_RANGE, controlAeCompensationRange, NELEM(controlAeCompensationRange));
 
     static const int32_t controlAeAvailableTargetFpsRanges[] = {
-        60, 60
+        15, 15,
+        15, 30,
+        30, 30,
     };
     cm.update(ANDROID_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES, controlAeAvailableTargetFpsRanges, NELEM(controlAeAvailableTargetFpsRanges));
 
@@ -294,16 +329,35 @@ camera_metadata_t *Camera::staticCharacteristics() {
     };
     cm.update(ANDROID_CONTROL_AE_AVAILABLE_ANTIBANDING_MODES, controlAeAvailableAntibandingModes, NELEM(controlAeAvailableAntibandingModes));
 
+    /* Exposure time: 0.1ms to 200ms */
+    static const int64_t sensorExposureTimeRange[] = { 100000LL, 200000000LL };
+    cm.update(ANDROID_SENSOR_INFO_EXPOSURE_TIME_RANGE, sensorExposureTimeRange, NELEM(sensorExposureTimeRange));
+
+    /* ISO sensitivity: 100 to 3200 */
+    static const int32_t sensorSensitivityRange[] = { 100, 3200 };
+    cm.update(ANDROID_SENSOR_INFO_SENSITIVITY_RANGE, sensorSensitivityRange, NELEM(sensorSensitivityRange));
+
+    static const int32_t sensorMaxAnalogSensitivity = 1600;
+    cm.update(ANDROID_SENSOR_MAX_ANALOG_SENSITIVITY, &sensorMaxAnalogSensitivity, 1);
+
     static const uint8_t controlAwbAvailableModes[] = {
             ANDROID_CONTROL_AWB_MODE_AUTO,
             ANDROID_CONTROL_AWB_MODE_OFF
     };
     cm.update(ANDROID_CONTROL_AWB_AVAILABLE_MODES, controlAwbAvailableModes, NELEM(controlAwbAvailableModes));
 
-    static const uint8_t controlAfAvailableModes[] = {
-        ANDROID_CONTROL_AF_MODE_OFF
-    };
-    cm.update(ANDROID_CONTROL_AF_AVAILABLE_MODES, controlAfAvailableModes, NELEM(controlAfAvailableModes));
+    if (mFacing == CAMERA_FACING_BACK) {
+        uint8_t controlAfAvailableModes[] = {
+            ANDROID_CONTROL_AF_MODE_OFF,
+            ANDROID_CONTROL_AF_MODE_AUTO,
+            ANDROID_CONTROL_AF_MODE_MACRO,
+            ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE,
+        };
+        cm.update(ANDROID_CONTROL_AF_AVAILABLE_MODES, controlAfAvailableModes, NELEM(controlAfAvailableModes));
+    } else {
+        uint8_t controlAfAvailableModes[] = { ANDROID_CONTROL_AF_MODE_OFF };
+        cm.update(ANDROID_CONTROL_AF_AVAILABLE_MODES, controlAfAvailableModes, 1);
+    }
 
     static const uint8_t controlAvailableVideoStabilizationModes[] = {
             ANDROID_CONTROL_VIDEO_STABILIZATION_MODE_OFF
@@ -425,7 +479,7 @@ const camera_metadata_t * Camera::constructDefaultRequestSettings(int type) {
     cm.update(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION, &controlAeExposureCompensation, 1);
 
     static const int32_t controlAeTargetFpsRange[] = {
-        10, 60
+        15, 30
     };
     cm.update(ANDROID_CONTROL_AE_TARGET_FPS_RANGE, controlAeTargetFpsRange, NELEM(controlAeTargetFpsRange));
 
@@ -438,7 +492,8 @@ const camera_metadata_t * Camera::constructDefaultRequestSettings(int type) {
     static const uint8_t controlAwbLock = ANDROID_CONTROL_AWB_LOCK_OFF;
     cm.update(ANDROID_CONTROL_AWB_LOCK, &controlAwbLock, 1);
 
-    uint8_t controlAfMode = ANDROID_CONTROL_AF_MODE_OFF;
+    uint8_t controlAfMode = (mFacing == CAMERA_FACING_BACK) ?
+        ANDROID_CONTROL_AF_MODE_AUTO : ANDROID_CONTROL_AF_MODE_OFF;
     cm.update(ANDROID_CONTROL_AF_MODE, &controlAfMode, 1);
 
     static const uint8_t controlAeState = ANDROID_CONTROL_AE_STATE_CONVERGED;
@@ -483,14 +538,11 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
     }
     ALOGV("+-------------------------------------------------------------------------------");
 
-    /* TODO: do we need input stream? */
     camera3_stream_t *inStream = NULL;
     unsigned width = 0;
     unsigned height = 0;
     for(size_t i = 0; i < streamList->num_streams; ++i) {
         camera3_stream_t *newStream = streamList->streams[i];
-
-        /* TODO: validate: null */
 
         if(newStream->stream_type == CAMERA3_STREAM_INPUT || newStream->stream_type == CAMERA3_STREAM_BIDIRECTIONAL) {
             if(inStream) {
@@ -500,17 +552,12 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
             inStream = newStream;
         }
 
-        /* TODO: validate format */
-
         if(newStream->format == HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED) {
             newStream->format = HAL_PIXEL_FORMAT_RGBA_8888;
         }
 
-        /* TODO: support ZSL */
         if(newStream->usage & GRALLOC_USAGE_HW_CAMERA_ZSL) {
-            ALOGE("ZSL STREAM FOUND! It is not supported for now.");
-            ALOGE("    Disable it by placing following line in /system/build.prop:");
-            ALOGE("    camera.disable_zsl_mode=1");
+            ALOGE("ZSL not supported. Add camera.disable_zsl_mode=1 to build.prop");
             return BAD_VALUE;
         }
 
@@ -519,15 +566,59 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
             case CAMERA3_STREAM_INPUT:          newStream->usage = GRALLOC_USAGE_SW_READ_OFTEN;                                 break;
             case CAMERA3_STREAM_BIDIRECTIONAL:  newStream->usage = GRALLOC_USAGE_SW_WRITE_OFTEN | GRALLOC_USAGE_SW_READ_OFTEN;  break;
         }
-        newStream->max_buffers = 1; /* TODO: support larger queue */
+        newStream->max_buffers = 4;
 
-        if(newStream->width * newStream->height > width * height) {
-            width = newStream->width;
-            height = newStream->height;
+        /*
+         * Use the largest NON-BLOB (preview/video) stream for V4L2 resolution.
+         * BLOB (JPEG) will be captured at this resolution too — no runtime
+         * resolution switch needed for simple capture.
+         */
+        if(newStream->format != HAL_PIXEL_FORMAT_BLOB) {
+            if(newStream->width * newStream->height > width * height) {
+                width = newStream->width;
+                height = newStream->height;
+            }
         }
-
-        /* TODO: store stream pointers somewhere and configure only new ones */
     }
+
+    /* Fallback: if only BLOB streams, use the largest */
+    if (!width || !height) {
+        for(size_t i = 0; i < streamList->num_streams; ++i) {
+            camera3_stream_t *s = streamList->streams[i];
+            if(s->width * s->height > width * height) {
+                width = s->width;
+                height = s->height;
+            }
+        }
+    }
+
+    /* ISP backend selection — read each configureStreams for runtime toggle */
+    char propVal[PROPERTY_VALUE_MAX] = {0};
+    property_get("persist.camera.soft_isp", propVal, "1");
+    mSoftIspEnabled = (propVal[0] == '1');
+
+    char ispBackend[PROPERTY_VALUE_MAX] = {0};
+    property_get("persist.camera.isp_backend", ispBackend, "cpu");
+
+    if (mIsp) { mIsp->destroy(); delete mIsp; mIsp = NULL; }
+    if (!strcmp(ispBackend, "vulkan")) {
+        mIsp = new VulkanIspPipeline();
+    } else if (!strcmp(ispBackend, "gles")) {
+        mIsp = new GlesIspPipeline();
+    } else {
+        mIsp = new CpuIspPipeline();
+    }
+    if (!mIsp->init()) {
+        ALOGE("ISP backend '%s' init failed, falling back to CPU", ispBackend);
+        delete mIsp;
+        mIsp = new CpuIspPipeline();
+        mIsp->init();
+    }
+    mIsp->setEnabled(mSoftIspEnabled);
+    mIsp->setCcm((mFacing == CAMERA_FACING_BACK) ? ccm_imx179 : ccm_ov5693);
+
+    ALOGD("V4L2 target resolution: %ux%u, isp=%s, soft_isp=%d",
+          width, height, ispBackend, mSoftIspEnabled);
 
     if(!mDev->setStreaming(false)) {
         ALOGE("Could not stop streaming");
@@ -554,9 +645,31 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
     }
     ALOGV("+-------------------------------------------------------------------------------");
 
+    /* Set exposure/gain BEFORE STREAMON — only with soft ISP */
+    if (mSoftIspEnabled) {
+        mDev->setControl(V4L2_CID_EXPOSURE, 30000);
+        if (mFacing == CAMERA_FACING_BACK)
+            mDev->setControl(V4L2_CID_GAIN, 8);
+        else
+            mDev->setControl(V4L2_CID_GAIN, 2048);
+    }
+
     if(!mDev->setStreaming(true)) {
         ALOGE("Could not start streaming");
         return NO_INIT;
+    }
+
+    /* Cache V4L2 resolution for safe conversion */
+    auto v4l2Res = mDev->resolution();
+    mV4l2Width = v4l2Res.width;
+    mV4l2Height = v4l2Res.height;
+
+    /* Pre-allocate temp RGBA buffer for resolution mismatch */
+    size_t needed = mV4l2Width * mV4l2Height * 4;
+    if (mRgbaTempSize < needed) {
+        free(mRgbaTemp);
+        mRgbaTemp = (uint8_t *)malloc(needed);
+        mRgbaTempSize = needed;
     }
 
     return NO_ERROR;
@@ -615,17 +728,127 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
         cm = request->settings;
     }
 
+    /* Apply exposure/gain from request metadata — only with soft ISP */
+    if (mSoftIspEnabled && cm.exists(ANDROID_SENSOR_EXPOSURE_TIME)) {
+        int64_t exposureNs = *cm.find(ANDROID_SENSOR_EXPOSURE_TIME).data.i64;
+        int32_t exposureUs = (int32_t)(exposureNs / 1000);
+        if (exposureUs < 100) exposureUs = 100;
+        if (exposureUs > 200000) exposureUs = 200000;
+        mDev->setControl(V4L2_CID_EXPOSURE, exposureUs);
+    }
+    if (mSoftIspEnabled && cm.exists(ANDROID_SENSOR_SENSITIVITY)) {
+        int32_t iso = *cm.find(ANDROID_SENSOR_SENSITIVITY).data.i32;
+        int32_t gain;
+        if (mFacing == CAMERA_FACING_BACK)
+            gain = iso / 100;                /* IMX179: GAIN_SHIFT=0 */
+        else
+            gain = (iso / 100) * 256;        /* OV5693: GAIN_SHIFT=8 */
+        if (gain < 1) gain = 1;
+        mDev->setControl(V4L2_CID_GAIN, gain);
+    }
+    if (mSoftIspEnabled && cm.exists(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION)) {
+        int32_t evComp = *cm.find(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION).data.i32;
+        if (evComp != 0) {
+            /* EV compensation: step=1/3, base=20ms.
+             * exposure = 20ms * 2^(ev/3)
+             * Use lookup: each step ~1.26x */
+            int32_t baseUs = 20000;
+            int32_t exposureUs = baseUs;
+            if (evComp > 0)
+                for (int i = 0; i < evComp; i++) exposureUs = exposureUs * 5 / 4;
+            else
+                for (int i = 0; i < -evComp; i++) exposureUs = exposureUs * 4 / 5;
+            if (exposureUs < 100) exposureUs = 100;
+            if (exposureUs > 200000) exposureUs = 200000;
+            mDev->setControl(V4L2_CID_EXPOSURE, exposureUs);
+        }
+    }
+
+    /* Focus control — only with soft ISP */
+    uint8_t afMode = ANDROID_CONTROL_AF_MODE_OFF;
+    if (!mSoftIspEnabled) goto skip_focus;
+    if (cm.exists(ANDROID_CONTROL_AF_MODE))
+        afMode = *cm.find(ANDROID_CONTROL_AF_MODE).data.u8;
+
+    /* Manual focus: LENS_FOCUS_DISTANCE (diopters = 1/meters) → VCM position */
+    if (afMode == ANDROID_CONTROL_AF_MODE_OFF && cm.exists(ANDROID_LENS_FOCUS_DISTANCE)) {
+        float diopter = *cm.find(ANDROID_LENS_FOCUS_DISTANCE).data.f;
+        /* Map: 0 diopters (infinity) → 140, 10 diopters (10cm) → 640 */
+        int32_t pos = 140 + (int32_t)(diopter * 50.0f);
+        if (pos < 0) pos = 0;
+        if (pos > 1023) pos = 1023;
+        mDev->setFocusPosition(pos);
+        mFocusPosition = pos;
+        mAfSweepActive = false;
+    }
+
+    /* AF trigger — start contrast-detect sweep */
+    if (cm.exists(ANDROID_CONTROL_AF_TRIGGER)) {
+        uint8_t trigger = *cm.find(ANDROID_CONTROL_AF_TRIGGER).data.u8;
+        if (trigger == ANDROID_CONTROL_AF_TRIGGER_START && !mAfSweepActive) {
+            mAfSweepActive = true;
+            if (afMode == ANDROID_CONTROL_AF_MODE_MACRO) {
+                mAfSweepPos = 400; /* macro: scan 400→640 */
+            } else {
+                mAfSweepPos = 140; /* full: scan 140→640 */
+            }
+            mAfSweepBestPos = mAfSweepPos;
+            mAfSweepBestScore = 0;
+            ALOGD("AF sweep started (mode=%d)", afMode);
+        } else if (trigger == ANDROID_CONTROL_AF_TRIGGER_CANCEL) {
+            mAfSweepActive = false;
+        }
+    }
+
+    /* Continuous AF: re-trigger every ~60 frames if not sweeping */
+    if ((afMode == ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE) &&
+        !mAfSweepActive && (request->frame_number % 60 == 0)) {
+        mAfSweepActive = true;
+        mAfSweepPos = 140;
+        mAfSweepBestPos = mFocusPosition;
+        mAfSweepBestScore = 0;
+    }
+
+skip_focus:
     notifyShutter(request->frame_number, (uint64_t)timestamp);
 
+    int64_t t0 = systemTime();
     BENCHMARK_SECTION("Lock/Read") {
         frame = mDev->readLock();
     }
+    int64_t t1 = systemTime();
 
     if(!frame) {
         return NOT_ENOUGH_DATA;
     }
 
+    /* AF sweep: step focus position each frame, measure contrast */
+    if (mSoftIspEnabled && mAfSweepActive) {
+        mDev->setFocusPosition(mAfSweepPos);
+    }
+
     buffers.setCapacity(request->num_output_buffers);
+
+    /* Parse crop region for digital zoom */
+    int cropX = 0, cropY = 0, cropW = res.width, cropH = res.height;
+    if (cm.exists(ANDROID_SCALER_CROP_REGION)) {
+        auto crop = cm.find(ANDROID_SCALER_CROP_REGION).data.i32;
+        /* crop is [x, y, width, height] in sensor coordinates */
+        auto sensor = mDev->sensorResolution();
+        /* Map from sensor coordinates to V4L2 resolution */
+        cropX = crop[0] * (int)res.width / (int)sensor.width;
+        cropY = crop[1] * (int)res.height / (int)sensor.height;
+        cropW = crop[2] * (int)res.width / (int)sensor.width;
+        cropH = crop[3] * (int)res.height / (int)sensor.height;
+        /* Clamp */
+        if (cropX < 0) cropX = 0;
+        if (cropY < 0) cropY = 0;
+        if (cropW < 16) cropW = 16;
+        if (cropH < 16) cropH = 16;
+        if (cropX + cropW > (int)res.width) cropW = res.width - cropX;
+        if (cropY + cropH > (int)res.height) cropH = res.height - cropY;
+    }
+    bool needZoom = (cropW != (int)res.width || cropH != (int)res.height);
 
     uint8_t *rgbaBuffer = NULL;
     for(size_t i = 0; i < request->num_output_buffers; ++i) {
@@ -651,19 +874,41 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
 
         switch(srcBuf.stream->format) {
             case HAL_PIXEL_FORMAT_RGBA_8888: {
+                unsigned streamW = srcBuf.stream->width;
+                unsigned streamH = srcBuf.stream->height;
+
                 if(!rgbaBuffer) {
                     BENCHMARK_SECTION("Raw->RGBA") {
+                        /* Always convert to temp buffer (needed for zoom crop) */
+                        uint8_t *convDst = needZoom ? mRgbaTemp : buf;
+                        if (!needZoom && (res.width != streamW || res.height != streamH))
+                            convDst = mRgbaTemp;
+
                         if(frame->pixFmt == V4L2_PIX_FMT_UYVY)
-                            mConverter.UYVYToRGBA(frame->buf, buf, res.width, res.height);
+                            mConverter.UYVYToRGBA(frame->buf, convDst, res.width, res.height);
                         else if(frame->pixFmt == V4L2_PIX_FMT_YUYV)
-                            mConverter.YUY2ToRGBA(frame->buf, buf, res.width, res.height);
+                            mConverter.YUY2ToRGBA(frame->buf, convDst, res.width, res.height);
                         else
-                            mConverter.BayerToRGBA(frame->buf, buf, res.width, res.height, frame->pixFmt);
-                        rgbaBuffer = buf;
+                            mIsp->processFromDmabuf(frame->dmabufFd, frame->buf, convDst, res.width, res.height, frame->pixFmt);
+                        rgbaBuffer = convDst;
                     }
-                } else {
-                    BENCHMARK_SECTION("Buf Copy") {
-                        memcpy(buf, rgbaBuffer, srcBuf.stream->width * srcBuf.stream->height * 4);
+                }
+
+                BENCHMARK_SECTION("Zoom/Copy") {
+                    if (needZoom) {
+                        /* Crop + scale: pointer offset for crop, ARGBScale for zoom */
+                        const uint8_t *cropSrc = rgbaBuffer + (cropY * res.width + cropX) * 4;
+                        libyuv::ARGBScale(cropSrc, res.width * 4, cropW, cropH,
+                                          buf, streamW * 4, streamW, streamH,
+                                          libyuv::kFilterBilinear);
+                    } else if (rgbaBuffer != buf) {
+                        /* Resolution mismatch: copy/crop */
+                        unsigned copyW = (streamW < res.width) ? streamW : res.width;
+                        unsigned copyH = (streamH < res.height) ? streamH : res.height;
+                        for (unsigned y = 0; y < copyH; y++)
+                            memcpy(buf + y * streamW * 4,
+                                   rgbaBuffer + y * res.width * 4,
+                                   copyW * 4);
                     }
                 }
                 break;
@@ -686,7 +931,7 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
                         /* Bayer: demosaic to temp RGBA, then encode JPEG */
                         size_t rgbaSize = res.width * res.height * 4;
                         uint8_t *rgba = new uint8_t[rgbaSize];
-                        mConverter.BayerToRGBA(frame->buf, rgba, res.width, res.height, frame->pixFmt);
+                        mIsp->process(frame->buf, rgba, res.width, res.height, frame->pixFmt);
                         /* TODO: RGBA->JPEG via libjpeg */
                         ALOGE("JPEG capture from Bayer not yet implemented");
                         delete[] rgba;
@@ -708,6 +953,40 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
         }
     }
 
+    /* AF sweep: measure contrast from center of RGBA frame, step position */
+    if (mSoftIspEnabled && mAfSweepActive && rgbaBuffer) {
+        /* Compute sharpness: sum of absolute horizontal gradient in center 1/4 */
+        unsigned cx = res.width / 4, cy = res.height / 4;
+        unsigned cw = res.width / 2, ch = res.height / 2;
+        uint64_t score = 0;
+        for (unsigned y = cy; y < cy + ch; y += 4) {
+            const uint8_t *row = rgbaBuffer + y * res.width * 4;
+            for (unsigned x = cx + 1; x < cx + cw; x += 4) {
+                int dg = (int)row[x*4+1] - (int)row[(x-1)*4+1]; /* green gradient */
+                score += (uint64_t)(dg < 0 ? -dg : dg);
+            }
+        }
+
+        if (score > mAfSweepBestScore) {
+            mAfSweepBestScore = score;
+            mAfSweepBestPos = mAfSweepPos;
+        }
+
+        ALOGD("AF step: pos=%d score=%llu best=%d/%llu",
+              mAfSweepPos, (unsigned long long)score,
+              mAfSweepBestPos, (unsigned long long)mAfSweepBestScore);
+
+        mAfSweepPos += 100;  /* step 100 per frame: 140→640 in ~5 frames */
+        if (mAfSweepPos > 640) {
+            /* Sweep done — go to best position */
+            mDev->setFocusPosition(mAfSweepBestPos);
+            mFocusPosition = mAfSweepBestPos;
+            mAfSweepActive = false;
+            ALOGD("AF done: best=%d score=%llu", mAfSweepBestPos,
+                  (unsigned long long)mAfSweepBestScore);
+        }
+    }
+
     /* Unlocking all buffers in separate loop allows to copy data from already processed buffer to not yet processed one */
     for(size_t i = 0; i < request->num_output_buffers; ++i) {
         const camera3_stream_buffer &srcBuf = request->output_buffers[i];
@@ -719,15 +998,29 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
         buffers.editTop().status = CAMERA3_BUFFER_STATUS_OK;
     }
 
+    int64_t t2 = systemTime();
     BENCHMARK_SECTION("Unlock") {
         mDev->unlock(frame);
     }
+    ALOGD("PERF: dqbuf=%lldms convert=%lldms total=%lldms",
+          (long long)(t1-t0)/1000000, (long long)(t2-t1)/1000000,
+          (long long)(t2-t0)/1000000);
 
     int64_t sensorTimestamp = timestamp;
     int64_t syncFrameNumber = request->frame_number;
 
     cm.update(ANDROID_SENSOR_TIMESTAMP, &sensorTimestamp, 1);
     cm.update(ANDROID_SYNC_FRAME_NUMBER, &syncFrameNumber, 1);
+
+    /* Report AF state + focus distance */
+    uint8_t afState = mAfSweepActive ?
+        ANDROID_CONTROL_AF_STATE_ACTIVE_SCAN :
+        ANDROID_CONTROL_AF_STATE_FOCUSED_LOCKED;
+    cm.update(ANDROID_CONTROL_AF_STATE, &afState, 1);
+
+    float reportDiopter = (mFocusPosition - 140) / 50.0f;
+    if (reportDiopter < 0) reportDiopter = 0;
+    cm.update(ANDROID_LENS_FOCUS_DISTANCE, &reportDiopter, 1);
 
     auto result = cm.getAndLock();
     processCaptureResult(request->frame_number, result, buffers);
@@ -815,9 +1108,7 @@ void Camera::sDump(const camera3_device *device, int fd) {
 }
 
 int Camera::sFlush(const camera3_device *device) {
-    /* TODO: implement */
-    ALOGD("%s: IMPLEMENT ME!", __FUNCTION__);
-    return -ENODEV;
+    return OK;
 }
 
 camera3_device_ops_t Camera::sOps = {
