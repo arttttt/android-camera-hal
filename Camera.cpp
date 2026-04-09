@@ -64,8 +64,12 @@ Camera::Camera(const char *devNode, int facing)
     , mFocusPosition(140)
     , mAfSweepActive(false)
     , mAfSweepPos(0)
+    , mAfSweepStep(0)
+    , mAfSweepEnd(0)
     , mAfSweepBestPos(140)
-    , mAfSweepBestScore(0) {
+    , mAfSweepBestScore(0)
+    , mAfFinePass(false)
+    , mAfSettleFrames(0) {
     DBGUTILS_AUTOLOGCALL(__func__);
     for(size_t i = 0; i < NELEM(mDefaultRequestSettings); i++) {
         mDefaultRequestSettings[i] = NULL;
@@ -730,38 +734,33 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
     }
 
     /* Apply exposure/gain from request metadata — only with soft ISP */
-    if (mSoftIspEnabled && cm.exists(ANDROID_SENSOR_EXPOSURE_TIME)) {
-        int64_t exposureNs = *cm.find(ANDROID_SENSOR_EXPOSURE_TIME).data.i64;
-        int32_t exposureUs = (int32_t)(exposureNs / 1000);
-        if (exposureUs < 100) exposureUs = 100;
-        if (exposureUs > 200000) exposureUs = 200000;
-        mDev->setControl(V4L2_CID_EXPOSURE, exposureUs);
-    }
-    if (mSoftIspEnabled && cm.exists(ANDROID_SENSOR_SENSITIVITY)) {
-        int32_t iso = *cm.find(ANDROID_SENSOR_SENSITIVITY).data.i32;
-        int32_t gain;
-        if (mFacing == CAMERA_FACING_BACK)
-            gain = iso / 100;                /* IMX179: GAIN_SHIFT=0 */
-        else
-            gain = (iso / 100) * 256;        /* OV5693: GAIN_SHIFT=8 */
-        if (gain < 1) gain = 1;
-        mDev->setControl(V4L2_CID_GAIN, gain);
-    }
-    if (mSoftIspEnabled && cm.exists(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION)) {
-        int32_t evComp = *cm.find(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION).data.i32;
-        if (evComp != 0) {
-            /* EV compensation: step=1/3, base=20ms.
-             * exposure = 20ms * 2^(ev/3)
-             * Use lookup: each step ~1.26x */
-            int32_t baseUs = 20000;
-            int32_t exposureUs = baseUs;
+    if (mSoftIspEnabled) {
+        int32_t exposureUs = 30000; /* default 30ms */
+        if (cm.exists(ANDROID_SENSOR_EXPOSURE_TIME)) {
+            int64_t exposureNs = *cm.find(ANDROID_SENSOR_EXPOSURE_TIME).data.i64;
+            exposureUs = (int32_t)(exposureNs / 1000);
+        }
+        /* EV compensation applied on top of exposure time */
+        if (cm.exists(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION)) {
+            int32_t evComp = *cm.find(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION).data.i32;
             if (evComp > 0)
                 for (int i = 0; i < evComp; i++) exposureUs = exposureUs * 5 / 4;
             else
                 for (int i = 0; i < -evComp; i++) exposureUs = exposureUs * 4 / 5;
-            if (exposureUs < 100) exposureUs = 100;
-            if (exposureUs > 200000) exposureUs = 200000;
-            mDev->setControl(V4L2_CID_EXPOSURE, exposureUs);
+        }
+        if (exposureUs < 100) exposureUs = 100;
+        if (exposureUs > 200000) exposureUs = 200000;
+        mDev->setControl(V4L2_CID_EXPOSURE, exposureUs);
+
+        if (cm.exists(ANDROID_SENSOR_SENSITIVITY)) {
+            int32_t iso = *cm.find(ANDROID_SENSOR_SENSITIVITY).data.i32;
+            int32_t gain;
+            if (mFacing == CAMERA_FACING_BACK)
+                gain = iso / 100;                /* IMX179: GAIN_SHIFT=0 */
+            else
+                gain = (iso / 100) * 256;        /* OV5693: GAIN_SHIFT=8 */
+            if (gain < 1) gain = 1;
+            mDev->setControl(V4L2_CID_GAIN, gain);
         }
     }
 
@@ -783,19 +782,22 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
         mAfSweepActive = false;
     }
 
-    /* AF trigger — start contrast-detect sweep */
+    /* AF trigger — start two-pass contrast-detect sweep */
     if (cm.exists(ANDROID_CONTROL_AF_TRIGGER)) {
         uint8_t trigger = *cm.find(ANDROID_CONTROL_AF_TRIGGER).data.u8;
         if (trigger == ANDROID_CONTROL_AF_TRIGGER_START && !mAfSweepActive) {
             mAfSweepActive = true;
+            mAfFinePass = false;
+            mAfSettleFrames = 0;
             if (afMode == ANDROID_CONTROL_AF_MODE_MACRO) {
-                mAfSweepPos = 400; /* macro: scan 400→640 */
+                mAfSweepPos = 400; mAfSweepEnd = 640; mAfSweepStep = 50;
             } else {
-                mAfSweepPos = 140; /* full: scan 140→640 */
+                mAfSweepPos = 140; mAfSweepEnd = 640; mAfSweepStep = 50;
             }
             mAfSweepBestPos = mAfSweepPos;
             mAfSweepBestScore = 0;
-            ALOGD("AF sweep started (mode=%d)", afMode);
+            ALOGD("AF coarse sweep started (mode=%d, %d→%d step %d)",
+                  afMode, mAfSweepPos, mAfSweepEnd, mAfSweepStep);
         } else if (trigger == ANDROID_CONTROL_AF_TRIGGER_CANCEL) {
             mAfSweepActive = false;
         }
@@ -805,7 +807,9 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
     if ((afMode == ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE) &&
         !mAfSweepActive && (request->frame_number % 60 == 0)) {
         mAfSweepActive = true;
-        mAfSweepPos = 140;
+        mAfFinePass = false;
+        mAfSettleFrames = 0;
+        mAfSweepPos = 140; mAfSweepEnd = 640; mAfSweepStep = 50;
         mAfSweepBestPos = mFocusPosition;
         mAfSweepBestScore = 0;
     }
@@ -983,8 +987,14 @@ skip_focus:
         }
     }
 
-    /* AF sweep: measure contrast from center of RGBA frame, step position */
+    /* AF sweep: two-pass contrast-detect with VCM settling */
     if (mSoftIspEnabled && mAfSweepActive && rgbaBuffer) {
+        /* Skip frames after VCM move to let lens settle */
+        if (mAfSettleFrames > 0) {
+            mAfSettleFrames--;
+            goto af_done;
+        }
+
         /* Compute sharpness: sum of absolute horizontal gradient in center 1/4 */
         unsigned cx = res.width / 4, cy = res.height / 4;
         unsigned cw = res.width / 2, ch = res.height / 2;
@@ -1002,20 +1012,40 @@ skip_focus:
             mAfSweepBestPos = mAfSweepPos;
         }
 
-        ALOGD("AF step: pos=%d score=%llu best=%d/%llu",
+        ALOGD("AF %s: pos=%d score=%llu best=%d/%llu",
+              mAfFinePass ? "fine" : "coarse",
               mAfSweepPos, (unsigned long long)score,
               mAfSweepBestPos, (unsigned long long)mAfSweepBestScore);
 
-        mAfSweepPos += 100;  /* step 100 per frame: 140→640 in ~5 frames */
-        if (mAfSweepPos > 640) {
-            /* Sweep done — go to best position */
-            mDev->setFocusPosition(mAfSweepBestPos);
-            mFocusPosition = mAfSweepBestPos;
-            mAfSweepActive = false;
-            ALOGD("AF done: best=%d score=%llu", mAfSweepBestPos,
-                  (unsigned long long)mAfSweepBestScore);
+        mAfSweepPos += mAfSweepStep;
+        if (mAfSweepPos > mAfSweepEnd) {
+            if (!mAfFinePass) {
+                /* Coarse pass done — start fine pass around best position */
+                mAfFinePass = true;
+                mAfSweepStep = 10;
+                mAfSweepPos = mAfSweepBestPos - 50;
+                if (mAfSweepPos < 0) mAfSweepPos = 0;
+                mAfSweepEnd = mAfSweepBestPos + 50;
+                if (mAfSweepEnd > 1023) mAfSweepEnd = 1023;
+                mAfSweepBestScore = 0;
+                ALOGD("AF fine sweep: %d→%d step %d",
+                      mAfSweepPos, mAfSweepEnd, mAfSweepStep);
+            } else {
+                /* Fine pass done — go to best position */
+                mDev->setFocusPosition(mAfSweepBestPos);
+                mFocusPosition = mAfSweepBestPos;
+                mAfSweepActive = false;
+                ALOGD("AF done: best=%d score=%llu", mAfSweepBestPos,
+                      (unsigned long long)mAfSweepBestScore);
+                goto af_done;
+            }
         }
+
+        /* Move VCM and wait 1 frame for settling */
+        mDev->setFocusPosition(mAfSweepPos);
+        mAfSettleFrames = 1;
     }
+af_done:
 
     /* Unlocking all buffers in separate loop allows to copy data from already processed buffer to not yet processed one */
     for(size_t i = 0; i < request->num_output_buffers; ++i) {

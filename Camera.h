@@ -64,8 +64,12 @@ protected:
     int32_t mFocusPosition;
     bool mAfSweepActive;
     int32_t mAfSweepPos;
+    int32_t mAfSweepStep;
+    int32_t mAfSweepEnd;
     int32_t mAfSweepBestPos;
     uint64_t mAfSweepBestScore;
+    bool mAfFinePass;       /* true = second fine-grained pass */
+    int32_t mAfSettleFrames; /* skip frames after VCM move for settling */
 
 private:
     ImageConverter mConverter;
