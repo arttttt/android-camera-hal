@@ -328,8 +328,15 @@ bool VulkanIspPipeline::init() {
     ALOGD("INIT: creating shader module (size=%zu)", (size_t)bayer_isp_spv_len);
     VkShaderModuleCreateInfo smi = {};
     smi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    /* Ensure 4-byte alignment for SPIR-V (Vulkan spec requires pCode aligned to uint32_t) */
+    static uint32_t alignedSpv[(sizeof(bayer_isp_spv) + 3) / 4];
+    static bool spvCopied = false;
+    if (!spvCopied) {
+        memcpy(alignedSpv, bayer_isp_spv, bayer_isp_spv_len);
+        spvCopied = true;
+    }
     smi.codeSize = bayer_isp_spv_len;
-    smi.pCode = (const uint32_t *)bayer_isp_spv;
+    smi.pCode = alignedSpv;
 
     if (vkCreateShaderModule(mDevice, &smi, NULL, &mShader) != VK_SUCCESS) {
         ALOGE("vkCreateShaderModule failed");
@@ -352,8 +359,12 @@ bool VulkanIspPipeline::init() {
     dslci.bindingCount = 3;
     dslci.pBindings = bindings;
     ALOGD("INIT: creating descriptor set layout");
-    vkCreateDescriptorSetLayout(mDevice, &dslci, NULL, &mDescLayout);
-    ALOGD("INIT: descriptor set layout OK");
+    VkResult r = vkCreateDescriptorSetLayout(mDevice, &dslci, NULL, &mDescLayout);
+    if (r != VK_SUCCESS) {
+        ALOGE("vkCreateDescriptorSetLayout failed: %d", r);
+        destroy(); return false;
+    }
+    ALOGD("INIT: descriptor set layout OK (handle=%p)", mDescLayout);
 
     /* Pipeline layout */
     VkPipelineLayoutCreateInfo plci = {};
@@ -361,8 +372,12 @@ bool VulkanIspPipeline::init() {
     plci.setLayoutCount = 1;
     plci.pSetLayouts = &mDescLayout;
     ALOGD("INIT: creating pipeline layout");
-    vkCreatePipelineLayout(mDevice, &plci, NULL, &mPipeLayout);
-    ALOGD("INIT: pipeline layout OK");
+    r = vkCreatePipelineLayout(mDevice, &plci, NULL, &mPipeLayout);
+    if (r != VK_SUCCESS) {
+        ALOGE("vkCreatePipelineLayout failed: %d", r);
+        destroy(); return false;
+    }
+    ALOGD("INIT: pipeline layout OK (handle=%p)", mPipeLayout);
 
     /* Compute pipeline */
     VkComputePipelineCreateInfo cpci = {};
@@ -391,7 +406,11 @@ bool VulkanIspPipeline::init() {
     dpci.poolSizeCount = 1;
     dpci.pPoolSizes = &poolSize;
     ALOGD("INIT: creating descriptor pool");
-    vkCreateDescriptorPool(mDevice, &dpci, NULL, &mDescPool);
+    r = vkCreateDescriptorPool(mDevice, &dpci, NULL, &mDescPool);
+    if (r != VK_SUCCESS) {
+        ALOGE("vkCreateDescriptorPool failed: %d", r);
+        destroy(); return false;
+    }
     ALOGD("INIT: descriptor pool OK");
 
     /* Allocate descriptor set */
@@ -401,7 +420,11 @@ bool VulkanIspPipeline::init() {
     dsai.descriptorSetCount = 1;
     dsai.pSetLayouts = &mDescLayout;
     ALOGD("INIT: allocating descriptor set");
-    vkAllocateDescriptorSets(mDevice, &dsai, &mDescSet);
+    r = vkAllocateDescriptorSets(mDevice, &dsai, &mDescSet);
+    if (r != VK_SUCCESS) {
+        ALOGE("vkAllocateDescriptorSets failed: %d", r);
+        destroy(); return false;
+    }
     ALOGD("INIT: descriptor set OK");
 
     /* Command pool + buffer */
