@@ -675,11 +675,6 @@ bool VulkanIspPipeline::process(const uint8_t *src, uint8_t *dst,
     mPrevPending = true;
 
     /* First frame: must wait synchronously (no previous result to show) */
-    if (!mPrevPending) {
-        /* This branch only on first ever call — mPrevPending was just set true above.
-         * Handled by the check at top of next call. But first call needs immediate result. */
-    }
-    /* Actually for first frame, dst needs data NOW. Wait sync: */
     static bool firstFrame = true;
     if (firstFrame) {
         firstFrame = false;
