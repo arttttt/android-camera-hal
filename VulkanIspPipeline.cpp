@@ -403,7 +403,7 @@ bool VulkanIspPipeline::init() {
 
     VkShaderModuleCreateInfo smi = {};
     smi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    if (false && hasNvGlsl) {
+    if (hasNvGlsl) {
         /* VK_NV_glsl_shader: pass GLSL source as pCode (null-terminated string) */
         smi.codeSize = strlen(kGlslShaderSrc);
         smi.pCode = (const uint32_t *)kGlslShaderSrc;
