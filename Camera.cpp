@@ -790,9 +790,9 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
             mAfFinePass = false;
             mAfSettleFrames = 0;
             if (afMode == ANDROID_CONTROL_AF_MODE_MACRO) {
-                mAfSweepPos = 400; mAfSweepEnd = 640; mAfSweepStep = 50;
+                mAfSweepPos = 400; mAfSweepEnd = 650; mAfSweepStep = 25;
             } else {
-                mAfSweepPos = 140; mAfSweepEnd = 640; mAfSweepStep = 50;
+                mAfSweepPos = 140; mAfSweepEnd = 640; mAfSweepStep = 25;
             }
             mAfSweepBestPos = mAfSweepPos;
             mAfSweepBestScore = 0;
@@ -809,7 +809,7 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
         mAfSweepActive = true;
         mAfFinePass = false;
         mAfSettleFrames = 0;
-        mAfSweepPos = 140; mAfSweepEnd = 640; mAfSweepStep = 50;
+        mAfSweepPos = 140; mAfSweepEnd = 640; mAfSweepStep = 25;
         mAfSweepBestPos = mFocusPosition;
         mAfSweepBestScore = 0;
     }
@@ -1022,10 +1022,10 @@ skip_focus:
             if (!mAfFinePass) {
                 /* Coarse pass done — start fine pass around best position */
                 mAfFinePass = true;
-                mAfSweepStep = 10;
-                mAfSweepPos = mAfSweepBestPos - 50;
+                mAfSweepStep = 5;
+                mAfSweepPos = mAfSweepBestPos - 25;
                 if (mAfSweepPos < 0) mAfSweepPos = 0;
-                mAfSweepEnd = mAfSweepBestPos + 50;
+                mAfSweepEnd = mAfSweepBestPos + 25;
                 if (mAfSweepEnd > 1023) mAfSweepEnd = 1023;
                 mAfSweepBestScore = 0;
                 ALOGD("AF fine sweep: %d→%d step %d",
