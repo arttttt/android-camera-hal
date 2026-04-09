@@ -897,11 +897,11 @@ skip_focus:
                             if (mIsp->processToGralloc(frame->buf, gb->getNativeBuffer(),
                                                         res.width, res.height, streamW, streamH,
                                                         frame->pixFmt)) {
-                                /* Success — buffer written by GPU */
-                                /* Re-lock so unlock below works, set rgbaBuffer=buf to skip copy */
+                                /* Success — GPU wrote directly.
+                                 * Re-lock as READ to sync GPU writes for compositor, then unlock releases it */
                                 const Rect rect((int)streamW, (int)streamH);
                                 GraphicBufferMapper::get().lock(*srcBuf.buffer,
-                                    GRALLOC_USAGE_SW_WRITE_OFTEN, rect, (void **)&buf);
+                                    GRALLOC_USAGE_SW_READ_OFTEN, rect, (void **)&buf);
                                 rgbaBuffer = buf;
                             } else {
                                 /* Failed — re-lock and fall back to CPU readback */
