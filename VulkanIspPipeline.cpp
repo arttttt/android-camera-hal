@@ -67,19 +67,13 @@ VulkanIspPipeline::~VulkanIspPipeline() { destroy(); }
 
 void VulkanIspPipeline::fillParams(IspParams *p, unsigned w, unsigned h,
                                     bool is16, uint32_t pixFmt) {
-    /* Bake gammaLut + ccm once — they don't change per frame */
+    /* Bake ccm once — it doesn't change per frame. gammaLut unused (sRGB pow in shader) */
     if (!mParamsTemplateReady) {
         memset(&mParamsTemplate, 0, sizeof(IspParams));
         if (mCcm) {
             for (int i = 0; i < 9; i++) mParamsTemplate.ccm[i] = mCcm[i];
         } else {
             mParamsTemplate.ccm[0] = 1024; mParamsTemplate.ccm[4] = 1024; mParamsTemplate.ccm[8] = 1024;
-        }
-        for (int i = 0; i < 64; i++) {
-            mParamsTemplate.gammaLut[i] = sGammaLut[i*4] |
-                             (sGammaLut[i*4+1] << 8) |
-                             (sGammaLut[i*4+2] << 16) |
-                             (sGammaLut[i*4+3] << 24);
         }
         mParamsTemplateReady = true;
     }
@@ -368,10 +362,8 @@ bool VulkanIspPipeline::init() {
         "        return (word >> ((idx & 3u) * 8u)) & 0xFFu;\n"
         "    }\n"
         "}\n"
-        "uint gammaLookup(uint val) {\n"
-        "    if (val > 255u) val = 255u;\n"
-        "    uint wordIdx = val >> 2; uint byteIdx = val & 3u;\n"
-        "    return (params.gammaLut[wordIdx] >> (byteIdx * 8u)) & 0xFFu;\n"
+        "float srgbGamma(float lin) {\n"
+        "    return (lin <= 0.0031308) ? lin * 12.92 : 1.055 * pow(lin, 1.0/2.4) - 0.055;\n"
         "}\n"
         "void main() {\n"
         "    uint x = gl_GlobalInvocationID.x, y = gl_GlobalInvocationID.y;\n"
@@ -419,7 +411,9 @@ bool VulkanIspPipeline::init() {
         "        int rr = clamp((params.ccm[0]*R + params.ccm[1]*G + params.ccm[2]*B) >> 10, 0, 255);\n"
         "        int gg = clamp((params.ccm[3]*R + params.ccm[4]*G + params.ccm[5]*B) >> 10, 0, 255);\n"
         "        int bb = clamp((params.ccm[6]*R + params.ccm[7]*G + params.ccm[8]*B) >> 10, 0, 255);\n"
-        "        R = int(gammaLookup(uint(rr))); G = int(gammaLookup(uint(gg))); B = int(gammaLookup(uint(bb)));\n"
+        "        R = clamp(int(srgbGamma(float(rr)/255.0) * 255.0 + 0.5), 0, 255);\n"
+        "        G = clamp(int(srgbGamma(float(gg)/255.0) * 255.0 + 0.5), 0, 255);\n"
+        "        B = clamp(int(srgbGamma(float(bb)/255.0) * 255.0 + 0.5), 0, 255);\n"
         "    }\n"
         "    outBuf.data[y * params.width + x] = uint(R) | (uint(G)<<8) | (uint(B)<<16) | (255u<<24);\n"
         "}\n";

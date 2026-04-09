@@ -62,11 +62,8 @@ uint readPixel(uint x, uint y) {
     return (params.is16bit != 0u) ? val >> 2u : val;
 }
 
-uint gammaLookup(uint val) {
-    if (val > 255u) val = 255u;
-    uint wordIdx = val >> 2;
-    uint byteIdx = val & 3u;
-    return (params.gammaLut[wordIdx] >> (byteIdx * 8u)) & 0xFFu;
+float srgbGamma(float lin) {
+    return (lin <= 0.0031308) ? lin * 12.92 : 1.055 * pow(lin, 1.0/2.4) - 0.055;
 }
 
 void main() {
@@ -116,9 +113,9 @@ void main() {
         int rr = clamp((params.ccm[0]*R + params.ccm[1]*G + params.ccm[2]*B) >> 10, 0, 255);
         int gg = clamp((params.ccm[3]*R + params.ccm[4]*G + params.ccm[5]*B) >> 10, 0, 255);
         int bb = clamp((params.ccm[6]*R + params.ccm[7]*G + params.ccm[8]*B) >> 10, 0, 255);
-        R = int(gammaLookup(uint(rr)));
-        G = int(gammaLookup(uint(gg)));
-        B = int(gammaLookup(uint(bb)));
+        R = clamp(int(srgbGamma(float(rr)/255.0) * 255.0 + 0.5), 0, 255);
+        G = clamp(int(srgbGamma(float(gg)/255.0) * 255.0 + 0.5), 0, 255);
+        B = clamp(int(srgbGamma(float(bb)/255.0) * 255.0 + 0.5), 0, 255);
     }
 
     imageStore(outImg, ivec2(x, y), vec4(float(R)/255.0, float(G)/255.0, float(B)/255.0, 1.0));
