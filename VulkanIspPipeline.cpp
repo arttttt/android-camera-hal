@@ -232,14 +232,41 @@ bool VulkanIspPipeline::init() {
     appInfo.pApplicationName = "CameraISP";
     appInfo.apiVersion = VK_API_VERSION;
 
+    /* Enumerate instance extensions */
+    bool hasInstExtMemCaps = false, hasInstPhysDevProps2 = false;
+    {
+        uint32_t iExtCount = 0;
+        vkEnumerateInstanceExtensionProperties(NULL, &iExtCount, NULL);
+        VkExtensionProperties *iExts = new VkExtensionProperties[iExtCount];
+        vkEnumerateInstanceExtensionProperties(NULL, &iExtCount, iExts);
+        for (uint32_t i = 0; i < iExtCount; i++) {
+            ALOGD("VK inst ext: %s", iExts[i].extensionName);
+            if (!strcmp(iExts[i].extensionName, "VK_KHR_external_memory_capabilities"))
+                hasInstExtMemCaps = true;
+            if (!strcmp(iExts[i].extensionName, "VK_KHR_get_physical_device_properties2"))
+                hasInstPhysDevProps2 = true;
+        }
+        delete[] iExts;
+    }
+
+    const char *instExtNames[2];
+    uint32_t instExtCount = 0;
+    if (hasInstExtMemCaps)
+        instExtNames[instExtCount++] = "VK_KHR_external_memory_capabilities";
+    if (hasInstPhysDevProps2)
+        instExtNames[instExtCount++] = "VK_KHR_get_physical_device_properties2";
+
     VkInstanceCreateInfo ici = {};
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &appInfo;
+    ici.enabledExtensionCount = instExtCount;
+    ici.ppEnabledExtensionNames = instExtCount ? instExtNames : NULL;
 
     if (vkCreateInstance(&ici, NULL, &mInstance) != VK_SUCCESS) {
         ALOGE("vkCreateInstance failed");
         return false;
     }
+    ALOGD("VkInstance created (inst exts=%u)", instExtCount);
 
     /* Physical device */
     uint32_t devCount = 1;
@@ -265,7 +292,8 @@ bool VulkanIspPipeline::init() {
         }
         delete[] exts;
     }
-    mDmabufSupported = hasExtMem && hasExtMemFd;
+    mDmabufSupported = hasExtMem && hasExtMemFd &&
+                       hasInstExtMemCaps && hasInstPhysDevProps2;
 
     /* Find compute queue */
     uint32_t qfCount = 0;
