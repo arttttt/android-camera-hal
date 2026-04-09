@@ -74,36 +74,40 @@ void main() {
     uint y = gl_GlobalInvocationID.y;
     if (x >= params.width || y >= params.height) return;
 
-    uint c = readPixel(x, y);
-    uint l = (x > 0u) ? readPixel(x-1u, y) : c;
-    uint r = (x < params.width-1u) ? readPixel(x+1u, y) : c;
-    uint u = (y > 0u) ? readPixel(x, y-1u) : c;
-    uint d = (y < params.height-1u) ? readPixel(x, y+1u) : c;
+    /* McGuire/Malvar-He-Cutler 5x5 demosaic — 13 samples, branch-free */
+    int ix = int(x), iy = int(y);
+    int iw = int(params.width) - 1, ih = int(params.height) - 1;
+#define PX(dx, dy) float(readPixel(uint(clamp(ix+(dx), 0, iw)), uint(clamp(iy+(dy), 0, ih))))
+    float pC  = PX(0, 0);
+    float pN  = PX(0,-1);  float pS  = PX(0, 1);
+    float pW  = PX(-1, 0); float pE  = PX(1, 0);
+    float pN2 = PX(0,-2);  float pS2 = PX(0, 2);
+    float pW2 = PX(-2, 0); float pE2 = PX(2, 0);
+    float pNW = PX(-1,-1); float pNE = PX(1,-1);
+    float pSW = PX(-1, 1); float pSE = PX(1, 1);
+#undef PX
+    float vFar  = pN2 + pS2;
+    float vNear = pN + pS;
+    float diag  = pNW + pNE + pSW + pSE;
+    float hFar  = pW2 + pE2;
+    float hNear = pW + pE;
 
+    float Pcross = (4.0*pC - vFar + 2.0*vNear - hFar + 2.0*hNear) * 0.125;
+    float Pcheck = (6.0*pC - 1.5*vFar + 2.0*diag - 1.5*hFar) * 0.125;
+    float Ptheta = (5.0*pC + 0.5*vFar - diag - hFar + 4.0*hNear) * 0.125;
+    float Pphi   = (5.0*pC - vFar - diag + 0.5*hFar + 4.0*vNear) * 0.125;
+
+    /* Branch-free Bayer position selection */
     uint rX = params.bayerPhase & 1u;
     uint rY = (params.bayerPhase >> 1) & 1u;
-    uint px = x & 1u, py = y & 1u;
-
-    int R, G, B;
-    if (py == rY && px == rX) {
-        R = int(c); G = int((l+r+u+d)/4u);
-        uint ul = (x>0u && y>0u) ? readPixel(x-1u,y-1u) : u;
-        uint ur = (x<params.width-1u && y>0u) ? readPixel(x+1u,y-1u) : u;
-        uint dl = (x>0u && y<params.height-1u) ? readPixel(x-1u,y+1u) : d;
-        uint dr = (x<params.width-1u && y<params.height-1u) ? readPixel(x+1u,y+1u) : d;
-        B = int((ul+ur+dl+dr)/4u);
-    } else if (py != rY && px != rX) {
-        B = int(c); G = int((l+r+u+d)/4u);
-        uint ul = (x>0u && y>0u) ? readPixel(x-1u,y-1u) : u;
-        uint ur = (x<params.width-1u && y>0u) ? readPixel(x+1u,y-1u) : u;
-        uint dl = (x>0u && y<params.height-1u) ? readPixel(x-1u,y+1u) : d;
-        uint dr = (x<params.width-1u && y<params.height-1u) ? readPixel(x+1u,y+1u) : d;
-        R = int((ul+ur+dl+dr)/4u);
-    } else {
-        G = int(c);
-        if (py == rY) { R = int((l+r)/2u); B = int((u+d)/2u); }
-        else           { B = int((l+r)/2u); R = int((u+d)/2u); }
-    }
+    bool isRedRow = ((y + rY) & 1u) == 0u;
+    bool isRedCol = ((x + rX) & 1u) == 0u;
+    float fR = isRedRow ? (isRedCol ? pC : Ptheta) : (isRedCol ? Pphi : Pcheck);
+    float fG = (isRedRow == isRedCol) ? Pcross : pC;
+    float fB = isRedRow ? (isRedCol ? Pcheck : Pphi) : (isRedCol ? Ptheta : pC);
+    int R = clamp(int(fR + 0.5), 0, 255);
+    int G = clamp(int(fG + 0.5), 0, 255);
+    int B = clamp(int(fB + 0.5), 0, 255);
 
     if (params.doIsp != 0u) {
         R = clamp((R * int(params.wbR)) >> 8, 0, 255);
