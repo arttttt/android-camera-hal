@@ -18,7 +18,7 @@ public:
     uint8_t * UYVYToRGBA(const uint8_t *src, uint8_t *dst, unsigned width, unsigned height);
     uint8_t * UYVYToJPEG(const uint8_t *src, uint8_t *dst, unsigned width, unsigned height, size_t dstLen, uint8_t quality);
 
-    uint8_t * BayerToRGBA(const uint8_t *src, uint8_t *dst, unsigned width, unsigned height, uint32_t pixFmt);
+    uint8_t * BayerToRGBA(const uint8_t *src, uint8_t *dst, unsigned width, unsigned height, uint32_t pixFmt, bool softIsp = true);
 
 protected:
     uint8_t * splitRunWait(const uint8_t *src, uint8_t *dst, unsigned width, unsigned height, Workers::Task::Function fn);
@@ -34,6 +34,12 @@ private:
             size_t          linesNum;
             size_t          startLine;
             uint32_t        pixFmt;
+            /* Gray-world AWB accumulation */
+            uint64_t        sumR, sumG, sumB;
+            /* WB gains (Q8: 256 = 1.0x) */
+            unsigned        wbR, wbG, wbB;
+            /* CCM (Q10: 1024 = 1.0x), row-major 3x3 */
+            const int16_t  *ccm;
         } data;
     };
 };

@@ -19,9 +19,13 @@
 #include <libyuv/row.h>
 #include <linux/videodev2.h>
 
+#include <utils/Log.h>
+
 #include "Yuv422UyvyToJpegEncoder.h"
 #include "ImageConverter.h"
 #include "DbgUtils.h"
+
+#define LOG_TAG "Cam-ImageConv"
 
 #define WORKERS_TASKS_NUM 30
 
@@ -199,12 +203,31 @@ static inline bool bayerIs16bit(uint32_t pixFmt) {
     }
 }
 
+/* sRGB gamma LUT — computed once */
+static uint8_t sGammaLut[256];
+static bool sGammaReady = false;
+
+static void initGammaLut() {
+    if (sGammaReady) return;
+    for (int i = 0; i < 256; i++) {
+        float lin = i / 255.0f;
+        float s = (lin <= 0.0031308f) ?
+            lin * 12.92f :
+            1.055f * powf(lin, 1.0f / 2.4f) - 0.055f;
+        int v = (int)(s * 255.0f + 0.5f);
+        sGammaLut[i] = v > 255 ? 255 : (v < 0 ? 0 : (uint8_t)v);
+    }
+    sGammaReady = true;
+}
+
 /*
- * Simple bilinear Bayer demosaic.
- * Supports RGGB, BGGR, GRBG, GBRG patterns in 8-bit and 10-bit (16-bit LE).
+ * Combined demosaic + AWB + CCM + gamma in one pass per line.
+ * Avoids second pass over 8MB RGBA buffer.
  */
-static inline void demosaicLine(const uint8_t *src, uint8_t *dst,
-        unsigned width, unsigned height, unsigned y, uint32_t pixFmt) {
+static inline void demosaicIspLine(const uint8_t *src, uint8_t *dst,
+        unsigned width, unsigned height, unsigned y, uint32_t pixFmt,
+        bool doIsp, const int16_t *ccm, unsigned wbR, unsigned wbG, unsigned wbB,
+        uint64_t *accR, uint64_t *accG, uint64_t *accB) {
     int rX, rY;
     bayerPattern(pixFmt, &rX, &rY);
     bool is16 = bayerIs16bit(pixFmt);
@@ -216,7 +239,8 @@ static inline void demosaicLine(const uint8_t *src, uint8_t *dst,
     const uint8_t *rowBytesD = (y < height - 1) ? rowBytes + stride : rowBytes;
     uint8_t *out = dst + y * width * 4;
 
-    /* Read one pixel, returning 8-bit value */
+    uint64_t sR = 0, sG = 0, sB = 0;
+
     #define PX(row, x) (is16 ? ((const uint16_t *)(row))[x] >> 2 : (row)[x])
 
     for (unsigned x = 0; x < width; x++) {
@@ -228,59 +252,110 @@ static inline void demosaicLine(const uint8_t *src, uint8_t *dst,
         int px = x & 1;
         int py = y & 1;
 
-        uint8_t R, G, B;
+        int R, G, B;
         if (py == rY && px == rX) {
-            /* Red pixel */
-            R = c;
-            G = (l + r + u + d) / 4;
-            unsigned ul = (x > 0)         ? PX(rowBytesU, x-1) : u;
-            unsigned ur = (x < width - 1) ? PX(rowBytesU, x+1) : u;
-            unsigned dl = (x > 0)         ? PX(rowBytesD, x-1) : d;
-            unsigned dr = (x < width - 1) ? PX(rowBytesD, x+1) : d;
+            R = c; G = (l + r + u + d) / 4;
+            unsigned ul = (x > 0) ? PX(rowBytesU, x-1) : u;
+            unsigned ur = (x < width-1) ? PX(rowBytesU, x+1) : u;
+            unsigned dl = (x > 0) ? PX(rowBytesD, x-1) : d;
+            unsigned dr = (x < width-1) ? PX(rowBytesD, x+1) : d;
             B = (ul + ur + dl + dr) / 4;
         } else if (py != rY && px != rX) {
-            /* Blue pixel */
-            B = c;
-            G = (l + r + u + d) / 4;
-            unsigned ul = (x > 0)         ? PX(rowBytesU, x-1) : u;
-            unsigned ur = (x < width - 1) ? PX(rowBytesU, x+1) : u;
-            unsigned dl = (x > 0)         ? PX(rowBytesD, x-1) : d;
-            unsigned dr = (x < width - 1) ? PX(rowBytesD, x+1) : d;
+            B = c; G = (l + r + u + d) / 4;
+            unsigned ul = (x > 0) ? PX(rowBytesU, x-1) : u;
+            unsigned ur = (x < width-1) ? PX(rowBytesU, x+1) : u;
+            unsigned dl = (x > 0) ? PX(rowBytesD, x-1) : d;
+            unsigned dr = (x < width-1) ? PX(rowBytesD, x+1) : d;
             R = (ul + ur + dl + dr) / 4;
         } else {
-            /* Green pixel */
             G = c;
             if (py == rY) { R = (l + r) / 2; B = (u + d) / 2; }
             else           { B = (l + r) / 2; R = (u + d) / 2; }
         }
 
-        out[0] = R;
-        out[1] = G;
-        out[2] = B;
+        if (doIsp) {
+            /* AWB */
+            R = (R * wbR) >> 8; if (R > 255) R = 255;
+            G = (G * wbG) >> 8; if (G > 255) G = 255;
+            B = (B * wbB) >> 8; if (B > 255) B = 255;
+
+            /* CCM (Q10) */
+            int rr = (ccm[0]*R + ccm[1]*G + ccm[2]*B) >> 10;
+            int gg = (ccm[3]*R + ccm[4]*G + ccm[5]*B) >> 10;
+            int bb = (ccm[6]*R + ccm[7]*G + ccm[8]*B) >> 10;
+            if (rr < 0) rr = 0; if (rr > 255) rr = 255;
+            if (gg < 0) gg = 0; if (gg > 255) gg = 255;
+            if (bb < 0) bb = 0; if (bb > 255) bb = 255;
+
+            /* Gamma */
+            out[0] = sGammaLut[rr];
+            out[1] = sGammaLut[gg];
+            out[2] = sGammaLut[bb];
+        } else {
+            out[0] = R;
+            out[1] = G;
+            out[2] = B;
+        }
         out[3] = 255;
         out += 4;
+
+        /* Accumulate for next frame AWB (sample every 4th) */
+        if (doIsp && (x & 3) == 0) { sR += R; sG += G; sB += B; }
     }
     #undef PX
+
+    *accR += sR; *accG += sG; *accB += sB;
 }
 
+/*
+ * Stock ISP color correction matrices from Xiaomi/NVIDIA calibration profiles.
+ * Q10 fixed-point (1024 = 1.0x). Row-major: {R_from_R, R_from_G, R_from_B, ...}
+ */
+static const int16_t ccm_imx179[9] = {  /* imx179_primax_v2.27.isp, srgbMatrix (D50) */
+     1930,  -844,   -61,   /* R' =  1.884*R - 0.824*G - 0.059*B */
+     -268,  1654,  -362,   /* G' = -0.262*R + 1.615*G - 0.354*B */
+       52,  -822,  1793,   /* B' =  0.051*R - 0.803*G + 1.751*B */
+};
+static const int16_t ccm_ov5693[9] = {  /* ov5693_sunny_v2.13.isp */
+     1912,  -861,   -27,   /* R' =  1.867*R - 0.841*G - 0.026*B */
+     -268,  1578,  -286,   /* G' = -0.262*R + 1.541*G - 0.279*B */
+      -15,  -663,  1702,   /* B' = -0.015*R - 0.647*G + 1.662*B */
+};
+
+/* Persistent AWB gains — updated per frame, applied to next frame */
+static unsigned sPrevWbR = 256, sPrevWbG = 256, sPrevWbB = 256;
+
 uint8_t *ImageConverter::BayerToRGBA(const uint8_t *src, uint8_t *dst,
-        unsigned width, unsigned height, uint32_t pixFmt) {
+        unsigned width, unsigned height, uint32_t pixFmt, bool softIsp) {
     assert(gWorkers.isRunning());
     assert(src != NULL);
     assert(dst != NULL);
 
+    initGammaLut();
+
+    /* Select CCM */
+    const int16_t *ccm = ccm_imx179;
+    if (pixFmt == V4L2_PIX_FMT_SBGGR10 || pixFmt == V4L2_PIX_FMT_SBGGR8)
+        ccm = ccm_ov5693;
+
+    /* Single pass: demosaic + AWB + CCM + gamma + accumulate for next AWB */
     Workers::Task::Function taskFn = [](void *data) {
         ConvertTask::Data *d = static_cast<ConvertTask::Data *>(data);
+        uint64_t sR = 0, sG = 0, sB = 0;
         for (size_t i = 0; i < d->linesNum; ++i) {
-            demosaicLine(d->src, d->dst, d->width, d->height,
-                         d->startLine + i, d->pixFmt);
+            demosaicIspLine(d->src, d->dst, d->width, d->height,
+                d->startLine + i, d->pixFmt,
+                d->ccm != NULL, d->ccm, d->wbR, d->wbG, d->wbB,
+                &sR, &sG, &sB);
         }
+        d->sumR = sR; d->sumG = sG; d->sumB = sB;
     };
 
-    ConvertTask tasks[WORKERS_TASKS_NUM];
-    const size_t linesPerTask = (height + WORKERS_TASKS_NUM - 1) / WORKERS_TASKS_NUM;
+    const size_t numTasks = 8;  /* match core count better than 30 */
+    ConvertTask tasks[8];
+    const size_t linesPerTask = (height + numTasks - 1) / numTasks;
 
-    for (size_t i = 0; i < WORKERS_TASKS_NUM; ++i) {
+    for (size_t i = 0; i < numTasks; ++i) {
         tasks[i].data.src       = src;
         tasks[i].data.dst       = dst;
         tasks[i].data.width     = width;
@@ -288,6 +363,13 @@ uint8_t *ImageConverter::BayerToRGBA(const uint8_t *src, uint8_t *dst,
         tasks[i].data.startLine = i * linesPerTask;
         tasks[i].data.linesNum  = linesPerTask;
         tasks[i].data.pixFmt    = pixFmt;
+        tasks[i].data.sumR      = 0;
+        tasks[i].data.sumG      = 0;
+        tasks[i].data.sumB      = 0;
+        tasks[i].data.wbR       = softIsp ? sPrevWbR : 256;
+        tasks[i].data.wbG       = softIsp ? sPrevWbG : 256;
+        tasks[i].data.wbB       = softIsp ? sPrevWbB : 256;
+        tasks[i].data.ccm       = softIsp ? ccm : NULL;
         if ((i + 1) * linesPerTask >= height)
             tasks[i].data.linesNum = height - i * linesPerTask;
 
@@ -295,8 +377,25 @@ uint8_t *ImageConverter::BayerToRGBA(const uint8_t *src, uint8_t *dst,
         gWorkers.queueTask(&tasks[i].task);
     }
 
-    for (size_t i = 0; i < WORKERS_TASKS_NUM; ++i)
+    uint64_t totalR = 0, totalG = 0, totalB = 0;
+    for (size_t i = 0; i < numTasks; ++i) {
         tasks[i].task.waitForCompletion();
+        totalR += tasks[i].data.sumR;
+        totalG += tasks[i].data.sumG;
+        totalB += tasks[i].data.sumB;
+    }
+
+    /* Update AWB gains for next frame */
+    if (softIsp && totalR && totalG && totalB) {
+        uint64_t avg = (totalR + totalG + totalB) / 3;
+        unsigned wbR = (unsigned)((avg * 256ULL) / totalR);
+        unsigned wbG = (unsigned)((avg * 256ULL) / totalG);
+        unsigned wbB = (unsigned)((avg * 256ULL) / totalB);
+        if (wbR < 128) wbR = 128; if (wbR > 1024) wbR = 1024;
+        if (wbG < 128) wbG = 128; if (wbG > 1024) wbG = 1024;
+        if (wbB < 128) wbB = 128; if (wbB > 1024) wbB = 1024;
+        sPrevWbR = wbR; sPrevWbG = wbG; sPrevWbB = wbB;
+    }
 
     return dst + width * height * 4;
 }
