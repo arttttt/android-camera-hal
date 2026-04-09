@@ -411,7 +411,9 @@ bool VulkanIspPipeline::init() {
     dpci.maxSets = 1;
     dpci.poolSizeCount = 1;
     dpci.pPoolSizes = &poolSize;
+    ALOGD("INIT: creating descriptor pool");
     vkCreateDescriptorPool(mDevice, &dpci, NULL, &mDescPool);
+    ALOGD("INIT: descriptor pool OK");
 
     /* Allocate descriptor set */
     VkDescriptorSetAllocateInfo dsai = {};
@@ -419,7 +421,9 @@ bool VulkanIspPipeline::init() {
     dsai.descriptorPool = mDescPool;
     dsai.descriptorSetCount = 1;
     dsai.pSetLayouts = &mDescLayout;
+    ALOGD("INIT: allocating descriptor set");
     vkAllocateDescriptorSets(mDevice, &dsai, &mDescSet);
+    ALOGD("INIT: descriptor set OK");
 
     /* Command pool + buffer */
     VkCommandPoolCreateInfo cpi = {};
@@ -433,7 +437,9 @@ bool VulkanIspPipeline::init() {
     cbai.commandPool = mCmdPool;
     cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbai.commandBufferCount = 1;
+    ALOGD("INIT: allocating command buffer");
     vkAllocateCommandBuffers(mDevice, &cbai, &mCmdBuf);
+    ALOGD("INIT: command buffer OK");
 
     /* Params buffer — persistent map */
     if (!createBuffer(&mParamBuf, &mParamMem, sizeof(IspParams),
@@ -442,7 +448,9 @@ bool VulkanIspPipeline::init() {
         destroy();
         return false;
     }
+    ALOGD("INIT: mapping params buffer");
     vkMapMemory(mDevice, mParamMem, 0, sizeof(IspParams), 0, &mParamMap);
+    ALOGD("INIT: params mapped OK");
 
     initGamma();
 
