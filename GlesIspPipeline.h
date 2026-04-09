@@ -29,9 +29,10 @@ private:
     EGLSurface mSurface;
 
     GLuint mProgram;
-    GLuint mInSSBO, mParamSSBO;
+    GLuint mInTex, mParamSSBO;
     GLuint mOutTex, mFbo;
     size_t mInSize;
+    bool mIs16bit;
 
     static uint8_t sGammaLut[256];
     static bool sGammaReady;

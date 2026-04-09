@@ -34,7 +34,7 @@ void GlesIspPipeline::initGamma() {
 static const char *kComputeShaderSrc = R"(#version 310 es
 layout(local_size_x = 16, local_size_y = 16) in;
 
-layout(std430, binding = 0) buffer InputBuf  { uint data[]; } inBuf;
+layout(binding = 0) uniform highp usampler2D inTex;
 layout(rgba8, binding = 1) writeonly uniform highp image2D outImg;
 layout(std430, binding = 2) buffer Params {
     uint width; uint height; uint bayerPhase; uint is16bit;
@@ -44,16 +44,8 @@ layout(std430, binding = 2) buffer Params {
 } params;
 
 uint readPixel(uint x, uint y) {
-    if (params.is16bit != 0u) {
-        uint idx = y * params.width + x;
-        uint word = inBuf.data[idx >> 1u];
-        uint val = ((idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16);
-        return val >> 2;
-    } else {
-        uint idx = y * params.width + x;
-        uint word = inBuf.data[idx >> 2u];
-        return (word >> ((idx & 3u) * 8u)) & 0xFFu;
-    }
+    uint val = texelFetch(inTex, ivec2(x, y), 0).r;
+    return (params.is16bit != 0u) ? val >> 2u : val;
 }
 
 uint gammaLookup(uint val) {
@@ -118,8 +110,8 @@ void main() {
 GlesIspPipeline::GlesIspPipeline()
     : mReady(false), mBufWidth(0), mBufHeight(0)
     , mDisplay(EGL_NO_DISPLAY), mContext(EGL_NO_CONTEXT), mSurface(EGL_NO_SURFACE)
-    , mProgram(0), mInSSBO(0), mParamSSBO(0), mOutTex(0), mFbo(0)
-    , mInSize(0) {}
+    , mProgram(0), mInTex(0), mParamSSBO(0), mOutTex(0), mFbo(0)
+    , mInSize(0), mIs16bit(false) {}
 
 GlesIspPipeline::~GlesIspPipeline() { destroy(); }
 
@@ -228,14 +220,20 @@ bool GlesIspPipeline::process(const uint8_t *src, uint8_t *dst,
     size_t outSize = width * height * 4;
 
     /* Resize buffers if needed */
-    if (mInSize < inSize || mBufWidth != width || mBufHeight != height) {
-        if (mInSSBO) glDeleteBuffers(1, &mInSSBO);
+    if (mInSize < inSize || mBufWidth != width || mBufHeight != height || mIs16bit != is16) {
+        if (mInTex) glDeleteTextures(1, &mInTex);
         if (mOutTex) glDeleteTextures(1, &mOutTex);
         if (mFbo) glDeleteFramebuffers(1, &mFbo);
 
-        glGenBuffers(1, &mInSSBO);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, mInSSBO);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, inSize, NULL, GL_STREAM_DRAW);
+        /* Input as texture — uses texture cache for spatial reads in demosaic */
+        glGenTextures(1, &mInTex);
+        glBindTexture(GL_TEXTURE_2D, mInTex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        if (is16)
+            glTexStorage2D(GL_TEXTURE_2D, 1, GL_R16UI, width, height);
+        else
+            glTexStorage2D(GL_TEXTURE_2D, 1, GL_R8UI, width, height);
 
         /* Output texture + FBO for glReadPixels readback */
         glGenTextures(1, &mOutTex);
@@ -252,22 +250,20 @@ bool GlesIspPipeline::process(const uint8_t *src, uint8_t *dst,
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        mInSize = inSize;
+        mInSize = inSize; mIs16bit = is16;
         mBufWidth = width; mBufHeight = height;
     }
 
     int64_t t0 = nowMs();
 
-    /* Upload input via mapped write (avoids driver-side copy in glBufferSubData) */
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, mInSSBO);
-    void *inMap = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, inSize,
-        GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
-    if (inMap) {
-        memcpy(inMap, src, inSize);
-        glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
-    } else {
-        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, inSize, src);
-    }
+    /* Upload input via texture (DMA path + texture cache for spatial reads) */
+    glBindTexture(GL_TEXTURE_2D, mInTex);
+    if (is16)
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
+                        GL_RED_INTEGER, GL_UNSIGNED_SHORT, src);
+    else
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
+                        GL_RED_INTEGER, GL_UNSIGNED_BYTE, src);
 
     /* Fill params */
     IspParams params = {};
@@ -303,7 +299,8 @@ bool GlesIspPipeline::process(const uint8_t *src, uint8_t *dst,
 
     /* Bind and dispatch */
     glUseProgram(mProgram);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, mInSSBO);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, mInTex);
     glBindImageTexture(1, mOutTex, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, mParamSSBO);
     int64_t t1 = nowMs();
@@ -365,7 +362,7 @@ void GlesIspPipeline::destroy() {
 
     if (mDisplay != EGL_NO_DISPLAY) {
         eglMakeCurrent(mDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, mContext);
-        if (mInSSBO) { glDeleteBuffers(1, &mInSSBO); mInSSBO = 0; }
+        if (mInTex) { glDeleteTextures(1, &mInTex); mInTex = 0; }
         if (mParamSSBO) { glDeleteBuffers(1, &mParamSSBO); mParamSSBO = 0; }
         if (mFbo) { glDeleteFramebuffers(1, &mFbo); mFbo = 0; }
         if (mOutTex) { glDeleteTextures(1, &mOutTex); mOutTex = 0; }
