@@ -267,6 +267,20 @@ bool VulkanIspPipeline::init() {
     }
     mDmabufSupported = false; /* no instance ext support on K1 */
 
+    /* Check for VK_NV_glsl_shader — compile GLSL directly, bypass SPIR-V compiler bug */
+    bool hasNvGlsl = false;
+    {
+        uint32_t extCount2 = 0;
+        vkEnumerateDeviceExtensionProperties(mPhysDev, NULL, &extCount2, NULL);
+        VkExtensionProperties *exts2 = new VkExtensionProperties[extCount2];
+        vkEnumerateDeviceExtensionProperties(mPhysDev, NULL, &extCount2, exts2);
+        for (uint32_t i = 0; i < extCount2; i++) {
+            if (!strcmp(exts2[i].extensionName, "VK_NV_glsl_shader"))
+                hasNvGlsl = true;
+        }
+        delete[] exts2;
+    }
+
     /* Find compute queue */
     uint32_t qfCount = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(mPhysDev, &qfCount, NULL);
@@ -295,19 +309,16 @@ bool VulkanIspPipeline::init() {
     qci.queueCount = 1;
     qci.pQueuePriorities = &qPriority;
 
-    const char *extNames[] = {
-        "VK_KHR_external_memory",
-        "VK_KHR_external_memory_fd"
-    };
+    const char *enabledExts[4];
+    uint32_t enabledExtCount = 0;
+    if (hasNvGlsl) enabledExts[enabledExtCount++] = "VK_NV_glsl_shader";
 
     VkDeviceCreateInfo dci = {};
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
-    if (mDmabufSupported) {
-        dci.enabledExtensionCount = 2;
-        dci.ppEnabledExtensionNames = extNames;
-    }
+    dci.enabledExtensionCount = enabledExtCount;
+    dci.ppEnabledExtensionNames = enabledExtCount ? enabledExts : NULL;
 
     if (vkCreateDevice(mPhysDev, &dci, NULL, &mDevice) != VK_SUCCESS) {
         ALOGE("vkCreateDevice failed (trying without extensions)");
@@ -324,19 +335,88 @@ bool VulkanIspPipeline::init() {
     vkGetDeviceQueue(mDevice, mQueueFamily, 0, &mQueue);
     ALOGD("DMA-BUF import: %s", mDmabufSupported ? "enabled" : "disabled (memcpy path)");
 
-    /* Shader module */
-    ALOGD("INIT: creating shader module (size=%zu)", (size_t)bayer_isp_spv_len);
+    /* Shader module — use GLSL via VK_NV_glsl_shader if available (avoids SPIR-V compiler crash) */
+    static const char *kGlslShaderSrc =
+        "#version 450\n"
+        "layout(local_size_x = 16, local_size_y = 16) in;\n"
+        "layout(std430, binding = 0) buffer InputBuf  { uint data[]; } inBuf;\n"
+        "layout(std430, binding = 1) buffer OutputBuf { uint data[]; } outBuf;\n"
+        "layout(std430, binding = 2) buffer Params {\n"
+        "    uint width; uint height; uint bayerPhase; uint is16bit;\n"
+        "    uint wbR; uint wbG; uint wbB; uint doIsp;\n"
+        "    int ccm[9]; uint gammaLut[64];\n"
+        "} params;\n"
+        "uint readPixel(uint x, uint y) {\n"
+        "    if (params.is16bit != 0u) {\n"
+        "        uint idx = y * params.width + x;\n"
+        "        uint word = inBuf.data[idx >> 1u];\n"
+        "        uint val = ((idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16);\n"
+        "        return val >> 2;\n"
+        "    } else {\n"
+        "        uint idx = y * params.width + x;\n"
+        "        uint word = inBuf.data[idx >> 2u];\n"
+        "        return (word >> ((idx & 3u) * 8u)) & 0xFFu;\n"
+        "    }\n"
+        "}\n"
+        "uint gammaLookup(uint val) {\n"
+        "    if (val > 255u) val = 255u;\n"
+        "    uint wordIdx = val >> 2; uint byteIdx = val & 3u;\n"
+        "    return (params.gammaLut[wordIdx] >> (byteIdx * 8u)) & 0xFFu;\n"
+        "}\n"
+        "void main() {\n"
+        "    uint x = gl_GlobalInvocationID.x, y = gl_GlobalInvocationID.y;\n"
+        "    if (x >= params.width || y >= params.height) return;\n"
+        "    uint c = readPixel(x, y);\n"
+        "    uint l = (x > 0u) ? readPixel(x-1u, y) : c;\n"
+        "    uint r = (x < params.width-1u) ? readPixel(x+1u, y) : c;\n"
+        "    uint u = (y > 0u) ? readPixel(x, y-1u) : c;\n"
+        "    uint d = (y < params.height-1u) ? readPixel(x, y+1u) : c;\n"
+        "    uint rX = params.bayerPhase & 1u, rY = (params.bayerPhase >> 1) & 1u;\n"
+        "    uint px = x & 1u, py = y & 1u;\n"
+        "    int R, G, B;\n"
+        "    if (py == rY && px == rX) {\n"
+        "        R = int(c); G = int((l+r+u+d)/4u);\n"
+        "        uint ul=(x>0u&&y>0u)?readPixel(x-1u,y-1u):u, ur=(x<params.width-1u&&y>0u)?readPixel(x+1u,y-1u):u;\n"
+        "        uint dl=(x>0u&&y<params.height-1u)?readPixel(x-1u,y+1u):d, dr=(x<params.width-1u&&y<params.height-1u)?readPixel(x+1u,y+1u):d;\n"
+        "        B = int((ul+ur+dl+dr)/4u);\n"
+        "    } else if (py != rY && px != rX) {\n"
+        "        B = int(c); G = int((l+r+u+d)/4u);\n"
+        "        uint ul=(x>0u&&y>0u)?readPixel(x-1u,y-1u):u, ur=(x<params.width-1u&&y>0u)?readPixel(x+1u,y-1u):u;\n"
+        "        uint dl=(x>0u&&y<params.height-1u)?readPixel(x-1u,y+1u):d, dr=(x<params.width-1u&&y<params.height-1u)?readPixel(x+1u,y+1u):d;\n"
+        "        R = int((ul+ur+dl+dr)/4u);\n"
+        "    } else {\n"
+        "        G = int(c);\n"
+        "        if (py == rY) { R = int((l+r)/2u); B = int((u+d)/2u); }\n"
+        "        else           { B = int((l+r)/2u); R = int((u+d)/2u); }\n"
+        "    }\n"
+        "    if (params.doIsp != 0u) {\n"
+        "        R = clamp((R * int(params.wbR)) >> 8, 0, 255);\n"
+        "        G = clamp((G * int(params.wbG)) >> 8, 0, 255);\n"
+        "        B = clamp((B * int(params.wbB)) >> 8, 0, 255);\n"
+        "        int rr = clamp((params.ccm[0]*R + params.ccm[1]*G + params.ccm[2]*B) >> 10, 0, 255);\n"
+        "        int gg = clamp((params.ccm[3]*R + params.ccm[4]*G + params.ccm[5]*B) >> 10, 0, 255);\n"
+        "        int bb = clamp((params.ccm[6]*R + params.ccm[7]*G + params.ccm[8]*B) >> 10, 0, 255);\n"
+        "        R = int(gammaLookup(uint(rr))); G = int(gammaLookup(uint(gg))); B = int(gammaLookup(uint(bb)));\n"
+        "    }\n"
+        "    outBuf.data[y * params.width + x] = uint(R) | (uint(G)<<8) | (uint(B)<<16) | (255u<<24);\n"
+        "}\n";
+
     VkShaderModuleCreateInfo smi = {};
     smi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    /* Ensure 4-byte alignment for SPIR-V (Vulkan spec requires pCode aligned to uint32_t) */
-    static uint32_t alignedSpv[(sizeof(bayer_isp_spv) + 3) / 4];
-    static bool spvCopied = false;
-    if (!spvCopied) {
-        memcpy(alignedSpv, bayer_isp_spv, bayer_isp_spv_len);
-        spvCopied = true;
+    if (hasNvGlsl) {
+        /* VK_NV_glsl_shader: pass GLSL source as pCode (null-terminated string) */
+        smi.codeSize = strlen(kGlslShaderSrc);
+        smi.pCode = (const uint32_t *)kGlslShaderSrc;
+        ALOGD("INIT: creating shader module from GLSL (VK_NV_glsl_shader, size=%zu)", smi.codeSize);
+    } else {
+        /* Standard SPIR-V path */
+        static uint32_t alignedSpv[(sizeof(bayer_isp_spv) + 3) / 4];
+        static bool spvCopied = false;
+        if (!spvCopied) { memcpy(alignedSpv, bayer_isp_spv, bayer_isp_spv_len); spvCopied = true; }
+        smi.codeSize = bayer_isp_spv_len;
+        smi.pCode = alignedSpv;
+        ALOGD("INIT: creating shader module from SPIR-V (size=%zu)", smi.codeSize);
     }
-    smi.codeSize = bayer_isp_spv_len;
-    smi.pCode = alignedSpv;
 
     if (vkCreateShaderModule(mDevice, &smi, NULL, &mShader) != VK_SUCCESS) {
         ALOGE("vkCreateShaderModule failed");
