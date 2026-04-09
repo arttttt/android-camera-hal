@@ -31,7 +31,9 @@ private:
     GLuint mProgram;
     GLuint mInTex, mParamSSBO;
     GLuint mOutTex, mFbo;
-    size_t mInSize;
+    GLuint mPbo[2];
+    int mPboIdx;
+    size_t mInSize, mOutSize;
     bool mIs16bit;
 
     static uint8_t sGammaLut[256];
