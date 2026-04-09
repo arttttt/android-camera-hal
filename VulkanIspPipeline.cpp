@@ -364,7 +364,7 @@ bool VulkanIspPipeline::init() {
         ALOGE("vkCreateDescriptorSetLayout failed: %d", r);
         destroy(); return false;
     }
-    ALOGD("INIT: descriptor set layout OK (handle=%p)", mDescLayout);
+    ALOGD("INIT: descriptor set layout OK (handle=0x%llx)", (unsigned long long)mDescLayout);
 
     /* Pipeline layout */
     VkPipelineLayoutCreateInfo plci = {};
@@ -377,7 +377,9 @@ bool VulkanIspPipeline::init() {
         ALOGE("vkCreatePipelineLayout failed: %d", r);
         destroy(); return false;
     }
-    ALOGD("INIT: pipeline layout OK (handle=%p)", mPipeLayout);
+    ALOGD("INIT: pipeline layout OK (handle=0x%llx)", (unsigned long long)mPipeLayout);
+    ALOGD("INIT: device=%p shader=0x%llx descLayout=0x%llx pipeLayout=0x%llx",
+          mDevice, (unsigned long long)mShader, (unsigned long long)mDescLayout, (unsigned long long)mPipeLayout);
 
     /* Compute pipeline */
     VkComputePipelineCreateInfo cpci = {};
