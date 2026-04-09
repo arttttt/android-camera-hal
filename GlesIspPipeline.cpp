@@ -46,7 +46,7 @@ void GlesIspPipeline::initGamma() {
 }
 
 static const char *kComputeShaderSrc = R"(#version 310 es
-layout(local_size_x = 16, local_size_y = 16) in;
+layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(binding = 0) uniform highp usampler2D inTex;
 layout(rgba8, binding = 1) writeonly uniform highp image2D outImg;
@@ -300,7 +300,7 @@ void GlesIspPipeline::dispatchCompute(const uint8_t *src, unsigned width, unsign
     glBindTexture(GL_TEXTURE_2D, mInTex);
     glBindImageTexture(1, mOutTex, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, mParamSSBO);
-    glDispatchCompute((width + 15) / 16, (height + 15) / 16, 1);
+    glDispatchCompute((width + 7) / 8, (height + 7) / 8, 1);
     glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 }
 
@@ -438,7 +438,7 @@ bool GlesIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
                       GL_COLOR_BUFFER_BIT, GL_NEAREST);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    glFinish(); /* ensure GPU completes before buffer returns to framework */
+    glFlush(); /* submit commands — gralloc SW_READ lock in Camera.cpp syncs GPU */
     int64_t t2 = nowMs();
 
     ALOGD("GLES gralloc: compute=%lld blit=%lldms total=%lld", t1 - t0, t2 - t1, t2 - t0);
