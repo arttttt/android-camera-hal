@@ -353,6 +353,7 @@ bool VulkanIspPipeline::init() {
     ALOGD("DMA-BUF import: %s", mDmabufSupported ? "enabled" : "disabled (memcpy path)");
 
     /* Shader module */
+    ALOGD("INIT: creating shader module (size=%zu)", (size_t)bayer_isp_spv_len);
     VkShaderModuleCreateInfo smi = {};
     smi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     smi.codeSize = bayer_isp_spv_len;
@@ -363,6 +364,7 @@ bool VulkanIspPipeline::init() {
         destroy();
         return false;
     }
+    ALOGD("INIT: shader module OK");
 
     /* Descriptor set layout: 3 storage buffers (input, output, params) */
     VkDescriptorSetLayoutBinding bindings[3] = {};
@@ -377,14 +379,18 @@ bool VulkanIspPipeline::init() {
     dslci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     dslci.bindingCount = 3;
     dslci.pBindings = bindings;
+    ALOGD("INIT: creating descriptor set layout");
     vkCreateDescriptorSetLayout(mDevice, &dslci, NULL, &mDescLayout);
+    ALOGD("INIT: descriptor set layout OK");
 
     /* Pipeline layout */
     VkPipelineLayoutCreateInfo plci = {};
     plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     plci.setLayoutCount = 1;
     plci.pSetLayouts = &mDescLayout;
+    ALOGD("INIT: creating pipeline layout");
     vkCreatePipelineLayout(mDevice, &plci, NULL, &mPipeLayout);
+    ALOGD("INIT: pipeline layout OK");
 
     /* Compute pipeline */
     VkComputePipelineCreateInfo cpci = {};
@@ -395,6 +401,7 @@ bool VulkanIspPipeline::init() {
     cpci.stage.pName = "main";
     cpci.layout = mPipeLayout;
 
+    ALOGD("INIT: creating compute pipeline");
     if (vkCreateComputePipelines(mDevice, VK_NULL_HANDLE, 1, &cpci, NULL, &mPipeline) != VK_SUCCESS) {
         ALOGE("vkCreateComputePipelines failed");
         destroy();
