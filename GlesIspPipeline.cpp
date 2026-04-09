@@ -111,8 +111,7 @@ GlesIspPipeline::GlesIspPipeline()
     : mReady(false), mBufWidth(0), mBufHeight(0)
     , mDisplay(EGL_NO_DISPLAY), mContext(EGL_NO_CONTEXT), mSurface(EGL_NO_SURFACE)
     , mProgram(0), mInTex(0), mParamSSBO(0), mOutTex(0), mFbo(0)
-    , mPboIdx(0), mInSize(0), mOutSize(0), mIs16bit(false)
-    { mPbo[0] = mPbo[1] = 0; }
+    , mInSize(0), mIs16bit(false) {}
 
 GlesIspPipeline::~GlesIspPipeline() { destroy(); }
 
@@ -225,7 +224,6 @@ bool GlesIspPipeline::process(const uint8_t *src, uint8_t *dst,
         if (mInTex) glDeleteTextures(1, &mInTex);
         if (mOutTex) glDeleteTextures(1, &mOutTex);
         if (mFbo) glDeleteFramebuffers(1, &mFbo);
-        if (mPbo[0]) glDeleteBuffers(2, mPbo);
 
         /* Input as texture — uses texture cache for spatial reads in demosaic */
         glGenTextures(1, &mInTex);
@@ -252,16 +250,7 @@ bool GlesIspPipeline::process(const uint8_t *src, uint8_t *dst,
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        /* PBOs for async readback (ping-pong) */
-        glGenBuffers(2, mPbo);
-        for (int i = 0; i < 2; i++) {
-            glBindBuffer(GL_PIXEL_PACK_BUFFER, mPbo[i]);
-            glBufferData(GL_PIXEL_PACK_BUFFER, outSize, NULL, GL_STREAM_READ);
-        }
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-        mPboIdx = 0;
-
-        mInSize = inSize; mOutSize = outSize; mIs16bit = is16;
+        mInSize = inSize; mIs16bit = is16;
         mBufWidth = width; mBufHeight = height;
     }
 
@@ -318,36 +307,15 @@ bool GlesIspPipeline::process(const uint8_t *src, uint8_t *dst,
 
     glDispatchCompute((width + 15) / 16, (height + 15) / 16, 1);
     glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-
-    /* Async readback: start DMA into current PBO (returns immediately) */
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, mPbo[mPboIdx]);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, mFbo);
-    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, 0);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     int64_t t2 = nowMs();
 
-    /* Map previous PBO — DMA has been running since last frame */
-    int prevIdx = 1 - mPboIdx;
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, mPbo[prevIdx]);
-    void *mapped = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, mOutSize, GL_MAP_READ_BIT);
-    if (mapped) {
-        memcpy(dst, mapped, mOutSize);
-        glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
-    } else {
-        /* First frame or error — sync fallback */
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, mPbo[mPboIdx]);
-        mapped = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, mOutSize, GL_MAP_READ_BIT);
-        if (mapped) {
-            memcpy(dst, mapped, mOutSize);
-            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
-        }
-    }
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    /* Read back via FBO + glReadPixels (uses tiled memory + DMA path) */
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, mFbo);
+    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, dst);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     int64_t t3 = nowMs();
 
-    mPboIdx = prevIdx;
-
-    ALOGD("GLES: upload=%lld dispatch=%lld readback=%lldms", t1 - t0, t2 - t1, t3 - t2);
+    ALOGD("GLES: upload=%lld gpu=%lld readback=%lldms", t1 - t0, t2 - t1, t3 - t2);
 
     /* AWB from raw input */
     if (mEnabled) {
@@ -396,7 +364,6 @@ void GlesIspPipeline::destroy() {
         eglMakeCurrent(mDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, mContext);
         if (mInTex) { glDeleteTextures(1, &mInTex); mInTex = 0; }
         if (mParamSSBO) { glDeleteBuffers(1, &mParamSSBO); mParamSSBO = 0; }
-        if (mPbo[0]) { glDeleteBuffers(2, mPbo); mPbo[0] = mPbo[1] = 0; }
         if (mFbo) { glDeleteFramebuffers(1, &mFbo); mFbo = 0; }
         if (mOutTex) { glDeleteTextures(1, &mOutTex); mOutTex = 0; }
         if (mProgram) { glDeleteProgram(mProgram); mProgram = 0; }
