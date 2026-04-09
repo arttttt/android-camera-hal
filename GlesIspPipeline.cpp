@@ -386,8 +386,11 @@ bool GlesIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
     if (!ensureInput(srcW, srcH, is16))
         return false;
 
-    /* Import gralloc buffer as EGLImage → texture → FBO (cached) */
-    if (mGrallocHandle != nativeBuffer) {
+    /* Import gralloc buffer as EGLImage → texture → FBO
+     * Cache by ANativeWindowBuffer->handle — buffer pool rotates 3-4 handles */
+    ANativeWindowBuffer *anb = (ANativeWindowBuffer *)nativeBuffer;
+    void *cacheKey = (void *)anb->handle;
+    if (mGrallocHandle != cacheKey) {
         if (mGrallocImage != EGL_NO_IMAGE_KHR)
             eglDestroyImageKHR_fn(mDisplay, mGrallocImage);
         if (mGrallocFbo) { glDeleteFramebuffers(1, &mGrallocFbo); mGrallocFbo = 0; }
@@ -420,7 +423,7 @@ bool GlesIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
         }
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        mGrallocHandle = nativeBuffer;
+        mGrallocHandle = cacheKey;
         ALOGD("Gralloc buffer imported as EGLImage OK (%ux%u)", dstW, dstH);
     }
 

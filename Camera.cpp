@@ -897,21 +897,21 @@ skip_focus:
                             if (mIsp->processToGralloc(frame->buf, gb->getNativeBuffer(),
                                                         res.width, res.height, streamW, streamH,
                                                         frame->pixFmt)) {
-                                /* Success — buffer already written by GPU, skip zoom/copy */
-                                rgbaBuffer = buf; /* mark as done */
-                                /* Re-lock so unlock below doesn't fail */
+                                /* Success — buffer written by GPU */
+                                /* Re-lock so unlock below works, set rgbaBuffer=buf to skip copy */
                                 const Rect rect((int)streamW, (int)streamH);
                                 GraphicBufferMapper::get().lock(*srcBuf.buffer,
                                     GRALLOC_USAGE_SW_WRITE_OFTEN, rect, (void **)&buf);
-                                break; /* skip zoom/copy section */
+                                rgbaBuffer = buf;
+                            } else {
+                                /* Failed — re-lock and fall back to CPU readback */
+                                const Rect rect2((int)streamW, (int)streamH);
+                                GraphicBufferMapper::get().lock(*srcBuf.buffer,
+                                    GRALLOC_USAGE_SW_WRITE_OFTEN, rect2, (void **)&buf);
+                                mIsp->processFromDmabuf(frame->dmabufFd, frame->buf, buf,
+                                                         res.width, res.height, frame->pixFmt);
+                                rgbaBuffer = buf;
                             }
-                            /* Failed — re-lock and fall back to CPU readback */
-                            const Rect rect((int)streamW, (int)streamH);
-                            GraphicBufferMapper::get().lock(*srcBuf.buffer,
-                                GRALLOC_USAGE_SW_WRITE_OFTEN, rect, (void **)&buf);
-                            mIsp->processFromDmabuf(frame->dmabufFd, frame->buf, buf,
-                                                     res.width, res.height, frame->pixFmt);
-                            rgbaBuffer = buf;
                         } else {
                             /* Zoom or size mismatch — CPU readback path */
                             uint8_t *convDst = needZoom ? mRgbaTemp : buf;
