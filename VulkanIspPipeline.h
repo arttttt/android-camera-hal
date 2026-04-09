@@ -33,6 +33,7 @@ private:
     bool importDmabuf(int fd, VkDeviceSize size, VkBuffer *buf, VkDeviceMemory *mem);
 
     bool mReady;
+    bool mDmabufSupported;
     unsigned mBufWidth, mBufHeight;
 
     VkInstance mInstance;
@@ -68,6 +69,9 @@ private:
         int32_t ccm[9];
         uint32_t gammaLut[64]; /* 256 entries packed 4 per uint */
     };
+
+    void fillParams(IspParams *p, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
+    void updateAwb(const uint8_t *raw, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
 
     static uint8_t sGammaLut[256];
     static bool sGammaReady;

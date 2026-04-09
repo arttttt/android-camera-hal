@@ -1,6 +1,7 @@
 #define LOG_TAG "Cam-VulkanISP"
 #include <utils/Log.h>
 #include <cstring>
+#include <unistd.h>
 #include <linux/videodev2.h>
 #include <math.h>
 #include <time.h>
@@ -45,7 +46,7 @@ void VulkanIspPipeline::initGamma() {
 }
 
 VulkanIspPipeline::VulkanIspPipeline()
-    : mReady(false), mBufWidth(0), mBufHeight(0)
+    : mReady(false), mDmabufSupported(false), mBufWidth(0), mBufHeight(0)
     , mInstance(VK_NULL_HANDLE), mPhysDev(VK_NULL_HANDLE)
     , mDevice(VK_NULL_HANDLE), mQueue(VK_NULL_HANDLE)
     , mShader(VK_NULL_HANDLE), mDescLayout(VK_NULL_HANDLE)
@@ -60,49 +61,73 @@ VulkanIspPipeline::VulkanIspPipeline()
 
 VulkanIspPipeline::~VulkanIspPipeline() { destroy(); }
 
-bool VulkanIspPipeline::importDmabuf(int fd, VkDeviceSize size,
-                                      VkBuffer *buf, VkDeviceMemory *mem) {
-    /* Create buffer */
-    VkBufferCreateInfo bci = {};
-    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bci.size = size;
-    bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+/* --- helpers --- */
 
-    if (vkCreateBuffer(mDevice, &bci, NULL, buf) != VK_SUCCESS)
-        return false;
+void VulkanIspPipeline::fillParams(IspParams *p, unsigned w, unsigned h,
+                                    bool is16, uint32_t pixFmt) {
+    memset(p, 0, sizeof(IspParams));
+    p->width = w; p->height = h;
+    p->is16bit = is16 ? 1 : 0;
+    p->doIsp = mEnabled ? 1 : 0;
+    p->wbR = mWbR; p->wbG = mWbG; p->wbB = mWbB;
 
-    VkMemoryRequirements req;
-    vkGetBufferMemoryRequirements(mDevice, *buf, &req);
-
-    /* Import fd as external memory */
-    VkImportMemoryFdInfoKHR importInfo = {};
-    importInfo.sType = (VkStructureType)VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
-    importInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR;
-    importInfo.fd = dup(fd);  /* Vulkan takes ownership, dup to keep original */
-
-    VkMemoryAllocateInfo ai = {};
-    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    ai.pNext = &importInfo;
-    ai.allocationSize = req.size;
-    ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    /* Fallback to any type */
-    if (ai.memoryTypeIndex == UINT32_MAX)
-        ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits, 0);
-
-    if (vkAllocateMemory(mDevice, &ai, NULL, mem) != VK_SUCCESS) {
-        ALOGW("importDmabuf: vkAllocateMemory failed");
-        close(importInfo.fd);
-        vkDestroyBuffer(mDevice, *buf, NULL);
-        *buf = VK_NULL_HANDLE;
-        return false;
+    switch (pixFmt) {
+        case V4L2_PIX_FMT_SRGGB10: case V4L2_PIX_FMT_SRGGB8: p->bayerPhase = 0; break;
+        case V4L2_PIX_FMT_SGRBG10: case V4L2_PIX_FMT_SGRBG8: p->bayerPhase = 1; break;
+        case V4L2_PIX_FMT_SGBRG10: case V4L2_PIX_FMT_SGBRG8: p->bayerPhase = 2; break;
+        case V4L2_PIX_FMT_SBGGR10: case V4L2_PIX_FMT_SBGGR8: p->bayerPhase = 3; break;
+        default: p->bayerPhase = 0; break;
     }
 
-    vkBindBufferMemory(mDevice, *buf, *mem, 0);
-    ALOGD("importDmabuf: fd=%d size=%zu OK", fd, (size_t)size);
-    return true;
+    if (mCcm) {
+        for (int i = 0; i < 9; i++) p->ccm[i] = mCcm[i];
+    } else {
+        p->ccm[0] = 1024; p->ccm[4] = 1024; p->ccm[8] = 1024;
+    }
+
+    for (int i = 0; i < 64; i++) {
+        p->gammaLut[i] = sGammaLut[i*4] |
+                         (sGammaLut[i*4+1] << 8) |
+                         (sGammaLut[i*4+2] << 16) |
+                         (sGammaLut[i*4+3] << 24);
+    }
 }
+
+void VulkanIspPipeline::updateAwb(const uint8_t *raw, unsigned w, unsigned h,
+                                    bool is16, uint32_t pixFmt) {
+    if (!mEnabled || !raw) return;
+
+    uint64_t sR = 0, sG = 0, sB = 0, nR = 0, nG = 0, nB = 0;
+    unsigned rX = (pixFmt == V4L2_PIX_FMT_SGRBG10 || pixFmt == V4L2_PIX_FMT_SGRBG8 ||
+                   pixFmt == V4L2_PIX_FMT_SBGGR10 || pixFmt == V4L2_PIX_FMT_SBGGR8) ? 1 : 0;
+    unsigned rY = (pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SGBRG8 ||
+                   pixFmt == V4L2_PIX_FMT_SBGGR10 || pixFmt == V4L2_PIX_FMT_SBGGR8) ? 1 : 0;
+
+    for (unsigned y = 0; y < h; y += 7) {
+        for (unsigned x = 0; x < w; x += 7) {
+            unsigned val = is16 ? ((const uint16_t *)raw)[y * w + x] >> 2
+                                : raw[y * w + x];
+            unsigned px = x & 1, py = y & 1;
+            if (py == rY && px == rX) { sR += val; nR++; }
+            else if (py != rY && px != rX) { sB += val; nB++; }
+            else { sG += val; nG++; }
+        }
+    }
+
+    if (nR && nG && nB) {
+        uint64_t avgR = sR / nR, avgG = sG / nG, avgB = sB / nB;
+        uint64_t avg = (avgR + avgG + avgB) / 3;
+        unsigned r = avgR ? (unsigned)((avg * 256ULL) / avgR) : 256;
+        unsigned g = avgG ? (unsigned)((avg * 256ULL) / avgG) : 256;
+        unsigned b = avgB ? (unsigned)((avg * 256ULL) / avgB) : 256;
+        if (r < 128) r = 128; if (r > 1024) r = 1024;
+        if (g < 128) g = 128; if (g > 1024) g = 1024;
+        if (b < 128) b = 128; if (b > 1024) b = 1024;
+        mWbR = r; mWbG = g; mWbB = b;
+    }
+}
+
+/* --- Vulkan buffer management --- */
 
 uint32_t VulkanIspPipeline::findMemoryType(uint32_t filter, VkMemoryPropertyFlags props) {
     VkPhysicalDeviceMemoryProperties memProps;
@@ -131,7 +156,7 @@ bool VulkanIspPipeline::createBuffer(VkBuffer *buf, VkDeviceMemory *mem,
     VkMemoryAllocateInfo ai = {};
     ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     ai.allocationSize = req.size;
-    /* Prefer cached for fast memcpy, fallback to coherent */
+    /* Prefer cached for fast CPU memcpy, fallback to coherent */
     ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
     if (ai.memoryTypeIndex == UINT32_MAX)
@@ -153,6 +178,50 @@ void VulkanIspPipeline::destroyBuffer(VkBuffer buf, VkDeviceMemory mem) {
     if (buf != VK_NULL_HANDLE) vkDestroyBuffer(mDevice, buf, NULL);
     if (mem != VK_NULL_HANDLE) vkFreeMemory(mDevice, mem, NULL);
 }
+
+bool VulkanIspPipeline::importDmabuf(int fd, VkDeviceSize size,
+                                      VkBuffer *buf, VkDeviceMemory *mem) {
+    VkBufferCreateInfo bci = {};
+    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bci.size = size;
+    bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateBuffer(mDevice, &bci, NULL, buf) != VK_SUCCESS)
+        return false;
+
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(mDevice, *buf, &req);
+
+    /* Import fd — OPAQUE_FD on Tegra goes through nvmap, same as V4L2 dmabuf */
+    VkImportMemoryFdInfoKHR importInfo = {};
+    importInfo.sType = (VkStructureType)VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
+    importInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR;
+    importInfo.fd = dup(fd);  /* Vulkan takes ownership */
+
+    VkMemoryAllocateInfo ai = {};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.pNext = &importInfo;
+    ai.allocationSize = req.size;
+    ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (ai.memoryTypeIndex == UINT32_MAX)
+        ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits, 0);
+
+    if (vkAllocateMemory(mDevice, &ai, NULL, mem) != VK_SUCCESS) {
+        ALOGW("importDmabuf: vkAllocateMemory failed");
+        close(importInfo.fd);
+        vkDestroyBuffer(mDevice, *buf, NULL);
+        *buf = VK_NULL_HANDLE;
+        return false;
+    }
+
+    vkBindBufferMemory(mDevice, *buf, *mem, 0);
+    ALOGD("importDmabuf: fd=%d size=%zu OK", fd, (size_t)size);
+    return true;
+}
+
+/* --- init / destroy --- */
 
 bool VulkanIspPipeline::init() {
     if (mReady) return true;
@@ -180,16 +249,23 @@ bool VulkanIspPipeline::init() {
         return false;
     }
 
-    /* Log device extensions */
+    /* Enumerate extensions — check for external memory support */
+    bool hasExtMem = false, hasExtMemFd = false;
     {
         uint32_t extCount = 0;
         vkEnumerateDeviceExtensionProperties(mPhysDev, NULL, &extCount, NULL);
         VkExtensionProperties *exts = new VkExtensionProperties[extCount];
         vkEnumerateDeviceExtensionProperties(mPhysDev, NULL, &extCount, exts);
-        for (uint32_t i = 0; i < extCount; i++)
+        for (uint32_t i = 0; i < extCount; i++) {
             ALOGD("VK ext: %s", exts[i].extensionName);
+            if (!strcmp(exts[i].extensionName, "VK_KHR_external_memory"))
+                hasExtMem = true;
+            if (!strcmp(exts[i].extensionName, "VK_KHR_external_memory_fd"))
+                hasExtMemFd = true;
+        }
         delete[] exts;
     }
+    mDmabufSupported = hasExtMem && hasExtMemFd;
 
     /* Find compute queue */
     uint32_t qfCount = 0;
@@ -211,7 +287,7 @@ bool VulkanIspPipeline::init() {
         return false;
     }
 
-    /* Logical device */
+    /* Logical device — enable external memory extensions if available */
     float qPriority = 1.0f;
     VkDeviceQueueCreateInfo qci = {};
     qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
@@ -219,19 +295,34 @@ bool VulkanIspPipeline::init() {
     qci.queueCount = 1;
     qci.pQueuePriorities = &qPriority;
 
+    const char *extNames[] = {
+        "VK_KHR_external_memory",
+        "VK_KHR_external_memory_fd"
+    };
+
     VkDeviceCreateInfo dci = {};
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
-    /* Don't request extensions — wrapper driver may crash.
-     * external_memory_fd available via vkGetDeviceProcAddr if supported. */
+    if (mDmabufSupported) {
+        dci.enabledExtensionCount = 2;
+        dci.ppEnabledExtensionNames = extNames;
+    }
 
     if (vkCreateDevice(mPhysDev, &dci, NULL, &mDevice) != VK_SUCCESS) {
-        ALOGE("vkCreateDevice failed");
-        destroy();
-        return false;
+        ALOGE("vkCreateDevice failed (trying without extensions)");
+        /* Fallback: create without extensions */
+        mDmabufSupported = false;
+        dci.enabledExtensionCount = 0;
+        dci.ppEnabledExtensionNames = NULL;
+        if (vkCreateDevice(mPhysDev, &dci, NULL, &mDevice) != VK_SUCCESS) {
+            ALOGE("vkCreateDevice failed");
+            destroy();
+            return false;
+        }
     }
     vkGetDeviceQueue(mDevice, mQueueFamily, 0, &mQueue);
+    ALOGD("DMA-BUF import: %s", mDmabufSupported ? "enabled" : "disabled (memcpy path)");
 
     /* Shader module */
     VkShaderModuleCreateInfo smi = {};
@@ -245,7 +336,7 @@ bool VulkanIspPipeline::init() {
         return false;
     }
 
-    /* Descriptor set layout: 3 bindings (input, output, params) */
+    /* Descriptor set layout: 3 storage buffers (input, output, params) */
     VkDescriptorSetLayoutBinding bindings[3] = {};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -283,17 +374,15 @@ bool VulkanIspPipeline::init() {
     }
 
     /* Descriptor pool */
-    VkDescriptorPoolSize poolSizes[2] = {};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[0].descriptorCount = 2;
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[1].descriptorCount = 1;
+    VkDescriptorPoolSize poolSize = {};
+    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSize.descriptorCount = 3;
 
     VkDescriptorPoolCreateInfo dpci = {};
     dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     dpci.maxSets = 1;
-    dpci.poolSizeCount = 2;
-    dpci.pPoolSizes = poolSizes;
+    dpci.poolSizeCount = 1;
+    dpci.pPoolSizes = &poolSize;
     vkCreateDescriptorPool(mDevice, &dpci, NULL, &mDescPool);
 
     /* Allocate descriptor set */
@@ -318,13 +407,14 @@ bool VulkanIspPipeline::init() {
     cbai.commandBufferCount = 1;
     vkAllocateCommandBuffers(mDevice, &cbai, &mCmdBuf);
 
-    /* Params buffer (constant size) */
+    /* Params buffer — persistent map */
     if (!createBuffer(&mParamBuf, &mParamMem, sizeof(IspParams),
                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
         ALOGE("Failed to create params buffer");
         destroy();
         return false;
     }
+    vkMapMemory(mDevice, mParamMem, 0, sizeof(IspParams), 0, &mParamMap);
 
     initGamma();
 
@@ -333,32 +423,41 @@ bool VulkanIspPipeline::init() {
     return true;
 }
 
+/* --- per-frame buffer management --- */
+
 bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16bit) {
     size_t inSize = width * height * (is16bit ? 2 : 1);
     size_t outSize = width * height * 4;
 
-    if (mInSize >= inSize && mOutSize >= outSize &&
-        mBufWidth == width && mBufHeight == height)
-        return true;
+    bool recreate = (mInSize < inSize || mOutSize < outSize ||
+                     mBufWidth != width || mBufHeight != height);
 
-    /* Recreate */
-    destroyBuffer(mInBuf, mInMem); mInBuf = VK_NULL_HANDLE; mInMem = VK_NULL_HANDLE;
-    destroyBuffer(mOutBuf, mOutMem); mOutBuf = VK_NULL_HANDLE; mOutMem = VK_NULL_HANDLE;
+    if (recreate) {
+        /* Unmap before destroy */
+        if (mInMap) { vkUnmapMemory(mDevice, mInMem); mInMap = NULL; }
+        if (mOutMap) { vkUnmapMemory(mDevice, mOutMem); mOutMap = NULL; }
 
-    if (!createBuffer(&mInBuf, &mInMem, inSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
-        !createBuffer(&mOutBuf, &mOutMem, outSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
-        ALOGE("Failed to allocate Vulkan buffers %ux%u", width, height);
-        return false;
+        destroyBuffer(mInBuf, mInMem); mInBuf = VK_NULL_HANDLE; mInMem = VK_NULL_HANDLE;
+        destroyBuffer(mOutBuf, mOutMem); mOutBuf = VK_NULL_HANDLE; mOutMem = VK_NULL_HANDLE;
+
+        if (!createBuffer(&mInBuf, &mInMem, inSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            !createBuffer(&mOutBuf, &mOutMem, outSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
+            ALOGE("Failed to allocate Vulkan buffers %ux%u", width, height);
+            return false;
+        }
+
+        /* Persistent map */
+        vkMapMemory(mDevice, mInMem, 0, inSize, 0, &mInMap);
+        vkMapMemory(mDevice, mOutMem, 0, outSize, 0, &mOutMap);
+
+        mInSize = inSize; mOutSize = outSize;
+        mBufWidth = width; mBufHeight = height;
     }
 
-
-    mInSize = inSize; mOutSize = outSize;
-    mBufWidth = width; mBufHeight = height;
-
-    /* Update descriptor set */
+    /* Always update descriptors — binding 0 may have been overridden by dmabuf path */
     VkDescriptorBufferInfo bufInfos[3] = {};
-    bufInfos[0].buffer = mInBuf;  bufInfos[0].range = inSize;
-    bufInfos[1].buffer = mOutBuf; bufInfos[1].range = outSize;
+    bufInfos[0].buffer = mInBuf;  bufInfos[0].range = mInSize;
+    bufInfos[1].buffer = mOutBuf; bufInfos[1].range = mOutSize;
     bufInfos[2].buffer = mParamBuf; bufInfos[2].range = sizeof(IspParams);
 
     VkWriteDescriptorSet writes[3] = {};
@@ -375,6 +474,8 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
     return true;
 }
 
+/* --- main processing paths --- */
+
 bool VulkanIspPipeline::process(const uint8_t *src, uint8_t *dst,
                                  unsigned width, unsigned height,
                                  uint32_t pixFmt) {
@@ -388,48 +489,25 @@ bool VulkanIspPipeline::process(const uint8_t *src, uint8_t *dst,
 
     int64_t t0 = nowMs();
 
-    /* Upload input */
-    void *mapped;
-    vkMapMemory(mDevice, mInMem, 0, mInSize, 0, &mapped);
-    memcpy(mapped, src, mInSize);
-    vkUnmapMemory(mDevice, mInMem);
+    /* Upload via persistent map */
+    memcpy(mInMap, src, mInSize);
+
+    /* Fill params via persistent map */
+    IspParams params;
+    fillParams(&params, width, height, is16, pixFmt);
+    memcpy(mParamMap, &params, sizeof(IspParams));
+
+    /* Flush CPU writes to device (no-op on coherent memory) */
+    VkMappedMemoryRange flushRanges[2] = {};
+    flushRanges[0].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    flushRanges[0].memory = mInMem;
+    flushRanges[0].size = VK_WHOLE_SIZE;
+    flushRanges[1].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    flushRanges[1].memory = mParamMem;
+    flushRanges[1].size = VK_WHOLE_SIZE;
+    vkFlushMappedMemoryRanges(mDevice, 2, flushRanges);
+
     int64_t t1 = nowMs();
-
-    /* Fill params */
-    IspParams params = {};
-    params.width = width;
-    params.height = height;
-    params.is16bit = is16 ? 1 : 0;
-    params.doIsp = mEnabled ? 1 : 0;
-    params.wbR = mWbR; params.wbG = mWbG; params.wbB = mWbB;
-
-    /* Bayer phase */
-    switch (pixFmt) {
-        case V4L2_PIX_FMT_SRGGB10: case V4L2_PIX_FMT_SRGGB8: params.bayerPhase = 0; break;
-        case V4L2_PIX_FMT_SGRBG10: case V4L2_PIX_FMT_SGRBG8: params.bayerPhase = 1; break;
-        case V4L2_PIX_FMT_SGBRG10: case V4L2_PIX_FMT_SGBRG8: params.bayerPhase = 2; break;
-        case V4L2_PIX_FMT_SBGGR10: case V4L2_PIX_FMT_SBGGR8: params.bayerPhase = 3; break;
-        default: params.bayerPhase = 0; break;
-    }
-
-    if (mCcm) {
-        for (int i = 0; i < 9; i++) params.ccm[i] = mCcm[i];
-    } else {
-        /* Identity CCM */
-        params.ccm[0] = 1024; params.ccm[4] = 1024; params.ccm[8] = 1024;
-    }
-
-    /* Pack gamma LUT: 4 bytes per uint32 */
-    for (int i = 0; i < 64; i++) {
-        params.gammaLut[i] = sGammaLut[i*4] |
-                             (sGammaLut[i*4+1] << 8) |
-                             (sGammaLut[i*4+2] << 16) |
-                             (sGammaLut[i*4+3] << 24);
-    }
-
-    vkMapMemory(mDevice, mParamMem, 0, sizeof(IspParams), 0, &mapped);
-    memcpy(mapped, &params, sizeof(IspParams));
-    vkUnmapMemory(mDevice, mParamMem);
 
     /* Record command buffer */
     VkCommandBufferBeginInfo beginInfo = {};
@@ -450,81 +528,41 @@ bool VulkanIspPipeline::process(const uint8_t *src, uint8_t *dst,
     si.commandBufferCount = 1;
     si.pCommandBuffers = &mCmdBuf;
 
-    int64_t t2 = nowMs();
     vkQueueSubmit(mQueue, 1, &si, VK_NULL_HANDLE);
     vkQueueWaitIdle(mQueue);
+    int64_t t2 = nowMs();
+
+    /* Invalidate output for CPU read (no-op on coherent memory) */
+    VkMappedMemoryRange outRange = {};
+    outRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    outRange.memory = mOutMem;
+    outRange.size = VK_WHOLE_SIZE;
+    vkInvalidateMappedMemoryRanges(mDevice, 1, &outRange);
+
+    /* Readback via persistent map */
+    memcpy(dst, mOutMap, mOutSize);
     int64_t t3 = nowMs();
 
-    /* Read back output */
-    vkMapMemory(mDevice, mOutMem, 0, mOutSize, 0, &mapped);
-    memcpy(dst, mapped, mOutSize);
-    vkUnmapMemory(mDevice, mOutMem);
-    int64_t t4 = nowMs();
+    ALOGD("VK: upload=%lld gpu=%lld readback=%lldms", t1 - t0, t2 - t1, t3 - t2);
 
-    ALOGD("VK: upload=%lld gpu=%lld readback=%lldms", t1-t0, t3-t2, t4-t3);
-
-    /* Update AWB from raw Bayer INPUT (pre-CCM, pre-gamma) */
-    if (mEnabled) {
-        uint64_t sR = 0, sG = 0, sB = 0, nR = 0, nG = 0, nB = 0;
-        unsigned rX = pixFmt == V4L2_PIX_FMT_SGRBG10 || pixFmt == V4L2_PIX_FMT_SGRBG8 ? 1 :
-                      pixFmt == V4L2_PIX_FMT_SBGGR10 || pixFmt == V4L2_PIX_FMT_SBGGR8 ? 1 : 0;
-        unsigned rY = pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SGBRG8 ? 1 :
-                      pixFmt == V4L2_PIX_FMT_SBGGR10 || pixFmt == V4L2_PIX_FMT_SBGGR8 ? 1 : 0;
-
-        /* Sample every 7th pixel — odd step covers all Bayer phases */
-        for (unsigned y = 0; y < height; y += 7) {
-            for (unsigned x = 0; x < width; x += 7) {
-                unsigned val;
-                if (is16)
-                    val = ((const uint16_t *)src)[y * width + x] >> 2;
-                else
-                    val = src[y * width + x];
-
-                unsigned px = x & 1, py = y & 1;
-                if (py == rY && px == rX) { sR += val; nR++; }
-                else if (py != rY && px != rX) { sB += val; nB++; }
-                else { sG += val; nG++; }
-            }
-        }
-
-        if (nR && nG && nB) {
-            uint64_t avgR = sR / nR, avgG = sG / nG, avgB = sB / nB;
-            uint64_t avg = (avgR + avgG + avgB) / 3;
-            unsigned r = avgR ? (unsigned)((avg * 256ULL) / avgR) : 256;
-            unsigned g = avgG ? (unsigned)((avg * 256ULL) / avgG) : 256;
-            unsigned b = avgB ? (unsigned)((avg * 256ULL) / avgB) : 256;
-            if (r < 128) r = 128; if (r > 1024) r = 1024;
-            if (g < 128) g = 128; if (g > 1024) g = 1024;
-            if (b < 128) b = 128; if (b > 1024) b = 1024;
-            mWbR = r; mWbG = g; mWbB = b;
-        }
-    }
-
+    updateAwb(src, width, height, is16, pixFmt);
     return true;
 }
 
 bool VulkanIspPipeline::processFromDmabuf(int dmabufFd, const uint8_t *cpuFallback,
                                            uint8_t *dst, unsigned width, unsigned height,
                                            uint32_t pixFmt) {
-    if (!mReady || dmabufFd < 0)
+    /* Fall through to memcpy path if dmabuf import not available */
+    if (!mReady || !mDmabufSupported || dmabufFd < 0)
         return process(cpuFallback, dst, width, height, pixFmt);
 
     bool is16 = (pixFmt == V4L2_PIX_FMT_SRGGB10 || pixFmt == V4L2_PIX_FMT_SGRBG10 ||
                  pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SBGGR10);
     size_t inSize = width * height * (is16 ? 2 : 1);
-    size_t outSize = width * height * 4;
 
-    /* Ensure output buffer */
-    if (mOutSize < outSize || mBufWidth != width || mBufHeight != height) {
-        if (mOutMap) { vkUnmapMemory(mDevice, mOutMem); mOutMap = NULL; }
-        destroyBuffer(mOutBuf, mOutMem);
-        mOutBuf = VK_NULL_HANDLE; mOutMem = VK_NULL_HANDLE;
-        if (!createBuffer(&mOutBuf, &mOutMem, outSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))
-            return process(cpuFallback, dst, width, height, pixFmt);
-        vkMapMemory(mDevice, mOutMem, 0, outSize, 0, &mOutMap);
-        mOutSize = outSize;
-        mBufWidth = width; mBufHeight = height;
-    }
+    /* Ensure output buffer + all descriptors */
+    if (!ensureBuffers(width, height, is16))
+        return process(cpuFallback, dst, width, height, pixFmt);
 
     /* Import dmabuf as input — reimport if fd changed */
     if (mDmaFd != dmabufFd) {
@@ -536,45 +574,33 @@ bool VulkanIspPipeline::processFromDmabuf(int dmabufFd, const uint8_t *cpuFallba
             return process(cpuFallback, dst, width, height, pixFmt);
         }
         mDmaFd = dmabufFd;
-
-        /* Update input descriptor to point to dmabuf */
-        VkDescriptorBufferInfo bufInfo = {};
-        bufInfo.buffer = mDmaBuf;
-        bufInfo.range = inSize;
-        VkWriteDescriptorSet w = {};
-        w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        w.dstSet = mDescSet;
-        w.dstBinding = 0;
-        w.descriptorCount = 1;
-        w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        w.pBufferInfo = &bufInfo;
-        vkUpdateDescriptorSets(mDevice, 1, &w, 0, NULL);
     }
+
+    /* Override input descriptor to point to dmabuf */
+    VkDescriptorBufferInfo bufInfo = {};
+    bufInfo.buffer = mDmaBuf;
+    bufInfo.range = inSize;
+    VkWriteDescriptorSet w = {};
+    w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w.dstSet = mDescSet;
+    w.dstBinding = 0;
+    w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    w.pBufferInfo = &bufInfo;
+    vkUpdateDescriptorSets(mDevice, 1, &w, 0, NULL);
 
     int64_t t0 = nowMs();
-    void *mapped;
 
-    /* Fill params (same as process()) */
-    IspParams params = {};
-    params.width = width; params.height = height;
-    params.is16bit = is16 ? 1 : 0;
-    params.doIsp = mEnabled ? 1 : 0;
-    params.wbR = mWbR; params.wbG = mWbG; params.wbB = mWbB;
-    switch (pixFmt) {
-        case V4L2_PIX_FMT_SRGGB10: case V4L2_PIX_FMT_SRGGB8: params.bayerPhase = 0; break;
-        case V4L2_PIX_FMT_SGRBG10: case V4L2_PIX_FMT_SGRBG8: params.bayerPhase = 1; break;
-        case V4L2_PIX_FMT_SGBRG10: case V4L2_PIX_FMT_SGBRG8: params.bayerPhase = 2; break;
-        case V4L2_PIX_FMT_SBGGR10: case V4L2_PIX_FMT_SBGGR8: params.bayerPhase = 3; break;
-        default: params.bayerPhase = 0; break;
-    }
-    if (mCcm) for (int i = 0; i < 9; i++) params.ccm[i] = mCcm[i];
-    else { params.ccm[0] = 1024; params.ccm[4] = 1024; params.ccm[8] = 1024; }
-    for (int i = 0; i < 64; i++)
-        params.gammaLut[i] = sGammaLut[i*4] | (sGammaLut[i*4+1]<<8) |
-                             (sGammaLut[i*4+2]<<16) | (sGammaLut[i*4+3]<<24);
-    vkMapMemory(mDevice, mParamMem, 0, sizeof(IspParams), 0, &mapped);
-    memcpy(mapped, &params, sizeof(IspParams));
-    vkUnmapMemory(mDevice, mParamMem);
+    /* Fill params via persistent map */
+    IspParams params;
+    fillParams(&params, width, height, is16, pixFmt);
+    memcpy(mParamMap, &params, sizeof(IspParams));
+
+    VkMappedMemoryRange paramRange = {};
+    paramRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    paramRange.memory = mParamMem;
+    paramRange.size = VK_WHOLE_SIZE;
+    vkFlushMappedMemoryRanges(mDevice, 1, &paramRange);
 
     int64_t t1 = nowMs();
 
@@ -598,46 +624,23 @@ bool VulkanIspPipeline::processFromDmabuf(int dmabufFd, const uint8_t *cpuFallba
     vkQueueWaitIdle(mQueue);
     int64_t t2 = nowMs();
 
-    /* Readback */
-    VkMappedMemoryRange invRange = {};
-    vkMapMemory(mDevice, mOutMem, 0, mOutSize, 0, &mapped);
-    memcpy(dst, mapped, mOutSize);
-    vkUnmapMemory(mDevice, mOutMem);
+    /* Invalidate + readback via persistent map */
+    VkMappedMemoryRange outRange = {};
+    outRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    outRange.memory = mOutMem;
+    outRange.size = VK_WHOLE_SIZE;
+    vkInvalidateMappedMemoryRanges(mDevice, 1, &outRange);
+
+    memcpy(dst, mOutMap, mOutSize);
     int64_t t3 = nowMs();
 
-    ALOGD("VK DMA: params=%lld gpu=%lld readback=%lldms (upload=0)", t1-t0, t2-t1, t3-t2);
+    ALOGD("VK DMA: params=%lld gpu=%lld readback=%lldms (upload=0)", t1 - t0, t2 - t1, t3 - t2);
 
-    /* AWB from CPU fallback pointer */
-    if (mEnabled && cpuFallback) {
-        uint64_t sR = 0, sG = 0, sB = 0, nR = 0, nG = 0, nB = 0;
-        unsigned rX = (pixFmt == V4L2_PIX_FMT_SGRBG10 || pixFmt == V4L2_PIX_FMT_SGRBG8 ||
-                       pixFmt == V4L2_PIX_FMT_SBGGR10 || pixFmt == V4L2_PIX_FMT_SBGGR8) ? 1 : 0;
-        unsigned rY = (pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SGBRG8 ||
-                       pixFmt == V4L2_PIX_FMT_SBGGR10 || pixFmt == V4L2_PIX_FMT_SBGGR8) ? 1 : 0;
-        for (unsigned y = 0; y < height; y += 7) {
-            for (unsigned x = 0; x < width; x += 7) {
-                unsigned val = is16 ? ((const uint16_t *)cpuFallback)[y*width+x] >> 2
-                                    : cpuFallback[y*width+x];
-                unsigned px = x & 1, py = y & 1;
-                if (py == rY && px == rX) { sR += val; nR++; }
-                else if (py != rY && px != rX) { sB += val; nB++; }
-                else { sG += val; nG++; }
-            }
-        }
-        if (nR && nG && nB) {
-            uint64_t avgR = sR/nR, avgG = sG/nG, avgB = sB/nB;
-            uint64_t avg = (avgR + avgG + avgB) / 3;
-            unsigned r = avgR ? (unsigned)((avg*256ULL)/avgR) : 256;
-            unsigned g = avgG ? (unsigned)((avg*256ULL)/avgG) : 256;
-            unsigned b = avgB ? (unsigned)((avg*256ULL)/avgB) : 256;
-            if (r<128) r=128; if (r>1024) r=1024;
-            if (g<128) g=128; if (g>1024) g=1024;
-            if (b<128) b=128; if (b>1024) b=1024;
-            mWbR = r; mWbG = g; mWbB = b;
-        }
-    }
+    updateAwb(cpuFallback, width, height, is16, pixFmt);
     return true;
 }
+
+/* --- cleanup --- */
 
 void VulkanIspPipeline::destroy() {
     if (!mReady && mDevice == VK_NULL_HANDLE)
@@ -645,6 +648,11 @@ void VulkanIspPipeline::destroy() {
 
     if (mDevice != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(mDevice);
+        /* Unmap persistent maps before destroying memory */
+        if (mInMap) { vkUnmapMemory(mDevice, mInMem); mInMap = NULL; }
+        if (mOutMap) { vkUnmapMemory(mDevice, mOutMem); mOutMap = NULL; }
+        if (mParamMap) { vkUnmapMemory(mDevice, mParamMem); mParamMap = NULL; }
+        /* Destroy buffers */
         destroyBuffer(mInBuf, mInMem);
         destroyBuffer(mOutBuf, mOutMem);
         destroyBuffer(mParamBuf, mParamMem);
