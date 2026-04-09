@@ -57,7 +57,8 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mInMem(VK_NULL_HANDLE), mOutMem(VK_NULL_HANDLE), mParamMem(VK_NULL_HANDLE)
     , mInSize(0), mOutSize(0)
     , mInMap(NULL), mOutMap(NULL), mParamMap(NULL)
-    , mDmaBuf(VK_NULL_HANDLE), mDmaMem(VK_NULL_HANDLE), mDmaFd(-1) {}
+    , mDmaBuf(VK_NULL_HANDLE), mDmaMem(VK_NULL_HANDLE), mDmaFd(-1)
+    , mFence(VK_NULL_HANDLE), mPrevDst(NULL), mPrevPending(false) {}
 
 VulkanIspPipeline::~VulkanIspPipeline() { destroy(); }
 
@@ -536,6 +537,11 @@ bool VulkanIspPipeline::init() {
     vkMapMemory(mDevice, mParamMem, 0, sizeof(IspParams), 0, &mParamMap);
     ALOGD("INIT: params mapped OK");
 
+    /* Fence for double-buffered submit */
+    VkFenceCreateInfo fci = {};
+    fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    vkCreateFence(mDevice, &fci, NULL, &mFence);
+
     initGamma();
 
     mReady = true;
@@ -610,15 +616,30 @@ bool VulkanIspPipeline::process(const uint8_t *src, uint8_t *dst,
 
     int64_t t0 = nowMs();
 
-    /* Upload via persistent map */
+    /* If previous frame is in-flight, wait for it and readback */
+    if (mPrevPending) {
+        vkWaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
+        vkResetFences(mDevice, 1, &mFence);
+
+        VkMappedMemoryRange outRange = {};
+        outRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        outRange.memory = mOutMem;
+        outRange.size = VK_WHOLE_SIZE;
+        vkInvalidateMappedMemoryRanges(mDevice, 1, &outRange);
+
+        memcpy(mPrevDst, mOutMap, mOutSize);
+        mPrevPending = false;
+    }
+
+    int64_t t1 = nowMs();
+
+    /* Upload current frame */
     memcpy(mInMap, src, mInSize);
 
-    /* Fill params via persistent map */
     IspParams params;
     fillParams(&params, width, height, is16, pixFmt);
     memcpy(mParamMap, &params, sizeof(IspParams));
 
-    /* Flush CPU writes to device (no-op on coherent memory) */
     VkMappedMemoryRange flushRanges[2] = {};
     flushRanges[0].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
     flushRanges[0].memory = mInMem;
@@ -628,9 +649,9 @@ bool VulkanIspPipeline::process(const uint8_t *src, uint8_t *dst,
     flushRanges[1].size = VK_WHOLE_SIZE;
     vkFlushMappedMemoryRanges(mDevice, 2, flushRanges);
 
-    int64_t t1 = nowMs();
+    int64_t t2 = nowMs();
 
-    /* Record command buffer */
+    /* Record + submit — don't wait, GPU runs async */
     VkCommandBufferBeginInfo beginInfo = {};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -643,28 +664,38 @@ bool VulkanIspPipeline::process(const uint8_t *src, uint8_t *dst,
     vkCmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
     vkEndCommandBuffer(mCmdBuf);
 
-    /* Submit */
     VkSubmitInfo si = {};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &mCmdBuf;
+    vkQueueSubmit(mQueue, 1, &si, mFence);
 
-    vkQueueSubmit(mQueue, 1, &si, VK_NULL_HANDLE);
-    vkQueueWaitIdle(mQueue);
-    int64_t t2 = nowMs();
+    /* Mark as pending — readback happens at start of NEXT frame */
+    mPrevDst = dst;
+    mPrevPending = true;
 
-    /* Invalidate output for CPU read */
-    VkMappedMemoryRange outRange = {};
-    outRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    outRange.memory = mOutMem;
-    outRange.size = VK_WHOLE_SIZE;
-    vkInvalidateMappedMemoryRanges(mDevice, 1, &outRange);
+    /* First frame: must wait synchronously (no previous result to show) */
+    if (!mPrevPending) {
+        /* This branch only on first ever call — mPrevPending was just set true above.
+         * Handled by the check at top of next call. But first call needs immediate result. */
+    }
+    /* Actually for first frame, dst needs data NOW. Wait sync: */
+    static bool firstFrame = true;
+    if (firstFrame) {
+        firstFrame = false;
+        vkWaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
+        vkResetFences(mDevice, 1, &mFence);
+        VkMappedMemoryRange outRange = {};
+        outRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        outRange.memory = mOutMem;
+        outRange.size = VK_WHOLE_SIZE;
+        vkInvalidateMappedMemoryRanges(mDevice, 1, &outRange);
+        memcpy(dst, mOutMap, mOutSize);
+        mPrevPending = false;
+    }
 
-    /* Readback via persistent map */
-    memcpy(dst, mOutMap, mOutSize);
     int64_t t3 = nowMs();
-
-    ALOGD("VK: upload=%lld gpu=%lld readback=%lldms", t1 - t0, t2 - t1, t3 - t2);
+    ALOGD("VK: prev_wait=%lld upload=%lld submit=%lldms", t1 - t0, t2 - t1, t3 - t2);
 
     updateAwb(src, width, height, is16, pixFmt);
     return true;
@@ -782,6 +813,7 @@ void VulkanIspPipeline::destroy() {
         mInBuf = VK_NULL_HANDLE; mInMem = VK_NULL_HANDLE;
         mOutBuf = VK_NULL_HANDLE; mOutMem = VK_NULL_HANDLE;
         mParamBuf = VK_NULL_HANDLE; mParamMem = VK_NULL_HANDLE;
+        if (mFence) { vkDestroyFence(mDevice, mFence, NULL); mFence = VK_NULL_HANDLE; }
         if (mCmdPool) { vkDestroyCommandPool(mDevice, mCmdPool, NULL); mCmdPool = VK_NULL_HANDLE; }
         if (mDescPool) { vkDestroyDescriptorPool(mDevice, mDescPool, NULL); mDescPool = VK_NULL_HANDLE; }
         if (mPipeline) { vkDestroyPipeline(mDevice, mPipeline, NULL); mPipeline = VK_NULL_HANDLE; }

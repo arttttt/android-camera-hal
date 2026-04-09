@@ -58,6 +58,11 @@ private:
     size_t mInSize, mOutSize;
     void *mInMap, *mOutMap, *mParamMap;  /* persistent mapped pointers */
 
+    /* Double buffering — overlap GPU compute with CPU upload */
+    VkFence mFence;
+    uint8_t *mPrevDst;       /* destination for previous frame readback */
+    bool mPrevPending;        /* previous frame GPU work is in-flight */
+
     /* Params UBO layout — must match shader */
     struct IspParams {
         uint32_t width;
