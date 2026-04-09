@@ -481,7 +481,8 @@ void GlesIspPipeline::destroy() {
         return;
 
     if (mDisplay != EGL_NO_DISPLAY) {
-        eglMakeCurrent(mDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, mContext);
+        if (mContext != EGL_NO_CONTEXT && mSurface != EGL_NO_SURFACE)
+            eglMakeCurrent(mDisplay, mSurface, mSurface, mContext);
         if (mGrallocFbo) { glDeleteFramebuffers(1, &mGrallocFbo); mGrallocFbo = 0; }
         if (mGrallocTex) { glDeleteTextures(1, &mGrallocTex); mGrallocTex = 0; }
         if (mGrallocImage != EGL_NO_IMAGE_KHR && eglDestroyImageKHR_fn)
