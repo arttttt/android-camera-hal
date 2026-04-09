@@ -58,7 +58,8 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mInSize(0), mOutSize(0)
     , mInMap(NULL), mOutMap(NULL), mParamMap(NULL)
     , mDmaBuf(VK_NULL_HANDLE), mDmaMem(VK_NULL_HANDLE), mDmaFd(-1)
-    , mFence(VK_NULL_HANDLE), mPrevDst(NULL), mPrevPending(false) {}
+    , mFence(VK_NULL_HANDLE), mPrevDst(NULL), mPrevPending(false)
+    , mParamsTemplateReady(false) {}
 
 VulkanIspPipeline::~VulkanIspPipeline() { destroy(); }
 
@@ -66,7 +67,24 @@ VulkanIspPipeline::~VulkanIspPipeline() { destroy(); }
 
 void VulkanIspPipeline::fillParams(IspParams *p, unsigned w, unsigned h,
                                     bool is16, uint32_t pixFmt) {
-    memset(p, 0, sizeof(IspParams));
+    /* Bake gammaLut + ccm once — they don't change per frame */
+    if (!mParamsTemplateReady) {
+        memset(&mParamsTemplate, 0, sizeof(IspParams));
+        if (mCcm) {
+            for (int i = 0; i < 9; i++) mParamsTemplate.ccm[i] = mCcm[i];
+        } else {
+            mParamsTemplate.ccm[0] = 1024; mParamsTemplate.ccm[4] = 1024; mParamsTemplate.ccm[8] = 1024;
+        }
+        for (int i = 0; i < 64; i++) {
+            mParamsTemplate.gammaLut[i] = sGammaLut[i*4] |
+                             (sGammaLut[i*4+1] << 8) |
+                             (sGammaLut[i*4+2] << 16) |
+                             (sGammaLut[i*4+3] << 24);
+        }
+        mParamsTemplateReady = true;
+    }
+
+    *p = mParamsTemplate;
     p->width = w; p->height = h;
     p->is16bit = is16 ? 1 : 0;
     p->doIsp = mEnabled ? 1 : 0;
@@ -78,19 +96,6 @@ void VulkanIspPipeline::fillParams(IspParams *p, unsigned w, unsigned h,
         case V4L2_PIX_FMT_SGBRG10: case V4L2_PIX_FMT_SGBRG8: p->bayerPhase = 2; break;
         case V4L2_PIX_FMT_SBGGR10: case V4L2_PIX_FMT_SBGGR8: p->bayerPhase = 3; break;
         default: p->bayerPhase = 0; break;
-    }
-
-    if (mCcm) {
-        for (int i = 0; i < 9; i++) p->ccm[i] = mCcm[i];
-    } else {
-        p->ccm[0] = 1024; p->ccm[4] = 1024; p->ccm[8] = 1024;
-    }
-
-    for (int i = 0; i < 64; i++) {
-        p->gammaLut[i] = sGammaLut[i*4] |
-                         (sGammaLut[i*4+1] << 8) |
-                         (sGammaLut[i*4+2] << 16) |
-                         (sGammaLut[i*4+3] << 24);
     }
 }
 
@@ -104,8 +109,8 @@ void VulkanIspPipeline::updateAwb(const uint8_t *raw, unsigned w, unsigned h,
     unsigned rY = (pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SGBRG8 ||
                    pixFmt == V4L2_PIX_FMT_SBGGR10 || pixFmt == V4L2_PIX_FMT_SBGGR8) ? 1 : 0;
 
-    for (unsigned y = 0; y < h; y += 7) {
-        for (unsigned x = 0; x < w; x += 7) {
+    for (unsigned y = 0; y < h; y += 8) {
+        for (unsigned x = 0; x < w; x += 8) {
             unsigned val = is16 ? ((const uint16_t *)raw)[y * w + x] >> 2
                                 : raw[y * w + x];
             unsigned px = x & 1, py = y & 1;
@@ -124,7 +129,11 @@ void VulkanIspPipeline::updateAwb(const uint8_t *raw, unsigned w, unsigned h,
         if (r < 128) r = 128; if (r > 1024) r = 1024;
         if (g < 128) g = 128; if (g > 1024) g = 1024;
         if (b < 128) b = 128; if (b > 1024) b = 1024;
-        mWbR = r; mWbG = g; mWbB = b;
+        /* Temporal smoothing — EMA, converges in ~7 frames */
+        const float alpha = 0.15f;
+        mWbR = (unsigned)(alpha * r + (1.0f - alpha) * mWbR);
+        mWbG = (unsigned)(alpha * g + (1.0f - alpha) * mWbG);
+        mWbB = (unsigned)(alpha * b + (1.0f - alpha) * mWbB);
     }
 }
 
@@ -819,6 +828,7 @@ void VulkanIspPipeline::destroy() {
     }
     if (mInstance) { vkDestroyInstance(mInstance, NULL); mInstance = VK_NULL_HANDLE; }
     mReady = false;
+    mParamsTemplateReady = false;
     mInSize = 0; mOutSize = 0;
     mBufWidth = 0; mBufHeight = 0;
 }

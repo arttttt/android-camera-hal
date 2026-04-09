@@ -78,6 +78,9 @@ private:
     void fillParams(IspParams *p, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
     void updateAwb(const uint8_t *raw, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
 
+    IspParams mParamsTemplate;  /* pre-baked gammaLut + ccm */
+    bool mParamsTemplateReady;
+
     static uint8_t sGammaLut[256];
     static bool sGammaReady;
     static void initGamma();
