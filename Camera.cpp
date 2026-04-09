@@ -892,7 +892,8 @@ skip_focus:
                             sp<GraphicBuffer> gb = new GraphicBuffer(streamW, streamH,
                                 HAL_PIXEL_FORMAT_RGBA_8888,
                                 GRALLOC_USAGE_HW_RENDER | GRALLOC_USAGE_HW_COMPOSER,
-                                streamW, *srcBuf.buffer, false);
+                                streamW, const_cast<native_handle_t *>(*srcBuf.buffer),
+                                false);
                             if (mIsp->processToGralloc(frame->buf, gb->getNativeBuffer(),
                                                         res.width, res.height, streamW, streamH,
                                                         frame->pixFmt)) {
