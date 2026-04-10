@@ -573,6 +573,8 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
 
         /* Save original usage before overwrite — framework sets HW_VIDEO_ENCODER for video streams */
         uint32_t origUsage = newStream->usage;
+        ALOGD("Stream[%zu]: %ux%u fmt=0x%x usage=0x%x", i,
+              newStream->width, newStream->height, newStream->format, origUsage);
 
         switch(newStream->stream_type) {
             case CAMERA3_STREAM_OUTPUT:         newStream->usage = GRALLOC_USAGE_SW_WRITE_OFTEN;                                break;
