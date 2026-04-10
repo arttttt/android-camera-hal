@@ -756,14 +756,14 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
         if (exposureUs < 100) exposureUs = 100;
         if (exposureUs > 200000) exposureUs = 200000;
         /* Extend frame_length so sensor can accommodate long exposures.
-         * coarse_time = exposureUs * pix_clk / (line_length * 1e6)
-         * IMX179: pix_clk=259.2MHz, line_length=3440 → 1 line ≈ 13.27µs
-         * OV5693: pix_clk=160MHz,   line_length=2688 → 1 line ≈ 16.8µs
-         * Use 13µs (conservative) for coarse estimate. */
+         * coarse_time ≈ exposureUs / 13µs (IMX179 line time).
+         * Cap at ~7500 lines (~100ms, ~10fps) to avoid VI timeout. */
         int32_t coarseEst = exposureUs / 13;
         int32_t frameLenNeeded = coarseEst + 6; /* MAX_COARSE_DIFF */
+        if (frameLenNeeded > 7500) frameLenNeeded = 7500;
         if (frameLenNeeded > 2510) /* only extend beyond default (30fps) */
             mDev->setControl(V4L2_CID_FRAME_LENGTH, frameLenNeeded);
+        if (exposureUs > 100000) exposureUs = 100000; /* match frame_length cap */
         mDev->setControl(V4L2_CID_EXPOSURE, exposureUs);
 
         if (cm.exists(ANDROID_SENSOR_SENSITIVITY)) {
