@@ -571,6 +571,9 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
             return BAD_VALUE;
         }
 
+        /* Save original usage before overwrite — framework sets HW_VIDEO_ENCODER for video streams */
+        uint32_t origUsage = newStream->usage;
+
         switch(newStream->stream_type) {
             case CAMERA3_STREAM_OUTPUT:         newStream->usage = GRALLOC_USAGE_SW_WRITE_OFTEN;                                break;
             case CAMERA3_STREAM_INPUT:          newStream->usage = GRALLOC_USAGE_SW_READ_OFTEN;                                 break;
@@ -579,12 +582,20 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
         newStream->max_buffers = 4;
 
         /*
-         * Use the largest NON-BLOB (preview/video) stream for V4L2 resolution.
-         * BLOB (JPEG) will be captured at this resolution too — no runtime
-         * resolution switch needed for simple capture.
+         * V4L2 resolution selection:
+         * - If a video stream exists (HW_VIDEO_ENCODER), use its resolution
+         *   so the sensor switches to the matching FPS mode (e.g. 720p@90fps).
+         * - Otherwise use the largest non-BLOB stream.
          */
         if(newStream->format != HAL_PIXEL_FORMAT_BLOB) {
-            if(newStream->width * newStream->height > width * height) {
+            bool isVideo = (origUsage & GRALLOC_USAGE_HW_VIDEO_ENCODER) != 0;
+            if (isVideo) {
+                /* Video stream takes priority */
+                width = newStream->width;
+                height = newStream->height;
+                ALOGD("Video stream detected: %ux%u", width, height);
+            } else if (!width || !height ||
+                       (newStream->width * newStream->height > width * height)) {
                 width = newStream->width;
                 height = newStream->height;
             }
