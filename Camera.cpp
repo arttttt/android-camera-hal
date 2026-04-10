@@ -760,10 +760,10 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
          * Cap at ~7500 lines (~100ms, ~10fps) to avoid VI timeout. */
         int32_t coarseEst = exposureUs / 13;
         int32_t frameLenNeeded = coarseEst + 6; /* MAX_COARSE_DIFF */
-        if (frameLenNeeded > 7500) frameLenNeeded = 7500;
-        if (frameLenNeeded > 2510) /* only extend beyond default (30fps) */
-            mDev->setControl(V4L2_CID_FRAME_LENGTH, frameLenNeeded);
-        if (exposureUs > 100000) exposureUs = 100000; /* match frame_length cap */
+        if (frameLenNeeded < 2510) frameLenNeeded = 2510; /* default 30fps */
+        if (frameLenNeeded > 7500) frameLenNeeded = 7500; /* cap ~10fps */
+        mDev->setControl(V4L2_CID_FRAME_LENGTH, frameLenNeeded);
+        if (exposureUs > 100000) exposureUs = 100000;
         mDev->setControl(V4L2_CID_EXPOSURE, exposureUs);
 
         if (cm.exists(ANDROID_SENSOR_SENSITIVITY)) {
