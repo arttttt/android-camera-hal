@@ -74,7 +74,7 @@ Camera::Camera(const char *devNode, int facing)
     , mAfSweepEnd(0)
     , mAfSweepBestPos(140)
     , mAfSweepBestScore(0)
-    , mAfFinePass(false)
+
     , mAfSettleFrames(0) {
     DBGUTILS_AUTOLOGCALL(__func__);
     for(size_t i = 0; i < NELEM(mDefaultRequestSettings); i++) {
@@ -823,7 +823,7 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
         uint8_t trigger = *cm.find(ANDROID_CONTROL_AF_TRIGGER).data.u8;
         if (trigger == ANDROID_CONTROL_AF_TRIGGER_START && !mAfSweepActive) {
             mAfSweepActive = true;
-            mAfFinePass = false;
+
             mAfSettleFrames = 0;
             if (afMode == ANDROID_CONTROL_AF_MODE_MACRO) {
                 mAfSweepPos = 400; mAfSweepEnd = 650; mAfSweepStep = 25;
@@ -843,7 +843,6 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
     if ((afMode == ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE) &&
         !mAfSweepActive && (request->frame_number % 60 == 0)) {
         mAfSweepActive = true;
-        mAfFinePass = false;
         mAfSettleFrames = 0;
         mAfSweepPos = 140; mAfSweepEnd = 640; mAfSweepStep = 25;
         mAfSweepBestPos = mFocusPosition;
@@ -1041,7 +1040,7 @@ skip_focus:
         }
     }
 
-    /* AF sweep: two-pass contrast-detect with VCM settling */
+    /* AF sweep: single-pass contrast-detect with VCM settling */
     if (mSoftIspEnabled && mAfSweepActive && rgbaBuffer) {
         /* Skip frames after VCM move to let lens settle */
         if (mAfSettleFrames > 0) {
@@ -1066,38 +1065,24 @@ skip_focus:
             mAfSweepBestPos = mAfSweepPos;
         }
 
-        ALOGD("AF %s: pos=%d score=%llu best=%d/%llu",
-              mAfFinePass ? "fine" : "coarse",
+        ALOGD("AF: pos=%d score=%llu best=%d/%llu",
               mAfSweepPos, (unsigned long long)score,
               mAfSweepBestPos, (unsigned long long)mAfSweepBestScore);
 
         mAfSweepPos += mAfSweepStep;
         if (mAfSweepPos > mAfSweepEnd) {
-            if (!mAfFinePass) {
-                /* Coarse pass done — start fine pass around best position */
-                mAfFinePass = true;
-                mAfSweepStep = 5;
-                mAfSweepPos = mAfSweepBestPos - 25;
-                if (mAfSweepPos < 0) mAfSweepPos = 0;
-                mAfSweepEnd = mAfSweepBestPos + 25;
-                if (mAfSweepEnd > 1023) mAfSweepEnd = 1023;
-                mAfSweepBestScore = 0;
-                ALOGD("AF fine sweep: %d→%d step %d",
-                      mAfSweepPos, mAfSweepEnd, mAfSweepStep);
-            } else {
-                /* Fine pass done — go to best position */
-                mDev->setFocusPosition(mAfSweepBestPos);
-                mFocusPosition = mAfSweepBestPos;
-                mAfSweepActive = false;
-                ALOGD("AF done: best=%d score=%llu", mAfSweepBestPos,
-                      (unsigned long long)mAfSweepBestScore);
-                goto af_done;
-            }
+            /* Sweep done — go to best position */
+            mDev->setFocusPosition(mAfSweepBestPos);
+            mFocusPosition = mAfSweepBestPos;
+            mAfSweepActive = false;
+            ALOGD("AF done: best=%d score=%llu", mAfSweepBestPos,
+                  (unsigned long long)mAfSweepBestScore);
+            goto af_done;
         }
 
-        /* Move VCM and wait 1 frame for settling */
+        /* Move VCM and wait 2 frames for settling */
         mDev->setFocusPosition(mAfSweepPos);
-        mAfSettleFrames = 1;
+        mAfSettleFrames = 2;
     }
 af_done:
 

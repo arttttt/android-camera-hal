@@ -70,7 +70,6 @@ protected:
     int32_t mAfSweepEnd;
     int32_t mAfSweepBestPos;
     uint64_t mAfSweepBestScore;
-    bool mAfFinePass;       /* true = second fine-grained pass */
     int32_t mAfSettleFrames; /* skip frames after VCM move for settling */
 
 private:
