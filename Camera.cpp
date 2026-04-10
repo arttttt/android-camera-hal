@@ -66,6 +66,8 @@ Camera::Camera(const char *devNode, int facing)
     , mV4l2Width(0)
     , mV4l2Height(0)
     , mSoftIspEnabled(true)
+    , mFrameLenDefault(2510)
+    , mFrameLenMax(7500)
     , mFocusPosition(140)
     , mAfSweepActive(false)
     , mAfSweepPos(0)
@@ -669,6 +671,18 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
         return NO_INIT;
     }
 
+    /* Query frame_length limits from sensor driver */
+    {
+        int32_t flMin, flMax, flDef;
+        if (mDev->queryControl(V4L2_CID_FRAME_LENGTH, &flMin, &flMax, &flDef)) {
+            mFrameLenDefault = flDef;
+            /* Cap max frame_length at ~10fps to avoid VI timeout */
+            mFrameLenMax = (flMax > flDef * 3) ? flDef * 3 : flMax;
+            ALOGD("Frame length: def=%d max=%d (driver max=%d)",
+                  mFrameLenDefault, mFrameLenMax, flMax);
+        }
+    }
+
     /* Cache V4L2 resolution for safe conversion */
     auto v4l2Res = mDev->resolution();
     mV4l2Width = v4l2Res.width;
@@ -755,24 +769,29 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
         }
         if (exposureUs < 100) exposureUs = 100;
         if (exposureUs > 200000) exposureUs = 200000;
-        /* Extend frame_length so sensor can accommodate long exposures.
-         * coarse_time ≈ exposureUs / 13µs (IMX179 line time).
-         * Cap at ~7500 lines (~100ms, ~10fps) to avoid VI timeout. */
-        int32_t coarseEst = exposureUs / 13;
-        int32_t frameLenNeeded = coarseEst + 6; /* MAX_COARSE_DIFF */
-        if (frameLenNeeded < 2510) frameLenNeeded = 2510; /* default 30fps */
-        if (frameLenNeeded > 7500) frameLenNeeded = 7500; /* cap ~10fps */
-        mDev->setControl(V4L2_CID_FRAME_LENGTH, frameLenNeeded);
-        if (exposureUs > 100000) exposureUs = 100000;
+        /* EV compensation: keep frame_length at default (preserve FPS),
+         * use gain to compensate when exposure hits the frame limit.
+         * Max exposure at default frame_length ≈ (frame_length - 6) * 13µs */
+        int32_t maxExposureUs = (mFrameLenDefault - 6) * 13;
+        int32_t extraGainQ8 = 256; /* Q8: 256 = 1.0x */
+        if (exposureUs > maxExposureUs) {
+            /* Overflow → convert excess to gain: gain = exposure / maxExposure */
+            extraGainQ8 = (int32_t)((int64_t)exposureUs * 256 / maxExposureUs);
+            exposureUs = maxExposureUs;
+        }
         mDev->setControl(V4L2_CID_EXPOSURE, exposureUs);
 
-        if (cm.exists(ANDROID_SENSOR_SENSITIVITY)) {
-            int32_t iso = *cm.find(ANDROID_SENSOR_SENSITIVITY).data.i32;
-            int32_t gain;
-            if (mFacing == CAMERA_FACING_BACK)
-                gain = iso / 100;                /* IMX179: GAIN_SHIFT=0 */
-            else
-                gain = (iso / 100) * 256;        /* OV5693: GAIN_SHIFT=8 */
+        {
+            int32_t gain = 1;
+            if (cm.exists(ANDROID_SENSOR_SENSITIVITY)) {
+                int32_t iso = *cm.find(ANDROID_SENSOR_SENSITIVITY).data.i32;
+                if (mFacing == CAMERA_FACING_BACK)
+                    gain = iso / 100;                /* IMX179: GAIN_SHIFT=0 */
+                else
+                    gain = (iso / 100) * 256;        /* OV5693: GAIN_SHIFT=8 */
+            }
+            /* Apply extra gain from EV compensation overflow */
+            gain = (int32_t)((int64_t)gain * extraGainQ8 / 256);
             if (gain < 1) gain = 1;
             mDev->setControl(V4L2_CID_GAIN, gain);
         }

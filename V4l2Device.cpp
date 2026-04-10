@@ -526,6 +526,24 @@ bool V4l2Device::setControl(uint32_t id, int32_t value) {
     return true;
 }
 
+bool V4l2Device::queryControl(uint32_t id, int32_t *min, int32_t *max, int32_t *def) {
+    if (mFd < 0)
+        return false;
+
+    struct v4l2_queryctrl qc;
+    memset(&qc, 0, sizeof(qc));
+    qc.id = id;
+    if (ioctl(mFd, VIDIOC_QUERYCTRL, &qc) < 0) {
+        ALOGW("queryControl(0x%x) FAILED: %s", id, strerror(errno));
+        return false;
+    }
+    if (min) *min = qc.minimum;
+    if (max) *max = qc.maximum;
+    if (def) *def = qc.default_value;
+    ALOGD("queryControl(0x%x): min=%d max=%d def=%d", id, qc.minimum, qc.maximum, qc.default_value);
+    return true;
+}
+
 bool V4l2Device::iocStreamOff() {
     assert(mFd >= 0);
     assert(mFormat.type);

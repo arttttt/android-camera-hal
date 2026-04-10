@@ -60,6 +60,10 @@ protected:
     unsigned mV4l2Width;
     unsigned mV4l2Height;
 
+    /* Sensor frame_length limits (queried from driver) */
+    int32_t mFrameLenDefault;
+    int32_t mFrameLenMax;
+
     /* Autofocus state */
     int32_t mFocusPosition;
     bool mAfSweepActive;

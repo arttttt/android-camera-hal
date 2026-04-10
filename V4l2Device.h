@@ -61,6 +61,7 @@ public:
     bool unlock(const VBuffer *buf);
 
     bool setControl(uint32_t id, int32_t value);
+    bool queryControl(uint32_t id, int32_t *min, int32_t *max, int32_t *def);
 
     /* Focuser subdev control */
     bool openFocuser(const char *subdevPath);
