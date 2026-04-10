@@ -984,9 +984,11 @@ skip_focus:
                     else if(frame->pixFmt == V4L2_PIX_FMT_YUYV)
                         bufEnd = mConverter.YUY2ToJPEG(frame->buf, buf, res.width, res.height, maxImageSize, jpegQuality);
                     else {
-                        /* Bayer: demosaic to mRgbaTemp (persistent), then encode JPEG.
-                         * Must use mRgbaTemp — Vulkan double buffering holds mPrevDst
-                         * across frames, so one-shot allocations cause use-after-free. */
+                        /* Bayer: demosaic to mRgbaTemp, then encode JPEG.
+                         * Call process() twice: first flushes the double-buffered
+                         * pipeline (readback of stale prev frame + submit current),
+                         * second gets the actual current frame result. */
+                        mIsp->process(frame->buf, mRgbaTemp, res.width, res.height, frame->pixFmt);
                         mIsp->process(frame->buf, mRgbaTemp, res.width, res.height, frame->pixFmt);
                         bufEnd = ImageConverter::RGBAToJPEG(mRgbaTemp, buf,
                             res.width, res.height, maxImageSize, jpegQuality);
