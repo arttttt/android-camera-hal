@@ -782,7 +782,8 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
         mDev->setControl(V4L2_CID_EXPOSURE, exposureUs);
 
         {
-            int32_t gain = 1;
+            /* Default gain: 1x in sensor units */
+            int32_t gain = (mFacing == CAMERA_FACING_BACK) ? 1 : 256;
             if (cm.exists(ANDROID_SENSOR_SENSITIVITY)) {
                 int32_t iso = *cm.find(ANDROID_SENSOR_SENSITIVITY).data.i32;
                 if (mFacing == CAMERA_FACING_BACK)
