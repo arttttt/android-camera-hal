@@ -920,14 +920,6 @@ skip_focus:
                 unsigned streamH = srcBuf.stream->height;
 
                 if(!rgbaBuffer) {
-                    /* soft_isp=0 + raw Bayer = no ISP, can't display */
-                    if (!mSoftIspEnabled &&
-                        frame->pixFmt != V4L2_PIX_FMT_UYVY &&
-                        frame->pixFmt != V4L2_PIX_FMT_YUYV) {
-                        memset(buf, 0, streamW * streamH * 4);
-                        rgbaBuffer = buf;
-                        break;
-                    }
                     BENCHMARK_SECTION("Raw->RGBA") {
                         if(frame->pixFmt == V4L2_PIX_FMT_UYVY) {
                             mConverter.UYVYToRGBA(frame->buf, needZoom ? mRgbaTemp : buf, res.width, res.height);
