@@ -10,6 +10,7 @@
 
 #include "Workers.h"
 #include "ImageConverter.h"
+#include "SensorConfig.h"
 #include "IspPipeline.h"
 #include "DbgUtils.h"
 
@@ -59,10 +60,7 @@ protected:
     size_t mRgbaTempSize;
     unsigned mV4l2Width;
     unsigned mV4l2Height;
-
-    /* Sensor frame_length limits (queried from driver) */
-    int32_t mFrameLenDefault;
-    int32_t mFrameLenMax;
+    SensorConfig mSensorCfg;
 
     /* Autofocus state */
     int32_t mFocusPosition;

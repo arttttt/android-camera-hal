@@ -66,8 +66,6 @@ Camera::Camera(const char *devNode, int facing)
     , mV4l2Width(0)
     , mV4l2Height(0)
     , mSoftIspEnabled(true)
-    , mFrameLenDefault(2510)
-    , mFrameLenMax(7500)
     , mFocusPosition(140)
     , mAfSweepActive(false)
     , mAfSweepPos(0)
@@ -657,13 +655,14 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
     }
     ALOGV("+-------------------------------------------------------------------------------");
 
+    /* Initialize sensor config */
+    mSensorCfg = (mFacing == CAMERA_FACING_BACK) ?
+        SensorConfig::imx179() : SensorConfig::ov5693();
+
     /* Set exposure/gain BEFORE STREAMON — only with soft ISP */
     if (mSoftIspEnabled) {
-        mDev->setControl(V4L2_CID_EXPOSURE, 30000);
-        if (mFacing == CAMERA_FACING_BACK)
-            mDev->setControl(V4L2_CID_GAIN, 8);
-        else
-            mDev->setControl(V4L2_CID_GAIN, 2048);
+        mDev->setControl(V4L2_CID_EXPOSURE, mSensorCfg.exposureDefault);
+        mDev->setControl(V4L2_CID_GAIN, mSensorCfg.gainDefault);
     }
 
     if(!mDev->setStreaming(true)) {
@@ -671,15 +670,19 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
         return NO_INIT;
     }
 
-    /* Query frame_length limits from sensor driver */
+    /* Update sensor config from driver queries */
     {
         int32_t flMin, flMax, flDef;
         if (mDev->queryControl(V4L2_CID_FRAME_LENGTH, &flMin, &flMax, &flDef)) {
-            mFrameLenDefault = flDef;
-            /* Cap max frame_length at ~10fps to avoid VI timeout */
-            mFrameLenMax = (flMax > flDef * 3) ? flDef * 3 : flMax;
+            mSensorCfg.frameLenDefault = flDef;
+            mSensorCfg.frameLenMax = (flMax > flDef * 3) ? flDef * 3 : flMax;
             ALOGD("Frame length: def=%d max=%d (driver max=%d)",
-                  mFrameLenDefault, mFrameLenMax, flMax);
+                  mSensorCfg.frameLenDefault, mSensorCfg.frameLenMax, flMax);
+        }
+        int32_t gMin, gMax, gDef;
+        if (mDev->queryControl(V4L2_CID_GAIN, &gMin, &gMax, &gDef)) {
+            mSensorCfg.gainMax = gMax;
+            ALOGD("Gain: min=%d max=%d def=%d", gMin, gMax, gDef);
         }
     }
 
@@ -754,7 +757,7 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
 
     /* Apply exposure/gain from request metadata — only with soft ISP */
     if (mSoftIspEnabled) {
-        int32_t exposureUs = 30000; /* default 30ms */
+        int32_t exposureUs = mSensorCfg.exposureDefault;
         if (cm.exists(ANDROID_SENSOR_EXPOSURE_TIME)) {
             int64_t exposureNs = *cm.find(ANDROID_SENSOR_EXPOSURE_TIME).data.i64;
             exposureUs = (int32_t)(exposureNs / 1000);
@@ -769,33 +772,19 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
         }
         if (exposureUs < 100) exposureUs = 100;
         if (exposureUs > 200000) exposureUs = 200000;
-        /* EV compensation: keep frame_length at default (preserve FPS),
-         * use gain to compensate when exposure hits the frame limit.
-         * Max exposure at default frame_length ≈ (frame_length - 6) * 13µs */
-        int32_t maxExposureUs = (mFrameLenDefault - 6) * 13;
-        int32_t extraGainQ8 = 256; /* Q8: 256 = 1.0x */
-        if (exposureUs > maxExposureUs) {
-            /* Overflow → convert excess to gain: gain = exposure / maxExposure */
-            extraGainQ8 = (int32_t)((int64_t)exposureUs * 256 / maxExposureUs);
-            exposureUs = maxExposureUs;
-        }
-        mDev->setControl(V4L2_CID_EXPOSURE, exposureUs);
 
-        {
-            /* Default gain: 1x in sensor units */
-            int32_t gain = (mFacing == CAMERA_FACING_BACK) ? 1 : 256;
-            if (cm.exists(ANDROID_SENSOR_SENSITIVITY)) {
-                int32_t iso = *cm.find(ANDROID_SENSOR_SENSITIVITY).data.i32;
-                if (mFacing == CAMERA_FACING_BACK)
-                    gain = iso / 100;                /* IMX179: GAIN_SHIFT=0 */
-                else
-                    gain = (iso / 100) * 256;        /* OV5693: GAIN_SHIFT=8 */
-            }
-            /* Apply extra gain from EV compensation overflow */
-            gain = (int32_t)((int64_t)gain * extraGainQ8 / 256);
-            if (gain < 1) gain = 1;
-            mDev->setControl(V4L2_CID_GAIN, gain);
-        }
+        /* Split into exposure + gain to preserve FPS */
+        int32_t actualExposure, extraGainQ8;
+        mSensorCfg.splitExposureGain(exposureUs, &actualExposure, &extraGainQ8);
+        mDev->setControl(V4L2_CID_EXPOSURE, actualExposure);
+
+        int32_t gain = mSensorCfg.gainUnit; /* 1x */
+        if (cm.exists(ANDROID_SENSOR_SENSITIVITY))
+            gain = mSensorCfg.isoToGain(*cm.find(ANDROID_SENSOR_SENSITIVITY).data.i32);
+        gain = (int32_t)((int64_t)gain * extraGainQ8 / 256);
+        if (gain < 1) gain = 1;
+        if (gain > mSensorCfg.gainMax) gain = mSensorCfg.gainMax;
+        mDev->setControl(V4L2_CID_GAIN, gain);
     }
 
     /* Focus control — only with soft ISP */
