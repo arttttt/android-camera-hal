@@ -989,10 +989,9 @@ skip_focus:
                         size_t rgbaSize = res.width * res.height * 4;
                         uint8_t *rgba = new uint8_t[rgbaSize];
                         mIsp->process(frame->buf, rgba, res.width, res.height, frame->pixFmt);
-                        /* TODO: RGBA->JPEG via libjpeg */
-                        ALOGE("JPEG capture from Bayer not yet implemented");
+                        bufEnd = ImageConverter::RGBAToJPEG(rgba, buf,
+                            res.width, res.height, maxImageSize, jpegQuality);
                         delete[] rgba;
-                        bufEnd = buf;
                     }
 
                     if(bufEnd != buf) {
