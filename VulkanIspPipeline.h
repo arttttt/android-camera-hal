@@ -20,6 +20,10 @@ public:
                  unsigned width, unsigned height,
                  uint32_t pixFmt) override;
 
+    bool processSync(const uint8_t *src, uint8_t *dst,
+                      unsigned width, unsigned height,
+                      uint32_t pixFmt) override;
+
     bool processFromDmabuf(int dmabufFd, const uint8_t *cpuFallback,
                            uint8_t *dst, unsigned width, unsigned height,
                            uint32_t pixFmt) override;

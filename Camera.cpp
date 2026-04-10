@@ -29,6 +29,7 @@
 #include <assert.h>
 #include <linux/videodev2.h>
 #include <libyuv/scale_argb.h>
+#include <libyuv/rotate_argb.h>
 #include <cutils/properties.h>
 
 /* Tegra camera CIDs — not in standard V4L2 headers */
@@ -984,14 +985,32 @@ skip_focus:
                     else if(frame->pixFmt == V4L2_PIX_FMT_YUYV)
                         bufEnd = mConverter.YUY2ToJPEG(frame->buf, buf, res.width, res.height, maxImageSize, jpegQuality);
                     else {
-                        /* Bayer: demosaic to mRgbaTemp, then encode JPEG.
-                         * Call process() twice: first flushes the double-buffered
-                         * pipeline (readback of stale prev frame + submit current),
-                         * second gets the actual current frame result. */
-                        mIsp->process(frame->buf, mRgbaTemp, res.width, res.height, frame->pixFmt);
-                        mIsp->process(frame->buf, mRgbaTemp, res.width, res.height, frame->pixFmt);
-                        bufEnd = ImageConverter::RGBAToJPEG(mRgbaTemp, buf,
-                            res.width, res.height, maxImageSize, jpegQuality);
+                        /* Bayer: synchronous demosaic + rotate + JPEG encode */
+                        mIsp->processSync(frame->buf, mRgbaTemp, res.width, res.height, frame->pixFmt);
+
+                        /* Apply JPEG orientation by rotating pixels */
+                        int32_t jpegOri = 0;
+                        if (cm.exists(ANDROID_JPEG_ORIENTATION))
+                            jpegOri = *cm.find(ANDROID_JPEG_ORIENTATION).data.i32;
+
+                        unsigned outW = res.width, outH = res.height;
+                        libyuv::RotationMode rot = libyuv::kRotate0;
+                        if (jpegOri == 90)       { rot = libyuv::kRotate90;  outW = res.height; outH = res.width; }
+                        else if (jpegOri == 180)  { rot = libyuv::kRotate180; }
+                        else if (jpegOri == 270)  { rot = libyuv::kRotate270; outW = res.height; outH = res.width; }
+
+                        if (rot != libyuv::kRotate0) {
+                            uint8_t *rotBuf = new uint8_t[outW * outH * 4];
+                            libyuv::ARGBRotate(mRgbaTemp, res.width * 4,
+                                               rotBuf, outW * 4,
+                                               res.width, res.height, rot);
+                            bufEnd = ImageConverter::RGBAToJPEG(rotBuf, buf,
+                                outW, outH, maxImageSize, jpegQuality);
+                            delete[] rotBuf;
+                        } else {
+                            bufEnd = ImageConverter::RGBAToJPEG(mRgbaTemp, buf,
+                                outW, outH, maxImageSize, jpegQuality);
+                        }
                     }
 
                     if(bufEnd != buf) {

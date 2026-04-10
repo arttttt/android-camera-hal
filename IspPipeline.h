@@ -23,6 +23,14 @@ public:
                          unsigned width, unsigned height,
                          uint32_t pixFmt) = 0;
 
+    /* Synchronous process — waits for GPU completion, result in dst immediately.
+     * For single-shot capture (JPEG). Default calls process(). */
+    virtual bool processSync(const uint8_t *src, uint8_t *dst,
+                              unsigned width, unsigned height,
+                              uint32_t pixFmt) {
+        return process(src, dst, width, height, pixFmt);
+    }
+
     /* Zero-copy: process from dmabuf fd instead of CPU pointer.
      * Default falls back to regular process(). */
     virtual bool processFromDmabuf(int dmabufFd, const uint8_t *cpuFallback,

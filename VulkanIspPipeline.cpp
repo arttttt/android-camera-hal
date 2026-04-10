@@ -712,6 +712,69 @@ bool VulkanIspPipeline::process(const uint8_t *src, uint8_t *dst,
     return true;
 }
 
+bool VulkanIspPipeline::processSync(const uint8_t *src, uint8_t *dst,
+                                     unsigned width, unsigned height,
+                                     uint32_t pixFmt) {
+    if (!mReady) return false;
+
+    bool is16 = (pixFmt == V4L2_PIX_FMT_SRGGB10 || pixFmt == V4L2_PIX_FMT_SGRBG10 ||
+                 pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SBGGR10);
+    if (!ensureBuffers(width, height, is16))
+        return false;
+
+    /* Drain any pending double-buffered work */
+    if (mPrevPending) {
+        vkWaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
+        vkResetFences(mDevice, 1, &mFence);
+        mPrevPending = false;
+    }
+
+    /* Upload */
+    memcpy(mInMap, src, mInSize);
+    IspParams params;
+    fillParams(&params, width, height, is16, pixFmt);
+    memcpy(mParamMap, &params, sizeof(IspParams));
+
+    VkMappedMemoryRange flushRanges[2] = {};
+    flushRanges[0].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    flushRanges[0].memory = mInMem;
+    flushRanges[0].size = VK_WHOLE_SIZE;
+    flushRanges[1].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    flushRanges[1].memory = mParamMem;
+    flushRanges[1].size = VK_WHOLE_SIZE;
+    vkFlushMappedMemoryRanges(mDevice, 2, flushRanges);
+
+    /* Submit + wait */
+    VkCommandBufferBeginInfo beginInfo = {};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkResetCommandBuffer(mCmdBuf, 0);
+    vkBeginCommandBuffer(mCmdBuf, &beginInfo);
+    vkCmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
+    vkCmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            mPipeLayout, 0, 1, &mDescSet, 0, NULL);
+    vkCmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
+    vkEndCommandBuffer(mCmdBuf);
+
+    VkSubmitInfo si = {};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &mCmdBuf;
+    vkQueueSubmit(mQueue, 1, &si, mFence);
+    vkWaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
+    vkResetFences(mDevice, 1, &mFence);
+
+    /* Readback immediately */
+    VkMappedMemoryRange outRange = {};
+    outRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    outRange.memory = mOutMem;
+    outRange.size = VK_WHOLE_SIZE;
+    vkInvalidateMappedMemoryRanges(mDevice, 1, &outRange);
+    memcpy(dst, mOutMap, mOutSize);
+
+    return true;
+}
+
 bool VulkanIspPipeline::processFromDmabuf(int dmabufFd, const uint8_t *cpuFallback,
                                            uint8_t *dst, unsigned width, unsigned height,
                                            uint32_t pixFmt) {
