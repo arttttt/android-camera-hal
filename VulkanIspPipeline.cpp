@@ -95,7 +95,7 @@ void VulkanIspPipeline::fillParams(IspParams *p, unsigned w, unsigned h,
 
 void VulkanIspPipeline::updateAwb(const uint8_t *raw, unsigned w, unsigned h,
                                     bool is16, uint32_t pixFmt) {
-    if (!mEnabled || !raw) return;
+    if (!mEnabled || !raw || mAwbLocked) return;
 
     uint64_t sR = 0, sG = 0, sB = 0, nR = 0, nG = 0, nB = 0;
     unsigned rX = (pixFmt == V4L2_PIX_FMT_SGRBG10 || pixFmt == V4L2_PIX_FMT_SGRBG8 ||

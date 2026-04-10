@@ -62,10 +62,14 @@ public:
     /* Enable/disable ISP processing (false = demosaic only) */
     void setEnabled(bool en) { mEnabled = en; }
 
+    /* Lock AWB — freeze gains during AF sweep */
+    void setAwbLock(bool lock) { mAwbLocked = lock; }
+
 protected:
     unsigned mWbR = 256, mWbG = 256, mWbB = 256;
     const int16_t *mCcm = nullptr;
     bool mEnabled = true;
+    bool mAwbLocked = false;
 };
 
 }; /* namespace android */

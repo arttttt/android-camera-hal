@@ -823,7 +823,7 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
         uint8_t trigger = *cm.find(ANDROID_CONTROL_AF_TRIGGER).data.u8;
         if (trigger == ANDROID_CONTROL_AF_TRIGGER_START && !mAfSweepActive) {
             mAfSweepActive = true;
-
+            mIsp->setAwbLock(true);
             mAfSettleFrames = 0;
             if (afMode == ANDROID_CONTROL_AF_MODE_MACRO) {
                 mAfSweepPos = 400; mAfSweepEnd = 650; mAfSweepStep = 25;
@@ -836,6 +836,7 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
                   afMode, mAfSweepPos, mAfSweepEnd, mAfSweepStep);
         } else if (trigger == ANDROID_CONTROL_AF_TRIGGER_CANCEL) {
             mAfSweepActive = false;
+            mIsp->setAwbLock(false);
         }
     }
 
@@ -843,6 +844,7 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
     if ((afMode == ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE) &&
         !mAfSweepActive && (request->frame_number % 60 == 0)) {
         mAfSweepActive = true;
+        mIsp->setAwbLock(true);
         mAfSettleFrames = 0;
         mAfSweepPos = 140; mAfSweepEnd = 640; mAfSweepStep = 25;
         mAfSweepBestPos = mFocusPosition;
@@ -1048,17 +1050,35 @@ skip_focus:
             goto af_done;
         }
 
-        /* Compute sharpness: sum of absolute horizontal gradient in center 1/4 */
+        /* Compute sharpness: normalized Laplacian in center 1/4.
+         * Laplacian = |2*center - left - right| + |2*center - up - down|
+         * Normalized by mean brightness to be AWB-independent. */
         unsigned cx = res.width / 4, cy = res.height / 4;
         unsigned cw = res.width / 2, ch = res.height / 2;
-        uint64_t score = 0;
-        for (unsigned y = cy; y < cy + ch; y += 4) {
-            const uint8_t *row = rgbaBuffer + y * res.width * 4;
-            for (unsigned x = cx + 1; x < cx + cw; x += 4) {
-                int dg = (int)row[x*4+1] - (int)row[(x-1)*4+1]; /* green gradient */
-                score += (uint64_t)(dg < 0 ? -dg : dg);
+        uint64_t gradSum = 0, brightSum = 0;
+        unsigned nSamples = 0;
+        for (unsigned y = cy + 1; y < cy + ch - 1; y += 4) {
+            const uint8_t *row  = rgbaBuffer + y * res.width * 4;
+            const uint8_t *rowU = rgbaBuffer + (y - 1) * res.width * 4;
+            const uint8_t *rowD = rgbaBuffer + (y + 1) * res.width * 4;
+            for (unsigned x = cx + 1; x < cx + cw - 1; x += 4) {
+                int g  = row[x*4+1];
+                int gl = row[(x-1)*4+1];
+                int gr = row[(x+1)*4+1];
+                int gu = rowU[x*4+1];
+                int gd = rowD[x*4+1];
+                /* Laplacian: horizontal + vertical */
+                int lapH = 2*g - gl - gr;
+                int lapV = 2*g - gu - gd;
+                gradSum += (lapH < 0 ? -lapH : lapH) + (lapV < 0 ? -lapV : lapV);
+                brightSum += g;
+                nSamples++;
             }
         }
+        /* Normalize: score = gradSum * 1000 / mean_brightness */
+        uint64_t score = 0;
+        if (brightSum > 0 && nSamples > 0)
+            score = gradSum * 1000 / (brightSum / nSamples);
 
         if (score > mAfSweepBestScore) {
             mAfSweepBestScore = score;
@@ -1075,6 +1095,7 @@ skip_focus:
             mDev->setFocusPosition(mAfSweepBestPos);
             mFocusPosition = mAfSweepBestPos;
             mAfSweepActive = false;
+            mIsp->setAwbLock(false);
             ALOGD("AF done: best=%d score=%llu", mAfSweepBestPos,
                   (unsigned long long)mAfSweepBestScore);
             goto af_done;
