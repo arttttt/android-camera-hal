@@ -269,9 +269,8 @@ camera_metadata_t *Camera::staticCharacteristics() {
     cm.update(ANDROID_SCALER_AVAILABLE_PROCESSED_SIZES, scalerAvailableProcessedSizes, (size_t)NELEM(scalerAvailableProcessedSizes));
     cm.update(ANDROID_SCALER_AVAILABLE_PROCESSED_MIN_DURATIONS, scalerAvailableProcessedMinDurations, (size_t)NELEM(scalerAvailableProcessedMinDurations));
 
-    /* ~8.25 bit/px (https://en.wikipedia.org/wiki/JPEG#Sample_photographs) */
-    /* Use 9 bit/px, add buffer info struct size, round up to page size */
-    mJpegBufferSize = sensorRes.width * sensorRes.height * 9 + sizeof(camera3_jpeg_blob);
+    /* ~1.1 byte/px typical JPEG, use 2 byte/px for safety margin */
+    mJpegBufferSize = sensorRes.width * sensorRes.height * 2 + sizeof(camera3_jpeg_blob);
     mJpegBufferSize = (mJpegBufferSize + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
     const int32_t jpegMaxSize = (int32_t)mJpegBufferSize;
     cm.update(ANDROID_JPEG_MAX_SIZE, &jpegMaxSize, 1);
