@@ -43,6 +43,7 @@
 #include "CpuIspPipeline.h"
 #include "VulkanIspPipeline.h"
 #include "GlesIspPipeline.h"
+#include "HwIspPipeline.h"
 #include "IspCalibration.h"
 
 extern camera_module_t HAL_MODULE_INFO_SYM;
@@ -628,6 +629,8 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
         mIsp = new VulkanIspPipeline();
     } else if (!strcmp(ispBackend, "gles")) {
         mIsp = new GlesIspPipeline();
+    } else if (!strcmp(ispBackend, "hwisp")) {
+        mIsp = new HwIspPipeline();
     } else {
         mIsp = new CpuIspPipeline();
     }

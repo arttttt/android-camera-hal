@@ -62,7 +62,8 @@ LOCAL_SRC_FILES += \
     Workers.cpp \
     Yuv422UyvyToJpegEncoder.cpp \
     VulkanIspPipeline.cpp \
-    GlesIspPipeline.cpp
+    GlesIspPipeline.cpp \
+    HwIspPipeline.cpp
 
 LOCAL_SHARED_LIBRARIES += libvulkan libEGL libGLESv2
 
