@@ -1,14 +1,12 @@
 #include <cutils/properties.h>
 
 #include "VulkanLoader.h"
+#include "VulkanPfn.h"
 #include "HalHmiVulkanLoader.h"
 #include "SystemVulkanLoader.h"
 
 namespace android {
 
-/* First API level where the standard Android Vulkan loader exposes
- * AHardwareBuffer integration (VK_ANDROID_external_memory_android_
- * hardware_buffer) natively — no HAL-layer bypass needed. */
 static const int API_OREO = 26;
 
 VulkanLoader *createVulkanLoader() {
@@ -16,6 +14,88 @@ VulkanLoader *createVulkanLoader() {
     if (sdk >= API_OREO)
         return new SystemVulkanLoader();
     return new HalHmiVulkanLoader();
+}
+
+void VulkanLoader::loadInstancePfns(VkInstance instance, VulkanPfn *pfn) const {
+    PFN_vkGetInstanceProcAddr gipa = getInstanceProcAddr();
+
+    pfn->GetInstanceProcAddr                  = gipa;
+    pfn->CreateInstance                       = getCreateInstance();
+    pfn->EnumerateInstanceExtensionProperties = getEnumerateInstanceExtensionProperties();
+
+    #define INST(name) \
+        pfn->name = (PFN_vk##name)gipa(instance, "vk" #name)
+
+    INST(DestroyInstance);
+    INST(EnumeratePhysicalDevices);
+    INST(GetPhysicalDeviceMemoryProperties);
+    INST(GetPhysicalDeviceQueueFamilyProperties);
+    INST(EnumerateDeviceExtensionProperties);
+    INST(CreateDevice);
+    INST(GetDeviceProcAddr);
+
+    #undef INST
+}
+
+void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
+    PFN_vkGetDeviceProcAddr gdpa = pfn->GetDeviceProcAddr;
+
+    #define DEV(name) \
+        pfn->name = (PFN_vk##name)gdpa(device, "vk" #name)
+
+    DEV(DestroyDevice);
+    DEV(GetDeviceQueue);
+    DEV(DeviceWaitIdle);
+
+    DEV(QueueSubmit);
+    DEV(QueueWaitIdle);
+
+    DEV(AllocateMemory);
+    DEV(FreeMemory);
+    DEV(MapMemory);
+    DEV(UnmapMemory);
+    DEV(FlushMappedMemoryRanges);
+    DEV(InvalidateMappedMemoryRanges);
+
+    DEV(CreateBuffer);
+    DEV(DestroyBuffer);
+    DEV(GetBufferMemoryRequirements);
+    DEV(BindBufferMemory);
+
+    DEV(CreateImage);
+    DEV(DestroyImage);
+
+    DEV(CreateFence);
+    DEV(DestroyFence);
+    DEV(WaitForFences);
+    DEV(ResetFences);
+
+    DEV(CreateShaderModule);
+    DEV(DestroyShaderModule);
+    DEV(CreateDescriptorSetLayout);
+    DEV(DestroyDescriptorSetLayout);
+    DEV(CreatePipelineLayout);
+    DEV(DestroyPipelineLayout);
+    DEV(CreateComputePipelines);
+    DEV(DestroyPipeline);
+
+    DEV(CreateDescriptorPool);
+    DEV(DestroyDescriptorPool);
+    DEV(AllocateDescriptorSets);
+    DEV(UpdateDescriptorSets);
+
+    DEV(CreateCommandPool);
+    DEV(DestroyCommandPool);
+    DEV(AllocateCommandBuffers);
+    DEV(BeginCommandBuffer);
+    DEV(EndCommandBuffer);
+    DEV(ResetCommandBuffer);
+
+    DEV(CmdBindPipeline);
+    DEV(CmdBindDescriptorSets);
+    DEV(CmdDispatch);
+
+    #undef DEV
 }
 
 } /* namespace android */

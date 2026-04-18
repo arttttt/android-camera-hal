@@ -15,6 +15,7 @@ static inline int64_t nowMs() {
 #include <system/window.h>
 #include "VulkanIspPipeline.h"
 #include "VulkanLoader.h"
+#include "VulkanPfn.h"
 
 /* Missing KHR types in old Vulkan SDK (android-24) */
 #ifndef VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR
@@ -43,75 +44,6 @@ typedef struct VkNativeBufferANDROID {
 #endif
 
 namespace android {
-
-struct VulkanPfn {
-    /* Bootstrap */
-    PFN_vkGetInstanceProcAddr                       GetInstanceProcAddr;
-    PFN_vkCreateInstance                            CreateInstance;
-    PFN_vkEnumerateInstanceExtensionProperties      EnumerateInstanceExtensionProperties;
-
-    /* Instance-level */
-    PFN_vkDestroyInstance                           DestroyInstance;
-    PFN_vkEnumeratePhysicalDevices                  EnumeratePhysicalDevices;
-    PFN_vkGetPhysicalDeviceMemoryProperties         GetPhysicalDeviceMemoryProperties;
-    PFN_vkGetPhysicalDeviceQueueFamilyProperties    GetPhysicalDeviceQueueFamilyProperties;
-    PFN_vkEnumerateDeviceExtensionProperties        EnumerateDeviceExtensionProperties;
-    PFN_vkCreateDevice                              CreateDevice;
-    PFN_vkGetDeviceProcAddr                         GetDeviceProcAddr;
-
-    /* Device-level */
-    PFN_vkDestroyDevice                             DestroyDevice;
-    PFN_vkGetDeviceQueue                            GetDeviceQueue;
-    PFN_vkDeviceWaitIdle                            DeviceWaitIdle;
-
-    PFN_vkQueueSubmit                               QueueSubmit;
-    PFN_vkQueueWaitIdle                             QueueWaitIdle;
-
-    PFN_vkAllocateMemory                            AllocateMemory;
-    PFN_vkFreeMemory                                FreeMemory;
-    PFN_vkMapMemory                                 MapMemory;
-    PFN_vkUnmapMemory                               UnmapMemory;
-    PFN_vkFlushMappedMemoryRanges                   FlushMappedMemoryRanges;
-    PFN_vkInvalidateMappedMemoryRanges              InvalidateMappedMemoryRanges;
-
-    PFN_vkCreateBuffer                              CreateBuffer;
-    PFN_vkDestroyBuffer                             DestroyBuffer;
-    PFN_vkGetBufferMemoryRequirements               GetBufferMemoryRequirements;
-    PFN_vkBindBufferMemory                          BindBufferMemory;
-
-    PFN_vkCreateImage                               CreateImage;
-    PFN_vkDestroyImage                              DestroyImage;
-
-    PFN_vkCreateFence                               CreateFence;
-    PFN_vkDestroyFence                              DestroyFence;
-    PFN_vkWaitForFences                             WaitForFences;
-    PFN_vkResetFences                               ResetFences;
-
-    PFN_vkCreateShaderModule                        CreateShaderModule;
-    PFN_vkDestroyShaderModule                       DestroyShaderModule;
-    PFN_vkCreateDescriptorSetLayout                 CreateDescriptorSetLayout;
-    PFN_vkDestroyDescriptorSetLayout                DestroyDescriptorSetLayout;
-    PFN_vkCreatePipelineLayout                      CreatePipelineLayout;
-    PFN_vkDestroyPipelineLayout                     DestroyPipelineLayout;
-    PFN_vkCreateComputePipelines                    CreateComputePipelines;
-    PFN_vkDestroyPipeline                           DestroyPipeline;
-
-    PFN_vkCreateDescriptorPool                      CreateDescriptorPool;
-    PFN_vkDestroyDescriptorPool                     DestroyDescriptorPool;
-    PFN_vkAllocateDescriptorSets                    AllocateDescriptorSets;
-    PFN_vkUpdateDescriptorSets                      UpdateDescriptorSets;
-
-    PFN_vkCreateCommandPool                         CreateCommandPool;
-    PFN_vkDestroyCommandPool                        DestroyCommandPool;
-    PFN_vkAllocateCommandBuffers                    AllocateCommandBuffers;
-    PFN_vkBeginCommandBuffer                        BeginCommandBuffer;
-    PFN_vkEndCommandBuffer                          EndCommandBuffer;
-    PFN_vkResetCommandBuffer                        ResetCommandBuffer;
-
-    PFN_vkCmdBindPipeline                           CmdBindPipeline;
-    PFN_vkCmdBindDescriptorSets                     CmdBindDescriptorSets;
-    PFN_vkCmdDispatch                               CmdDispatch;
-};
 
 uint8_t VulkanIspPipeline::sGammaLut[256];
 bool VulkanIspPipeline::sGammaReady = false;
@@ -322,11 +254,7 @@ bool VulkanIspPipeline::init() {
 
     mPfn = new VulkanPfn();
     memset(mPfn, 0, sizeof(*mPfn));
-    mPfn->GetInstanceProcAddr                  = mLoader->getInstanceProcAddr();
-    mPfn->CreateInstance                       = mLoader->getCreateInstance();
-    mPfn->EnumerateInstanceExtensionProperties = mLoader->getEnumerateInstanceExtensionProperties();
 
-    /* Instance */
     VkApplicationInfo appInfo = {};
     appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     appInfo.pApplicationName = "CameraISP";
@@ -336,23 +264,13 @@ bool VulkanIspPipeline::init() {
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &appInfo;
 
-    if (mPfn->CreateInstance(&ici, NULL, &mInstance) != VK_SUCCESS) {
+    if (mLoader->getCreateInstance()(&ici, NULL, &mInstance) != VK_SUCCESS) {
         ALOGE("vkCreateInstance failed");
         destroy();
         return false;
     }
 
-#define INST_PFN(name) \
-    mPfn->name = (PFN_vk##name)mPfn->GetInstanceProcAddr(mInstance, "vk" #name)
-    INST_PFN(DestroyInstance);
-    INST_PFN(EnumeratePhysicalDevices);
-    INST_PFN(GetPhysicalDeviceMemoryProperties);
-    INST_PFN(GetPhysicalDeviceQueueFamilyProperties);
-    INST_PFN(EnumerateDeviceExtensionProperties);
-    INST_PFN(CreateDevice);
-    INST_PFN(GetDeviceProcAddr);
-#undef INST_PFN
-
+    mLoader->loadInstancePfns(mInstance, mPfn);
     if (!mPfn->DestroyInstance || !mPfn->EnumeratePhysicalDevices ||
         !mPfn->CreateDevice    || !mPfn->GetDeviceProcAddr) {
         ALOGE("Instance-level PFN resolution failed");
@@ -440,61 +358,7 @@ bool VulkanIspPipeline::init() {
         return false;
     }
 
-#define DEV_PFN(name) \
-    mPfn->name = (PFN_vk##name)mPfn->GetDeviceProcAddr(mDevice, "vk" #name)
-    DEV_PFN(DestroyDevice);
-    DEV_PFN(GetDeviceQueue);
-    DEV_PFN(DeviceWaitIdle);
-
-    DEV_PFN(QueueSubmit);
-    DEV_PFN(QueueWaitIdle);
-
-    DEV_PFN(AllocateMemory);
-    DEV_PFN(FreeMemory);
-    DEV_PFN(MapMemory);
-    DEV_PFN(UnmapMemory);
-    DEV_PFN(FlushMappedMemoryRanges);
-    DEV_PFN(InvalidateMappedMemoryRanges);
-
-    DEV_PFN(CreateBuffer);
-    DEV_PFN(DestroyBuffer);
-    DEV_PFN(GetBufferMemoryRequirements);
-    DEV_PFN(BindBufferMemory);
-
-    DEV_PFN(CreateImage);
-    DEV_PFN(DestroyImage);
-
-    DEV_PFN(CreateFence);
-    DEV_PFN(DestroyFence);
-    DEV_PFN(WaitForFences);
-    DEV_PFN(ResetFences);
-
-    DEV_PFN(CreateShaderModule);
-    DEV_PFN(DestroyShaderModule);
-    DEV_PFN(CreateDescriptorSetLayout);
-    DEV_PFN(DestroyDescriptorSetLayout);
-    DEV_PFN(CreatePipelineLayout);
-    DEV_PFN(DestroyPipelineLayout);
-    DEV_PFN(CreateComputePipelines);
-    DEV_PFN(DestroyPipeline);
-
-    DEV_PFN(CreateDescriptorPool);
-    DEV_PFN(DestroyDescriptorPool);
-    DEV_PFN(AllocateDescriptorSets);
-    DEV_PFN(UpdateDescriptorSets);
-
-    DEV_PFN(CreateCommandPool);
-    DEV_PFN(DestroyCommandPool);
-    DEV_PFN(AllocateCommandBuffers);
-    DEV_PFN(BeginCommandBuffer);
-    DEV_PFN(EndCommandBuffer);
-    DEV_PFN(ResetCommandBuffer);
-
-    DEV_PFN(CmdBindPipeline);
-    DEV_PFN(CmdBindDescriptorSets);
-    DEV_PFN(CmdDispatch);
-#undef DEV_PFN
-
+    mLoader->loadDevicePfns(mDevice, mPfn);
     if (!mPfn->QueueSubmit || !mPfn->CreateBuffer || !mPfn->CreateShaderModule) {
         ALOGE("Device-level PFN resolution failed (critical fn missing)");
         destroy();
