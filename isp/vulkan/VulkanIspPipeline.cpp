@@ -13,7 +13,6 @@ static inline int64_t nowMs() {
 }
 
 #include "VulkanIspPipeline.h"
-#include "bayer_isp_spv.h"
 
 /* Missing KHR types in old Vulkan SDK (android-24) */
 #ifndef VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR
@@ -271,7 +270,7 @@ bool VulkanIspPipeline::init() {
     }
     mDmabufSupported = false; /* no instance ext support on K1 */
 
-    /* Check for VK_NV_glsl_shader — compile GLSL directly, bypass SPIR-V compiler bug */
+    /* VK_NV_glsl_shader is required — shader is shipped as GLSL source */
     bool hasNvGlsl = false;
     {
         uint32_t extCount2 = 0;
@@ -283,6 +282,11 @@ bool VulkanIspPipeline::init() {
                 hasNvGlsl = true;
         }
         delete[] exts2;
+    }
+    if (!hasNvGlsl) {
+        ALOGE("VK_NV_glsl_shader not supported — Vulkan ISP unavailable");
+        destroy();
+        return false;
     }
 
     /* Find compute queue */
@@ -313,33 +317,24 @@ bool VulkanIspPipeline::init() {
     qci.queueCount = 1;
     qci.pQueuePriorities = &qPriority;
 
-    const char *enabledExts[4];
-    uint32_t enabledExtCount = 0;
-    if (hasNvGlsl) enabledExts[enabledExtCount++] = "VK_NV_glsl_shader";
+    const char *enabledExts[1] = { "VK_NV_glsl_shader" };
 
     VkDeviceCreateInfo dci = {};
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
-    dci.enabledExtensionCount = enabledExtCount;
-    dci.ppEnabledExtensionNames = enabledExtCount ? enabledExts : NULL;
+    dci.enabledExtensionCount = 1;
+    dci.ppEnabledExtensionNames = enabledExts;
 
     if (vkCreateDevice(mPhysDev, &dci, NULL, &mDevice) != VK_SUCCESS) {
-        ALOGE("vkCreateDevice failed (trying without extensions)");
-        /* Fallback: create without extensions */
-        mDmabufSupported = false;
-        dci.enabledExtensionCount = 0;
-        dci.ppEnabledExtensionNames = NULL;
-        if (vkCreateDevice(mPhysDev, &dci, NULL, &mDevice) != VK_SUCCESS) {
-            ALOGE("vkCreateDevice failed");
-            destroy();
-            return false;
-        }
+        ALOGE("vkCreateDevice failed");
+        destroy();
+        return false;
     }
     vkGetDeviceQueue(mDevice, mQueueFamily, 0, &mQueue);
     ALOGD("DMA-BUF import: %s", mDmabufSupported ? "enabled" : "disabled (memcpy path)");
 
-    /* Shader module — use GLSL via VK_NV_glsl_shader if available (avoids SPIR-V compiler crash) */
+    /* Shader module — GLSL source via VK_NV_glsl_shader */
     static const char *kGlslShaderSrc =
         "#version 450\n"
         "layout(local_size_x = 8, local_size_y = 8) in;\n"
@@ -420,20 +415,9 @@ bool VulkanIspPipeline::init() {
 
     VkShaderModuleCreateInfo smi = {};
     smi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    if (hasNvGlsl) {
-        /* VK_NV_glsl_shader: pass GLSL source as pCode (null-terminated string) */
-        smi.codeSize = strlen(kGlslShaderSrc);
-        smi.pCode = (const uint32_t *)kGlslShaderSrc;
-        ALOGD("INIT: creating shader module from GLSL (VK_NV_glsl_shader, size=%zu)", smi.codeSize);
-    } else {
-        /* Standard SPIR-V path */
-        static uint32_t alignedSpv[(sizeof(bayer_isp_spv) + 3) / 4];
-        static bool spvCopied = false;
-        if (!spvCopied) { memcpy(alignedSpv, bayer_isp_spv, bayer_isp_spv_len); spvCopied = true; }
-        smi.codeSize = bayer_isp_spv_len;
-        smi.pCode = alignedSpv;
-        ALOGD("INIT: creating shader module from SPIR-V (size=%zu)", smi.codeSize);
-    }
+    /* VK_NV_glsl_shader: pass GLSL source as pCode */
+    smi.codeSize = strlen(kGlslShaderSrc);
+    smi.pCode = (const uint32_t *)kGlslShaderSrc;
 
     if (vkCreateShaderModule(mDevice, &smi, NULL, &mShader) != VK_SUCCESS) {
         ALOGE("vkCreateShaderModule failed");
