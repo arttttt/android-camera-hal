@@ -3,6 +3,7 @@
 #include <utils/Log.h>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
 #include <sys/ioctl.h>
