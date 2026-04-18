@@ -908,10 +908,12 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
         }
     }
 
-    /* dlopen driver directly */
-    void *drv = dlopen("/system/vendor/lib/libglcore.so", RTLD_NOW | RTLD_LOCAL);
+    /* dlopen the Vulkan HAL shim — it exports vkGetInstanceProcAddr that
+     * bridges into libglcore.so via libEGL init. libglcore itself doesn't
+     * expose vk* symbols publicly. */
+    void *drv = dlopen("/system/vendor/lib/hw/vulkan.tegra.so", RTLD_NOW | RTLD_LOCAL);
     if (!drv) {
-        ALOGE("HACK-PROBE: dlopen libglcore.so failed: %s", dlerror());
+        ALOGE("HACK-PROBE: dlopen vulkan.tegra.so failed: %s", dlerror());
         return false;
     }
 
@@ -922,7 +924,7 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
         dlclose(drv);
         return false;
     }
-    ALOGD("HACK-PROBE: driver vkGetInstanceProcAddr = %p", drvGipa);
+    ALOGD("HACK-PROBE: shim vkGetInstanceProcAddr = %p", drvGipa);
 
     /* Create a parallel VkInstance via driver */
     VkApplicationInfo appInfo = {};
