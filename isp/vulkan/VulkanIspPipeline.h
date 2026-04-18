@@ -8,6 +8,9 @@
 
 namespace android {
 
+class VulkanLoader;
+struct VulkanPfn;
+
 class VulkanIspPipeline : public IspPipeline {
 public:
     VulkanIspPipeline();
@@ -28,8 +31,6 @@ public:
                            uint8_t *dst, unsigned width, unsigned height,
                            uint32_t pixFmt) override;
 
-    /* Phase 2 probe: attempts VkImage creation from gralloc handle once,
-     * logs result, returns false so caller falls back to existing path. */
     bool processToGralloc(const uint8_t *src, void *nativeBuffer,
                            unsigned srcW, unsigned srcH,
                            unsigned dstW, unsigned dstH,
@@ -42,6 +43,9 @@ private:
     uint32_t findMemoryType(uint32_t filter, VkMemoryPropertyFlags props);
     bool ensureBuffers(unsigned width, unsigned height, bool is16bit);
     bool importDmabuf(int fd, VkDeviceSize size, VkBuffer *buf, VkDeviceMemory *mem);
+
+    VulkanLoader *mLoader;
+    VulkanPfn    *mPfn;
 
     bool mReady;
     bool mDmabufSupported;
@@ -64,17 +68,15 @@ private:
 
     VkBuffer mInBuf, mOutBuf, mParamBuf, mDmaBuf;
     VkDeviceMemory mDmaMem;
-    int mDmaFd;  /* currently imported fd */
+    int mDmaFd;
     VkDeviceMemory mInMem, mOutMem, mParamMem;
     size_t mInSize, mOutSize;
-    void *mInMap, *mOutMap, *mParamMap;  /* persistent mapped pointers */
+    void *mInMap, *mOutMap, *mParamMap;
 
-    /* Double buffering — overlap GPU compute with CPU upload */
     VkFence mFence;
-    uint8_t *mPrevDst;       /* destination for previous frame readback */
-    bool mPrevPending;        /* previous frame GPU work is in-flight */
+    uint8_t *mPrevDst;
+    bool mPrevPending;
 
-    /* Params UBO layout — must match shader */
     struct IspParams {
         uint32_t width;
         uint32_t height;
@@ -83,20 +85,19 @@ private:
         uint32_t wbR, wbG, wbB;
         uint32_t doIsp;
         int32_t ccm[9];
-        uint32_t gammaLut[64]; /* 256 entries packed 4 per uint */
+        uint32_t gammaLut[64];
     };
 
     void fillParams(IspParams *p, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
     void updateAwb(const uint8_t *raw, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
 
-    IspParams mParamsTemplate;  /* pre-baked gammaLut + ccm */
+    IspParams mParamsTemplate;
     bool mParamsTemplateReady;
 
     static uint8_t sGammaLut[256];
     static bool sGammaReady;
     static void initGamma();
 
-    /* VK_ANDROID_native_buffer probe state */
     bool mNativeBufferAvail;
     bool mNativeBufferProbed;
 };

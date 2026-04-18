@@ -23,7 +23,7 @@ static inline int64_t nowMs() {
 typedef struct VkImportMemoryFdInfoKHR {
     VkStructureType sType;
     const void *pNext;
-    uint32_t handleType;  /* VkExternalMemoryHandleTypeFlagBitsKHR */
+    uint32_t handleType;
     int fd;
 } VkImportMemoryFdInfoKHR;
 #endif
@@ -44,6 +44,75 @@ typedef struct VkNativeBufferANDROID {
 
 namespace android {
 
+struct VulkanPfn {
+    /* Bootstrap */
+    PFN_vkGetInstanceProcAddr                       GetInstanceProcAddr;
+    PFN_vkCreateInstance                            CreateInstance;
+    PFN_vkEnumerateInstanceExtensionProperties      EnumerateInstanceExtensionProperties;
+
+    /* Instance-level */
+    PFN_vkDestroyInstance                           DestroyInstance;
+    PFN_vkEnumeratePhysicalDevices                  EnumeratePhysicalDevices;
+    PFN_vkGetPhysicalDeviceMemoryProperties         GetPhysicalDeviceMemoryProperties;
+    PFN_vkGetPhysicalDeviceQueueFamilyProperties    GetPhysicalDeviceQueueFamilyProperties;
+    PFN_vkEnumerateDeviceExtensionProperties        EnumerateDeviceExtensionProperties;
+    PFN_vkCreateDevice                              CreateDevice;
+    PFN_vkGetDeviceProcAddr                         GetDeviceProcAddr;
+
+    /* Device-level */
+    PFN_vkDestroyDevice                             DestroyDevice;
+    PFN_vkGetDeviceQueue                            GetDeviceQueue;
+    PFN_vkDeviceWaitIdle                            DeviceWaitIdle;
+
+    PFN_vkQueueSubmit                               QueueSubmit;
+    PFN_vkQueueWaitIdle                             QueueWaitIdle;
+
+    PFN_vkAllocateMemory                            AllocateMemory;
+    PFN_vkFreeMemory                                FreeMemory;
+    PFN_vkMapMemory                                 MapMemory;
+    PFN_vkUnmapMemory                               UnmapMemory;
+    PFN_vkFlushMappedMemoryRanges                   FlushMappedMemoryRanges;
+    PFN_vkInvalidateMappedMemoryRanges              InvalidateMappedMemoryRanges;
+
+    PFN_vkCreateBuffer                              CreateBuffer;
+    PFN_vkDestroyBuffer                             DestroyBuffer;
+    PFN_vkGetBufferMemoryRequirements               GetBufferMemoryRequirements;
+    PFN_vkBindBufferMemory                          BindBufferMemory;
+
+    PFN_vkCreateImage                               CreateImage;
+    PFN_vkDestroyImage                              DestroyImage;
+
+    PFN_vkCreateFence                               CreateFence;
+    PFN_vkDestroyFence                              DestroyFence;
+    PFN_vkWaitForFences                             WaitForFences;
+    PFN_vkResetFences                               ResetFences;
+
+    PFN_vkCreateShaderModule                        CreateShaderModule;
+    PFN_vkDestroyShaderModule                       DestroyShaderModule;
+    PFN_vkCreateDescriptorSetLayout                 CreateDescriptorSetLayout;
+    PFN_vkDestroyDescriptorSetLayout                DestroyDescriptorSetLayout;
+    PFN_vkCreatePipelineLayout                      CreatePipelineLayout;
+    PFN_vkDestroyPipelineLayout                     DestroyPipelineLayout;
+    PFN_vkCreateComputePipelines                    CreateComputePipelines;
+    PFN_vkDestroyPipeline                           DestroyPipeline;
+
+    PFN_vkCreateDescriptorPool                      CreateDescriptorPool;
+    PFN_vkDestroyDescriptorPool                     DestroyDescriptorPool;
+    PFN_vkAllocateDescriptorSets                    AllocateDescriptorSets;
+    PFN_vkUpdateDescriptorSets                      UpdateDescriptorSets;
+
+    PFN_vkCreateCommandPool                         CreateCommandPool;
+    PFN_vkDestroyCommandPool                        DestroyCommandPool;
+    PFN_vkAllocateCommandBuffers                    AllocateCommandBuffers;
+    PFN_vkBeginCommandBuffer                        BeginCommandBuffer;
+    PFN_vkEndCommandBuffer                          EndCommandBuffer;
+    PFN_vkResetCommandBuffer                        ResetCommandBuffer;
+
+    PFN_vkCmdBindPipeline                           CmdBindPipeline;
+    PFN_vkCmdBindDescriptorSets                     CmdBindDescriptorSets;
+    PFN_vkCmdDispatch                               CmdDispatch;
+};
+
 uint8_t VulkanIspPipeline::sGammaLut[256];
 bool VulkanIspPipeline::sGammaReady = false;
 
@@ -61,29 +130,29 @@ void VulkanIspPipeline::initGamma() {
 }
 
 VulkanIspPipeline::VulkanIspPipeline()
-    : mReady(false), mDmabufSupported(false), mBufWidth(0), mBufHeight(0)
+    : mLoader(NULL), mPfn(NULL)
+    , mReady(false), mDmabufSupported(false), mBufWidth(0), mBufHeight(0)
     , mInstance(VK_NULL_HANDLE), mPhysDev(VK_NULL_HANDLE)
-    , mDevice(VK_NULL_HANDLE), mQueue(VK_NULL_HANDLE)
+    , mDevice(VK_NULL_HANDLE), mQueue(VK_NULL_HANDLE), mQueueFamily(0)
     , mShader(VK_NULL_HANDLE), mDescLayout(VK_NULL_HANDLE)
     , mPipeLayout(VK_NULL_HANDLE), mPipeline(VK_NULL_HANDLE)
     , mDescPool(VK_NULL_HANDLE), mDescSet(VK_NULL_HANDLE)
     , mCmdPool(VK_NULL_HANDLE), mCmdBuf(VK_NULL_HANDLE)
     , mInBuf(VK_NULL_HANDLE), mOutBuf(VK_NULL_HANDLE), mParamBuf(VK_NULL_HANDLE)
+    , mDmaBuf(VK_NULL_HANDLE), mDmaMem(VK_NULL_HANDLE), mDmaFd(-1)
     , mInMem(VK_NULL_HANDLE), mOutMem(VK_NULL_HANDLE), mParamMem(VK_NULL_HANDLE)
     , mInSize(0), mOutSize(0)
     , mInMap(NULL), mOutMap(NULL), mParamMap(NULL)
-    , mDmaBuf(VK_NULL_HANDLE), mDmaMem(VK_NULL_HANDLE), mDmaFd(-1)
     , mFence(VK_NULL_HANDLE), mPrevDst(NULL), mPrevPending(false)
     , mParamsTemplateReady(false)
     , mNativeBufferAvail(false), mNativeBufferProbed(false) {}
 
 VulkanIspPipeline::~VulkanIspPipeline() { destroy(); }
 
-/* --- helpers --- */
+/* --- helpers (no VK calls) --- */
 
 void VulkanIspPipeline::fillParams(IspParams *p, unsigned w, unsigned h,
                                     bool is16, uint32_t pixFmt) {
-    /* Bake ccm once — it doesn't change per frame. gammaLut unused (sRGB pow in shader) */
     if (!mParamsTemplateReady) {
         memset(&mParamsTemplate, 0, sizeof(IspParams));
         if (mCcm) {
@@ -139,7 +208,6 @@ void VulkanIspPipeline::updateAwb(const uint8_t *raw, unsigned w, unsigned h,
         if (r < 128) r = 128; if (r > 1024) r = 1024;
         if (g < 128) g = 128; if (g > 1024) g = 1024;
         if (b < 128) b = 128; if (b > 1024) b = 1024;
-        /* Temporal smoothing — EMA, converges in ~7 frames */
         const float alpha = 0.15f;
         mWbR = (unsigned)(alpha * r + (1.0f - alpha) * mWbR);
         mWbG = (unsigned)(alpha * g + (1.0f - alpha) * mWbG);
@@ -151,7 +219,7 @@ void VulkanIspPipeline::updateAwb(const uint8_t *raw, unsigned w, unsigned h,
 
 uint32_t VulkanIspPipeline::findMemoryType(uint32_t filter, VkMemoryPropertyFlags props) {
     VkPhysicalDeviceMemoryProperties memProps;
-    vkGetPhysicalDeviceMemoryProperties(mPhysDev, &memProps);
+    mPfn->GetPhysicalDeviceMemoryProperties(mPhysDev, &memProps);
     for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
         if ((filter & (1 << i)) && (memProps.memoryTypes[i].propertyFlags & props) == props)
             return i;
@@ -167,16 +235,15 @@ bool VulkanIspPipeline::createBuffer(VkBuffer *buf, VkDeviceMemory *mem,
     ci.usage = usage;
     ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    if (vkCreateBuffer(mDevice, &ci, NULL, buf) != VK_SUCCESS)
+    if (mPfn->CreateBuffer(mDevice, &ci, NULL, buf) != VK_SUCCESS)
         return false;
 
     VkMemoryRequirements req;
-    vkGetBufferMemoryRequirements(mDevice, *buf, &req);
+    mPfn->GetBufferMemoryRequirements(mDevice, *buf, &req);
 
     VkMemoryAllocateInfo ai = {};
     ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     ai.allocationSize = req.size;
-    /* Prefer cached for fast CPU memcpy, fallback to coherent */
     ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
     if (ai.memoryTypeIndex == UINT32_MAX)
@@ -184,19 +251,19 @@ bool VulkanIspPipeline::createBuffer(VkBuffer *buf, VkDeviceMemory *mem,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     if (ai.memoryTypeIndex == UINT32_MAX ||
-        vkAllocateMemory(mDevice, &ai, NULL, mem) != VK_SUCCESS) {
-        vkDestroyBuffer(mDevice, *buf, NULL);
+        mPfn->AllocateMemory(mDevice, &ai, NULL, mem) != VK_SUCCESS) {
+        mPfn->DestroyBuffer(mDevice, *buf, NULL);
         *buf = VK_NULL_HANDLE;
         return false;
     }
 
-    vkBindBufferMemory(mDevice, *buf, *mem, 0);
+    mPfn->BindBufferMemory(mDevice, *buf, *mem, 0);
     return true;
 }
 
 void VulkanIspPipeline::destroyBuffer(VkBuffer buf, VkDeviceMemory mem) {
-    if (buf != VK_NULL_HANDLE) vkDestroyBuffer(mDevice, buf, NULL);
-    if (mem != VK_NULL_HANDLE) vkFreeMemory(mDevice, mem, NULL);
+    if (buf != VK_NULL_HANDLE) mPfn->DestroyBuffer(mDevice, buf, NULL);
+    if (mem != VK_NULL_HANDLE) mPfn->FreeMemory(mDevice, mem, NULL);
 }
 
 bool VulkanIspPipeline::importDmabuf(int fd, VkDeviceSize size,
@@ -207,17 +274,16 @@ bool VulkanIspPipeline::importDmabuf(int fd, VkDeviceSize size,
     bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    if (vkCreateBuffer(mDevice, &bci, NULL, buf) != VK_SUCCESS)
+    if (mPfn->CreateBuffer(mDevice, &bci, NULL, buf) != VK_SUCCESS)
         return false;
 
     VkMemoryRequirements req;
-    vkGetBufferMemoryRequirements(mDevice, *buf, &req);
+    mPfn->GetBufferMemoryRequirements(mDevice, *buf, &req);
 
-    /* Import fd — OPAQUE_FD on Tegra goes through nvmap, same as V4L2 dmabuf */
     VkImportMemoryFdInfoKHR importInfo = {};
     importInfo.sType = (VkStructureType)VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
     importInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR;
-    importInfo.fd = dup(fd);  /* Vulkan takes ownership */
+    importInfo.fd = dup(fd);
 
     VkMemoryAllocateInfo ai = {};
     ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -228,15 +294,15 @@ bool VulkanIspPipeline::importDmabuf(int fd, VkDeviceSize size,
     if (ai.memoryTypeIndex == UINT32_MAX)
         ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits, 0);
 
-    if (vkAllocateMemory(mDevice, &ai, NULL, mem) != VK_SUCCESS) {
+    if (mPfn->AllocateMemory(mDevice, &ai, NULL, mem) != VK_SUCCESS) {
         ALOGW("importDmabuf: vkAllocateMemory failed");
         close(importInfo.fd);
-        vkDestroyBuffer(mDevice, *buf, NULL);
+        mPfn->DestroyBuffer(mDevice, *buf, NULL);
         *buf = VK_NULL_HANDLE;
         return false;
     }
 
-    vkBindBufferMemory(mDevice, *buf, *mem, 0);
+    mPfn->BindBufferMemory(mDevice, *buf, *mem, 0);
     ALOGD("importDmabuf: fd=%d size=%zu OK", fd, (size_t)size);
     return true;
 }
@@ -245,6 +311,20 @@ bool VulkanIspPipeline::importDmabuf(int fd, VkDeviceSize size,
 
 bool VulkanIspPipeline::init() {
     if (mReady) return true;
+
+    mLoader = createVulkanLoader();
+    if (!mLoader->load()) {
+        ALOGE("VulkanLoader '%s' load() failed", mLoader->name());
+        destroy();
+        return false;
+    }
+    ALOGD("VulkanLoader: %s", mLoader->name());
+
+    mPfn = new VulkanPfn();
+    memset(mPfn, 0, sizeof(*mPfn));
+    mPfn->GetInstanceProcAddr                  = mLoader->getInstanceProcAddr();
+    mPfn->CreateInstance                       = mLoader->getCreateInstance();
+    mPfn->EnumerateInstanceExtensionProperties = mLoader->getEnumerateInstanceExtensionProperties();
 
     /* Instance */
     VkApplicationInfo appInfo = {};
@@ -256,52 +336,54 @@ bool VulkanIspPipeline::init() {
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &appInfo;
 
-    if (vkCreateInstance(&ici, NULL, &mInstance) != VK_SUCCESS) {
+    if (mPfn->CreateInstance(&ici, NULL, &mInstance) != VK_SUCCESS) {
         ALOGE("vkCreateInstance failed");
+        destroy();
+        return false;
+    }
+
+#define INST_PFN(name) \
+    mPfn->name = (PFN_vk##name)mPfn->GetInstanceProcAddr(mInstance, "vk" #name)
+    INST_PFN(DestroyInstance);
+    INST_PFN(EnumeratePhysicalDevices);
+    INST_PFN(GetPhysicalDeviceMemoryProperties);
+    INST_PFN(GetPhysicalDeviceQueueFamilyProperties);
+    INST_PFN(EnumerateDeviceExtensionProperties);
+    INST_PFN(CreateDevice);
+    INST_PFN(GetDeviceProcAddr);
+#undef INST_PFN
+
+    if (!mPfn->DestroyInstance || !mPfn->EnumeratePhysicalDevices ||
+        !mPfn->CreateDevice    || !mPfn->GetDeviceProcAddr) {
+        ALOGE("Instance-level PFN resolution failed");
+        destroy();
         return false;
     }
 
     /* Physical device */
     uint32_t devCount = 1;
-    if (vkEnumeratePhysicalDevices(mInstance, &devCount, &mPhysDev) != VK_SUCCESS || devCount == 0) {
+    if (mPfn->EnumeratePhysicalDevices(mInstance, &devCount, &mPhysDev) != VK_SUCCESS || devCount == 0) {
         ALOGE("No Vulkan physical device");
         destroy();
         return false;
     }
 
-    /* Enumerate extensions — check for external memory support */
-    bool hasExtMem = false, hasExtMemFd = false;
+    /* Enumerate device extensions. */
+    bool hasNvGlsl = false;
+    mNativeBufferAvail = false;
     {
         uint32_t extCount = 0;
-        vkEnumerateDeviceExtensionProperties(mPhysDev, NULL, &extCount, NULL);
+        mPfn->EnumerateDeviceExtensionProperties(mPhysDev, NULL, &extCount, NULL);
         VkExtensionProperties *exts = new VkExtensionProperties[extCount];
-        vkEnumerateDeviceExtensionProperties(mPhysDev, NULL, &extCount, exts);
+        mPfn->EnumerateDeviceExtensionProperties(mPhysDev, NULL, &extCount, exts);
         for (uint32_t i = 0; i < extCount; i++) {
             ALOGD("VK ext: %s", exts[i].extensionName);
-            if (!strcmp(exts[i].extensionName, "VK_KHR_external_memory"))
-                hasExtMem = true;
-            if (!strcmp(exts[i].extensionName, "VK_KHR_external_memory_fd"))
-                hasExtMemFd = true;
-        }
-        delete[] exts;
-    }
-    mDmabufSupported = false; /* no instance ext support on K1 */
-
-    /* VK_NV_glsl_shader is required (shader is shipped as GLSL source).
-     * VK_ANDROID_native_buffer is probed for Phase 2 — used by processToGralloc. */
-    bool hasNvGlsl = false;
-    {
-        uint32_t extCount2 = 0;
-        vkEnumerateDeviceExtensionProperties(mPhysDev, NULL, &extCount2, NULL);
-        VkExtensionProperties *exts2 = new VkExtensionProperties[extCount2];
-        vkEnumerateDeviceExtensionProperties(mPhysDev, NULL, &extCount2, exts2);
-        for (uint32_t i = 0; i < extCount2; i++) {
-            if (!strcmp(exts2[i].extensionName, "VK_NV_glsl_shader"))
+            if (!strcmp(exts[i].extensionName, "VK_NV_glsl_shader"))
                 hasNvGlsl = true;
-            if (!strcmp(exts2[i].extensionName, "VK_ANDROID_native_buffer"))
+            if (!strcmp(exts[i].extensionName, "VK_ANDROID_native_buffer"))
                 mNativeBufferAvail = true;
         }
-        delete[] exts2;
+        delete[] exts;
     }
     if (!hasNvGlsl) {
         ALOGE("VK_NV_glsl_shader not supported — Vulkan ISP unavailable");
@@ -309,13 +391,14 @@ bool VulkanIspPipeline::init() {
         return false;
     }
     ALOGD("VK_ANDROID_native_buffer: %s", mNativeBufferAvail ? "AVAILABLE" : "absent");
+    mDmabufSupported = false;
 
-    /* Find compute queue */
+    /* Compute queue */
     uint32_t qfCount = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(mPhysDev, &qfCount, NULL);
+    mPfn->GetPhysicalDeviceQueueFamilyProperties(mPhysDev, &qfCount, NULL);
     VkQueueFamilyProperties qfProps[8];
     if (qfCount > 8) qfCount = 8;
-    vkGetPhysicalDeviceQueueFamilyProperties(mPhysDev, &qfCount, qfProps);
+    mPfn->GetPhysicalDeviceQueueFamilyProperties(mPhysDev, &qfCount, qfProps);
 
     mQueueFamily = UINT32_MAX;
     for (uint32_t i = 0; i < qfCount; i++) {
@@ -330,7 +413,7 @@ bool VulkanIspPipeline::init() {
         return false;
     }
 
-    /* Logical device — enable external memory extensions if available */
+    /* Logical device */
     float qPriority = 1.0f;
     VkDeviceQueueCreateInfo qci = {};
     qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
@@ -351,13 +434,74 @@ bool VulkanIspPipeline::init() {
     dci.enabledExtensionCount = enabledExtCount;
     dci.ppEnabledExtensionNames = enabledExts;
 
-    if (vkCreateDevice(mPhysDev, &dci, NULL, &mDevice) != VK_SUCCESS) {
+    if (mPfn->CreateDevice(mPhysDev, &dci, NULL, &mDevice) != VK_SUCCESS) {
         ALOGE("vkCreateDevice failed");
         destroy();
         return false;
     }
-    vkGetDeviceQueue(mDevice, mQueueFamily, 0, &mQueue);
-    ALOGD("DMA-BUF import: %s", mDmabufSupported ? "enabled" : "disabled (memcpy path)");
+
+#define DEV_PFN(name) \
+    mPfn->name = (PFN_vk##name)mPfn->GetDeviceProcAddr(mDevice, "vk" #name)
+    DEV_PFN(DestroyDevice);
+    DEV_PFN(GetDeviceQueue);
+    DEV_PFN(DeviceWaitIdle);
+
+    DEV_PFN(QueueSubmit);
+    DEV_PFN(QueueWaitIdle);
+
+    DEV_PFN(AllocateMemory);
+    DEV_PFN(FreeMemory);
+    DEV_PFN(MapMemory);
+    DEV_PFN(UnmapMemory);
+    DEV_PFN(FlushMappedMemoryRanges);
+    DEV_PFN(InvalidateMappedMemoryRanges);
+
+    DEV_PFN(CreateBuffer);
+    DEV_PFN(DestroyBuffer);
+    DEV_PFN(GetBufferMemoryRequirements);
+    DEV_PFN(BindBufferMemory);
+
+    DEV_PFN(CreateImage);
+    DEV_PFN(DestroyImage);
+
+    DEV_PFN(CreateFence);
+    DEV_PFN(DestroyFence);
+    DEV_PFN(WaitForFences);
+    DEV_PFN(ResetFences);
+
+    DEV_PFN(CreateShaderModule);
+    DEV_PFN(DestroyShaderModule);
+    DEV_PFN(CreateDescriptorSetLayout);
+    DEV_PFN(DestroyDescriptorSetLayout);
+    DEV_PFN(CreatePipelineLayout);
+    DEV_PFN(DestroyPipelineLayout);
+    DEV_PFN(CreateComputePipelines);
+    DEV_PFN(DestroyPipeline);
+
+    DEV_PFN(CreateDescriptorPool);
+    DEV_PFN(DestroyDescriptorPool);
+    DEV_PFN(AllocateDescriptorSets);
+    DEV_PFN(UpdateDescriptorSets);
+
+    DEV_PFN(CreateCommandPool);
+    DEV_PFN(DestroyCommandPool);
+    DEV_PFN(AllocateCommandBuffers);
+    DEV_PFN(BeginCommandBuffer);
+    DEV_PFN(EndCommandBuffer);
+    DEV_PFN(ResetCommandBuffer);
+
+    DEV_PFN(CmdBindPipeline);
+    DEV_PFN(CmdBindDescriptorSets);
+    DEV_PFN(CmdDispatch);
+#undef DEV_PFN
+
+    if (!mPfn->QueueSubmit || !mPfn->CreateBuffer || !mPfn->CreateShaderModule) {
+        ALOGE("Device-level PFN resolution failed (critical fn missing)");
+        destroy();
+        return false;
+    }
+
+    mPfn->GetDeviceQueue(mDevice, mQueueFamily, 0, &mQueue);
 
     /* Shader module — GLSL source via VK_NV_glsl_shader */
     static const char *kGlslShaderSrc =
@@ -440,18 +584,16 @@ bool VulkanIspPipeline::init() {
 
     VkShaderModuleCreateInfo smi = {};
     smi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    /* VK_NV_glsl_shader: pass GLSL source as pCode */
     smi.codeSize = strlen(kGlslShaderSrc);
     smi.pCode = (const uint32_t *)kGlslShaderSrc;
 
-    if (vkCreateShaderModule(mDevice, &smi, NULL, &mShader) != VK_SUCCESS) {
+    if (mPfn->CreateShaderModule(mDevice, &smi, NULL, &mShader) != VK_SUCCESS) {
         ALOGE("vkCreateShaderModule failed");
         destroy();
         return false;
     }
-    ALOGD("INIT: shader module OK");
 
-    /* Descriptor set layout: 3 storage buffers (input, output, params) */
+    /* Descriptor set layout */
     VkDescriptorSetLayoutBinding bindings[3] = {};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -464,28 +606,20 @@ bool VulkanIspPipeline::init() {
     dslci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     dslci.bindingCount = 3;
     dslci.pBindings = bindings;
-    ALOGD("INIT: creating descriptor set layout");
-    VkResult r = vkCreateDescriptorSetLayout(mDevice, &dslci, NULL, &mDescLayout);
-    if (r != VK_SUCCESS) {
-        ALOGE("vkCreateDescriptorSetLayout failed: %d", r);
+    if (mPfn->CreateDescriptorSetLayout(mDevice, &dslci, NULL, &mDescLayout) != VK_SUCCESS) {
+        ALOGE("vkCreateDescriptorSetLayout failed");
         destroy(); return false;
     }
-    ALOGD("INIT: descriptor set layout OK (handle=0x%llx)", (unsigned long long)mDescLayout);
 
     /* Pipeline layout */
     VkPipelineLayoutCreateInfo plci = {};
     plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     plci.setLayoutCount = 1;
     plci.pSetLayouts = &mDescLayout;
-    ALOGD("INIT: creating pipeline layout");
-    r = vkCreatePipelineLayout(mDevice, &plci, NULL, &mPipeLayout);
-    if (r != VK_SUCCESS) {
-        ALOGE("vkCreatePipelineLayout failed: %d", r);
+    if (mPfn->CreatePipelineLayout(mDevice, &plci, NULL, &mPipeLayout) != VK_SUCCESS) {
+        ALOGE("vkCreatePipelineLayout failed");
         destroy(); return false;
     }
-    ALOGD("INIT: pipeline layout OK (handle=0x%llx)", (unsigned long long)mPipeLayout);
-    ALOGD("INIT: device=%p shader=0x%llx descLayout=0x%llx pipeLayout=0x%llx",
-          mDevice, (unsigned long long)mShader, (unsigned long long)mDescLayout, (unsigned long long)mPipeLayout);
 
     /* Compute pipeline */
     VkComputePipelineCreateInfo cpci = {};
@@ -496,8 +630,7 @@ bool VulkanIspPipeline::init() {
     cpci.stage.pName = "main";
     cpci.layout = mPipeLayout;
 
-    ALOGD("INIT: creating compute pipeline");
-    if (vkCreateComputePipelines(mDevice, VK_NULL_HANDLE, 1, &cpci, NULL, &mPipeline) != VK_SUCCESS) {
+    if (mPfn->CreateComputePipelines(mDevice, VK_NULL_HANDLE, 1, &cpci, NULL, &mPipeline) != VK_SUCCESS) {
         ALOGE("vkCreateComputePipelines failed");
         destroy();
         return false;
@@ -513,43 +646,34 @@ bool VulkanIspPipeline::init() {
     dpci.maxSets = 1;
     dpci.poolSizeCount = 1;
     dpci.pPoolSizes = &poolSize;
-    ALOGD("INIT: creating descriptor pool");
-    r = vkCreateDescriptorPool(mDevice, &dpci, NULL, &mDescPool);
-    if (r != VK_SUCCESS) {
-        ALOGE("vkCreateDescriptorPool failed: %d", r);
+    if (mPfn->CreateDescriptorPool(mDevice, &dpci, NULL, &mDescPool) != VK_SUCCESS) {
+        ALOGE("vkCreateDescriptorPool failed");
         destroy(); return false;
     }
-    ALOGD("INIT: descriptor pool OK");
 
-    /* Allocate descriptor set */
     VkDescriptorSetAllocateInfo dsai = {};
     dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     dsai.descriptorPool = mDescPool;
     dsai.descriptorSetCount = 1;
     dsai.pSetLayouts = &mDescLayout;
-    ALOGD("INIT: allocating descriptor set");
-    r = vkAllocateDescriptorSets(mDevice, &dsai, &mDescSet);
-    if (r != VK_SUCCESS) {
-        ALOGE("vkAllocateDescriptorSets failed: %d", r);
+    if (mPfn->AllocateDescriptorSets(mDevice, &dsai, &mDescSet) != VK_SUCCESS) {
+        ALOGE("vkAllocateDescriptorSets failed");
         destroy(); return false;
     }
-    ALOGD("INIT: descriptor set OK");
 
     /* Command pool + buffer */
     VkCommandPoolCreateInfo cpi = {};
     cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     cpi.queueFamilyIndex = mQueueFamily;
     cpi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    vkCreateCommandPool(mDevice, &cpi, NULL, &mCmdPool);
+    mPfn->CreateCommandPool(mDevice, &cpi, NULL, &mCmdPool);
 
     VkCommandBufferAllocateInfo cbai = {};
     cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     cbai.commandPool = mCmdPool;
     cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbai.commandBufferCount = 1;
-    ALOGD("INIT: allocating command buffer");
-    vkAllocateCommandBuffers(mDevice, &cbai, &mCmdBuf);
-    ALOGD("INIT: command buffer OK");
+    mPfn->AllocateCommandBuffers(mDevice, &cbai, &mCmdBuf);
 
     /* Params buffer — persistent map */
     if (!createBuffer(&mParamBuf, &mParamMem, sizeof(IspParams),
@@ -558,14 +682,12 @@ bool VulkanIspPipeline::init() {
         destroy();
         return false;
     }
-    ALOGD("INIT: mapping params buffer");
-    vkMapMemory(mDevice, mParamMem, 0, sizeof(IspParams), 0, &mParamMap);
-    ALOGD("INIT: params mapped OK");
+    mPfn->MapMemory(mDevice, mParamMem, 0, sizeof(IspParams), 0, &mParamMap);
 
     /* Fence for double-buffered submit */
     VkFenceCreateInfo fci = {};
     fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    vkCreateFence(mDevice, &fci, NULL, &mFence);
+    mPfn->CreateFence(mDevice, &fci, NULL, &mFence);
 
     initGamma();
 
@@ -584,22 +706,20 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
                      mBufWidth != width || mBufHeight != height);
 
     if (recreate) {
-        /* Unmap before destroy */
-        if (mInMap) { vkUnmapMemory(mDevice, mInMem); mInMap = NULL; }
-        if (mOutMap) { vkUnmapMemory(mDevice, mOutMem); mOutMap = NULL; }
+        if (mInMap)  { mPfn->UnmapMemory(mDevice, mInMem);  mInMap = NULL; }
+        if (mOutMap) { mPfn->UnmapMemory(mDevice, mOutMem); mOutMap = NULL; }
 
-        destroyBuffer(mInBuf, mInMem); mInBuf = VK_NULL_HANDLE; mInMem = VK_NULL_HANDLE;
+        destroyBuffer(mInBuf, mInMem);   mInBuf = VK_NULL_HANDLE;  mInMem = VK_NULL_HANDLE;
         destroyBuffer(mOutBuf, mOutMem); mOutBuf = VK_NULL_HANDLE; mOutMem = VK_NULL_HANDLE;
 
-        if (!createBuffer(&mInBuf, &mInMem, inSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+        if (!createBuffer(&mInBuf,  &mInMem,  inSize,  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
             !createBuffer(&mOutBuf, &mOutMem, outSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
             ALOGE("Failed to allocate Vulkan buffers %ux%u", width, height);
             return false;
         }
 
-        /* Persistent map */
-        vkMapMemory(mDevice, mInMem, 0, inSize, 0, &mInMap);
-        vkMapMemory(mDevice, mOutMem, 0, outSize, 0, &mOutMap);
+        mPfn->MapMemory(mDevice, mInMem,  0, inSize,  0, &mInMap);
+        mPfn->MapMemory(mDevice, mOutMem, 0, outSize, 0, &mOutMap);
 
         mInSize = inSize; mOutSize = outSize;
         mBufWidth = width; mBufHeight = height;
@@ -608,8 +728,8 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
     if (!recreate) return true;
 
     VkDescriptorBufferInfo bufInfos[3] = {};
-    bufInfos[0].buffer = mInBuf;  bufInfos[0].range = mInSize;
-    bufInfos[1].buffer = mOutBuf; bufInfos[1].range = mOutSize;
+    bufInfos[0].buffer = mInBuf;    bufInfos[0].range = mInSize;
+    bufInfos[1].buffer = mOutBuf;   bufInfos[1].range = mOutSize;
     bufInfos[2].buffer = mParamBuf; bufInfos[2].range = sizeof(IspParams);
 
     VkWriteDescriptorSet writes[3] = {};
@@ -621,7 +741,7 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
         writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[i].pBufferInfo = &bufInfos[i];
     }
-    vkUpdateDescriptorSets(mDevice, 3, writes, 0, NULL);
+    mPfn->UpdateDescriptorSets(mDevice, 3, writes, 0, NULL);
 
     return true;
 }
@@ -641,16 +761,15 @@ bool VulkanIspPipeline::process(const uint8_t *src, uint8_t *dst,
 
     int64_t t0 = nowMs();
 
-    /* If previous frame is in-flight, wait for it and readback */
     if (mPrevPending) {
-        vkWaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
-        vkResetFences(mDevice, 1, &mFence);
+        mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
+        mPfn->ResetFences(mDevice, 1, &mFence);
 
         VkMappedMemoryRange outRange = {};
         outRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
         outRange.memory = mOutMem;
         outRange.size = VK_WHOLE_SIZE;
-        vkInvalidateMappedMemoryRanges(mDevice, 1, &outRange);
+        mPfn->InvalidateMappedMemoryRanges(mDevice, 1, &outRange);
 
         memcpy(mPrevDst, mOutMap, mOutSize);
         mPrevPending = false;
@@ -658,7 +777,6 @@ bool VulkanIspPipeline::process(const uint8_t *src, uint8_t *dst,
 
     int64_t t1 = nowMs();
 
-    /* Upload current frame */
     memcpy(mInMap, src, mInSize);
 
     IspParams params;
@@ -672,44 +790,41 @@ bool VulkanIspPipeline::process(const uint8_t *src, uint8_t *dst,
     flushRanges[1].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
     flushRanges[1].memory = mParamMem;
     flushRanges[1].size = VK_WHOLE_SIZE;
-    vkFlushMappedMemoryRanges(mDevice, 2, flushRanges);
+    mPfn->FlushMappedMemoryRanges(mDevice, 2, flushRanges);
 
     int64_t t2 = nowMs();
 
-    /* Record + submit — don't wait, GPU runs async */
     VkCommandBufferBeginInfo beginInfo = {};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-    vkResetCommandBuffer(mCmdBuf, 0);
-    vkBeginCommandBuffer(mCmdBuf, &beginInfo);
-    vkCmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
-    vkCmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            mPipeLayout, 0, 1, &mDescSet, 0, NULL);
-    vkCmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
-    vkEndCommandBuffer(mCmdBuf);
+    mPfn->ResetCommandBuffer(mCmdBuf, 0);
+    mPfn->BeginCommandBuffer(mCmdBuf, &beginInfo);
+    mPfn->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
+    mPfn->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                mPipeLayout, 0, 1, &mDescSet, 0, NULL);
+    mPfn->CmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
+    mPfn->EndCommandBuffer(mCmdBuf);
 
     VkSubmitInfo si = {};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &mCmdBuf;
-    vkQueueSubmit(mQueue, 1, &si, mFence);
+    mPfn->QueueSubmit(mQueue, 1, &si, mFence);
 
-    /* Mark as pending — readback happens at start of NEXT frame */
     mPrevDst = dst;
     mPrevPending = true;
 
-    /* First frame: must wait synchronously (no previous result to show) */
     static bool firstFrame = true;
     if (firstFrame) {
         firstFrame = false;
-        vkWaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
-        vkResetFences(mDevice, 1, &mFence);
+        mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
+        mPfn->ResetFences(mDevice, 1, &mFence);
         VkMappedMemoryRange outRange = {};
         outRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
         outRange.memory = mOutMem;
         outRange.size = VK_WHOLE_SIZE;
-        vkInvalidateMappedMemoryRanges(mDevice, 1, &outRange);
+        mPfn->InvalidateMappedMemoryRanges(mDevice, 1, &outRange);
         memcpy(dst, mOutMap, mOutSize);
         mPrevPending = false;
     }
@@ -731,14 +846,12 @@ bool VulkanIspPipeline::processSync(const uint8_t *src, uint8_t *dst,
     if (!ensureBuffers(width, height, is16))
         return false;
 
-    /* Drain any pending double-buffered work */
     if (mPrevPending) {
-        vkWaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
-        vkResetFences(mDevice, 1, &mFence);
+        mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
+        mPfn->ResetFences(mDevice, 1, &mFence);
         mPrevPending = false;
     }
 
-    /* Upload */
     memcpy(mInMap, src, mInSize);
     IspParams params;
     fillParams(&params, width, height, is16, pixFmt);
@@ -751,34 +864,32 @@ bool VulkanIspPipeline::processSync(const uint8_t *src, uint8_t *dst,
     flushRanges[1].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
     flushRanges[1].memory = mParamMem;
     flushRanges[1].size = VK_WHOLE_SIZE;
-    vkFlushMappedMemoryRanges(mDevice, 2, flushRanges);
+    mPfn->FlushMappedMemoryRanges(mDevice, 2, flushRanges);
 
-    /* Submit + wait */
     VkCommandBufferBeginInfo beginInfo = {};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkResetCommandBuffer(mCmdBuf, 0);
-    vkBeginCommandBuffer(mCmdBuf, &beginInfo);
-    vkCmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
-    vkCmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            mPipeLayout, 0, 1, &mDescSet, 0, NULL);
-    vkCmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
-    vkEndCommandBuffer(mCmdBuf);
+    mPfn->ResetCommandBuffer(mCmdBuf, 0);
+    mPfn->BeginCommandBuffer(mCmdBuf, &beginInfo);
+    mPfn->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
+    mPfn->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                mPipeLayout, 0, 1, &mDescSet, 0, NULL);
+    mPfn->CmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
+    mPfn->EndCommandBuffer(mCmdBuf);
 
     VkSubmitInfo si = {};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &mCmdBuf;
-    vkQueueSubmit(mQueue, 1, &si, mFence);
-    vkWaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
-    vkResetFences(mDevice, 1, &mFence);
+    mPfn->QueueSubmit(mQueue, 1, &si, mFence);
+    mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
+    mPfn->ResetFences(mDevice, 1, &mFence);
 
-    /* Readback immediately */
     VkMappedMemoryRange outRange = {};
     outRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
     outRange.memory = mOutMem;
     outRange.size = VK_WHOLE_SIZE;
-    vkInvalidateMappedMemoryRanges(mDevice, 1, &outRange);
+    mPfn->InvalidateMappedMemoryRanges(mDevice, 1, &outRange);
     memcpy(dst, mOutMap, mOutSize);
 
     return true;
@@ -787,7 +898,6 @@ bool VulkanIspPipeline::processSync(const uint8_t *src, uint8_t *dst,
 bool VulkanIspPipeline::processFromDmabuf(int dmabufFd, const uint8_t *cpuFallback,
                                            uint8_t *dst, unsigned width, unsigned height,
                                            uint32_t pixFmt) {
-    /* Fall through to memcpy path if dmabuf import not available */
     if (!mReady || !mDmabufSupported || dmabufFd < 0)
         return process(cpuFallback, dst, width, height, pixFmt);
 
@@ -795,11 +905,9 @@ bool VulkanIspPipeline::processFromDmabuf(int dmabufFd, const uint8_t *cpuFallba
                  pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SBGGR10);
     size_t inSize = width * height * (is16 ? 2 : 1);
 
-    /* Ensure output buffer + all descriptors */
     if (!ensureBuffers(width, height, is16))
         return process(cpuFallback, dst, width, height, pixFmt);
 
-    /* Import dmabuf as input — reimport if fd changed */
     if (mDmaFd != dmabufFd) {
         if (mDmaBuf != VK_NULL_HANDLE) destroyBuffer(mDmaBuf, mDmaMem);
         mDmaBuf = VK_NULL_HANDLE; mDmaMem = VK_NULL_HANDLE;
@@ -811,7 +919,6 @@ bool VulkanIspPipeline::processFromDmabuf(int dmabufFd, const uint8_t *cpuFallba
         mDmaFd = dmabufFd;
     }
 
-    /* Override input descriptor to point to dmabuf */
     VkDescriptorBufferInfo bufInfo = {};
     bufInfo.buffer = mDmaBuf;
     bufInfo.range = inSize;
@@ -822,11 +929,10 @@ bool VulkanIspPipeline::processFromDmabuf(int dmabufFd, const uint8_t *cpuFallba
     w.descriptorCount = 1;
     w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     w.pBufferInfo = &bufInfo;
-    vkUpdateDescriptorSets(mDevice, 1, &w, 0, NULL);
+    mPfn->UpdateDescriptorSets(mDevice, 1, &w, 0, NULL);
 
     int64_t t0 = nowMs();
 
-    /* Fill params via persistent map */
     IspParams params;
     fillParams(&params, width, height, is16, pixFmt);
     memcpy(mParamMap, &params, sizeof(IspParams));
@@ -835,36 +941,34 @@ bool VulkanIspPipeline::processFromDmabuf(int dmabufFd, const uint8_t *cpuFallba
     paramRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
     paramRange.memory = mParamMem;
     paramRange.size = VK_WHOLE_SIZE;
-    vkFlushMappedMemoryRanges(mDevice, 1, &paramRange);
+    mPfn->FlushMappedMemoryRanges(mDevice, 1, &paramRange);
 
     int64_t t1 = nowMs();
 
-    /* Dispatch */
     VkCommandBufferBeginInfo beginInfo = {};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkResetCommandBuffer(mCmdBuf, 0);
-    vkBeginCommandBuffer(mCmdBuf, &beginInfo);
-    vkCmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
-    vkCmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            mPipeLayout, 0, 1, &mDescSet, 0, NULL);
-    vkCmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
-    vkEndCommandBuffer(mCmdBuf);
+    mPfn->ResetCommandBuffer(mCmdBuf, 0);
+    mPfn->BeginCommandBuffer(mCmdBuf, &beginInfo);
+    mPfn->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
+    mPfn->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                mPipeLayout, 0, 1, &mDescSet, 0, NULL);
+    mPfn->CmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
+    mPfn->EndCommandBuffer(mCmdBuf);
 
     VkSubmitInfo si = {};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &mCmdBuf;
-    vkQueueSubmit(mQueue, 1, &si, VK_NULL_HANDLE);
-    vkQueueWaitIdle(mQueue);
+    mPfn->QueueSubmit(mQueue, 1, &si, VK_NULL_HANDLE);
+    mPfn->QueueWaitIdle(mQueue);
     int64_t t2 = nowMs();
 
-    /* Invalidate + readback via persistent map */
     VkMappedMemoryRange outRange = {};
     outRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
     outRange.memory = mOutMem;
     outRange.size = VK_WHOLE_SIZE;
-    vkInvalidateMappedMemoryRanges(mDevice, 1, &outRange);
+    mPfn->InvalidateMappedMemoryRanges(mDevice, 1, &outRange);
 
     memcpy(dst, mOutMap, mOutSize);
     int64_t t3 = nowMs();
@@ -875,12 +979,6 @@ bool VulkanIspPipeline::processFromDmabuf(int dmabufFd, const uint8_t *cpuFallba
     return true;
 }
 
-/* --- Phase 2 end-to-end probe: verify gralloc → VkImage via VulkanLoader ---
- * Builds a parallel VkInstance/VkDevice through VulkanLoader (on Android 7
- * this is the HalHmiVulkanLoader that bypasses libvulkan's HAL-extension
- * filter), enables VK_ANDROID_native_buffer, and tries vkCreateImage with
- * VkNativeBufferANDROID chained on a real gralloc handle.
- * Always returns false so production path is untouched. */
 bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
                                           unsigned srcW, unsigned srcH,
                                           unsigned dstW, unsigned dstH,
@@ -891,129 +989,12 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
         return false;
     mNativeBufferProbed = true;
 
-    ANativeWindowBuffer *anwb = (ANativeWindowBuffer *)nativeBuffer;
-    ALOGD("PROBE: nativeBuffer %dx%d stride=%d format=%d usage=0x%x handle=%p numFds=%d numInts=%d",
-          anwb->width, anwb->height, anwb->stride, anwb->format, anwb->usage,
-          anwb->handle, anwb->handle ? anwb->handle->numFds : -1,
-          anwb->handle ? anwb->handle->numInts : -1);
-
-    VulkanLoader *loader = createVulkanLoader();
-    if (!loader->load()) {
-        ALOGE("PROBE: VulkanLoader %s load() failed", loader->name());
-        delete loader;
+    if (!mNativeBufferAvail) {
+        ALOGW("PROBE: VK_ANDROID_native_buffer not available on this device");
         return false;
     }
-    ALOGD("PROBE: VulkanLoader %s ready", loader->name());
 
-    PFN_vkGetInstanceProcAddr gipa = loader->getInstanceProcAddr();
-    PFN_vkCreateInstance createInst = loader->getCreateInstance();
-
-    /* Bootstrap VkInstance */
-    VkApplicationInfo appInfo = {};
-    appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    appInfo.pApplicationName = "CameraISP-probe";
-    appInfo.apiVersion = VK_API_VERSION;
-
-    VkInstanceCreateInfo ici = {};
-    ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    ici.pApplicationInfo = &appInfo;
-
-    VkInstance drvInst = VK_NULL_HANDLE;
-    VkResult r = createInst(&ici, NULL, &drvInst);
-    if (r != VK_SUCCESS) {
-        ALOGE("PROBE: vkCreateInstance = %d", (int)r);
-        delete loader; return false;
-    }
-
-    /* Resolve rest of PFNs via driver-direct GIPA */
-    PFN_vkEnumeratePhysicalDevices enumPD =
-        (PFN_vkEnumeratePhysicalDevices)gipa(drvInst, "vkEnumeratePhysicalDevices");
-    PFN_vkEnumerateDeviceExtensionProperties enumDevExt =
-        (PFN_vkEnumerateDeviceExtensionProperties)gipa(drvInst, "vkEnumerateDeviceExtensionProperties");
-    PFN_vkGetPhysicalDeviceQueueFamilyProperties qfProps =
-        (PFN_vkGetPhysicalDeviceQueueFamilyProperties)gipa(drvInst, "vkGetPhysicalDeviceQueueFamilyProperties");
-    PFN_vkCreateDevice createDev =
-        (PFN_vkCreateDevice)gipa(drvInst, "vkCreateDevice");
-    PFN_vkDestroyInstance destroyInst =
-        (PFN_vkDestroyInstance)gipa(drvInst, "vkDestroyInstance");
-
-    uint32_t pdCount = 1;
-    VkPhysicalDevice drvPd = VK_NULL_HANDLE;
-    r = enumPD(drvInst, &pdCount, &drvPd);
-    if (r != VK_SUCCESS || pdCount == 0) {
-        ALOGE("PROBE: enumPD = %d", (int)r);
-        destroyInst(drvInst, NULL); delete loader; return false;
-    }
-
-    bool hasNB = false, hasGlsl = false;
-    {
-        uint32_t extCount = 0;
-        enumDevExt(drvPd, NULL, &extCount, NULL);
-        VkExtensionProperties *exts = new VkExtensionProperties[extCount];
-        enumDevExt(drvPd, NULL, &extCount, exts);
-        for (uint32_t i = 0; i < extCount; i++) {
-            if (!strcmp(exts[i].extensionName, "VK_ANDROID_native_buffer"))
-                hasNB = true;
-            if (!strcmp(exts[i].extensionName, "VK_NV_glsl_shader"))
-                hasGlsl = true;
-        }
-        delete[] exts;
-    }
-    ALOGD("PROBE: VK_ANDROID_native_buffer via loader = %s", hasNB ? "YES" : "NO");
-    if (!hasNB) {
-        destroyInst(drvInst, NULL); delete loader; return false;
-    }
-
-    uint32_t qfCount = 0;
-    qfProps(drvPd, &qfCount, NULL);
-    VkQueueFamilyProperties qfArr[8];
-    if (qfCount > 8) qfCount = 8;
-    qfProps(drvPd, &qfCount, qfArr);
-    uint32_t qFamily = 0;
-    for (uint32_t i = 0; i < qfCount; i++)
-        if (qfArr[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) { qFamily = i; break; }
-
-    float qPriority = 1.0f;
-    VkDeviceQueueCreateInfo qci = {};
-    qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    qci.queueFamilyIndex = qFamily;
-    qci.queueCount = 1;
-    qci.pQueuePriorities = &qPriority;
-
-    const char *devExts[2];
-    uint32_t devExtCount = 0;
-    devExts[devExtCount++] = "VK_ANDROID_native_buffer";
-    if (hasGlsl) devExts[devExtCount++] = "VK_NV_glsl_shader";
-
-    VkDeviceCreateInfo dci = {};
-    dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    dci.queueCreateInfoCount = 1;
-    dci.pQueueCreateInfos = &qci;
-    dci.enabledExtensionCount = devExtCount;
-    dci.ppEnabledExtensionNames = devExts;
-
-    VkDevice drvDev = VK_NULL_HANDLE;
-    r = createDev(drvPd, &dci, NULL, &drvDev);
-    if (r != VK_SUCCESS) {
-        ALOGE("PROBE: vkCreateDevice = %d", (int)r);
-        destroyInst(drvInst, NULL); delete loader; return false;
-    }
-
-    PFN_vkGetDeviceProcAddr gdpa =
-        (PFN_vkGetDeviceProcAddr)gipa(drvInst, "vkGetDeviceProcAddr");
-    PFN_vkCreateImage createImg =
-        (PFN_vkCreateImage)gdpa(drvDev, "vkCreateImage");
-    PFN_vkDestroyImage destroyImg =
-        (PFN_vkDestroyImage)gdpa(drvDev, "vkDestroyImage");
-    PFN_vkDestroyDevice destroyDev =
-        (PFN_vkDestroyDevice)gdpa(drvDev, "vkDestroyDevice");
-    void *acquireAndroid =
-        (void*)gdpa(drvDev, "vkAcquireImageANDROID");
-    void *releaseAndroid =
-        (void*)gdpa(drvDev, "vkQueueSignalReleaseImageANDROID");
-    ALOGD("PROBE: vkCreateImage=%p acquireANDROID=%p releaseANDROID=%p",
-          createImg, acquireAndroid, releaseAndroid);
-
+    ANativeWindowBuffer *anwb = (ANativeWindowBuffer *)nativeBuffer;
     VkNativeBufferANDROID nbInfo = {};
     nbInfo.sType  = VK_STRUCTURE_TYPE_NATIVE_BUFFER_ANDROID;
     nbInfo.handle = anwb->handle;
@@ -1021,74 +1002,78 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
     nbInfo.format = anwb->format;
     nbInfo.usage  = anwb->usage;
 
-    VkImageCreateInfo iici = {};
-    iici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    iici.pNext         = &nbInfo;
-    iici.imageType     = VK_IMAGE_TYPE_2D;
-    iici.format        = VK_FORMAT_R8G8B8A8_UNORM;
-    iici.extent.width  = dstW;
-    iici.extent.height = dstH;
-    iici.extent.depth  = 1;
-    iici.mipLevels     = 1;
-    iici.arrayLayers   = 1;
-    iici.samples       = VK_SAMPLE_COUNT_1_BIT;
-    iici.tiling        = VK_IMAGE_TILING_OPTIMAL;
-    iici.usage         = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    iici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
-    iici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageCreateInfo ici = {};
+    ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ici.pNext         = &nbInfo;
+    ici.imageType     = VK_IMAGE_TYPE_2D;
+    ici.format        = VK_FORMAT_R8G8B8A8_UNORM;
+    ici.extent.width  = dstW;
+    ici.extent.height = dstH;
+    ici.extent.depth  = 1;
+    ici.mipLevels     = 1;
+    ici.arrayLayers   = 1;
+    ici.samples       = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling        = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage         = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    VkImage drvImg = VK_NULL_HANDLE;
-    r = createImg(drvDev, &iici, NULL, &drvImg);
-    ALOGD("PROBE: vkCreateImage(OPTIMAL, STORAGE|TRANSFER_DST) = %d", (int)r);
-
-    if (r == VK_SUCCESS) {
-        ALOGD("PROBE RESULT: VkImage from gralloc CREATED — loader path WORKS");
-        if (destroyImg) destroyImg(drvDev, drvImg, NULL);
-    } else {
-        ALOGE("PROBE RESULT: vkCreateImage failed: %d", (int)r);
+    VkImage img = VK_NULL_HANDLE;
+    VkResult r = mPfn->CreateImage(mDevice, &ici, NULL, &img);
+    ALOGD("PROBE: vkCreateImage from gralloc = %d", (int)r);
+    if (r == VK_SUCCESS && mPfn->DestroyImage) {
+        mPfn->DestroyImage(mDevice, img, NULL);
+        ALOGD("PROBE RESULT: native_buffer usable on production stack");
     }
 
-    if (destroyDev) destroyDev(drvDev, NULL);
-    destroyInst(drvInst, NULL);
-    delete loader;
     return false;
 }
 
 /* --- cleanup --- */
 
 void VulkanIspPipeline::destroy() {
-    if (!mReady && mDevice == VK_NULL_HANDLE)
-        return;
+    if (mDevice != VK_NULL_HANDLE && mPfn && mPfn->DeviceWaitIdle) {
+        mPfn->DeviceWaitIdle(mDevice);
 
-    if (mDevice != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(mDevice);
-        /* Unmap persistent maps before destroying memory */
-        if (mInMap) { vkUnmapMemory(mDevice, mInMem); mInMap = NULL; }
-        if (mOutMap) { vkUnmapMemory(mDevice, mOutMem); mOutMap = NULL; }
-        if (mParamMap) { vkUnmapMemory(mDevice, mParamMem); mParamMap = NULL; }
-        /* Destroy buffers */
-        destroyBuffer(mInBuf, mInMem);
-        destroyBuffer(mOutBuf, mOutMem);
+        if (mInMap)    { mPfn->UnmapMemory(mDevice, mInMem);    mInMap = NULL; }
+        if (mOutMap)   { mPfn->UnmapMemory(mDevice, mOutMem);   mOutMap = NULL; }
+        if (mParamMap) { mPfn->UnmapMemory(mDevice, mParamMem); mParamMap = NULL; }
+
+        destroyBuffer(mInBuf,    mInMem);
+        destroyBuffer(mOutBuf,   mOutMem);
         destroyBuffer(mParamBuf, mParamMem);
         if (mDmaBuf != VK_NULL_HANDLE) destroyBuffer(mDmaBuf, mDmaMem);
         mDmaBuf = VK_NULL_HANDLE; mDmaMem = VK_NULL_HANDLE; mDmaFd = -1;
-        mInBuf = VK_NULL_HANDLE; mInMem = VK_NULL_HANDLE;
+        mInBuf = VK_NULL_HANDLE;  mInMem = VK_NULL_HANDLE;
         mOutBuf = VK_NULL_HANDLE; mOutMem = VK_NULL_HANDLE;
         mParamBuf = VK_NULL_HANDLE; mParamMem = VK_NULL_HANDLE;
-        if (mFence) { vkDestroyFence(mDevice, mFence, NULL); mFence = VK_NULL_HANDLE; }
-        if (mCmdPool) { vkDestroyCommandPool(mDevice, mCmdPool, NULL); mCmdPool = VK_NULL_HANDLE; }
-        if (mDescPool) { vkDestroyDescriptorPool(mDevice, mDescPool, NULL); mDescPool = VK_NULL_HANDLE; }
-        if (mPipeline) { vkDestroyPipeline(mDevice, mPipeline, NULL); mPipeline = VK_NULL_HANDLE; }
-        if (mPipeLayout) { vkDestroyPipelineLayout(mDevice, mPipeLayout, NULL); mPipeLayout = VK_NULL_HANDLE; }
-        if (mDescLayout) { vkDestroyDescriptorSetLayout(mDevice, mDescLayout, NULL); mDescLayout = VK_NULL_HANDLE; }
-        if (mShader) { vkDestroyShaderModule(mDevice, mShader, NULL); mShader = VK_NULL_HANDLE; }
-        vkDestroyDevice(mDevice, NULL); mDevice = VK_NULL_HANDLE;
+
+        if (mFence)      { mPfn->DestroyFence(mDevice, mFence, NULL);                 mFence = VK_NULL_HANDLE; }
+        if (mCmdPool)    { mPfn->DestroyCommandPool(mDevice, mCmdPool, NULL);         mCmdPool = VK_NULL_HANDLE; }
+        if (mDescPool)   { mPfn->DestroyDescriptorPool(mDevice, mDescPool, NULL);     mDescPool = VK_NULL_HANDLE; }
+        if (mPipeline)   { mPfn->DestroyPipeline(mDevice, mPipeline, NULL);           mPipeline = VK_NULL_HANDLE; }
+        if (mPipeLayout) { mPfn->DestroyPipelineLayout(mDevice, mPipeLayout, NULL);   mPipeLayout = VK_NULL_HANDLE; }
+        if (mDescLayout) { mPfn->DestroyDescriptorSetLayout(mDevice, mDescLayout, NULL); mDescLayout = VK_NULL_HANDLE; }
+        if (mShader)     { mPfn->DestroyShaderModule(mDevice, mShader, NULL);         mShader = VK_NULL_HANDLE; }
+        if (mPfn->DestroyDevice) mPfn->DestroyDevice(mDevice, NULL);
+        mDevice = VK_NULL_HANDLE;
     }
-    if (mInstance) { vkDestroyInstance(mInstance, NULL); mInstance = VK_NULL_HANDLE; }
+    if (mInstance != VK_NULL_HANDLE && mPfn && mPfn->DestroyInstance) {
+        mPfn->DestroyInstance(mInstance, NULL);
+        mInstance = VK_NULL_HANDLE;
+    }
+
+    delete mPfn;    mPfn = NULL;
+    delete mLoader; mLoader = NULL;
+
     mReady = false;
     mParamsTemplateReady = false;
     mInSize = 0; mOutSize = 0;
     mBufWidth = 0; mBufHeight = 0;
+    mPrevPending = false;
+    mPrevDst = NULL;
+    mNativeBufferProbed = false;
+    mNativeBufferAvail = false;
 }
 
 }; /* namespace android */
