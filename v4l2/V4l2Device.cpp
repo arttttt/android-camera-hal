@@ -690,16 +690,6 @@ bool V4l2Device::setResolutionAndAllocateBuffers(unsigned width, unsigned height
             return false;
         }
 
-        /* Export as dmabuf fd for zero-copy GPU access */
-        struct v4l2_exportbuffer expbuf;
-        memset(&expbuf, 0, sizeof(expbuf));
-        expbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        expbuf.index = i;
-        if (ioctl(mFd, VIDIOC_EXPBUF, &expbuf) == 0) {
-            mBuf[i].dmabufFd = expbuf.fd;
-            ALOGD("Buffer %d: dmabuf fd=%d", i, expbuf.fd);
-        }
-
         if(!queueBuffer(i)) {
             ALOGE("Could not queue buffer: %s (%d)", strerror(errno), errno);
             do mBuf[i].unmap(); while(i--);
@@ -757,10 +747,6 @@ void V4l2Device::VBuffer::unmap() {
         munmap(buf, len);
         buf         = NULL;
         len         = 0;
-    }
-    if (dmabufFd >= 0) {
-        close(dmabufFd);
-        dmabufFd = -1;
     }
 }
 

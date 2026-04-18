@@ -64,6 +64,10 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
 
     DEV(CreateImage);
     DEV(DestroyImage);
+    DEV(GetImageMemoryRequirements);
+    DEV(BindImageMemory);
+    DEV(CreateImageView);
+    DEV(DestroyImageView);
 
     DEV(CreateFence);
     DEV(DestroyFence);
@@ -94,6 +98,12 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
     DEV(CmdBindPipeline);
     DEV(CmdBindDescriptorSets);
     DEV(CmdDispatch);
+    DEV(CmdPipelineBarrier);
+    DEV(CmdCopyImageToBuffer);
+
+    /* VK_ANDROID_native_buffer — only present when extension enabled on device */
+    DEV(AcquireImageANDROID);
+    DEV(QueueSignalReleaseImageANDROID);
 
     #undef DEV
 }

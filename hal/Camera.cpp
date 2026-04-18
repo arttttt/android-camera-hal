@@ -40,10 +40,7 @@
 #include "DbgUtils.h"
 #include "Camera.h"
 #include "ImageConverter.h"
-#include "CpuIspPipeline.h"
-#include "VulkanIspPipeline.h"
-#include "GlesIspPipeline.h"
-#include "HwIspPipeline.h"
+#include "IspPipeline.h"
 #include "IspCalibration.h"
 
 extern camera_module_t HAL_MODULE_INFO_SYM;
@@ -616,35 +613,22 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
         }
     }
 
-    /* ISP backend selection — read each configureStreams for runtime toggle */
     char propVal[PROPERTY_VALUE_MAX] = {0};
     property_get("persist.camera.soft_isp", propVal, "1");
     mSoftIspEnabled = (propVal[0] == '1');
 
-    char ispBackend[PROPERTY_VALUE_MAX] = {0};
-    property_get("persist.camera.isp_backend", ispBackend, "vulkan");
-
     if (mIsp) { mIsp->destroy(); delete mIsp; mIsp = NULL; }
-    if (!strcmp(ispBackend, "vulkan")) {
-        mIsp = new VulkanIspPipeline();
-    } else if (!strcmp(ispBackend, "gles")) {
-        mIsp = new GlesIspPipeline();
-    } else if (!strcmp(ispBackend, "hwisp")) {
-        mIsp = new HwIspPipeline();
-    } else {
-        mIsp = new CpuIspPipeline();
-    }
+    mIsp = createIspPipeline();
     if (!mIsp->init()) {
-        ALOGE("ISP backend '%s' init failed, falling back to CPU", ispBackend);
-        delete mIsp;
-        mIsp = new CpuIspPipeline();
-        mIsp->init();
+        ALOGE("ISP init failed");
+        delete mIsp; mIsp = NULL;
+        return NO_INIT;
     }
     mIsp->setEnabled(mSoftIspEnabled);
     mIsp->setCcm((mFacing == CAMERA_FACING_BACK) ? ccm_imx179 : ccm_ov5693);
 
-    ALOGD("V4L2 target resolution: %ux%u, isp=%s, soft_isp=%d",
-          width, height, ispBackend, mSoftIspEnabled);
+    ALOGD("V4L2 target resolution: %ux%u, soft_isp=%d",
+          width, height, mSoftIspEnabled);
 
     if(!mDev->setStreaming(false)) {
         ALOGE("Could not stop streaming");
@@ -941,8 +925,7 @@ skip_focus:
                                 streamW, const_cast<native_handle_t *>(*srcBuf.buffer),
                                 false);
                             if (mIsp->processToGralloc(frame->buf, gb->getNativeBuffer(),
-                                                        res.width, res.height, streamW, streamH,
-                                                        frame->pixFmt)) {
+                                                        streamW, streamH, frame->pixFmt)) {
                                 /* Success — GPU wrote directly.
                                  * Re-lock as READ to sync GPU writes for compositor, then unlock releases it */
                                 const Rect rect((int)streamW, (int)streamH);
@@ -954,8 +937,8 @@ skip_focus:
                                 const Rect rect2((int)streamW, (int)streamH);
                                 GraphicBufferMapper::get().lock(*srcBuf.buffer,
                                     GRALLOC_USAGE_SW_WRITE_OFTEN, rect2, (void **)&buf);
-                                mIsp->processFromDmabuf(frame->dmabufFd, frame->buf, buf,
-                                                         res.width, res.height, frame->pixFmt);
+                                mIsp->process(frame->buf, buf,
+                                               res.width, res.height, frame->pixFmt);
                                 rgbaBuffer = buf;
                             }
                         } else {
@@ -963,8 +946,8 @@ skip_focus:
                             uint8_t *convDst = needZoom ? mRgbaTemp : buf;
                             if (!needZoom && (res.width != streamW || res.height != streamH))
                                 convDst = mRgbaTemp;
-                            mIsp->processFromDmabuf(frame->dmabufFd, frame->buf, convDst,
-                                                     res.width, res.height, frame->pixFmt);
+                            mIsp->process(frame->buf, convDst,
+                                           res.width, res.height, frame->pixFmt);
                             rgbaBuffer = convDst;
                         }
                     }

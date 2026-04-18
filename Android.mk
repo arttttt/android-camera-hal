@@ -59,8 +59,6 @@ LOCAL_C_INCLUDES += \
     $(LOCAL_PATH)/hal \
     $(LOCAL_PATH)/v4l2 \
     $(LOCAL_PATH)/isp \
-    $(LOCAL_PATH)/isp/cpu \
-    $(LOCAL_PATH)/isp/gles \
     $(LOCAL_PATH)/isp/vulkan \
     $(LOCAL_PATH)/isp/vulkan/loader \
     $(LOCAL_PATH)/isp/hw \
@@ -74,14 +72,14 @@ LOCAL_SRC_FILES += \
     image/ImageConverter.cpp \
     image/Yuv422UyvyToJpegEncoder.cpp \
     util/Workers.cpp \
+    isp/IspPipeline.cpp \
     isp/vulkan/VulkanIspPipeline.cpp \
     isp/vulkan/loader/VulkanLoader.cpp \
     isp/vulkan/loader/HalHmiVulkanLoader.cpp \
     isp/vulkan/loader/SystemVulkanLoader.cpp \
-    isp/gles/GlesIspPipeline.cpp \
     isp/hw/HwIspPipeline.cpp
 
-LOCAL_SHARED_LIBRARIES += libvulkan libEGL libGLESv2
+LOCAL_SHARED_LIBRARIES += libvulkan
 
 include $(BUILD_SHARED_LIBRARY)
 

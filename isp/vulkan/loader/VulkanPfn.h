@@ -4,6 +4,17 @@
 #define VK_USE_PLATFORM_ANDROID_KHR
 #include <vulkan/vulkan.h>
 
+/* VK_ANDROID_native_buffer PFN typedefs — not exposed in android-24 NDK vulkan.h */
+#ifndef VK_ANDROID_NATIVE_BUFFER_PFN
+#define VK_ANDROID_NATIVE_BUFFER_PFN
+typedef VkResult (VKAPI_PTR *PFN_vkAcquireImageANDROID)(
+    VkDevice device, VkImage image, int nativeFenceFd,
+    VkSemaphore semaphore, VkFence fence);
+typedef VkResult (VKAPI_PTR *PFN_vkQueueSignalReleaseImageANDROID)(
+    VkQueue queue, uint32_t waitSemaphoreCount,
+    const VkSemaphore *pWaitSemaphores, VkImage image, int *pNativeFenceFd);
+#endif
+
 namespace android {
 
 /* Dispatch table of Vulkan function pointers populated by VulkanLoader.
@@ -45,6 +56,10 @@ struct VulkanPfn {
 
     PFN_vkCreateImage                               CreateImage;
     PFN_vkDestroyImage                              DestroyImage;
+    PFN_vkGetImageMemoryRequirements                GetImageMemoryRequirements;
+    PFN_vkBindImageMemory                           BindImageMemory;
+    PFN_vkCreateImageView                           CreateImageView;
+    PFN_vkDestroyImageView                          DestroyImageView;
 
     PFN_vkCreateFence                               CreateFence;
     PFN_vkDestroyFence                              DestroyFence;
@@ -75,6 +90,12 @@ struct VulkanPfn {
     PFN_vkCmdBindPipeline                           CmdBindPipeline;
     PFN_vkCmdBindDescriptorSets                     CmdBindDescriptorSets;
     PFN_vkCmdDispatch                               CmdDispatch;
+    PFN_vkCmdPipelineBarrier                        CmdPipelineBarrier;
+    PFN_vkCmdCopyImageToBuffer                      CmdCopyImageToBuffer;
+
+    /* VK_ANDROID_native_buffer (HAL-only extension, gralloc zero-copy) */
+    PFN_vkAcquireImageANDROID                       AcquireImageANDROID;
+    PFN_vkQueueSignalReleaseImageANDROID            QueueSignalReleaseImageANDROID;
 };
 
 }; /* namespace android */

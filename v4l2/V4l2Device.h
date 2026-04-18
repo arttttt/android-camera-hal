@@ -28,10 +28,9 @@ public:
         uint8_t *buf;
         uint32_t len;
         uint32_t pixFmt;
-        int dmabufFd;  /* EXPBUF fd for zero-copy GPU access */
 
     private:
-        VBuffer(): buf(NULL), len(0), dmabufFd(-1) {}
+        VBuffer(): buf(NULL), len(0) {}
         ~VBuffer();
 
         bool map(int fd, unsigned offset, unsigned len, uint32_t pixelFormat);

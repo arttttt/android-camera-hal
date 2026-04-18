@@ -37,23 +37,13 @@ public:
         (void)width; (void)height; (void)pixFmt;
     }
 
-    /* Zero-copy: process from dmabuf fd instead of CPU pointer.
-     * Default falls back to regular process(). */
-    virtual bool processFromDmabuf(int dmabufFd, const uint8_t *cpuFallback,
-                                    uint8_t *dst, unsigned width, unsigned height,
-                                    uint32_t pixFmt) {
-        return process(cpuFallback, dst, width, height, pixFmt);
-    }
-
     /* Process Bayer and blit result directly to gralloc buffer (no CPU readback).
      * nativeBuffer: ANativeWindowBuffer* cast to void*.
      * Returns false if not supported — caller falls back to process(). */
     virtual bool processToGralloc(const uint8_t *src, void *nativeBuffer,
-                                   unsigned srcW, unsigned srcH,
-                                   unsigned dstW, unsigned dstH,
+                                   unsigned width, unsigned height,
                                    uint32_t pixFmt) {
-        (void)src; (void)nativeBuffer; (void)srcW; (void)srcH;
-        (void)dstW; (void)dstH; (void)pixFmt;
+        (void)src; (void)nativeBuffer; (void)width; (void)height; (void)pixFmt;
         return false;
     }
 
@@ -77,6 +67,10 @@ protected:
     bool mEnabled = true;
     bool mAwbLocked = false;
 };
+
+/* Pick and construct an ISP backend based on runtime properties.
+ * Caller owns the returned instance and must call init() before use. */
+IspPipeline *createIspPipeline();
 
 }; /* namespace android */
 

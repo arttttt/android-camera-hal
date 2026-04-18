@@ -17,18 +17,6 @@ static inline int64_t nowMs() {
 #include "VulkanLoader.h"
 #include "VulkanPfn.h"
 
-/* Missing KHR types in old Vulkan SDK (android-24) */
-#ifndef VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR
-#define VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR 1000074000
-#define VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR 0x00000001
-typedef struct VkImportMemoryFdInfoKHR {
-    VkStructureType sType;
-    const void *pNext;
-    uint32_t handleType;
-    int fd;
-} VkImportMemoryFdInfoKHR;
-#endif
-
 /* VK_ANDROID_native_buffer types — absent from android-24 NDK vulkan.h */
 #ifndef VK_ANDROID_NATIVE_BUFFER_NUMBER
 #define VK_ANDROID_NATIVE_BUFFER_NUMBER 11
@@ -63,7 +51,7 @@ void VulkanIspPipeline::initGamma() {
 
 VulkanIspPipeline::VulkanIspPipeline()
     : mLoader(NULL), mPfn(NULL)
-    , mReady(false), mDmabufSupported(false), mBufWidth(0), mBufHeight(0)
+    , mReady(false), mBufWidth(0), mBufHeight(0)
     , mInstance(VK_NULL_HANDLE), mPhysDev(VK_NULL_HANDLE)
     , mDevice(VK_NULL_HANDLE), mQueue(VK_NULL_HANDLE), mQueueFamily(0)
     , mShader(VK_NULL_HANDLE), mDescLayout(VK_NULL_HANDLE)
@@ -71,10 +59,10 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mDescPool(VK_NULL_HANDLE), mDescSet(VK_NULL_HANDLE)
     , mCmdPool(VK_NULL_HANDLE), mCmdBuf(VK_NULL_HANDLE)
     , mInBuf(VK_NULL_HANDLE), mOutBuf(VK_NULL_HANDLE), mParamBuf(VK_NULL_HANDLE)
-    , mDmaBuf(VK_NULL_HANDLE), mDmaMem(VK_NULL_HANDLE), mDmaFd(-1)
     , mInMem(VK_NULL_HANDLE), mOutMem(VK_NULL_HANDLE), mParamMem(VK_NULL_HANDLE)
     , mInSize(0), mOutSize(0)
     , mInMap(NULL), mOutMap(NULL), mParamMap(NULL)
+    , mScratchImg(VK_NULL_HANDLE), mScratchMem(VK_NULL_HANDLE), mScratchView(VK_NULL_HANDLE)
     , mFence(VK_NULL_HANDLE), mPrevDst(NULL), mPrevPending(false)
     , mParamsTemplateReady(false)
     , mNativeBufferAvail(false), mNativeBufferProbed(false) {}
@@ -198,7 +186,8 @@ void VulkanIspPipeline::destroyBuffer(VkBuffer buf, VkDeviceMemory mem) {
     if (mem != VK_NULL_HANDLE) mPfn->FreeMemory(mDevice, mem, NULL);
 }
 
-void VulkanIspPipeline::recordAndSubmit(unsigned width, unsigned height, VkFence fence) {
+void VulkanIspPipeline::recordAndSubmit(unsigned width, unsigned height, VkFence fence,
+                                         bool copyToOutBuf) {
     VkCommandBufferBeginInfo beginInfo = {};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -209,6 +198,36 @@ void VulkanIspPipeline::recordAndSubmit(unsigned width, unsigned height, VkFence
     mPfn->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 mPipeLayout, 0, 1, &mDescSet, 0, NULL);
     mPfn->CmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
+
+    if (copyToOutBuf) {
+        VkImageMemoryBarrier imb = {};
+        imb.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        imb.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        imb.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        imb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        imb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        imb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        imb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        imb.image = mScratchImg;
+        imb.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        imb.subresourceRange.levelCount = 1;
+        imb.subresourceRange.layerCount = 1;
+
+        mPfn->CmdPipelineBarrier(mCmdBuf,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, NULL, 0, NULL, 1, &imb);
+
+        VkBufferImageCopy region = {};
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent.width = width;
+        region.imageExtent.height = height;
+        region.imageExtent.depth = 1;
+        mPfn->CmdCopyImageToBuffer(mCmdBuf, mScratchImg, VK_IMAGE_LAYOUT_GENERAL,
+                                    mOutBuf, 1, &region);
+    }
+
     mPfn->EndCommandBuffer(mCmdBuf);
 
     VkSubmitInfo si = {};
@@ -216,47 +235,6 @@ void VulkanIspPipeline::recordAndSubmit(unsigned width, unsigned height, VkFence
     si.commandBufferCount = 1;
     si.pCommandBuffers = &mCmdBuf;
     mPfn->QueueSubmit(mQueue, 1, &si, fence);
-}
-
-bool VulkanIspPipeline::importDmabuf(int fd, VkDeviceSize size,
-                                      VkBuffer *buf, VkDeviceMemory *mem) {
-    VkBufferCreateInfo bci = {};
-    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bci.size = size;
-    bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-    if (mPfn->CreateBuffer(mDevice, &bci, NULL, buf) != VK_SUCCESS)
-        return false;
-
-    VkMemoryRequirements req;
-    mPfn->GetBufferMemoryRequirements(mDevice, *buf, &req);
-
-    VkImportMemoryFdInfoKHR importInfo = {};
-    importInfo.sType = (VkStructureType)VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
-    importInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR;
-    importInfo.fd = dup(fd);
-
-    VkMemoryAllocateInfo ai = {};
-    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    ai.pNext = &importInfo;
-    ai.allocationSize = req.size;
-    ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (ai.memoryTypeIndex == UINT32_MAX)
-        ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits, 0);
-
-    if (mPfn->AllocateMemory(mDevice, &ai, NULL, mem) != VK_SUCCESS) {
-        ALOGW("importDmabuf: vkAllocateMemory failed");
-        close(importInfo.fd);
-        mPfn->DestroyBuffer(mDevice, *buf, NULL);
-        *buf = VK_NULL_HANDLE;
-        return false;
-    }
-
-    mPfn->BindBufferMemory(mDevice, *buf, *mem, 0);
-    ALOGD("importDmabuf: fd=%d size=%zu OK", fd, (size_t)size);
-    return true;
 }
 
 /* --- init / destroy --- */
@@ -329,7 +307,6 @@ bool VulkanIspPipeline::init() {
         return false;
     }
     ALOGD("VK_ANDROID_native_buffer: %s", mNativeBufferAvail ? "AVAILABLE" : "absent");
-    mDmabufSupported = false;
 
     /* Compute queue */
     uint32_t qfCount = 0;
@@ -392,7 +369,7 @@ bool VulkanIspPipeline::init() {
         "#version 450\n"
         "layout(local_size_x = 8, local_size_y = 8) in;\n"
         "layout(std430, binding = 0) buffer InputBuf  { uint data[]; } inBuf;\n"
-        "layout(std430, binding = 1) buffer OutputBuf { uint data[]; } outBuf;\n"
+        "layout(rgba8, binding = 1) writeonly uniform image2D outImg;\n"
         "layout(std430, binding = 2) buffer Params {\n"
         "    uint width; uint height; uint bayerPhase; uint is16bit;\n"
         "    uint wbR; uint wbG; uint wbB; uint doIsp;\n"
@@ -463,7 +440,8 @@ bool VulkanIspPipeline::init() {
         "        G = clamp(int(srgbGamma(float(gg)/255.0) * 255.0 + 0.5), 0, 255);\n"
         "        B = clamp(int(srgbGamma(float(bb)/255.0) * 255.0 + 0.5), 0, 255);\n"
         "    }\n"
-        "    outBuf.data[y * params.width + x] = uint(R) | (uint(G)<<8) | (uint(B)<<16) | (255u<<24);\n"
+        "    imageStore(outImg, ivec2(int(x), int(y)),\n"
+        "               vec4(float(R), float(G), float(B), 255.0) / 255.0);\n"
         "}\n";
 
     VkShaderModuleCreateInfo smi = {};
@@ -477,13 +455,14 @@ bool VulkanIspPipeline::init() {
         return false;
     }
 
-    /* Descriptor set layout */
+    /* Descriptor set layout — binding 0/2 = storage buffer, binding 1 = storage image */
     VkDescriptorSetLayoutBinding bindings[3] = {};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[0].descriptorCount = 1;
     bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     bindings[1] = bindings[0]; bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     bindings[2] = bindings[0]; bindings[2].binding = 2;
 
     VkDescriptorSetLayoutCreateInfo dslci = {};
@@ -520,16 +499,18 @@ bool VulkanIspPipeline::init() {
         return false;
     }
 
-    /* Descriptor pool */
-    VkDescriptorPoolSize poolSize = {};
-    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSize.descriptorCount = 3;
+    /* Descriptor pool — 2 storage buffers (input, params) + 1 storage image (output) */
+    VkDescriptorPoolSize poolSizes[2] = {};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSizes[0].descriptorCount = 2;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    poolSizes[1].descriptorCount = 1;
 
     VkDescriptorPoolCreateInfo dpci = {};
     dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     dpci.maxSets = 1;
-    dpci.poolSizeCount = 1;
-    dpci.pPoolSizes = &poolSize;
+    dpci.poolSizeCount = 2;
+    dpci.pPoolSizes = poolSizes;
     if (mPfn->CreateDescriptorPool(mDevice, &dpci, NULL, &mDescPool) != VK_SUCCESS) {
         ALOGE("vkCreateDescriptorPool failed");
         destroy(); return false;
@@ -588,42 +569,142 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
     bool recreate = (mInSize < inSize || mOutSize < outSize ||
                      mBufWidth != width || mBufHeight != height);
 
-    if (recreate) {
-        if (mInMap)  { mPfn->UnmapMemory(mDevice, mInMem);  mInMap = NULL; }
-        if (mOutMap) { mPfn->UnmapMemory(mDevice, mOutMem); mOutMap = NULL; }
-
-        destroyBuffer(mInBuf, mInMem);   mInBuf = VK_NULL_HANDLE;  mInMem = VK_NULL_HANDLE;
-        destroyBuffer(mOutBuf, mOutMem); mOutBuf = VK_NULL_HANDLE; mOutMem = VK_NULL_HANDLE;
-
-        if (!createBuffer(&mInBuf,  &mInMem,  inSize,  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
-            !createBuffer(&mOutBuf, &mOutMem, outSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
-            ALOGE("Failed to allocate Vulkan buffers %ux%u", width, height);
-            return false;
-        }
-
-        mPfn->MapMemory(mDevice, mInMem,  0, inSize,  0, &mInMap);
-        mPfn->MapMemory(mDevice, mOutMem, 0, outSize, 0, &mOutMap);
-
-        mInSize = inSize; mOutSize = outSize;
-        mBufWidth = width; mBufHeight = height;
-    }
-
     if (!recreate) return true;
 
-    VkDescriptorBufferInfo bufInfos[3] = {};
-    bufInfos[0].buffer = mInBuf;    bufInfos[0].range = mInSize;
-    bufInfos[1].buffer = mOutBuf;   bufInfos[1].range = mOutSize;
-    bufInfos[2].buffer = mParamBuf; bufInfos[2].range = sizeof(IspParams);
+    if (mInMap)  { mPfn->UnmapMemory(mDevice, mInMem);  mInMap = NULL; }
+    if (mOutMap) { mPfn->UnmapMemory(mDevice, mOutMem); mOutMap = NULL; }
+
+    destroyBuffer(mInBuf, mInMem);   mInBuf = VK_NULL_HANDLE;  mInMem = VK_NULL_HANDLE;
+    destroyBuffer(mOutBuf, mOutMem); mOutBuf = VK_NULL_HANDLE; mOutMem = VK_NULL_HANDLE;
+
+    if (mScratchView) { mPfn->DestroyImageView(mDevice, mScratchView, NULL); mScratchView = VK_NULL_HANDLE; }
+    if (mScratchImg)  { mPfn->DestroyImage(mDevice, mScratchImg, NULL);      mScratchImg = VK_NULL_HANDLE; }
+    if (mScratchMem)  { mPfn->FreeMemory(mDevice, mScratchMem, NULL);        mScratchMem = VK_NULL_HANDLE; }
+
+    if (!createBuffer(&mInBuf,  &mInMem,  inSize,  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+        !createBuffer(&mOutBuf, &mOutMem, outSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) {
+        ALOGE("Failed to allocate Vulkan buffers %ux%u", width, height);
+        return false;
+    }
+
+    mPfn->MapMemory(mDevice, mInMem,  0, inSize,  0, &mInMap);
+    mPfn->MapMemory(mDevice, mOutMem, 0, outSize, 0, &mOutMap);
+
+    mInSize = inSize; mOutSize = outSize;
+    mBufWidth = width; mBufHeight = height;
+
+    VkImageCreateInfo ici = {};
+    ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ici.imageType     = VK_IMAGE_TYPE_2D;
+    ici.format        = VK_FORMAT_R8G8B8A8_UNORM;
+    ici.extent.width  = width;
+    ici.extent.height = height;
+    ici.extent.depth  = 1;
+    ici.mipLevels     = 1;
+    ici.arrayLayers   = 1;
+    ici.samples       = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling        = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage         = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    if (mPfn->CreateImage(mDevice, &ici, NULL, &mScratchImg) != VK_SUCCESS) {
+        ALOGE("Scratch vkCreateImage failed %ux%u", width, height);
+        return false;
+    }
+
+    VkMemoryRequirements req;
+    mPfn->GetImageMemoryRequirements(mDevice, mScratchImg, &req);
+
+    VkMemoryAllocateInfo ai = {};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize = req.size;
+    ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (ai.memoryTypeIndex == UINT32_MAX)
+        ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits, 0);
+
+    if (ai.memoryTypeIndex == UINT32_MAX ||
+        mPfn->AllocateMemory(mDevice, &ai, NULL, &mScratchMem) != VK_SUCCESS) {
+        ALOGE("Scratch vkAllocateMemory failed");
+        return false;
+    }
+    mPfn->BindImageMemory(mDevice, mScratchImg, mScratchMem, 0);
+
+    VkImageViewCreateInfo vci = {};
+    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vci.image = mScratchImg;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format = VK_FORMAT_R8G8B8A8_UNORM;
+    vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    vci.subresourceRange.levelCount = 1;
+    vci.subresourceRange.layerCount = 1;
+    if (mPfn->CreateImageView(mDevice, &vci, NULL, &mScratchView) != VK_SUCCESS) {
+        ALOGE("Scratch vkCreateImageView failed");
+        return false;
+    }
+
+    /* One-time UNDEFINED → GENERAL transition. */
+    VkCommandBufferBeginInfo bi = {};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    mPfn->ResetCommandBuffer(mCmdBuf, 0);
+    mPfn->BeginCommandBuffer(mCmdBuf, &bi);
+
+    VkImageMemoryBarrier imb = {};
+    imb.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    imb.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imb.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    imb.srcAccessMask = 0;
+    imb.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    imb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    imb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    imb.image = mScratchImg;
+    imb.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    imb.subresourceRange.levelCount = 1;
+    imb.subresourceRange.layerCount = 1;
+
+    mPfn->CmdPipelineBarrier(mCmdBuf,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 0, NULL, 0, NULL, 1, &imb);
+    mPfn->EndCommandBuffer(mCmdBuf);
+
+    VkSubmitInfo si = {};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &mCmdBuf;
+    mPfn->QueueSubmit(mQueue, 1, &si, mFence);
+    mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
+    mPfn->ResetFences(mDevice, 1, &mFence);
+
+    /* Descriptor set — bind input buffer, scratch image, params buffer. */
+    VkDescriptorBufferInfo inInfo = {};
+    inInfo.buffer = mInBuf;    inInfo.range = mInSize;
+    VkDescriptorImageInfo imgInfo = {};
+    imgInfo.imageView = mScratchView;
+    imgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkDescriptorBufferInfo paramInfo = {};
+    paramInfo.buffer = mParamBuf; paramInfo.range = sizeof(IspParams);
 
     VkWriteDescriptorSet writes[3] = {};
-    for (int i = 0; i < 3; i++) {
-        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[i].dstSet = mDescSet;
-        writes[i].dstBinding = i;
-        writes[i].descriptorCount = 1;
-        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[i].pBufferInfo = &bufInfos[i];
-    }
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = mDescSet; writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[0].pBufferInfo = &inInfo;
+
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = mDescSet; writes[1].dstBinding = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    writes[1].pImageInfo = &imgInfo;
+
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = mDescSet; writes[2].dstBinding = 2;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[2].pBufferInfo = &paramInfo;
+
     mPfn->UpdateDescriptorSets(mDevice, 3, writes, 0, NULL);
 
     return true;
@@ -677,7 +758,7 @@ bool VulkanIspPipeline::process(const uint8_t *src, uint8_t *dst,
 
     int64_t t2 = nowMs();
 
-    recordAndSubmit(width, height, mFence);
+    recordAndSubmit(width, height, mFence, true);
 
     mPrevDst = dst;
     mPrevPending = true;
@@ -733,7 +814,7 @@ bool VulkanIspPipeline::processSync(const uint8_t *src, uint8_t *dst,
     flushRanges[1].size = VK_WHOLE_SIZE;
     mPfn->FlushMappedMemoryRanges(mDevice, 2, flushRanges);
 
-    recordAndSubmit(width, height, mFence);
+    recordAndSubmit(width, height, mFence, true);
     mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
     mPfn->ResetFences(mDevice, 1, &mFence);
 
@@ -744,75 +825,6 @@ bool VulkanIspPipeline::processSync(const uint8_t *src, uint8_t *dst,
     mPfn->InvalidateMappedMemoryRanges(mDevice, 1, &outRange);
     memcpy(dst, mOutMap, mOutSize);
 
-    return true;
-}
-
-bool VulkanIspPipeline::processFromDmabuf(int dmabufFd, const uint8_t *cpuFallback,
-                                           uint8_t *dst, unsigned width, unsigned height,
-                                           uint32_t pixFmt) {
-    if (!mReady || !mDmabufSupported || dmabufFd < 0)
-        return process(cpuFallback, dst, width, height, pixFmt);
-
-    bool is16 = (pixFmt == V4L2_PIX_FMT_SRGGB10 || pixFmt == V4L2_PIX_FMT_SGRBG10 ||
-                 pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SBGGR10);
-    size_t inSize = width * height * (is16 ? 2 : 1);
-
-    if (!ensureBuffers(width, height, is16))
-        return process(cpuFallback, dst, width, height, pixFmt);
-
-    if (mDmaFd != dmabufFd) {
-        if (mDmaBuf != VK_NULL_HANDLE) destroyBuffer(mDmaBuf, mDmaMem);
-        mDmaBuf = VK_NULL_HANDLE; mDmaMem = VK_NULL_HANDLE;
-        if (!importDmabuf(dmabufFd, inSize, &mDmaBuf, &mDmaMem)) {
-            ALOGW("dmabuf import failed, fallback to memcpy");
-            mDmaFd = -1;
-            return process(cpuFallback, dst, width, height, pixFmt);
-        }
-        mDmaFd = dmabufFd;
-    }
-
-    VkDescriptorBufferInfo bufInfo = {};
-    bufInfo.buffer = mDmaBuf;
-    bufInfo.range = inSize;
-    VkWriteDescriptorSet w = {};
-    w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    w.dstSet = mDescSet;
-    w.dstBinding = 0;
-    w.descriptorCount = 1;
-    w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    w.pBufferInfo = &bufInfo;
-    mPfn->UpdateDescriptorSets(mDevice, 1, &w, 0, NULL);
-
-    int64_t t0 = nowMs();
-
-    IspParams params;
-    fillParams(&params, width, height, is16, pixFmt);
-    memcpy(mParamMap, &params, sizeof(IspParams));
-
-    VkMappedMemoryRange paramRange = {};
-    paramRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    paramRange.memory = mParamMem;
-    paramRange.size = VK_WHOLE_SIZE;
-    mPfn->FlushMappedMemoryRanges(mDevice, 1, &paramRange);
-
-    int64_t t1 = nowMs();
-
-    recordAndSubmit(width, height, VK_NULL_HANDLE);
-    mPfn->QueueWaitIdle(mQueue);
-    int64_t t2 = nowMs();
-
-    VkMappedMemoryRange outRange = {};
-    outRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    outRange.memory = mOutMem;
-    outRange.size = VK_WHOLE_SIZE;
-    mPfn->InvalidateMappedMemoryRanges(mDevice, 1, &outRange);
-
-    memcpy(dst, mOutMap, mOutSize);
-    int64_t t3 = nowMs();
-
-    ALOGD("VK DMA: params=%lld gpu=%lld readback=%lldms (upload=0)", t1 - t0, t2 - t1, t3 - t2);
-
-    updateAwb(cpuFallback, width, height, is16, pixFmt);
     return true;
 }
 
@@ -839,7 +851,7 @@ void VulkanIspPipeline::prewarm(unsigned width, unsigned height, uint32_t pixFmt
     mPfn->FlushMappedMemoryRanges(mDevice, 1, &paramRange);
 
     int64_t start = nowMs();
-    recordAndSubmit(width, height, mFence);
+    recordAndSubmit(width, height, mFence, false);
     mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
     mPfn->ResetFences(mDevice, 1, &mFence);
     ALOGD("Vulkan ISP prewarm %ux%u is16=%d: %lldms",
@@ -847,10 +859,9 @@ void VulkanIspPipeline::prewarm(unsigned width, unsigned height, uint32_t pixFmt
 }
 
 bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
-                                          unsigned srcW, unsigned srcH,
-                                          unsigned dstW, unsigned dstH,
+                                          unsigned width, unsigned height,
                                           uint32_t pixFmt) {
-    (void)src; (void)srcW; (void)srcH; (void)pixFmt;
+    (void)src; (void)pixFmt;
 
     if (mNativeBufferProbed || !mReady || !nativeBuffer)
         return false;
@@ -874,8 +885,8 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
     ici.pNext         = &nbInfo;
     ici.imageType     = VK_IMAGE_TYPE_2D;
     ici.format        = VK_FORMAT_R8G8B8A8_UNORM;
-    ici.extent.width  = dstW;
-    ici.extent.height = dstH;
+    ici.extent.width  = width;
+    ici.extent.height = height;
     ici.extent.depth  = 1;
     ici.mipLevels     = 1;
     ici.arrayLayers   = 1;
@@ -906,11 +917,13 @@ void VulkanIspPipeline::destroy() {
         if (mOutMap)   { mPfn->UnmapMemory(mDevice, mOutMem);   mOutMap = NULL; }
         if (mParamMap) { mPfn->UnmapMemory(mDevice, mParamMem); mParamMap = NULL; }
 
+        if (mScratchView) { mPfn->DestroyImageView(mDevice, mScratchView, NULL); mScratchView = VK_NULL_HANDLE; }
+        if (mScratchImg)  { mPfn->DestroyImage(mDevice, mScratchImg, NULL);      mScratchImg = VK_NULL_HANDLE; }
+        if (mScratchMem)  { mPfn->FreeMemory(mDevice, mScratchMem, NULL);        mScratchMem = VK_NULL_HANDLE; }
+
         destroyBuffer(mInBuf,    mInMem);
         destroyBuffer(mOutBuf,   mOutMem);
         destroyBuffer(mParamBuf, mParamMem);
-        if (mDmaBuf != VK_NULL_HANDLE) destroyBuffer(mDmaBuf, mDmaMem);
-        mDmaBuf = VK_NULL_HANDLE; mDmaMem = VK_NULL_HANDLE; mDmaFd = -1;
         mInBuf = VK_NULL_HANDLE;  mInMem = VK_NULL_HANDLE;
         mOutBuf = VK_NULL_HANDLE; mOutMem = VK_NULL_HANDLE;
         mParamBuf = VK_NULL_HANDLE; mParamMem = VK_NULL_HANDLE;

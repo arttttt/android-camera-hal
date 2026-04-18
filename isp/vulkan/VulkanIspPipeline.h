@@ -27,15 +27,10 @@ public:
                       unsigned width, unsigned height,
                       uint32_t pixFmt) override;
 
-    bool processFromDmabuf(int dmabufFd, const uint8_t *cpuFallback,
-                           uint8_t *dst, unsigned width, unsigned height,
-                           uint32_t pixFmt) override;
-
     void prewarm(unsigned width, unsigned height, uint32_t pixFmt) override;
 
     bool processToGralloc(const uint8_t *src, void *nativeBuffer,
-                           unsigned srcW, unsigned srcH,
-                           unsigned dstW, unsigned dstH,
+                           unsigned width, unsigned height,
                            uint32_t pixFmt) override;
 
 private:
@@ -44,18 +39,18 @@ private:
     void destroyBuffer(VkBuffer buf, VkDeviceMemory mem);
     uint32_t findMemoryType(uint32_t filter, VkMemoryPropertyFlags props);
     bool ensureBuffers(unsigned width, unsigned height, bool is16bit);
-    bool importDmabuf(int fd, VkDeviceSize size, VkBuffer *buf, VkDeviceMemory *mem);
 
     /* Record mCmdBuf with pipeline+descriptor bind and a single compute
-     * dispatch sized for (width, height), then submit to mQueue signalling
-     * `fence` (VK_NULL_HANDLE = no fence). */
-    void recordAndSubmit(unsigned width, unsigned height, VkFence fence);
+     * dispatch sized for (width, height); optionally append an image→buffer
+     * copy of mScratchImg into mOutBuf so CPU can read the result via mOutMap.
+     * Submits to mQueue signalling `fence` (VK_NULL_HANDLE = no fence). */
+    void recordAndSubmit(unsigned width, unsigned height, VkFence fence,
+                          bool copyToOutBuf);
 
     VulkanLoader *mLoader;
     VulkanPfn    *mPfn;
 
     bool mReady;
-    bool mDmabufSupported;
     unsigned mBufWidth, mBufHeight;
 
     VkInstance mInstance;
@@ -73,12 +68,15 @@ private:
     VkCommandPool mCmdPool;
     VkCommandBuffer mCmdBuf;
 
-    VkBuffer mInBuf, mOutBuf, mParamBuf, mDmaBuf;
-    VkDeviceMemory mDmaMem;
-    int mDmaFd;
+    VkBuffer mInBuf, mOutBuf, mParamBuf;
     VkDeviceMemory mInMem, mOutMem, mParamMem;
     size_t mInSize, mOutSize;
     void *mInMap, *mOutMap, *mParamMap;
+
+    /* Shader output image for CPU-readback paths; copied to mOutBuf after dispatch. */
+    VkImage        mScratchImg;
+    VkDeviceMemory mScratchMem;
+    VkImageView    mScratchView;
 
     VkFence mFence;
     uint8_t *mPrevDst;
