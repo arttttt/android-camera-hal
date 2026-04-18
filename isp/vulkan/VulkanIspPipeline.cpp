@@ -998,10 +998,12 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &appInfo;
 
-    PFN_vkCreateInstance drvCreateInst =
-        (PFN_vkCreateInstance)drvGipa(VK_NULL_HANDLE, "vkCreateInstance");
+    /* Android Vulkan HAL doesn't require vkGetInstanceProcAddr(NULL, ...).
+     * Use the entry point exposed directly on hwvulkan_device_t instead. */
+    PFN_vkCreateInstance drvCreateInst = hwDev->CreateInstance;
     if (!drvCreateInst) {
-        ALOGE("HACK-PROBE: driver vkCreateInstance PFN missing");
+        ALOGE("HACK-PROBE: hwvulkan_device has null CreateInstance");
+        if (hwDev->common.close) hwDev->common.close(devRaw);
         dlclose(drv); return false;
     }
     VkInstance drvInst = VK_NULL_HANDLE;
