@@ -13,8 +13,8 @@ static inline int64_t nowMs() {
 }
 
 #include <system/window.h>
-#include <dlfcn.h>
 #include "VulkanIspPipeline.h"
+#include "VulkanLoader.h"
 
 /* Missing KHR types in old Vulkan SDK (android-24) */
 #ifndef VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR
@@ -875,15 +875,12 @@ bool VulkanIspPipeline::processFromDmabuf(int dmabufFd, const uint8_t *cpuFallba
     return true;
 }
 
-/* --- Phase 2 HACK probe: bypass libvulkan, load driver directly ---
- * Android's libvulkan loader filters out VK_ANDROID_native_buffer from
- * app-level enumeration (HAL-only extension). The driver (libglcore.so)
- * still implements it. This probe dlopen()'s libglcore directly, builds
- * a parallel VkInstance/VkDevice via the driver's own vkGetInstanceProcAddr,
- * enumerates extensions (expecting native_buffer to appear), then attempts
- * vkCreateImage with VkNativeBufferANDROID chained on a real gralloc handle.
- * Cleans up the parallel stack before returning false. Always returns false
- * so production path is untouched. */
+/* --- Phase 2 end-to-end probe: verify gralloc → VkImage via VulkanLoader ---
+ * Builds a parallel VkInstance/VkDevice through VulkanLoader (on Android 7
+ * this is the HalHmiVulkanLoader that bypasses libvulkan's HAL-extension
+ * filter), enables VK_ANDROID_native_buffer, and tries vkCreateImage with
+ * VkNativeBufferANDROID chained on a real gralloc handle.
+ * Always returns false so production path is untouched. */
 bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
                                           unsigned srcW, unsigned srcH,
                                           unsigned dstW, unsigned dstH,
@@ -895,158 +892,66 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
     mNativeBufferProbed = true;
 
     ANativeWindowBuffer *anwb = (ANativeWindowBuffer *)nativeBuffer;
-    ALOGD("HACK-PROBE: nativeBuffer %dx%d stride=%d format=%d usage=0x%x handle=%p numFds=%d numInts=%d",
+    ALOGD("PROBE: nativeBuffer %dx%d stride=%d format=%d usage=0x%x handle=%p numFds=%d numInts=%d",
           anwb->width, anwb->height, anwb->stride, anwb->format, anwb->usage,
           anwb->handle, anwb->handle ? anwb->handle->numFds : -1,
           anwb->handle ? anwb->handle->numInts : -1);
-    if (anwb->handle) {
-        for (int i = 0; i < anwb->handle->numFds && i < 4; i++)
-            ALOGD("HACK-PROBE: handle->data[%d] (fd) = %d", i, anwb->handle->data[i]);
-        for (int i = 0; i < anwb->handle->numInts && i < 8; i++) {
-            int idx = anwb->handle->numFds + i;
-            ALOGD("HACK-PROBE: handle->data[%d] (int) = 0x%x", idx, anwb->handle->data[idx]);
-        }
-    }
 
-    /* dlopen the Vulkan HAL shim. Android Vulkan HALs export entry points
-     * via the HMI hw_module_t structure, not as plain symbols. Flow:
-     *   1. dlsym("HMI")  → hw_module_t*
-     *   2. module->methods->open(module, "vk0", &device) → hwvulkan_device_t*
-     *   3. device has { EnumerateInstanceExtensionProperties, CreateInstance,
-     *                   GetInstanceProcAddr } function pointers */
-    void *drv = dlopen("/system/vendor/lib/hw/vulkan.tegra.so", RTLD_NOW | RTLD_LOCAL);
-    if (!drv) {
-        ALOGE("HACK-PROBE: dlopen vulkan.tegra.so failed: %s", dlerror());
+    VulkanLoader *loader = createVulkanLoader();
+    if (!loader->load()) {
+        ALOGE("PROBE: VulkanLoader %s load() failed", loader->name());
+        delete loader;
         return false;
     }
+    ALOGD("PROBE: VulkanLoader %s ready", loader->name());
 
-    /* Inline minimal Android HAL structs — avoid NDK header issues */
-    struct hw_module_methods_inline {
-        int (*open)(const void *module, const char *id, void **device);
-    };
-    struct hw_module_inline {
-        uint32_t tag;
-        uint16_t module_api_version;
-        uint16_t hal_api_version;
-        const char *id;
-        const char *name;
-        const char *author;
-        hw_module_methods_inline *methods;
-        void *dso;
-        uint32_t reserved[32-7];
-    };
-    struct hw_device_inline {
-        uint32_t tag;
-        uint32_t version;
-        void *module;
-        uint32_t reserved[12];
-        int (*close)(void *device);
-    };
-    struct hwvulkan_device_inline {
-        hw_device_inline common;
-        PFN_vkEnumerateInstanceExtensionProperties EnumerateInstanceExtensionProperties;
-        PFN_vkCreateInstance CreateInstance;
-        PFN_vkGetInstanceProcAddr GetInstanceProcAddr;
-    };
+    PFN_vkGetInstanceProcAddr gipa = loader->getInstanceProcAddr();
+    PFN_vkCreateInstance createInst = loader->getCreateInstance();
 
-    hw_module_inline *hwMod = (hw_module_inline *)dlsym(drv, "HMI");
-    if (!hwMod) {
-        ALOGE("HACK-PROBE: dlsym HMI failed: %s", dlerror());
-        dlclose(drv);
-        return false;
-    }
-    ALOGD("HACK-PROBE: HMI=%p tag=0x%08x id=%s name=%s",
-          hwMod, hwMod->tag, hwMod->id ? hwMod->id : "(null)",
-          hwMod->name ? hwMod->name : "(null)");
-
-    if (!hwMod->methods || !hwMod->methods->open) {
-        ALOGE("HACK-PROBE: HMI has no open method");
-        dlclose(drv);
-        return false;
-    }
-
-    void *devRaw = NULL;
-    int openRes = hwMod->methods->open(hwMod, "vk0", &devRaw);
-    ALOGD("HACK-PROBE: HMI open('vk0') = %d, device=%p", openRes, devRaw);
-    if (openRes != 0 || !devRaw) {
-        ALOGE("HACK-PROBE: hwvulkan open failed");
-        dlclose(drv);
-        return false;
-    }
-
-    hwvulkan_device_inline *hwDev = (hwvulkan_device_inline *)devRaw;
-    ALOGD("HACK-PROBE: hwvulkan_device EnumExtProps=%p CreateInstance=%p GetInstProcAddr=%p",
-          hwDev->EnumerateInstanceExtensionProperties,
-          hwDev->CreateInstance,
-          hwDev->GetInstanceProcAddr);
-
-    PFN_vkGetInstanceProcAddr drvGipa = hwDev->GetInstanceProcAddr;
-    if (!drvGipa) {
-        ALOGE("HACK-PROBE: hwvulkan_device has null GetInstanceProcAddr");
-        if (hwDev->common.close) hwDev->common.close(devRaw);
-        dlclose(drv);
-        return false;
-    }
-
-    /* Create a parallel VkInstance via driver */
+    /* Bootstrap VkInstance */
     VkApplicationInfo appInfo = {};
     appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    appInfo.pApplicationName = "CameraISP-hack";
+    appInfo.pApplicationName = "CameraISP-probe";
     appInfo.apiVersion = VK_API_VERSION;
 
     VkInstanceCreateInfo ici = {};
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &appInfo;
 
-    /* Android Vulkan HAL doesn't require vkGetInstanceProcAddr(NULL, ...).
-     * Use the entry point exposed directly on hwvulkan_device_t instead. */
-    PFN_vkCreateInstance drvCreateInst = hwDev->CreateInstance;
-    if (!drvCreateInst) {
-        ALOGE("HACK-PROBE: hwvulkan_device has null CreateInstance");
-        if (hwDev->common.close) hwDev->common.close(devRaw);
-        dlclose(drv); return false;
-    }
     VkInstance drvInst = VK_NULL_HANDLE;
-    VkResult r = drvCreateInst(&ici, NULL, &drvInst);
-    ALOGD("HACK-PROBE: driver vkCreateInstance = %d inst=%p", (int)r, drvInst);
-    if (r != VK_SUCCESS) { dlclose(drv); return false; }
-
-    /* Enumerate physical devices via driver */
-    PFN_vkEnumeratePhysicalDevices drvEnumPD =
-        (PFN_vkEnumeratePhysicalDevices)drvGipa(drvInst, "vkEnumeratePhysicalDevices");
-    PFN_vkEnumerateDeviceExtensionProperties drvEnumExt =
-        (PFN_vkEnumerateDeviceExtensionProperties)drvGipa(drvInst, "vkEnumerateDeviceExtensionProperties");
-    PFN_vkGetPhysicalDeviceQueueFamilyProperties drvQF =
-        (PFN_vkGetPhysicalDeviceQueueFamilyProperties)drvGipa(drvInst, "vkGetPhysicalDeviceQueueFamilyProperties");
-    PFN_vkCreateDevice drvCreateDev =
-        (PFN_vkCreateDevice)drvGipa(drvInst, "vkCreateDevice");
-    PFN_vkDestroyInstance drvDestroyInst =
-        (PFN_vkDestroyInstance)drvGipa(drvInst, "vkDestroyInstance");
-    if (!drvEnumPD || !drvEnumExt || !drvCreateDev || !drvDestroyInst || !drvQF) {
-        ALOGE("HACK-PROBE: missing driver PFNs (enumPD=%p enumExt=%p createDev=%p destroyInst=%p qf=%p)",
-              drvEnumPD, drvEnumExt, drvCreateDev, drvDestroyInst, drvQF);
-        if (drvDestroyInst) drvDestroyInst(drvInst, NULL);
-        dlclose(drv); return false;
+    VkResult r = createInst(&ici, NULL, &drvInst);
+    if (r != VK_SUCCESS) {
+        ALOGE("PROBE: vkCreateInstance = %d", (int)r);
+        delete loader; return false;
     }
+
+    /* Resolve rest of PFNs via driver-direct GIPA */
+    PFN_vkEnumeratePhysicalDevices enumPD =
+        (PFN_vkEnumeratePhysicalDevices)gipa(drvInst, "vkEnumeratePhysicalDevices");
+    PFN_vkEnumerateDeviceExtensionProperties enumDevExt =
+        (PFN_vkEnumerateDeviceExtensionProperties)gipa(drvInst, "vkEnumerateDeviceExtensionProperties");
+    PFN_vkGetPhysicalDeviceQueueFamilyProperties qfProps =
+        (PFN_vkGetPhysicalDeviceQueueFamilyProperties)gipa(drvInst, "vkGetPhysicalDeviceQueueFamilyProperties");
+    PFN_vkCreateDevice createDev =
+        (PFN_vkCreateDevice)gipa(drvInst, "vkCreateDevice");
+    PFN_vkDestroyInstance destroyInst =
+        (PFN_vkDestroyInstance)gipa(drvInst, "vkDestroyInstance");
 
     uint32_t pdCount = 1;
     VkPhysicalDevice drvPd = VK_NULL_HANDLE;
-    r = drvEnumPD(drvInst, &pdCount, &drvPd);
-    ALOGD("HACK-PROBE: driver enumPD = %d count=%u pd=%p", (int)r, pdCount, drvPd);
+    r = enumPD(drvInst, &pdCount, &drvPd);
     if (r != VK_SUCCESS || pdCount == 0) {
-        drvDestroyInst(drvInst, NULL); if (hwDev->common.close) hwDev->common.close(devRaw); dlclose(drv); return false;
+        ALOGE("PROBE: enumPD = %d", (int)r);
+        destroyInst(drvInst, NULL); delete loader; return false;
     }
 
-    /* Enumerate device extensions via driver directly — expect VK_ANDROID_native_buffer */
-    bool hasNB = false;
-    bool hasGlsl = false;
+    bool hasNB = false, hasGlsl = false;
     {
         uint32_t extCount = 0;
-        drvEnumExt(drvPd, NULL, &extCount, NULL);
+        enumDevExt(drvPd, NULL, &extCount, NULL);
         VkExtensionProperties *exts = new VkExtensionProperties[extCount];
-        drvEnumExt(drvPd, NULL, &extCount, exts);
+        enumDevExt(drvPd, NULL, &extCount, exts);
         for (uint32_t i = 0; i < extCount; i++) {
-            ALOGD("HACK-PROBE: drv ext: %s", exts[i].extensionName);
             if (!strcmp(exts[i].extensionName, "VK_ANDROID_native_buffer"))
                 hasNB = true;
             if (!strcmp(exts[i].extensionName, "VK_NV_glsl_shader"))
@@ -1054,26 +959,20 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
         }
         delete[] exts;
     }
-    ALOGD("HACK-PROBE: driver exposes VK_ANDROID_native_buffer = %s", hasNB ? "YES" : "NO");
-
+    ALOGD("PROBE: VK_ANDROID_native_buffer via loader = %s", hasNB ? "YES" : "NO");
     if (!hasNB) {
-        ALOGE("HACK-PROBE: driver did NOT expose native_buffer even via direct enumeration");
-        drvDestroyInst(drvInst, NULL); if (hwDev->common.close) hwDev->common.close(devRaw); dlclose(drv); return false;
+        destroyInst(drvInst, NULL); delete loader; return false;
     }
 
-    /* Find a queue family */
     uint32_t qfCount = 0;
-    drvQF(drvPd, &qfCount, NULL);
-    VkQueueFamilyProperties qfProps[8];
+    qfProps(drvPd, &qfCount, NULL);
+    VkQueueFamilyProperties qfArr[8];
     if (qfCount > 8) qfCount = 8;
-    drvQF(drvPd, &qfCount, qfProps);
-    uint32_t qFamily = UINT32_MAX;
-    for (uint32_t i = 0; i < qfCount; i++) {
-        if (qfProps[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) { qFamily = i; break; }
-    }
-    if (qFamily == UINT32_MAX) qFamily = 0;
+    qfProps(drvPd, &qfCount, qfArr);
+    uint32_t qFamily = 0;
+    for (uint32_t i = 0; i < qfCount; i++)
+        if (qfArr[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) { qFamily = i; break; }
 
-    /* Create a parallel VkDevice with native_buffer enabled */
     float qPriority = 1.0f;
     VkDeviceQueueCreateInfo qci = {};
     qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
@@ -1094,82 +993,65 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
     dci.ppEnabledExtensionNames = devExts;
 
     VkDevice drvDev = VK_NULL_HANDLE;
-    r = drvCreateDev(drvPd, &dci, NULL, &drvDev);
-    ALOGD("HACK-PROBE: driver vkCreateDevice = %d dev=%p", (int)r, drvDev);
+    r = createDev(drvPd, &dci, NULL, &drvDev);
     if (r != VK_SUCCESS) {
-        drvDestroyInst(drvInst, NULL); if (hwDev->common.close) hwDev->common.close(devRaw); dlclose(drv); return false;
+        ALOGE("PROBE: vkCreateDevice = %d", (int)r);
+        destroyInst(drvInst, NULL); delete loader; return false;
     }
 
-    /* Get driver's vkCreateImage / vkDestroyImage / vkDestroyDevice */
-    PFN_vkGetDeviceProcAddr drvGdpa =
-        (PFN_vkGetDeviceProcAddr)drvGipa(drvInst, "vkGetDeviceProcAddr");
-    PFN_vkCreateImage drvCreateImg =
-        (PFN_vkCreateImage)drvGdpa(drvDev, "vkCreateImage");
-    PFN_vkDestroyImage drvDestroyImg =
-        (PFN_vkDestroyImage)drvGdpa(drvDev, "vkDestroyImage");
-    PFN_vkDestroyDevice drvDestroyDev =
-        (PFN_vkDestroyDevice)drvGdpa(drvDev, "vkDestroyDevice");
-    /* Android-specific PFNs — check availability */
-    void *drvAcquire = (void*)drvGdpa(drvDev, "vkAcquireImageANDROID");
-    void *drvReleaseSig = (void*)drvGdpa(drvDev, "vkQueueSignalReleaseImageANDROID");
-    ALOGD("HACK-PROBE: vkCreateImage=%p vkAcquireImageANDROID=%p vkQueueSignalReleaseImageANDROID=%p",
-          drvCreateImg, drvAcquire, drvReleaseSig);
+    PFN_vkGetDeviceProcAddr gdpa =
+        (PFN_vkGetDeviceProcAddr)gipa(drvInst, "vkGetDeviceProcAddr");
+    PFN_vkCreateImage createImg =
+        (PFN_vkCreateImage)gdpa(drvDev, "vkCreateImage");
+    PFN_vkDestroyImage destroyImg =
+        (PFN_vkDestroyImage)gdpa(drvDev, "vkDestroyImage");
+    PFN_vkDestroyDevice destroyDev =
+        (PFN_vkDestroyDevice)gdpa(drvDev, "vkDestroyDevice");
+    void *acquireAndroid =
+        (void*)gdpa(drvDev, "vkAcquireImageANDROID");
+    void *releaseAndroid =
+        (void*)gdpa(drvDev, "vkQueueSignalReleaseImageANDROID");
+    ALOGD("PROBE: vkCreateImage=%p acquireANDROID=%p releaseANDROID=%p",
+          createImg, acquireAndroid, releaseAndroid);
 
-    if (!drvCreateImg) {
-        ALOGE("HACK-PROBE: driver vkCreateImage PFN missing");
-        if (drvDestroyDev) drvDestroyDev(drvDev, NULL);
-        drvDestroyInst(drvInst, NULL); if (hwDev->common.close) hwDev->common.close(devRaw); dlclose(drv); return false;
-    }
-
-    /* Try vkCreateImage with VkNativeBufferANDROID */
     VkNativeBufferANDROID nbInfo = {};
-    nbInfo.sType = VK_STRUCTURE_TYPE_NATIVE_BUFFER_ANDROID;
+    nbInfo.sType  = VK_STRUCTURE_TYPE_NATIVE_BUFFER_ANDROID;
     nbInfo.handle = anwb->handle;
     nbInfo.stride = anwb->stride;
     nbInfo.format = anwb->format;
     nbInfo.usage  = anwb->usage;
 
     VkImageCreateInfo iici = {};
-    iici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    iici.pNext = &nbInfo;
-    iici.imageType = VK_IMAGE_TYPE_2D;
-    iici.format = VK_FORMAT_R8G8B8A8_UNORM;
+    iici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    iici.pNext         = &nbInfo;
+    iici.imageType     = VK_IMAGE_TYPE_2D;
+    iici.format        = VK_FORMAT_R8G8B8A8_UNORM;
     iici.extent.width  = dstW;
     iici.extent.height = dstH;
     iici.extent.depth  = 1;
-    iici.mipLevels = 1;
-    iici.arrayLayers = 1;
-    iici.samples = VK_SAMPLE_COUNT_1_BIT;
-    iici.tiling = VK_IMAGE_TILING_OPTIMAL;
-    iici.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    iici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    iici.mipLevels     = 1;
+    iici.arrayLayers   = 1;
+    iici.samples       = VK_SAMPLE_COUNT_1_BIT;
+    iici.tiling        = VK_IMAGE_TILING_OPTIMAL;
+    iici.usage         = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    iici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
     iici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     VkImage drvImg = VK_NULL_HANDLE;
-    r = drvCreateImg(drvDev, &iici, NULL, &drvImg);
-    ALOGD("HACK-PROBE: driver vkCreateImage(OPTIMAL, STORAGE|TRANSFER_DST) = %d", (int)r);
-
-    if (r != VK_SUCCESS) {
-        iici.tiling = VK_IMAGE_TILING_OPTIMAL;
-        iici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-        r = drvCreateImg(drvDev, &iici, NULL, &drvImg);
-        ALOGD("HACK-PROBE: retry vkCreateImage(OPTIMAL, TRANSFER_DST) = %d", (int)r);
-    }
+    r = createImg(drvDev, &iici, NULL, &drvImg);
+    ALOGD("PROBE: vkCreateImage(OPTIMAL, STORAGE|TRANSFER_DST) = %d", (int)r);
 
     if (r == VK_SUCCESS) {
-        ALOGD("HACK-PROBE RESULT: VkImage from gralloc CREATED via driver-direct path — HACK WORKS");
-        if (drvDestroyImg) drvDestroyImg(drvDev, drvImg, NULL);
+        ALOGD("PROBE RESULT: VkImage from gralloc CREATED — loader path WORKS");
+        if (destroyImg) destroyImg(drvDev, drvImg, NULL);
     } else {
-        ALOGE("HACK-PROBE RESULT: vkCreateImage failed via driver-direct path too: %d", (int)r);
+        ALOGE("PROBE RESULT: vkCreateImage failed: %d", (int)r);
     }
 
-    /* Clean up the parallel stack */
-    if (drvDestroyDev) drvDestroyDev(drvDev, NULL);
-    drvDestroyInst(drvInst, NULL);
-    if (hwDev->common.close) hwDev->common.close(devRaw);
-    dlclose(drv);
-
-    return false;  /* always fall through to existing path */
+    if (destroyDev) destroyDev(drvDev, NULL);
+    destroyInst(drvInst, NULL);
+    delete loader;
+    return false;
 }
 
 /* --- cleanup --- */

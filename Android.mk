@@ -62,6 +62,7 @@ LOCAL_C_INCLUDES += \
     $(LOCAL_PATH)/isp/cpu \
     $(LOCAL_PATH)/isp/gles \
     $(LOCAL_PATH)/isp/vulkan \
+    $(LOCAL_PATH)/isp/vulkan/loader \
     $(LOCAL_PATH)/isp/hw \
     $(LOCAL_PATH)/image \
     $(LOCAL_PATH)/util
@@ -74,6 +75,9 @@ LOCAL_SRC_FILES += \
     image/Yuv422UyvyToJpegEncoder.cpp \
     util/Workers.cpp \
     isp/vulkan/VulkanIspPipeline.cpp \
+    isp/vulkan/loader/VulkanLoader.cpp \
+    isp/vulkan/loader/HalHmiVulkanLoader.cpp \
+    isp/vulkan/loader/SystemVulkanLoader.cpp \
     isp/gles/GlesIspPipeline.cpp \
     isp/hw/HwIspPipeline.cpp
 
