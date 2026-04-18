@@ -548,12 +548,49 @@ bool VulkanIspPipeline::init() {
     }
     mPfn->MapMemory(mDevice, mParamMem, 0, sizeof(IspParams), 0, &mParamMap);
 
-    /* Fence for double-buffered submit */
     VkFenceCreateInfo fci = {};
     fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     mPfn->CreateFence(mDevice, &fci, NULL, &mFence);
 
     initGamma();
+
+    /* Prewarm: dispatch the compute pipeline on tiny dummy buffers so the
+     * driver's shader JIT runs here instead of on the first real frame.
+     * Without this, frame 1 pays ~80ms for shader compilation + GPU DVFS ramp. */
+    int64_t prewarmStart = nowMs();
+    if (ensureBuffers(64, 64, false)) {
+        IspParams dummy = {};
+        dummy.width = 64; dummy.height = 64;
+        dummy.wbR = 256; dummy.wbG = 256; dummy.wbB = 256;
+        dummy.ccm[0] = 1024; dummy.ccm[4] = 1024; dummy.ccm[8] = 1024;
+        memcpy(mParamMap, &dummy, sizeof(IspParams));
+
+        VkMappedMemoryRange paramRange = {};
+        paramRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        paramRange.memory = mParamMem;
+        paramRange.size = VK_WHOLE_SIZE;
+        mPfn->FlushMappedMemoryRanges(mDevice, 1, &paramRange);
+
+        VkCommandBufferBeginInfo beginInfo = {};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        mPfn->ResetCommandBuffer(mCmdBuf, 0);
+        mPfn->BeginCommandBuffer(mCmdBuf, &beginInfo);
+        mPfn->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
+        mPfn->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    mPipeLayout, 0, 1, &mDescSet, 0, NULL);
+        mPfn->CmdDispatch(mCmdBuf, 8, 8, 1);
+        mPfn->EndCommandBuffer(mCmdBuf);
+
+        VkSubmitInfo si = {};
+        si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &mCmdBuf;
+        mPfn->QueueSubmit(mQueue, 1, &si, mFence);
+        mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
+        mPfn->ResetFences(mDevice, 1, &mFence);
+    }
+    ALOGD("Vulkan ISP prewarm: %lldms", nowMs() - prewarmStart);
 
     mReady = true;
     ALOGD("Vulkan ISP initialized");
