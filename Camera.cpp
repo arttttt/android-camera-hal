@@ -622,7 +622,7 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
     mSoftIspEnabled = (propVal[0] == '1');
 
     char ispBackend[PROPERTY_VALUE_MAX] = {0};
-    property_get("persist.camera.isp_backend", ispBackend, "cpu");
+    property_get("persist.camera.isp_backend", ispBackend, "vulkan");
 
     if (mIsp) { mIsp->destroy(); delete mIsp; mIsp = NULL; }
     if (!strcmp(ispBackend, "vulkan")) {
