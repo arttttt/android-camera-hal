@@ -54,16 +54,28 @@ LOCAL_C_INCLUDES += \
     frameworks/native/include \
     prebuilts/ndk/current/platforms/android-24/arch-arm/usr/include
 
+# Module-internal include dirs
+LOCAL_C_INCLUDES += \
+    $(LOCAL_PATH)/hal \
+    $(LOCAL_PATH)/v4l2 \
+    $(LOCAL_PATH)/isp \
+    $(LOCAL_PATH)/isp/cpu \
+    $(LOCAL_PATH)/isp/gles \
+    $(LOCAL_PATH)/isp/vulkan \
+    $(LOCAL_PATH)/isp/hw \
+    $(LOCAL_PATH)/image \
+    $(LOCAL_PATH)/util
+
 LOCAL_SRC_FILES += \
-    HalModule.cpp \
-    Camera.cpp \
-    V4l2Device.cpp \
-    ImageConverter.cpp \
-    Workers.cpp \
-    Yuv422UyvyToJpegEncoder.cpp \
-    VulkanIspPipeline.cpp \
-    GlesIspPipeline.cpp \
-    HwIspPipeline.cpp
+    hal/HalModule.cpp \
+    hal/Camera.cpp \
+    v4l2/V4l2Device.cpp \
+    image/ImageConverter.cpp \
+    image/Yuv422UyvyToJpegEncoder.cpp \
+    util/Workers.cpp \
+    isp/vulkan/VulkanIspPipeline.cpp \
+    isp/gles/GlesIspPipeline.cpp \
+    isp/hw/HwIspPipeline.cpp
 
 LOCAL_SHARED_LIBRARIES += libvulkan libEGL libGLESv2
 

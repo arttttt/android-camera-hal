@@ -9,7 +9,7 @@ require reducing `V4L2DEVICE_BUF_COUNT`. Two compatible fixes:
 
 1. **Drain-to-latest in `readLock()`** — keep 4 buffers but always
    return the newest ready one, requeueing stale ones immediately.
-   Minimal change, ~50 lines in `V4l2Device.cpp`.
+   Minimal change, ~50 lines in `v4l2/V4l2Device.cpp`.
 2. **Asynchronous capture thread** — dedicate a thread to continuously
    `DQBUF → QBUF`, publishing "latest frame" via an atomic.
    `processCaptureRequest` reads latest under mutex. Larger change but
@@ -29,7 +29,7 @@ The kernel V4L2 queue is a ring: buffers sit in three states at any
 moment — **owned by driver** (being filled by VI), **done queue** (filled,
 waiting for userspace), **owned by userspace** (dequeued, in HAL).
 
-HAL flow per request (`Camera::processCaptureRequest`, `Camera.cpp:741`):
+HAL flow per request (`Camera::processCaptureRequest`, `hal/Camera.cpp:741`):
 
 ```
 t0 ── DQBUF ──► process ──► QBUF ──► return ──► framework calls again ──► …
@@ -44,7 +44,7 @@ fills up, and the frame we dequeue is progressively older. At steady
 state with 30 fps sensor and a ~40 ms pipeline, the framework sees a
 frame that is ~`buf_count` frames stale.
 
-The existing perf log line (`Camera.cpp:1128`) makes this observable:
+The existing perf log line (`hal/Camera.cpp:1128`) makes this observable:
 
 ```
 PERF: dqbuf=… convert=… total=…
@@ -69,7 +69,7 @@ After the first (blocking) DQBUF that gets us a frame, loop
 non-blocking DQBUFs. Each successful non-blocking DQBUF means a newer
 frame was already waiting; requeue the previous one immediately.
 
-Sketch for `V4l2Device.cpp:427`:
+Sketch for `v4l2/V4l2Device.cpp:427`:
 
 ```cpp
 const V4l2Device::VBuffer * V4l2Device::readLock() {
@@ -137,7 +137,7 @@ Move the DQBUF/QBUF loop off the framework thread entirely.
 
 Cost: one thread, one mutex + condition variable, and careful shutdown
 / restart on `configure_streams`. Fits naturally with
-`Workers.cpp` style.
+`util/Workers.cpp` style.
 
 This is how libcamera and cros-camera both do it. See
 [open-source-references.md](open-source-references.md).

@@ -11,7 +11,7 @@
                      └─────────┬─────────┘
                                │ opens per-camera
                      ┌─────────▼─────────┐
-                     │      Camera       │  (Camera.cpp)
+                     │      Camera       │  (hal/Camera.cpp)
                      │  (Camera3 device) │
                      └──┬───────────┬────┘
                         │           │
@@ -33,31 +33,31 @@
 
 The main objects:
 
-- **`Camera`** (`Camera.cpp`, `Camera.h`) — one instance per physical camera.
+- **`Camera`** (`hal/Camera.cpp`, `hal/Camera.h`) — one instance per physical camera.
   Implements the Camera3 device ops (`process_capture_request`,
   `configure_streams`, `construct_default_request_settings`, …). Holds
   per-camera state: default request templates, static characteristics,
   cached `V4l2Device` pointer, `IspPipeline*`, AF state machine.
 
-- **`V4l2Device`** (`V4l2Device.cpp/.h`) — thin C++ wrapper over
+- **`V4l2Device`** (`v4l2/V4l2Device.cpp/.h`) — thin C++ wrapper over
   `/dev/video0`. Manages mmap buffers, `VIDIOC_QBUF`/`VIDIOC_DQBUF`,
   `VIDIOC_S_CTRL` for sensor controls, `VIDIOC_EXPBUF` for dmabuf export.
   Also opens the focuser subdev (`/dev/v4l-subdev*`) when found.
 
-- **`IspPipeline`** (`IspPipeline.h`) — abstract base for demosaic / color
+- **`IspPipeline`** (`isp/IspPipeline.h`) — abstract base for demosaic / color
   processing. See [isp-pipeline.md](isp-pipeline.md) for the four backends.
 
-- **`ImageConverter`** (`ImageConverter.cpp`) — libyuv-backed YUV/UYVY/YUYV →
+- **`ImageConverter`** (`image/ImageConverter.cpp`) — libyuv-backed YUV/UYVY/YUYV →
   RGBA / JPEG paths, used when the sensor emits packed YUV (no ISP needed).
 
-- **`Workers`** (`Workers.cpp/h`) — a generic thread pool. Currently used
+- **`Workers`** (`util/Workers.cpp/h`) — a generic thread pool. Currently used
   only by `CpuIspPipeline` / `ImageConverter` for parallelising row-wise
   work. **Not** used for request pipelining.
 
 ## Request lifecycle
 
 All Camera3 per-frame work happens in `Camera::processCaptureRequest()`
-(`Camera.cpp:741`). The flow is **strictly synchronous**, single-threaded,
+(`hal/Camera.cpp:741`). The flow is **strictly synchronous**, single-threaded,
 single-buffer:
 
 ```
@@ -119,7 +119,7 @@ the pipeline-depth-1 behaviour discussed in
 ## Static characteristics
 
 Built once per camera in `Camera::getStaticCharacteristics()`
-(`Camera.cpp:145`). The keys populated today are enumerated in
+(`hal/Camera.cpp:145`). The keys populated today are enumerated in
 [camera3-compliance.md](camera3-compliance.md) along with the gaps. Values
 are a mix of sensor-derived (resolutions, sensor area from `SensorConfig`),
 hardcoded (optical properties — 3.3 mm focal length, 1.8 mm physical
@@ -128,7 +128,7 @@ sensor width), and inferred (VCM range from the focuser subdev via
 
 ## AF state machine
 
-Live in `Camera.cpp` across `mAfSweep*`, `mAfSettleFrames`, `mFocusPosition`.
+Live in `hal/Camera.cpp` across `mAfSweep*`, `mAfSettleFrames`, `mFocusPosition`.
 Semantics:
 
 - **AF_MODE_OFF** — pass through `LENS_FOCUS_DISTANCE` verbatim to VCM.
@@ -156,7 +156,7 @@ Compile-time, defined in `Android.mk`:
   per `open()` call.
 - `V4L2DEVICE_USE_POLL` — use `poll()` before `DQBUF` (timeout 5 s).
 
-Runtime knobs via setprop (`Camera.cpp` parses `ro.hal.camera.*`):
+Runtime knobs via setprop (`hal/Camera.cpp` parses `ro.hal.camera.*`):
 
 - `soft_isp` — `0`/`1` toggle between hardware ISP (Tegra `libnvisp_v3`)
   and software pipeline.

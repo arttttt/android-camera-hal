@@ -1,7 +1,7 @@
 # Camera3 compliance gaps
 
 This HAL declares `ANDROID_INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED`
-(`Camera.cpp:378`) but is missing several metadata keys and behaviours
+(`hal/Camera.cpp:378`) but is missing several metadata keys and behaviours
 that `LIMITED` implementations are expected to provide. This document
 enumerates the gaps, ordered by how badly they break real applications.
 
@@ -29,7 +29,7 @@ report `LOCKED` if the framework set `AWB_LOCK`, else `CONVERGED`.
 
 ### Requested controls not echoed in result metadata
 
-The result built around `Camera.cpp:1132+` is missing:
+The result built around `hal/Camera.cpp:1132+` is missing:
 
 - `ANDROID_SENSOR_EXPOSURE_TIME`
 - `ANDROID_SENSOR_SENSITIVITY`
@@ -60,7 +60,7 @@ reads / writes. This is tedious but mechanical.
 ### `YUV_420_888` output not supported
 
 Only `RGBA_8888` and `BLOB` are offered
-(`ANDROID_SCALER_AVAILABLE_STREAM_CONFIGURATIONS` in `Camera.cpp` around
+(`ANDROID_SCALER_AVAILABLE_STREAM_CONFIGURATIONS` in `hal/Camera.cpp` around
 line 220). `YUV_420_888` is mandatory for `LIMITED` and is the format
 CameraX's `ImageAnalysis`, ML Kit, and most third-party video pipelines
 consume. Without it, CameraX falls back to unusable paths or refuses to
@@ -73,7 +73,7 @@ pass or a libyuv call). Expose the format in the stream config array.
 ### `notifyError` path not wired up
 
 `grep notifyError` returns zero uses. Any V4L2 read failure
-(`readLock()` returning `NULL`, `Camera.cpp:866`) returns
+(`readLock()` returning `NULL`, `hal/Camera.cpp:866`) returns
 `NOT_ENOUGH_DATA` silently. Framework expects `CAMERA3_MSG_ERROR_REQUEST`
 or `CAMERA3_MSG_ERROR_BUFFER` on such failures, otherwise it waits
 indefinitely for the result.
@@ -138,8 +138,8 @@ This is fine for a bare-bones HAL; flagging it so the roadmap is honest.
 
 ### ZSL and reprocessing rejected
 
-Input streams are accepted and ignored (`Camera.cpp:762-765`); ZSL-flagged
-streams are rejected outright (`Camera.cpp:570-571`). Both are optional
+Input streams are accepted and ignored (`hal/Camera.cpp:762-765`); ZSL-flagged
+streams are rejected outright (`hal/Camera.cpp:570-571`). Both are optional
 for `LIMITED` but useful for still-capture latency.
 
 ### HFR / constrained high-speed missing
@@ -150,7 +150,7 @@ No `ANDROID_CONTROL_AVAILABLE_HIGH_SPEED_VIDEO_CONFIGURATIONS`.
 
 ### Sensor characteristics are partially faked
 
-`Camera.cpp:160-180` uses hardcoded constants: 5×5 mm physical sensor
+`hal/Camera.cpp:160-180` uses hardcoded constants: 5×5 mm physical sensor
 area (scaled by aspect ratio), 3.3 mm focal length, fixed minimum focus
 distance. Good enough for preview; wrong for apps using physical
 parameters (depth estimation, augmented reality, focal plane metadata
@@ -174,7 +174,7 @@ one supported mode.
 
 ### Stream-configuration min frame durations assume 60 fps
 
-`Camera.cpp:229, 253` — hardcoded `1_000_000_000 / 60`. On sensors that
+`hal/Camera.cpp:229, 253` — hardcoded `1_000_000_000 / 60`. On sensors that
 can't actually do 60 fps at full resolution, framework will request
 impossible frame rates.
 

@@ -40,7 +40,7 @@ Honest values: `1` and `1` today. Bump after tier 3 lands.
 
 ### Fix `min_frame_duration` arrays (S)
 
-`Camera.cpp:229, 253` hardcode 60 fps. Replace with sensor-queried
+`hal/Camera.cpp:229, 253` hardcode 60 fps. Replace with sensor-queried
 max-fps-per-resolution so the framework stops requesting impossible
 rates on modes that can only do 30.
 
@@ -111,7 +111,7 @@ Prerequisite for truthful manual-exposure and HDR-bracketing support.
 
 ### 3A module with statistics feedback (L)
 
-Pull AF/AE/AWB out of `Camera.cpp` into a separate `IpaModule` with a
+Pull AF/AE/AWB out of `hal/Camera.cpp` into a separate `IpaModule` with a
 `process(StatsBuffer) → ControlUpdate` interface. Feed it statistics
 from the ISP rather than the rendered preview.
 

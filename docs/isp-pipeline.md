@@ -1,6 +1,6 @@
 # ISP pipeline abstraction
 
-The `IspPipeline` interface (`IspPipeline.h`) hides which backend
+The `IspPipeline` interface (`isp/IspPipeline.h`) hides which backend
 performs demosaic / colour correction / format conversion. Four
 implementations exist today.
 
@@ -51,13 +51,13 @@ public:
 
 ### `CpuIspPipeline`
 
-`CpuIspPipeline.cpp`. libyuv-based, runs on `Workers` thread pool for
+`isp/cpu/CpuIspPipeline.cpp`. libyuv-based, runs on `Workers` thread pool for
 row parallelism. Slow on Bayer input (naive bilinear demosaic in C++).
 Fine on packed YUV. Kept for debug / correctness reference.
 
 ### `GlesIspPipeline`
 
-`GlesIspPipeline.cpp`. OpenGL ES 3.0 pipeline, EGL-initialised. Runs as
+`isp/gles/GlesIspPipeline.cpp`. OpenGL ES 3.0 pipeline, EGL-initialised. Runs as
 a fragment shader reading a GL_TEXTURE_2D_RGBA sampled as packed Bayer,
 writing into a gralloc-backed EGLImage via FBO when `processToGralloc`
 is called. Zero-copy output on the golden path; dmabuf input via
@@ -65,7 +65,7 @@ is called. Zero-copy output on the golden path; dmabuf input via
 
 ### `VulkanIspPipeline`
 
-`VulkanIspPipeline.cpp`. Compute-shader pipeline. Consumes dmabuf via
+`isp/vulkan/VulkanIspPipeline.cpp`. Compute-shader pipeline. Consumes dmabuf via
 `VK_EXT_external_memory_dma_buf`, outputs either to mapped system
 memory or to gralloc through `VK_ANDROID_external_memory_android_hardware_buffer`.
 Currently the preferred soft-ISP path on this HAL when
@@ -73,8 +73,8 @@ Currently the preferred soft-ISP path on this HAL when
 
 ### `HwIspPipeline`
 
-`HwIspPipeline.cpp`. Uses Tegra ISP-A via the MIUI `libnvisp_v3.so` blob.
-Flow, per `HwIspPipeline.h`:
+`isp/hw/HwIspPipeline.cpp`. Uses Tegra ISP-A via the MIUI `libnvisp_v3.so` blob.
+Flow, per `isp/hw/HwIspPipeline.h`:
 
 1. `dlopen` the blob stack (`libnvos`, `libnvrm`, `libnvrm_graphics`,
    `libnvisp_v3`). Requires `nvrm_shim.so` via `LD_PRELOAD` for
@@ -92,7 +92,7 @@ on NVIDIA blobs matching the kernel, and we do not own the tuning.
 
 ## Backend selection
 
-At `Camera` construction time (`Camera.cpp` around `mSoftIspEnabled`):
+At `Camera` construction time (`hal/Camera.cpp` around `mSoftIspEnabled`):
 
 ```cpp
 mSoftIspEnabled = property_get_bool("ro.hal.camera.soft_isp", true);
@@ -114,7 +114,7 @@ win.
   have no feedback at all. A proper ISP exposes an AE histogram, AWB
   patch averages, and an AF sharpness grid via a separate output
   channel — `HwIspPipeline` actually has a `mStatsHandle` nvmap
-  allocation (`HwIspPipeline.h:72`), but nothing reads it. Surfacing
+  allocation (`isp/hw/HwIspPipeline.h:72`), but nothing reads it. Surfacing
   statistics would be the single biggest quality upgrade.
 
 - **No per-frame tuning parameters.** `processSync` etc. take only
@@ -141,7 +141,7 @@ win.
 3. Implement at least `processSync`. `processFromDmabuf` and
    `processToGralloc` are optional — the default
    `processToGralloc` returns `false` which triggers the CPU readback
-   path in `Camera.cpp`.
+   path in `hal/Camera.cpp`.
 4. Wire into the `Camera` constructor selector and `Android.mk`.
 
 Keep the class self-contained (no direct V4L2 knowledge, no Camera3

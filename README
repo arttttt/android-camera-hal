@@ -16,7 +16,7 @@ LIMITATIONS
 * No parameter control, most of the reported specs are hardcoded.
 
 * Resolution detection is limited up to 1920x1080. See availableResolutions()
-  in V4l2Device.cpp.
+  in v4l2/V4l2Device.cpp.
 
 
 
