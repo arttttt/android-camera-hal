@@ -908,23 +908,85 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
         }
     }
 
-    /* dlopen the Vulkan HAL shim — it exports vkGetInstanceProcAddr that
-     * bridges into libglcore.so via libEGL init. libglcore itself doesn't
-     * expose vk* symbols publicly. */
+    /* dlopen the Vulkan HAL shim. Android Vulkan HALs export entry points
+     * via the HMI hw_module_t structure, not as plain symbols. Flow:
+     *   1. dlsym("HMI")  → hw_module_t*
+     *   2. module->methods->open(module, "vk0", &device) → hwvulkan_device_t*
+     *   3. device has { EnumerateInstanceExtensionProperties, CreateInstance,
+     *                   GetInstanceProcAddr } function pointers */
     void *drv = dlopen("/system/vendor/lib/hw/vulkan.tegra.so", RTLD_NOW | RTLD_LOCAL);
     if (!drv) {
         ALOGE("HACK-PROBE: dlopen vulkan.tegra.so failed: %s", dlerror());
         return false;
     }
 
-    PFN_vkGetInstanceProcAddr drvGipa =
-        (PFN_vkGetInstanceProcAddr)dlsym(drv, "vkGetInstanceProcAddr");
-    if (!drvGipa) {
-        ALOGE("HACK-PROBE: dlsym vkGetInstanceProcAddr failed: %s", dlerror());
+    /* Inline minimal Android HAL structs — avoid NDK header issues */
+    struct hw_module_methods_inline {
+        int (*open)(const void *module, const char *id, void **device);
+    };
+    struct hw_module_inline {
+        uint32_t tag;
+        uint16_t module_api_version;
+        uint16_t hal_api_version;
+        const char *id;
+        const char *name;
+        const char *author;
+        hw_module_methods_inline *methods;
+        void *dso;
+        uint32_t reserved[32-7];
+    };
+    struct hw_device_inline {
+        uint32_t tag;
+        uint32_t version;
+        void *module;
+        uint32_t reserved[12];
+        int (*close)(void *device);
+    };
+    struct hwvulkan_device_inline {
+        hw_device_inline common;
+        PFN_vkEnumerateInstanceExtensionProperties EnumerateInstanceExtensionProperties;
+        PFN_vkCreateInstance CreateInstance;
+        PFN_vkGetInstanceProcAddr GetInstanceProcAddr;
+    };
+
+    hw_module_inline *hwMod = (hw_module_inline *)dlsym(drv, "HMI");
+    if (!hwMod) {
+        ALOGE("HACK-PROBE: dlsym HMI failed: %s", dlerror());
         dlclose(drv);
         return false;
     }
-    ALOGD("HACK-PROBE: shim vkGetInstanceProcAddr = %p", drvGipa);
+    ALOGD("HACK-PROBE: HMI=%p tag=0x%08x id=%s name=%s",
+          hwMod, hwMod->tag, hwMod->id ? hwMod->id : "(null)",
+          hwMod->name ? hwMod->name : "(null)");
+
+    if (!hwMod->methods || !hwMod->methods->open) {
+        ALOGE("HACK-PROBE: HMI has no open method");
+        dlclose(drv);
+        return false;
+    }
+
+    void *devRaw = NULL;
+    int openRes = hwMod->methods->open(hwMod, "vk0", &devRaw);
+    ALOGD("HACK-PROBE: HMI open('vk0') = %d, device=%p", openRes, devRaw);
+    if (openRes != 0 || !devRaw) {
+        ALOGE("HACK-PROBE: hwvulkan open failed");
+        dlclose(drv);
+        return false;
+    }
+
+    hwvulkan_device_inline *hwDev = (hwvulkan_device_inline *)devRaw;
+    ALOGD("HACK-PROBE: hwvulkan_device EnumExtProps=%p CreateInstance=%p GetInstProcAddr=%p",
+          hwDev->EnumerateInstanceExtensionProperties,
+          hwDev->CreateInstance,
+          hwDev->GetInstanceProcAddr);
+
+    PFN_vkGetInstanceProcAddr drvGipa = hwDev->GetInstanceProcAddr;
+    if (!drvGipa) {
+        ALOGE("HACK-PROBE: hwvulkan_device has null GetInstanceProcAddr");
+        if (hwDev->common.close) hwDev->common.close(devRaw);
+        dlclose(drv);
+        return false;
+    }
 
     /* Create a parallel VkInstance via driver */
     VkApplicationInfo appInfo = {};
@@ -970,7 +1032,7 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
     r = drvEnumPD(drvInst, &pdCount, &drvPd);
     ALOGD("HACK-PROBE: driver enumPD = %d count=%u pd=%p", (int)r, pdCount, drvPd);
     if (r != VK_SUCCESS || pdCount == 0) {
-        drvDestroyInst(drvInst, NULL); dlclose(drv); return false;
+        drvDestroyInst(drvInst, NULL); if (hwDev->common.close) hwDev->common.close(devRaw); dlclose(drv); return false;
     }
 
     /* Enumerate device extensions via driver directly — expect VK_ANDROID_native_buffer */
@@ -994,7 +1056,7 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
 
     if (!hasNB) {
         ALOGE("HACK-PROBE: driver did NOT expose native_buffer even via direct enumeration");
-        drvDestroyInst(drvInst, NULL); dlclose(drv); return false;
+        drvDestroyInst(drvInst, NULL); if (hwDev->common.close) hwDev->common.close(devRaw); dlclose(drv); return false;
     }
 
     /* Find a queue family */
@@ -1033,7 +1095,7 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
     r = drvCreateDev(drvPd, &dci, NULL, &drvDev);
     ALOGD("HACK-PROBE: driver vkCreateDevice = %d dev=%p", (int)r, drvDev);
     if (r != VK_SUCCESS) {
-        drvDestroyInst(drvInst, NULL); dlclose(drv); return false;
+        drvDestroyInst(drvInst, NULL); if (hwDev->common.close) hwDev->common.close(devRaw); dlclose(drv); return false;
     }
 
     /* Get driver's vkCreateImage / vkDestroyImage / vkDestroyDevice */
@@ -1054,7 +1116,7 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
     if (!drvCreateImg) {
         ALOGE("HACK-PROBE: driver vkCreateImage PFN missing");
         if (drvDestroyDev) drvDestroyDev(drvDev, NULL);
-        drvDestroyInst(drvInst, NULL); dlclose(drv); return false;
+        drvDestroyInst(drvInst, NULL); if (hwDev->common.close) hwDev->common.close(devRaw); dlclose(drv); return false;
     }
 
     /* Try vkCreateImage with VkNativeBufferANDROID */
@@ -1102,6 +1164,7 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
     /* Clean up the parallel stack */
     if (drvDestroyDev) drvDestroyDev(drvDev, NULL);
     drvDestroyInst(drvInst, NULL);
+    if (hwDev->common.close) hwDev->common.close(devRaw);
     dlclose(drv);
 
     return false;  /* always fall through to existing path */
