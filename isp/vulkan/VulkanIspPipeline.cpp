@@ -12,6 +12,7 @@ static inline int64_t nowMs() {
     return ts.tv_sec * 1000LL + ts.tv_nsec / 1000000;
 }
 
+#include <system/window.h>
 #include "VulkanIspPipeline.h"
 
 /* Missing KHR types in old Vulkan SDK (android-24) */
@@ -24,6 +25,20 @@ typedef struct VkImportMemoryFdInfoKHR {
     uint32_t handleType;  /* VkExternalMemoryHandleTypeFlagBitsKHR */
     int fd;
 } VkImportMemoryFdInfoKHR;
+#endif
+
+/* VK_ANDROID_native_buffer types — absent from android-24 NDK vulkan.h */
+#ifndef VK_ANDROID_NATIVE_BUFFER_NUMBER
+#define VK_ANDROID_NATIVE_BUFFER_NUMBER 11
+#define VK_STRUCTURE_TYPE_NATIVE_BUFFER_ANDROID ((VkStructureType)1000010000)
+typedef struct VkNativeBufferANDROID {
+    VkStructureType sType;
+    const void *pNext;
+    const struct native_handle *handle;
+    int stride;
+    int format;
+    int usage;
+} VkNativeBufferANDROID;
 #endif
 
 namespace android {
@@ -58,7 +73,8 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mInMap(NULL), mOutMap(NULL), mParamMap(NULL)
     , mDmaBuf(VK_NULL_HANDLE), mDmaMem(VK_NULL_HANDLE), mDmaFd(-1)
     , mFence(VK_NULL_HANDLE), mPrevDst(NULL), mPrevPending(false)
-    , mParamsTemplateReady(false) {}
+    , mParamsTemplateReady(false)
+    , mNativeBufferAvail(false), mNativeBufferProbed(false) {}
 
 VulkanIspPipeline::~VulkanIspPipeline() { destroy(); }
 
@@ -270,7 +286,8 @@ bool VulkanIspPipeline::init() {
     }
     mDmabufSupported = false; /* no instance ext support on K1 */
 
-    /* VK_NV_glsl_shader is required — shader is shipped as GLSL source */
+    /* VK_NV_glsl_shader is required (shader is shipped as GLSL source).
+     * VK_ANDROID_native_buffer is probed for Phase 2 — used by processToGralloc. */
     bool hasNvGlsl = false;
     {
         uint32_t extCount2 = 0;
@@ -280,6 +297,8 @@ bool VulkanIspPipeline::init() {
         for (uint32_t i = 0; i < extCount2; i++) {
             if (!strcmp(exts2[i].extensionName, "VK_NV_glsl_shader"))
                 hasNvGlsl = true;
+            if (!strcmp(exts2[i].extensionName, "VK_ANDROID_native_buffer"))
+                mNativeBufferAvail = true;
         }
         delete[] exts2;
     }
@@ -288,6 +307,7 @@ bool VulkanIspPipeline::init() {
         destroy();
         return false;
     }
+    ALOGD("VK_ANDROID_native_buffer: %s", mNativeBufferAvail ? "AVAILABLE" : "absent");
 
     /* Find compute queue */
     uint32_t qfCount = 0;
@@ -317,13 +337,17 @@ bool VulkanIspPipeline::init() {
     qci.queueCount = 1;
     qci.pQueuePriorities = &qPriority;
 
-    const char *enabledExts[1] = { "VK_NV_glsl_shader" };
+    const char *enabledExts[2];
+    uint32_t enabledExtCount = 0;
+    enabledExts[enabledExtCount++] = "VK_NV_glsl_shader";
+    if (mNativeBufferAvail)
+        enabledExts[enabledExtCount++] = "VK_ANDROID_native_buffer";
 
     VkDeviceCreateInfo dci = {};
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
-    dci.enabledExtensionCount = 1;
+    dci.enabledExtensionCount = enabledExtCount;
     dci.ppEnabledExtensionNames = enabledExts;
 
     if (vkCreateDevice(mPhysDev, &dci, NULL, &mDevice) != VK_SUCCESS) {
@@ -848,6 +872,82 @@ bool VulkanIspPipeline::processFromDmabuf(int dmabufFd, const uint8_t *cpuFallba
 
     updateAwb(cpuFallback, width, height, is16, pixFmt);
     return true;
+}
+
+/* --- Phase 2 probe: VK_ANDROID_native_buffer ---
+ * Validates whether the driver can import a gralloc handle as VkImage.
+ * Runs once on first call, always returns false so the existing
+ * processFromDmabuf path is taken. No behavior change in production. */
+bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
+                                          unsigned srcW, unsigned srcH,
+                                          unsigned dstW, unsigned dstH,
+                                          uint32_t pixFmt) {
+    (void)src; (void)srcW; (void)srcH; (void)pixFmt;
+
+    if (mNativeBufferProbed || !mReady || !nativeBuffer)
+        return false;
+    mNativeBufferProbed = true;
+
+    if (!mNativeBufferAvail) {
+        ALOGW("PROBE: VK_ANDROID_native_buffer not available — skipping probe");
+        return false;
+    }
+
+    ANativeWindowBuffer *anwb = (ANativeWindowBuffer *)nativeBuffer;
+    ALOGD("PROBE: nativeBuffer %dx%d stride=%d format=%d usage=0x%x handle=%p",
+          anwb->width, anwb->height, anwb->stride, anwb->format, anwb->usage,
+          anwb->handle);
+
+    VkNativeBufferANDROID nbInfo = {};
+    nbInfo.sType = VK_STRUCTURE_TYPE_NATIVE_BUFFER_ANDROID;
+    nbInfo.handle = anwb->handle;
+    nbInfo.stride = anwb->stride;
+    nbInfo.format = anwb->format;
+    nbInfo.usage = anwb->usage;
+
+    VkImageCreateInfo ici = {};
+    ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ici.pNext = &nbInfo;
+    ici.imageType = VK_IMAGE_TYPE_2D;
+    ici.format = VK_FORMAT_R8G8B8A8_UNORM;
+    ici.extent.width = dstW;
+    ici.extent.height = dstH;
+    ici.extent.depth = 1;
+    ici.mipLevels = 1;
+    ici.arrayLayers = 1;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VkImage testImage = VK_NULL_HANDLE;
+    VkResult res = vkCreateImage(mDevice, &ici, NULL, &testImage);
+    ALOGD("PROBE: vkCreateImage(OPTIMAL, STORAGE|TRANSFER_DST) = %d", (int)res);
+
+    if (res != VK_SUCCESS) {
+        /* Try LINEAR tiling — gralloc may have been allocated with SW flags */
+        ici.tiling = VK_IMAGE_TILING_LINEAR;
+        res = vkCreateImage(mDevice, &ici, NULL, &testImage);
+        ALOGD("PROBE: retry vkCreateImage(LINEAR) = %d", (int)res);
+    }
+
+    if (res != VK_SUCCESS) {
+        /* Try without STORAGE bit — compositor buffers often can't be storage images */
+        ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        res = vkCreateImage(mDevice, &ici, NULL, &testImage);
+        ALOGD("PROBE: retry vkCreateImage(OPTIMAL, TRANSFER_DST only) = %d", (int)res);
+    }
+
+    if (res == VK_SUCCESS) {
+        ALOGD("PROBE RESULT: VkImage from gralloc handle CREATED — VK_ANDROID_native_buffer WORKS");
+        vkDestroyImage(mDevice, testImage, NULL);
+    } else {
+        ALOGE("PROBE RESULT: all vkCreateImage attempts failed — VK_ANDROID_native_buffer NOT USABLE on this path");
+    }
+
+    return false;  /* always fall through to existing path */
 }
 
 /* --- cleanup --- */

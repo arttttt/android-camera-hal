@@ -28,6 +28,13 @@ public:
                            uint8_t *dst, unsigned width, unsigned height,
                            uint32_t pixFmt) override;
 
+    /* Phase 2 probe: attempts VkImage creation from gralloc handle once,
+     * logs result, returns false so caller falls back to existing path. */
+    bool processToGralloc(const uint8_t *src, void *nativeBuffer,
+                           unsigned srcW, unsigned srcH,
+                           unsigned dstW, unsigned dstH,
+                           uint32_t pixFmt) override;
+
 private:
     bool createBuffer(VkBuffer *buf, VkDeviceMemory *mem,
                       VkDeviceSize size, VkBufferUsageFlags usage);
@@ -88,6 +95,10 @@ private:
     static uint8_t sGammaLut[256];
     static bool sGammaReady;
     static void initGamma();
+
+    /* VK_ANDROID_native_buffer probe state */
+    bool mNativeBufferAvail;
+    bool mNativeBufferProbed;
 };
 
 }; /* namespace android */
