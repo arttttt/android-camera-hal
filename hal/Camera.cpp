@@ -655,6 +655,8 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
         return NO_INIT;
     }
 
+    mIsp->prewarm(width, height, mDev->pixelFormat());
+
     ALOGV("+-------------------------------------------------------------------------------");
     ALOGV("| STREAMS AFTER CHANGES");
     ALOGV("+-------------------------------------------------------------------------------");

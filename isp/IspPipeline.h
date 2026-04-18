@@ -31,6 +31,12 @@ public:
         return process(src, dst, width, height, pixFmt);
     }
 
+    /* Run a dummy dispatch at the target stream dimensions so the backend's
+     * shader / GPU state is warm before the first real frame. Default no-op. */
+    virtual void prewarm(unsigned width, unsigned height, uint32_t pixFmt) {
+        (void)width; (void)height; (void)pixFmt;
+    }
+
     /* Zero-copy: process from dmabuf fd instead of CPU pointer.
      * Default falls back to regular process(). */
     virtual bool processFromDmabuf(int dmabufFd, const uint8_t *cpuFallback,

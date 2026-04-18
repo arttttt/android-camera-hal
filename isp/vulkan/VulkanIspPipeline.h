@@ -31,6 +31,8 @@ public:
                            uint8_t *dst, unsigned width, unsigned height,
                            uint32_t pixFmt) override;
 
+    void prewarm(unsigned width, unsigned height, uint32_t pixFmt) override;
+
     bool processToGralloc(const uint8_t *src, void *nativeBuffer,
                            unsigned srcW, unsigned srcH,
                            unsigned dstW, unsigned dstH,
@@ -43,6 +45,11 @@ private:
     uint32_t findMemoryType(uint32_t filter, VkMemoryPropertyFlags props);
     bool ensureBuffers(unsigned width, unsigned height, bool is16bit);
     bool importDmabuf(int fd, VkDeviceSize size, VkBuffer *buf, VkDeviceMemory *mem);
+
+    /* Record mCmdBuf with pipeline+descriptor bind and a single compute
+     * dispatch sized for (width, height), then submit to mQueue signalling
+     * `fence` (VK_NULL_HANDLE = no fence). */
+    void recordAndSubmit(unsigned width, unsigned height, VkFence fence);
 
     VulkanLoader *mLoader;
     VulkanPfn    *mPfn;

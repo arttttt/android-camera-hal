@@ -198,6 +198,26 @@ void VulkanIspPipeline::destroyBuffer(VkBuffer buf, VkDeviceMemory mem) {
     if (mem != VK_NULL_HANDLE) mPfn->FreeMemory(mDevice, mem, NULL);
 }
 
+void VulkanIspPipeline::recordAndSubmit(unsigned width, unsigned height, VkFence fence) {
+    VkCommandBufferBeginInfo beginInfo = {};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    mPfn->ResetCommandBuffer(mCmdBuf, 0);
+    mPfn->BeginCommandBuffer(mCmdBuf, &beginInfo);
+    mPfn->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
+    mPfn->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                mPipeLayout, 0, 1, &mDescSet, 0, NULL);
+    mPfn->CmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
+    mPfn->EndCommandBuffer(mCmdBuf);
+
+    VkSubmitInfo si = {};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &mCmdBuf;
+    mPfn->QueueSubmit(mQueue, 1, &si, fence);
+}
+
 bool VulkanIspPipeline::importDmabuf(int fd, VkDeviceSize size,
                                       VkBuffer *buf, VkDeviceMemory *mem) {
     VkBufferCreateInfo bci = {};
@@ -554,44 +574,6 @@ bool VulkanIspPipeline::init() {
 
     initGamma();
 
-    /* Prewarm: dispatch the compute pipeline on tiny dummy buffers so the
-     * driver's shader JIT runs here instead of on the first real frame.
-     * Without this, frame 1 pays ~80ms for shader compilation + GPU DVFS ramp. */
-    int64_t prewarmStart = nowMs();
-    if (ensureBuffers(64, 64, false)) {
-        IspParams dummy = {};
-        dummy.width = 64; dummy.height = 64;
-        dummy.wbR = 256; dummy.wbG = 256; dummy.wbB = 256;
-        dummy.ccm[0] = 1024; dummy.ccm[4] = 1024; dummy.ccm[8] = 1024;
-        memcpy(mParamMap, &dummy, sizeof(IspParams));
-
-        VkMappedMemoryRange paramRange = {};
-        paramRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-        paramRange.memory = mParamMem;
-        paramRange.size = VK_WHOLE_SIZE;
-        mPfn->FlushMappedMemoryRanges(mDevice, 1, &paramRange);
-
-        VkCommandBufferBeginInfo beginInfo = {};
-        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        mPfn->ResetCommandBuffer(mCmdBuf, 0);
-        mPfn->BeginCommandBuffer(mCmdBuf, &beginInfo);
-        mPfn->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
-        mPfn->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                    mPipeLayout, 0, 1, &mDescSet, 0, NULL);
-        mPfn->CmdDispatch(mCmdBuf, 8, 8, 1);
-        mPfn->EndCommandBuffer(mCmdBuf);
-
-        VkSubmitInfo si = {};
-        si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        si.commandBufferCount = 1;
-        si.pCommandBuffers = &mCmdBuf;
-        mPfn->QueueSubmit(mQueue, 1, &si, mFence);
-        mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
-        mPfn->ResetFences(mDevice, 1, &mFence);
-    }
-    ALOGD("Vulkan ISP prewarm: %lldms", nowMs() - prewarmStart);
-
     mReady = true;
     ALOGD("Vulkan ISP initialized");
     return true;
@@ -695,23 +677,7 @@ bool VulkanIspPipeline::process(const uint8_t *src, uint8_t *dst,
 
     int64_t t2 = nowMs();
 
-    VkCommandBufferBeginInfo beginInfo = {};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-    mPfn->ResetCommandBuffer(mCmdBuf, 0);
-    mPfn->BeginCommandBuffer(mCmdBuf, &beginInfo);
-    mPfn->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
-    mPfn->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                mPipeLayout, 0, 1, &mDescSet, 0, NULL);
-    mPfn->CmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
-    mPfn->EndCommandBuffer(mCmdBuf);
-
-    VkSubmitInfo si = {};
-    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &mCmdBuf;
-    mPfn->QueueSubmit(mQueue, 1, &si, mFence);
+    recordAndSubmit(width, height, mFence);
 
     mPrevDst = dst;
     mPrevPending = true;
@@ -767,22 +733,7 @@ bool VulkanIspPipeline::processSync(const uint8_t *src, uint8_t *dst,
     flushRanges[1].size = VK_WHOLE_SIZE;
     mPfn->FlushMappedMemoryRanges(mDevice, 2, flushRanges);
 
-    VkCommandBufferBeginInfo beginInfo = {};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    mPfn->ResetCommandBuffer(mCmdBuf, 0);
-    mPfn->BeginCommandBuffer(mCmdBuf, &beginInfo);
-    mPfn->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
-    mPfn->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                mPipeLayout, 0, 1, &mDescSet, 0, NULL);
-    mPfn->CmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
-    mPfn->EndCommandBuffer(mCmdBuf);
-
-    VkSubmitInfo si = {};
-    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &mCmdBuf;
-    mPfn->QueueSubmit(mQueue, 1, &si, mFence);
+    recordAndSubmit(width, height, mFence);
     mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
     mPfn->ResetFences(mDevice, 1, &mFence);
 
@@ -846,22 +797,7 @@ bool VulkanIspPipeline::processFromDmabuf(int dmabufFd, const uint8_t *cpuFallba
 
     int64_t t1 = nowMs();
 
-    VkCommandBufferBeginInfo beginInfo = {};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    mPfn->ResetCommandBuffer(mCmdBuf, 0);
-    mPfn->BeginCommandBuffer(mCmdBuf, &beginInfo);
-    mPfn->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
-    mPfn->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                mPipeLayout, 0, 1, &mDescSet, 0, NULL);
-    mPfn->CmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
-    mPfn->EndCommandBuffer(mCmdBuf);
-
-    VkSubmitInfo si = {};
-    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &mCmdBuf;
-    mPfn->QueueSubmit(mQueue, 1, &si, VK_NULL_HANDLE);
+    recordAndSubmit(width, height, VK_NULL_HANDLE);
     mPfn->QueueWaitIdle(mQueue);
     int64_t t2 = nowMs();
 
@@ -878,6 +814,36 @@ bool VulkanIspPipeline::processFromDmabuf(int dmabufFd, const uint8_t *cpuFallba
 
     updateAwb(cpuFallback, width, height, is16, pixFmt);
     return true;
+}
+
+void VulkanIspPipeline::prewarm(unsigned width, unsigned height, uint32_t pixFmt) {
+    if (!mReady) return;
+
+    bool is16 = (pixFmt == V4L2_PIX_FMT_SRGGB10 || pixFmt == V4L2_PIX_FMT_SGRBG10 ||
+                 pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SBGGR10);
+    if (!ensureBuffers(width, height, is16))
+        return;
+
+    IspParams params = {};
+    params.width = width;
+    params.height = height;
+    params.is16bit = is16 ? 1 : 0;
+    params.wbR = 256; params.wbG = 256; params.wbB = 256;
+    params.ccm[0] = 1024; params.ccm[4] = 1024; params.ccm[8] = 1024;
+    memcpy(mParamMap, &params, sizeof(IspParams));
+
+    VkMappedMemoryRange paramRange = {};
+    paramRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    paramRange.memory = mParamMem;
+    paramRange.size = VK_WHOLE_SIZE;
+    mPfn->FlushMappedMemoryRanges(mDevice, 1, &paramRange);
+
+    int64_t start = nowMs();
+    recordAndSubmit(width, height, mFence);
+    mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
+    mPfn->ResetFences(mDevice, 1, &mFence);
+    ALOGD("Vulkan ISP prewarm %ux%u is16=%d: %lldms",
+          width, height, is16 ? 1 : 0, nowMs() - start);
 }
 
 bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
