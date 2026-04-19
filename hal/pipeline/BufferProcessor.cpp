@@ -50,16 +50,17 @@ bool BufferProcessor::tryZeroCopy(const camera3_stream_buffer &srcBuf,
                                    const FrameContext &ctx,
                                    OutputState *state,
                                    uint8_t **sharedRgba) {
-    /* Zero-copy eligibility: RGBA preview stream, Bayer input. Zoom and
-     * cross-resolution are now handled by the GPU blit shader, so no
-     * resolution match or needZoom guard. Attempt before taking
-     * SW_WRITE_OFTEN lock — the zero-copy path writes gralloc directly
-     * through the driver's blocklinear ROP and skips the ~25ms detile
-     * the SW lock would otherwise force. */
+    /* Zero-copy eligibility: RGBA preview stream, Bayer input. Each
+     * RGBA output runs its own GPU blit — running the demosaic again
+     * on the GPU is cheaper than reusing CPU-demosaiced pixels from a
+     * previous iteration, so no !*sharedRgba short-circuit. Zoom and
+     * cross-resolution are handled by the blit shader. Attempt before
+     * taking SW_WRITE_OFTEN lock — the zero-copy path writes gralloc
+     * directly through the driver's blocklinear ROP and skips the
+     * ~25ms detile the SW lock would otherwise force. */
     unsigned streamW = srcBuf.stream->width;
     unsigned streamH = srcBuf.stream->height;
     bool zcEligible = (srcBuf.stream->format == HAL_PIXEL_FORMAT_RGBA_8888 &&
-                       !*sharedRgba &&
                        ctx.pixFmt != V4L2_PIX_FMT_UYVY &&
                        ctx.pixFmt != V4L2_PIX_FMT_YUYV);
     if (!zcEligible)
@@ -87,10 +88,12 @@ bool BufferProcessor::tryZeroCopy(const camera3_stream_buffer &srcBuf,
         return false;
 
     state->releaseFd = zcReleaseFd;
-    if (mDeps.af && mDeps.af->isSweeping()) {
-        /* AF sharpness metric needs CPU-readable pixels. This lock
-         * blocks until the GPU finishes (gralloc internally syncs),
-         * but AF sweeps are infrequent. */
+    if (mDeps.af && mDeps.af->isSweeping() && !*sharedRgba) {
+        /* AF sharpness metric needs CPU-readable pixels. Lock once —
+         * the first eligible output per frame — so subsequent outputs
+         * avoid the ~25ms blocklinear detile. The lock blocks until
+         * the GPU finishes (gralloc internally syncs), but AF sweeps
+         * are infrequent. Replaced by ISP statistics in Tier 3. */
         const Rect rect((int)streamW, (int)streamH);
         uint8_t *buf = NULL;
         GraphicBufferMapper::get().lock(*srcBuf.buffer,

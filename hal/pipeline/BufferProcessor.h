@@ -56,10 +56,12 @@ public:
     /* Process one output buffer. On NO_ERROR, `*state` is populated.
      *
      * sharedRgba: in-out — points at CPU-readable demosaiced pixels
-     *   whenever the CPU fallback / AF-readback path produces them.
-     *   Reused across iterations to skip redundant demosaic, and read
-     *   by the AF sharpness measurement after the per-buffer loop
-     *   completes. */
+     *   whenever either (a) the CPU fallback path runs (demosaic into
+     *   scratch) or (b) an AF sweep forces a SW_READ lock on the first
+     *   eligible zero-copy output. Read by the AF sharpness metric
+     *   after the per-buffer loop. Zero-copy outputs no longer cache
+     *   it for reuse by later iterations — every RGBA stream runs its
+     *   own GPU blit independently. */
     status_t processOne(const camera3_stream_buffer &srcBuf,
                         const FrameContext &ctx,
                         const CameraMetadata &cm,
