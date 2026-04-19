@@ -1231,6 +1231,25 @@ af_done:
 
     cm.update(ANDROID_CONTROL_AF_MODE, &afMode, 1);
 
+    /* AE state: only AE_MODE_OFF is advertised, so there is no loop to
+     * converge or lock — always INACTIVE. Revisit when real AE lands. */
+    uint8_t reportAeState = ANDROID_CONTROL_AE_STATE_INACTIVE;
+    cm.update(ANDROID_CONTROL_AE_STATE, &reportAeState, 1);
+
+    /* AWB state: OFF → INACTIVE; AUTO → LOCKED when the request set
+     * AWB_LOCK or the AF sweep is holding the lock internally,
+     * CONVERGED otherwise. */
+    uint8_t reportAwbState = ANDROID_CONTROL_AWB_STATE_INACTIVE;
+    if (reportAwbMode == ANDROID_CONTROL_AWB_MODE_AUTO) {
+        bool awbLocked = mAfSweepActive;
+        if (cm.exists(ANDROID_CONTROL_AWB_LOCK))
+            awbLocked = awbLocked || (*cm.find(ANDROID_CONTROL_AWB_LOCK).data.u8
+                                      == ANDROID_CONTROL_AWB_LOCK_ON);
+        reportAwbState = awbLocked ? ANDROID_CONTROL_AWB_STATE_LOCKED
+                                   : ANDROID_CONTROL_AWB_STATE_CONVERGED;
+    }
+    cm.update(ANDROID_CONTROL_AWB_STATE, &reportAwbState, 1);
+
     uint8_t reportIntent = ANDROID_CONTROL_CAPTURE_INTENT_PREVIEW;
     if (cm.exists(ANDROID_CONTROL_CAPTURE_INTENT))
         reportIntent = *cm.find(ANDROID_CONTROL_CAPTURE_INTENT).data.u8;
