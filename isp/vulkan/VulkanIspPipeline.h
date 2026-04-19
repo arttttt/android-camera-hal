@@ -57,6 +57,12 @@ private:
 
     bool ensureBuffers(unsigned width, unsigned height, bool is16bit);
 
+    /* ensureBuffers sub-steps. */
+    void releaseScratchResources();
+    bool createOutBuffer(size_t size);
+    bool createScratchImage(unsigned width, unsigned height);
+    void writeStaticDescriptors();
+
     /* Wait + reset mFence when mPrevPending is set; no-op otherwise.
      * Used to sync with the async processToGralloc submit before the
      * next frame starts touching mCmdBuf / mDescSet / mParamMap. */

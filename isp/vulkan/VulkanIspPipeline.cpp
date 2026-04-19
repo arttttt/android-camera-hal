@@ -561,17 +561,34 @@ bool VulkanIspPipeline::createCommandObjects() {
 /* --- per-frame buffer management --- */
 
 bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16bit) {
-    size_t inSize = width * height * (is16bit ? 2 : 1);
+    size_t inSize  = width * height * (is16bit ? 2 : 1);
     size_t outSize = width * height * 4;
 
     bool recreate = (mInputRing.slotSize() < inSize || mOutSize < outSize ||
                      mBufWidth != width || mBufHeight != height);
-
     if (!recreate) return true;
 
-    /* Any cached gralloc images were sized for old resolution — drop them. */
+    /* Cached gralloc wrappers and output-sized Vulkan objects are all
+     * sized for the previous resolution — drop them first. */
     mGrallocCache.clear();
+    releaseScratchResources();
 
+    if (!mInputRing.ensureSize(inSize)) {
+        ALOGE("VulkanInputRing ensureSize(%zu) failed at %ux%u",
+              inSize, width, height);
+        return false;
+    }
+    if (!createOutBuffer(outSize))             return false;
+    if (!createScratchImage(width, height))    return false;
+    writeStaticDescriptors();
+
+    mOutSize   = outSize;
+    mBufWidth  = width;
+    mBufHeight = height;
+    return true;
+}
+
+void VulkanIspPipeline::releaseScratchResources() {
     if (mOutMap) {
         mDeviceState.pfn()->UnmapMemory(mDeviceState.device(), mOutMem);
         mOutMap = NULL;
@@ -592,28 +609,19 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
         mDeviceState.pfn()->FreeMemory(mDeviceState.device(), mScratchMem, NULL);
         mScratchMem = VK_NULL_HANDLE;
     }
+}
 
-    mGrallocCache.clear();
-
-    if (!mInputRing.ensureSize(inSize)) {
-        ALOGE("VulkanInputRing ensureSize(%zu) failed at %ux%u",
-              inSize, width, height);
+bool VulkanIspPipeline::createOutBuffer(size_t size) {
+    if (!mDeviceState.createBuffer(&mOutBuf, &mOutMem, size,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT)) {
+        ALOGE("Failed to allocate Vulkan output buffer (%zu bytes)", size);
         return false;
     }
+    mDeviceState.pfn()->MapMemory(mDeviceState.device(), mOutMem, 0, size, 0, &mOutMap);
+    return true;
+}
 
-    if (!mDeviceState.createBuffer(&mOutBuf, &mOutMem, outSize,
-                      VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT)) {
-        ALOGE("Failed to allocate Vulkan output buffer %ux%u", width, height);
-        return false;
-    }
-
-    mDeviceState.pfn()->MapMemory(mDeviceState.device(), mOutMem, 0, outSize, 0, &mOutMap);
-
-    mOutSize = outSize;
-    mBufWidth = width;
-    mBufHeight = height;
-
+bool VulkanIspPipeline::createScratchImage(unsigned width, unsigned height) {
     VkImageCreateInfo ici = {};
     ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ici.imageType     = VK_IMAGE_TYPE_2D;
@@ -628,7 +636,6 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
     ici.usage         = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
     if (mDeviceState.pfn()->CreateImage(mDeviceState.device(), &ici, NULL, &mScratchImg) != VK_SUCCESS) {
         ALOGE("Scratch vkCreateImage failed %ux%u", width, height);
         return false;
@@ -638,12 +645,12 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
     mDeviceState.pfn()->GetImageMemoryRequirements(mDeviceState.device(), mScratchImg, &req);
 
     VkMemoryAllocateInfo ai = {};
-    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    ai.allocationSize = req.size;
-    ai.memoryTypeIndex = mDeviceState.findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    ai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize  = req.size;
+    ai.memoryTypeIndex = mDeviceState.findMemoryType(req.memoryTypeBits,
+                                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (ai.memoryTypeIndex == UINT32_MAX)
         ai.memoryTypeIndex = mDeviceState.findMemoryType(req.memoryTypeBits, 0);
-
     if (ai.memoryTypeIndex == UINT32_MAX ||
         mDeviceState.pfn()->AllocateMemory(mDeviceState.device(), &ai, NULL, &mScratchMem) != VK_SUCCESS) {
         ALOGE("Scratch vkAllocateMemory failed");
@@ -652,19 +659,20 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
     mDeviceState.pfn()->BindImageMemory(mDeviceState.device(), mScratchImg, mScratchMem, 0);
 
     VkImageViewCreateInfo vci = {};
-    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    vci.image = mScratchImg;
-    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    vci.format = VK_FORMAT_R8G8B8A8_UNORM;
-    vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    vci.subresourceRange.levelCount = 1;
-    vci.subresourceRange.layerCount = 1;
+    vci.sType                        = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vci.image                        = mScratchImg;
+    vci.viewType                     = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format                       = VK_FORMAT_R8G8B8A8_UNORM;
+    vci.subresourceRange.aspectMask  = VK_IMAGE_ASPECT_COLOR_BIT;
+    vci.subresourceRange.levelCount  = 1;
+    vci.subresourceRange.layerCount  = 1;
     if (mDeviceState.pfn()->CreateImageView(mDeviceState.device(), &vci, NULL, &mScratchView) != VK_SUCCESS) {
         ALOGE("Scratch vkCreateImageView failed");
         return false;
     }
 
-    /* One-time UNDEFINED → GENERAL transition. */
+    /* One-time UNDEFINED → GENERAL transition so the compute shader can
+     * imageStore into the scratch image on the first dispatch. */
     VkCommandBufferBeginInfo bi = {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -672,18 +680,17 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
     mDeviceState.pfn()->BeginCommandBuffer(mCmdBuf, &bi);
 
     VkImageMemoryBarrier imb = {};
-    imb.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    imb.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    imb.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    imb.srcAccessMask = 0;
-    imb.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    imb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    imb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    imb.image = mScratchImg;
-    imb.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    imb.subresourceRange.levelCount = 1;
-    imb.subresourceRange.layerCount = 1;
-
+    imb.sType                           = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    imb.oldLayout                       = VK_IMAGE_LAYOUT_UNDEFINED;
+    imb.newLayout                       = VK_IMAGE_LAYOUT_GENERAL;
+    imb.srcAccessMask                   = 0;
+    imb.dstAccessMask                   = VK_ACCESS_SHADER_WRITE_BIT;
+    imb.srcQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
+    imb.dstQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
+    imb.image                           = mScratchImg;
+    imb.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+    imb.subresourceRange.levelCount     = 1;
+    imb.subresourceRange.layerCount     = 1;
     mDeviceState.pfn()->CmdPipelineBarrier(mCmdBuf,
         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -691,22 +698,25 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
     mDeviceState.pfn()->EndCommandBuffer(mCmdBuf);
 
     VkSubmitInfo si = {};
-    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
-    si.pCommandBuffers = &mCmdBuf;
+    si.pCommandBuffers    = &mCmdBuf;
     mDeviceState.pfn()->QueueSubmit(mDeviceState.queue(), 1, &si, mFence);
     mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1, &mFence, VK_TRUE, UINT64_MAX);
     mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence);
+    return true;
+}
 
-    /* Descriptor set — bind input buffer 0 by default; per-frame paths that
-     * rotate through the ring of N input buffers can rebind binding=0 before
-     * recording the command buffer. */
+void VulkanIspPipeline::writeStaticDescriptors() {
+    /* Initial bind: input slot 0 (rebound per-frame via rebindInputDescriptor),
+     * scratch image (binding 1, never rebinds — same VkImage every frame),
+     * param buffer (binding 2, never rebinds — content updated via uploadParams). */
     VkDescriptorBufferInfo inInfo = {};
     inInfo.buffer = mInputRing.buffer(0);
     inInfo.range  = mInputRing.slotSize();
 
     VkDescriptorImageInfo imgInfo = {};
-    imgInfo.imageView = mScratchView;
+    imgInfo.imageView   = mScratchView;
     imgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
     VkDescriptorBufferInfo paramInfo = {};
@@ -714,30 +724,28 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
     paramInfo.range  = sizeof(IspParams);
 
     VkWriteDescriptorSet writes[3] = {};
-    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet = mDescSet;
-    writes[0].dstBinding = 0;
+    writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet          = mDescSet;
+    writes[0].dstBinding      = 0;
     writes[0].descriptorCount = 1;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[0].pBufferInfo = &inInfo;
+    writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[0].pBufferInfo     = &inInfo;
 
-    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = mDescSet;
-    writes[1].dstBinding = 1;
+    writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet          = mDescSet;
+    writes[1].dstBinding      = 1;
     writes[1].descriptorCount = 1;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    writes[1].pImageInfo = &imgInfo;
+    writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    writes[1].pImageInfo      = &imgInfo;
 
-    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[2].dstSet = mDescSet;
-    writes[2].dstBinding = 2;
+    writes[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet          = mDescSet;
+    writes[2].dstBinding      = 2;
     writes[2].descriptorCount = 1;
-    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[2].pBufferInfo = &paramInfo;
+    writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[2].pBufferInfo     = &paramInfo;
 
     mDeviceState.pfn()->UpdateDescriptorSets(mDeviceState.device(), 3, writes, 0, NULL);
-
-    return true;
 }
 
 /* --- main processing paths --- */
