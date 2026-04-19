@@ -50,7 +50,6 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mOutMap(NULL), mParamMap(NULL)
     , mScratchImg(VK_NULL_HANDLE), mScratchMem(VK_NULL_HANDLE), mScratchView(VK_NULL_HANDLE)
     , mFence(VK_NULL_HANDLE), mPrevPending(false)
-    , mParamsTemplateReady(false)
     , mNativeBufferAvail(false)
 {
     for (int i = 0; i < kInputBufferCount; i++) {
@@ -66,28 +65,17 @@ VulkanIspPipeline::~VulkanIspPipeline() { destroy(); }
 
 void VulkanIspPipeline::fillParams(IspParams *p, unsigned w, unsigned h,
                                     bool is16, uint32_t pixFmt) {
-    if (!mParamsTemplateReady) {
-        memset(&mParamsTemplate, 0, sizeof(IspParams));
-        if (mCcm) {
-            for (int i = 0; i < 9; i++) mParamsTemplate.ccm[i] = mCcm[i];
-        } else {
-            mParamsTemplate.ccm[0] = 1024; mParamsTemplate.ccm[4] = 1024; mParamsTemplate.ccm[8] = 1024;
-        }
-        mParamsTemplateReady = true;
-    }
-
-    *p = mParamsTemplate;
-    p->width = w; p->height = h;
-    p->is16bit = is16 ? 1 : 0;
-    p->doIsp = mEnabled ? 1 : 0;
-    p->wbR = mWbR; p->wbG = mWbG; p->wbB = mWbB;
-
-    switch (pixFmt) {
-        case V4L2_PIX_FMT_SRGGB10: case V4L2_PIX_FMT_SRGGB8: p->bayerPhase = 0; break;
-        case V4L2_PIX_FMT_SGRBG10: case V4L2_PIX_FMT_SGRBG8: p->bayerPhase = 1; break;
-        case V4L2_PIX_FMT_SGBRG10: case V4L2_PIX_FMT_SGBRG8: p->bayerPhase = 2; break;
-        case V4L2_PIX_FMT_SBGGR10: case V4L2_PIX_FMT_SBGGR8: p->bayerPhase = 3; break;
-        default: p->bayerPhase = 0; break;
+    p->reset();
+    p->width      = w;
+    p->height     = h;
+    p->is16bit    = is16 ? 1 : 0;
+    p->doIsp      = mEnabled ? 1 : 0;
+    p->wbR        = mWbR;
+    p->wbG        = mWbG;
+    p->wbB        = mWbB;
+    p->bayerPhase = IspParams::bayerPhaseFromFourcc(pixFmt);
+    if (mCcm) {
+        for (int i = 0; i < 9; i++) p->ccm[i] = mCcm[i];
     }
 }
 
@@ -1254,7 +1242,6 @@ void VulkanIspPipeline::destroy() {
     delete mLoader; mLoader = NULL;
 
     mReady = false;
-    mParamsTemplateReady = false;
     mInSize = 0; mOutSize = 0;
     mBufWidth = 0; mBufHeight = 0;
     mPrevPending = false;

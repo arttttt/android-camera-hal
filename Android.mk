@@ -74,6 +74,7 @@ LOCAL_SRC_FILES += \
     util/Workers.cpp \
     isp/IspPipeline.cpp \
     isp/IspCalibration.cpp \
+    isp/IspParams.cpp \
     isp/vulkan/VulkanIspPipeline.cpp \
     isp/vulkan/loader/VulkanLoader.cpp \
     isp/vulkan/loader/HalHmiVulkanLoader.cpp \

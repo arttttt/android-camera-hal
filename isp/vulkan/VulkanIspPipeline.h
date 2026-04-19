@@ -2,6 +2,7 @@
 #define VULKAN_ISP_PIPELINE_H
 
 #include "IspPipeline.h"
+#include "IspParams.h"
 
 #include <cutils/native_handle.h>
 #include <unordered_map>
@@ -111,21 +112,8 @@ private:
      * mInMap are still in use by GPU. Drained at the start of the next call. */
     bool mPrevPending;
 
-    struct IspParams {
-        uint32_t width;
-        uint32_t height;
-        uint32_t bayerPhase;
-        uint32_t is16bit;
-        uint32_t wbR, wbG, wbB;
-        uint32_t doIsp;
-        int32_t ccm[9];
-    };
-
     void fillParams(IspParams *p, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
     void updateAwb(const uint8_t *raw, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
-
-    IspParams mParamsTemplate;
-    bool mParamsTemplateReady;
 
     bool mNativeBufferAvail;
 
