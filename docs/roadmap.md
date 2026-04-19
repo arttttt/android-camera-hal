@@ -106,7 +106,7 @@ Split into:
   cache; takes a `VulkanDeviceState&` on construction
 - `isp/IspParams.{h,cpp}` — `IspParams` struct, default/template helpers;
   reusable by the future IPA module
-- `isp/IspCalibration.{h,cpp}` — per-sensor CCM tables behind static
+- `isp/sensor/IspCalibration.{h,cpp}` — per-sensor CCM tables behind static
   accessors. (Gamma LUT turned out to be dead on both backends: the
   Vulkan shader computes sRGB inline via `pow()`, the CPU path is gone;
   no LUT is needed anywhere.)

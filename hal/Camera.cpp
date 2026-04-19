@@ -42,7 +42,7 @@
 #include "Camera.h"
 #include "ImageConverter.h"
 #include "IspPipeline.h"
-#include "IspCalibration.h"
+#include "sensor/IspCalibration.h"
 
 extern camera_module_t HAL_MODULE_INFO_SYM;
 

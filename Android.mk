@@ -73,8 +73,8 @@ LOCAL_SRC_FILES += \
     image/Yuv422UyvyToJpegEncoder.cpp \
     util/Workers.cpp \
     isp/IspPipeline.cpp \
-    isp/IspCalibration.cpp \
     isp/IspParams.cpp \
+    isp/sensor/IspCalibration.cpp \
     isp/vulkan/VulkanDeviceState.cpp \
     isp/vulkan/VulkanInputRing.cpp \
     isp/vulkan/VulkanIspPipeline.cpp \

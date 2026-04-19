@@ -10,7 +10,7 @@
 
 #include "Workers.h"
 #include "ImageConverter.h"
-#include "SensorConfig.h"
+#include "sensor/SensorConfig.h"
 #include "IspPipeline.h"
 #include "DbgUtils.h"
 
