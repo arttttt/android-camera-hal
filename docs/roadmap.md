@@ -51,6 +51,130 @@ Ship `BLACK_LEVEL_PATTERN`, `WHITE_LEVEL`,
 `NOISE_PROFILE`. Values come from sensor datasheet or vendor tuning.
 Cheap to add, unblocks DNG capture.
 
+## Tier 1.1 — refactor the monoliths (M)
+
+The HAL violates its own design rules (one object per file; SRP;
+DRY; no impl leaks) in several large files. Each one got so big that
+every new Tier 1/2 task touches code that doesn't belong to what the
+task is about. Before we keep piling features onto these files, we
+split them.
+
+This tier is both a concrete split plan and a standing rule: **every
+file touched by later work gets audited against the rules as part of
+that work**. New violations spotted after this tier opens go into the
+same plan.
+
+### Priority H
+
+#### `hal/Camera.cpp` (1345 LOC)
+
+Responsibilities bundled today:
+1. Android Camera3 device callbacks (the C-facing ops table)
+2. Static characteristics generation (~240 LOC in `staticCharacteristics()`)
+3. Per-frame request pipeline (~500 LOC in `processCaptureRequest()`)
+4. Autofocus state machine (`mAfSweep*`, `mAfSettleFrames`, sweep step/pick logic)
+5. Temp RGBA buffer sizing (`mRgbaTemp`, `ensureTempSize`)
+6. V4L2 control application (exposure/gain splitting, EV compensation)
+7. JPEG buffer sizing + JPEG orientation rotation
+
+Split into:
+- `hal/Camera.{h,cpp}` — callback dispatcher + result routing only
+- `hal/CameraStaticMetadata.{h,cpp}` — `buildStaticCharacteristics(Camera*, CameraMetadata&)`; all
+  resolution/format/AE/AWB/AF mode enumeration
+- `hal/AutoFocusController.{h,cpp}` — sweep state machine; interface
+  `onTriggerStart(mode)`, `onFrame(rgba) → ControlUpdate`, `cancel()`
+- `hal/ExposureControl.{h,cpp}` — request→V4L2 exposure/gain split, EV
+  compensation, applied-value report
+- `hal/JpegEncoder.{h,cpp}` — own the rotation+encode+BLOB wrap (today
+  scattered in `processCaptureRequest` and `ImageConverter::RGBAToJPEG`)
+- Temp RGBA buffer disappears entirely once Tier 1.5 lands
+
+#### `isp/vulkan/VulkanIspPipeline.cpp` (1399 LOC)
+
+Bundled today:
+1. Vulkan instance/device/queue/descriptor-set bootstrap
+2. Compute + graphics pipeline creation (demosaic shader, blit shader)
+3. Per-frame command-buffer recording + submit
+4. Gralloc image caching (`GrallocEntry` struct, per-`native_handle_t*` lookup)
+5. ISP params struct (`IspParams`: CCM, WB, gamma LUT indices)
+6. Gamma LUT math (duplicated in `ImageConverter`)
+
+Split into:
+- `isp/vulkan/VulkanIspPipeline.{h,cpp}` — orchestration of the per-frame
+  path only (`process*`, `prewarm`, `waitForPreviousFrame`)
+- `isp/vulkan/VulkanDeviceState.{h,cpp}` — instance/device/queue/
+  descriptor-set lifecycle; RAII-owned by `VulkanIspPipeline`
+- `isp/vulkan/VulkanGrallocCache.{h,cpp}` — `GrallocEntry` + per-handle
+  cache; takes a `VulkanDeviceState&` on construction
+- `isp/IspParams.{h,cpp}` — `IspParams` struct, default/template helpers;
+  reusable by the future IPA module
+- `isp/IspLut.{h,cpp}` — canonical gamma LUT + per-sensor CCM tables
+  (see `ImageConverter` below — this is where the duplication collapses)
+
+#### `image/ImageConverter.cpp` (460 LOC)
+
+Bundled today:
+1. YUY2 / UYVY → RGBA (Bayer path never hits this on our hardware)
+2. YUY2 / UYVY → JPEG (same)
+3. CPU Bayer demosaic with WB/CCM/gamma (duplicate of Vulkan's)
+4. Static CCM tables (`ccm_imx179`, `ccm_ov5693`)
+5. Static gamma LUT generation (duplicated with `VulkanIspPipeline`)
+6. Global AWB state (`sPrevWbR`, `sPrevWbG`, `sPrevWbB`) — clashes with
+   per-pipeline AWB in Vulkan backend
+
+Split into:
+- YUY2/UYVY paths: **deleted** once Tier 1.5 lands (Tegra K1 is Bayer-only
+  per `memory/project_target_hw.md`)
+- CPU Bayer demosaic: **deleted** once Tier 1.5 lands (no CPU fallbacks)
+- CCM / gamma tables: moved to `isp/IspLut.{h,cpp}`, single source of
+  truth shared by both backends
+- Global AWB state: deleted; per-pipeline already tracks it
+- Expected end state: `ImageConverter` disappears or collapses to a pure
+  RGBA→JPEG helper. Reassess once Tier 1.5 lands whether anything is left
+  worth keeping under `image/`.
+
+### Priority M
+
+#### `v4l2/V4l2Device.cpp` (808 LOC)
+
+- Extract `Resolution` struct → `v4l2/Resolution.h` (or `util/Resolution.h`
+  if it ends up shared with static-metadata generation).
+- Consider extracting focuser-subdev control → `v4l2/V4l2Focuser.{h,cpp}`
+  if AF moves out into its own module (it will — see `AutoFocusController`
+  above).
+
+#### `util/DbgUtils.h` (267 LOC)
+
+Three unrelated template classes (`AutoLogCall`, `FpsCounter`, `Benchmark`)
+in one header. Split into `util/AutoLogCall.h`, `util/FpsCounter.h`,
+`util/Benchmark.h`. Macro wrappers can stay in a thin `util/DbgUtils.h`
+that includes the three.
+
+### Priority L
+
+#### `isp/hw/HwIspPipeline.cpp` (427 LOC)
+
+Dead code per `memory/project_hw_isp_status.md` — kept as reference. Skip
+until/unless we decide to revive the HW ISP path, at which point the
+nvmap/nvhost ioctl structs (lines 20–70) extract to
+`isp/hw/NvmapHelper.h` / `NvhostHelper.h`.
+
+### Ordering
+
+1. `isp/IspLut` extraction first — kills the gamma/CCM duplication
+   between Vulkan and CPU paths; very mechanical.
+2. `hal/AutoFocusController` and `hal/CameraStaticMetadata` — both
+   blocked by nothing; each cuts ~250–350 LOC out of `Camera.cpp`.
+3. `VulkanIspPipeline` split — after IspLut lands (so the split doesn't
+   pick up a dead copy of the gamma code).
+4. `hal/ExposureControl`, `hal/JpegEncoder` — pull out after AF split to
+   get `Camera.cpp` under ~400 LOC.
+5. `v4l2/Resolution.h` + `DbgUtils.h` split — low-priority cleanup pass.
+6. `ImageConverter` final collapse — happens as part of Tier 1.5 when
+   all CPU paths die.
+
+Each extraction is its own PR. No behaviour changes: pure moves + rename.
+
 ## Tier 1.5 — eliminate CPU fallbacks, zero-copy everything (M)
 
 Today zero-copy only triggers when **all** of these hold simultaneously:
@@ -248,13 +372,20 @@ complexity until it does.
 
 ## Suggested sequencing
 
-1. Ship Tier 1 in one or two PRs. Low risk, unlocks apps today.
-2. Tier 1.5 (zero-copy zoom) right after — small shader change, big
-   latency payoff during pinch-to-zoom.
-3. Before diving into Tier 3: land **drain-to-latest** (Tier 2) for an
-   immediate latency win, and **JSON tuning** for a cleanup that makes
-   Tier 3 easier.
-4. Tier 3 in a branch, with the request-queue refactor first (no
+1. Tier 1 in parallel with Tier 1.1 — each Tier 1 item that lands in
+   `Camera.cpp` should leave the code in a cleaner shape than it
+   found. New files created during Tier 1.1 absorb the logic; `Camera.cpp`
+   shrinks on every merge.
+2. Tier 1.1 extractions driven opportunistically by Tier 1 work;
+   standalone PRs for the ones not motivated by a feature (IspLut,
+   DbgUtils split, Resolution header).
+3. Tier 1.5 (zero-copy everything) after Tier 1 + the
+   `VulkanIspPipeline` split — the split makes the shader changes
+   small instead of massive.
+4. Before Tier 3: land **drain-to-latest** (Tier 2) for an immediate
+   latency win, and **JSON tuning** for a cleanup that makes Tier 3
+   easier.
+5. Tier 3 in a branch, with the request-queue refactor first (no
    behaviour change, just decoupling), then DelayedControls, then the
    IPA module split.
-5. Tier 4 is discretionary.
+6. Tier 4 is discretionary.
