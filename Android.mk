@@ -69,6 +69,7 @@ LOCAL_SRC_FILES += \
     hal/Camera.cpp \
     hal/metadata/CameraStaticMetadata.cpp \
     hal/metadata/RequestTemplateBuilder.cpp \
+    hal/metadata/ResultMetadataBuilder.cpp \
     hal/3a/AutoFocusController.cpp \
     hal/3a/ExposureControl.cpp \
     hal/jpeg/JpegEncoder.cpp \
