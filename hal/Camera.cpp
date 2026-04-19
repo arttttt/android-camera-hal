@@ -86,6 +86,7 @@ Camera::Camera(const char *devNode, int facing)
     mAf = NULL;
     mExposure = NULL;
     mJpeg = NULL;
+    mBufferProcessor = NULL;
     mDev = new V4l2Device(devNode);
     if(!mDev) {
         mValid = false;
@@ -95,6 +96,7 @@ Camera::Camera(const char *devNode, int facing)
 Camera::~Camera() {
     DBGUTILS_AUTOLOGCALL(__func__);
     gWorkers.stop();
+    delete mBufferProcessor;
     delete mAf;
     delete mExposure;
     delete mJpeg;
@@ -279,6 +281,14 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
 
     if (mJpeg) { delete mJpeg; mJpeg = NULL; }
     mJpeg = new JpegEncoder(mIsp, &mConverter);
+
+    if (mBufferProcessor) { delete mBufferProcessor; mBufferProcessor = NULL; }
+    BufferProcessor::Deps bpDeps;
+    bpDeps.isp       = mIsp;
+    bpDeps.converter = &mConverter;
+    bpDeps.jpeg      = mJpeg;
+    bpDeps.af        = mAf;
+    mBufferProcessor = new BufferProcessor(bpDeps);
 
     ALOGD("V4L2 target resolution: %ux%u, soft_isp=%d",
           width, height, mSoftIspEnabled);
@@ -508,137 +518,33 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
      *                      propagated as camera3_stream_buffer.release_fence. */
     std::vector<bool> needsFinalUnlock(request->num_output_buffers, true);
     std::vector<int>  releaseFd(request->num_output_buffers, -1);
-    for(size_t i = 0; i < request->num_output_buffers; ++i) {
-        const camera3_stream_buffer &srcBuf = request->output_buffers[i];
-        uint8_t *buf = NULL;
 
-        sp<Fence> acquireFence = new Fence(srcBuf.acquire_fence);
-        e = acquireFence->wait(1000); /* FIXME: magic number */
-        if(e == TIMED_OUT) {
-            ALOGE("buffer %p  frame %-4u  Wait on acquire fence timed out", srcBuf.buffer, request->frame_number);
-        }
-        if(e != NO_ERROR) {
+    BufferProcessor::FrameContext fctx;
+    fctx.frameBuf       = frame->buf;
+    fctx.frameSlotIdx   = (frame->buf == NULL) ? frame->index : -1;
+    fctx.pixFmt         = frame->pixFmt;
+    fctx.resW           = res.width;
+    fctx.resH           = res.height;
+    fctx.cropX          = cropX;
+    fctx.cropY          = cropY;
+    fctx.cropW          = cropW;
+    fctx.cropH          = cropH;
+    fctx.needZoom       = needZoom;
+    fctx.jpegBufferSize = mJpegBufferSize;
+    fctx.rgbaScratch    = mRgbaTemp;
+
+    for(size_t i = 0; i < request->num_output_buffers; ++i) {
+        BufferProcessor::OutputState bpState;
+        e = mBufferProcessor->processOne(request->output_buffers[i], fctx, cm,
+                                          request->frame_number,
+                                          &bpState, &rgbaBuffer);
+        if (e != NO_ERROR) {
             do GraphicBufferMapper::get().unlock(*request->output_buffers[i].buffer); while(i--);
             notifyError(request->frame_number, NULL, CAMERA3_MSG_ERROR_REQUEST);
-            return NO_INIT;
+            return e;
         }
-
-        /* Zero-copy eligibility: RGBA preview stream, matching resolution, no
-         * zoom, Bayer input. Attempt before taking SW_WRITE_OFTEN lock so we
-         * skip the ~25ms blocklinear→staging detile when the GPU can write
-         * directly into gralloc. */
-        unsigned streamW = srcBuf.stream->width;
-        unsigned streamH = srcBuf.stream->height;
-        bool zcEligible = (srcBuf.stream->format == HAL_PIXEL_FORMAT_RGBA_8888 &&
-                           !rgbaBuffer && !needZoom &&
-                           res.width == streamW && res.height == streamH &&
-                           frame->pixFmt != V4L2_PIX_FMT_UYVY &&
-                           frame->pixFmt != V4L2_PIX_FMT_YUYV);
-        if (zcEligible) {
-            sp<GraphicBuffer> gb = new GraphicBuffer(streamW, streamH,
-                HAL_PIXEL_FORMAT_RGBA_8888,
-                GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_COMPOSER,
-                streamW, const_cast<native_handle_t *>(*srcBuf.buffer),
-                false);
-            int zcReleaseFd = -1;
-            bool zcOk = false;
-            BENCHMARK_SECTION("Raw->RGBA") {
-                /* DMABUF capture: frame->buf is NULL, Bayer already sits in
-                 * the Vulkan input slot identified by frame->index. */
-                int srcSlot = (frame->buf == NULL) ? frame->index : -1;
-                zcOk = mIsp->processToGralloc(frame->buf, gb->getNativeBuffer(),
-                                               streamW, streamH, frame->pixFmt,
-                                               -1, &zcReleaseFd, srcSlot);
-            }
-            if (zcOk) {
-                releaseFd[i] = zcReleaseFd;
-                if (mAf && mAf->isSweeping()) {
-                    /* AF sharpness metric needs CPU-readable pixels. This lock
-                     * blocks until GPU finishes (gralloc internally syncs), but
-                     * AF sweeps are infrequent. */
-                    const Rect rect((int)streamW, (int)streamH);
-                    GraphicBufferMapper::get().lock(*srcBuf.buffer,
-                        GRALLOC_USAGE_SW_READ_OFTEN, rect, (void **)&buf);
-                    rgbaBuffer = buf;
-                } else {
-                    needsFinalUnlock[i] = false;
-                }
-                continue;
-            }
-            /* Fall through to CPU path on zero-copy failure. */
-        }
-
-        {
-            const Rect rect((int)streamW, (int)streamH);
-            e = GraphicBufferMapper::get().lock(*srcBuf.buffer, GRALLOC_USAGE_SW_WRITE_OFTEN, rect, (void **)&buf);
-            if(e != NO_ERROR) {
-                ALOGE("buffer %p  frame %-4u  lock failed", srcBuf.buffer, request->frame_number);
-                do GraphicBufferMapper::get().unlock(*request->output_buffers[i].buffer); while(i--);
-                notifyError(request->frame_number, NULL, CAMERA3_MSG_ERROR_REQUEST);
-                return NO_INIT;
-            }
-        }
-
-        switch(srcBuf.stream->format) {
-            case HAL_PIXEL_FORMAT_RGBA_8888: {
-                if(!rgbaBuffer) {
-                    BENCHMARK_SECTION("Raw->RGBA") {
-                        if(frame->pixFmt == V4L2_PIX_FMT_UYVY) {
-                            mConverter.UYVYToRGBA(frame->buf, needZoom ? mRgbaTemp : buf, res.width, res.height);
-                            rgbaBuffer = needZoom ? mRgbaTemp : buf;
-                        } else if(frame->pixFmt == V4L2_PIX_FMT_YUYV) {
-                            mConverter.YUY2ToRGBA(frame->buf, needZoom ? mRgbaTemp : buf, res.width, res.height);
-                            rgbaBuffer = needZoom ? mRgbaTemp : buf;
-                        } else {
-                            /* Zoom or size mismatch — CPU readback path.
-                             * processSync honours srcInputSlot so DMABUF
-                             * capture (frame->buf == NULL) still resolves. */
-                            uint8_t *convDst = needZoom ? mRgbaTemp : buf;
-                            if (!needZoom && (res.width != streamW || res.height != streamH))
-                                convDst = mRgbaTemp;
-                            int srcSlot = (frame->buf == NULL) ? frame->index : -1;
-                            mIsp->processSync(frame->buf, convDst,
-                                               res.width, res.height, frame->pixFmt,
-                                               srcSlot);
-                            rgbaBuffer = convDst;
-                        }
-                    }
-                }
-
-                BENCHMARK_SECTION("Zoom/Copy") {
-                    if (needZoom) {
-                        /* Crop + scale: pointer offset for crop, ARGBScale for zoom */
-                        const uint8_t *cropSrc = rgbaBuffer + (cropY * res.width + cropX) * 4;
-                        libyuv::ARGBScale(cropSrc, res.width * 4, cropW, cropH,
-                                          buf, streamW * 4, streamW, streamH,
-                                          libyuv::kFilterBilinear);
-                    } else if (rgbaBuffer != buf) {
-                        /* Resolution mismatch: copy/crop */
-                        unsigned copyW = (streamW < res.width) ? streamW : res.width;
-                        unsigned copyH = (streamH < res.height) ? streamH : res.height;
-                        for (unsigned y = 0; y < copyH; y++)
-                            memcpy(buf + y * streamW * 4,
-                                   rgbaBuffer + y * res.width * 4,
-                                   copyW * 4);
-                    }
-                }
-                break;
-            }
-            case HAL_PIXEL_FORMAT_BLOB: {
-                BENCHMARK_SECTION("YUV->JPEG") {
-                    JpegSource jsrc;
-                    jsrc.frameBuf     = frame->buf;
-                    jsrc.srcInputSlot = (frame->buf == NULL) ? frame->index : -1;
-                    jsrc.pixFmt       = frame->pixFmt;
-                    jsrc.width        = res.width;
-                    jsrc.height       = res.height;
-                    mJpeg->encode(buf, mJpegBufferSize, jsrc, cm, mRgbaTemp);
-                }
-                break;
-            }
-            default:
-                ALOGE("Unknown pixel format %d in buffer %p (stream %p), ignoring", srcBuf.stream->format, srcBuf.buffer, srcBuf.stream);
-        }
+        needsFinalUnlock[i] = bpState.needsFinalUnlock;
+        releaseFd[i]        = bpState.releaseFd;
     }
 
     if (mAf)

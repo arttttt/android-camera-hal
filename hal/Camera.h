@@ -15,6 +15,7 @@
 #include "3a/AutoFocusController.h"
 #include "3a/ExposureControl.h"
 #include "jpeg/JpegEncoder.h"
+#include "pipeline/BufferProcessor.h"
 #include "DbgUtils.h"
 
 namespace android {
@@ -71,6 +72,7 @@ private:
     AutoFocusController *mAf;
     ExposureControl *mExposure;
     JpegEncoder *mJpeg;
+    BufferProcessor *mBufferProcessor;
     Mutex mMutex;
 
     /* STATIC WRAPPERS */
