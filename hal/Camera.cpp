@@ -225,10 +225,9 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
 
     if (mBufferProcessor) { delete mBufferProcessor; mBufferProcessor = NULL; }
     BufferProcessor::Deps bpDeps;
-    bpDeps.isp       = mIsp;
-    bpDeps.converter = &mConverter;
-    bpDeps.jpeg      = mJpeg;
-    bpDeps.af        = mAf;
+    bpDeps.isp  = mIsp;
+    bpDeps.jpeg = mJpeg;
+    bpDeps.af   = mAf;
     mBufferProcessor = new BufferProcessor(bpDeps);
 
     ALOGD("V4L2 target resolution: %ux%u, soft_isp=%d",

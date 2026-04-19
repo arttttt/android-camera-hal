@@ -11,14 +11,12 @@
 namespace android {
 
 class IspPipeline;
-class ImageConverter;
 class JpegEncoder;
 class AutoFocusController;
 
-/* Per-output-buffer processing. Produces a ready-to-return gralloc
- * buffer from a just-dequeued V4L2 frame: zero-copy into gralloc where
- * possible (Bayer RGBA preview), otherwise the CPU RGBA / BLOB JPEG
- * fallback paths.
+/* Per-output-buffer processing. Takes a just-dequeued V4L2 Bayer
+ * frame and emits either a zero-copy RGBA gralloc (preview) or a
+ * libjpeg-encoded BLOB (still capture).
  *
  * A BufferProcessor instance is reused across frames; per-frame state
  * is passed through FrameContext. */
@@ -26,7 +24,6 @@ class BufferProcessor {
 public:
     struct Deps {
         IspPipeline         *isp;
-        ImageConverter      *converter;
         JpegEncoder         *jpeg;
         AutoFocusController *af;
     };
@@ -55,13 +52,9 @@ public:
 
     /* Process one output buffer. On NO_ERROR, `*state` is populated.
      *
-     * sharedRgba: in-out — points at CPU-readable demosaiced pixels
-     *   whenever either (a) the CPU fallback path runs (demosaic into
-     *   scratch) or (b) an AF sweep forces a SW_READ lock on the first
-     *   eligible zero-copy output. Read by the AF sharpness metric
-     *   after the per-buffer loop. Zero-copy outputs no longer cache
-     *   it for reuse by later iterations — every RGBA stream runs its
-     *   own GPU blit independently. */
+     * sharedRgba: in-out — points at CPU-readable RGBA when an AF
+     *   sweep forces a SW_READ lock on the first zero-copy output.
+     *   Read by the AF sharpness metric after the per-buffer loop. */
     status_t processOne(const camera3_stream_buffer &srcBuf,
                         const FrameContext &ctx,
                         const CameraMetadata &cm,
@@ -74,27 +67,21 @@ private:
     status_t waitAcquireFence(const camera3_stream_buffer &srcBuf,
                               uint32_t frameNumber);
 
-    /* Attempt the GPU→gralloc zero-copy path. Returns true if the
-     * buffer is fully serviced (caller skips the CPU path); false if
-     * ineligible or if processToGralloc failed. On success, populates
-     * state->releaseFd; may also lock the buffer for AF readback. */
+    /* GPU demosaic + optional crop/scale direct into gralloc. On
+     * success populates state->releaseFd and, if AF is sweeping,
+     * locks srcBuf SW_READ_OFTEN and points *sharedRgba at it.
+     * Returns false if processToGralloc failed — that is an error
+     * on Bayer hardware and the caller propagates it. */
     bool     tryZeroCopy(const camera3_stream_buffer &srcBuf,
                          const FrameContext &ctx,
                          OutputState *state,
                          uint8_t **sharedRgba);
 
     /* Lock the gralloc buffer for CPU write; writes the mapped pointer
-     * to *outBuf. Used by the RGBA/BLOB CPU fallback paths. */
+     * to *outBuf. Used by the BLOB path — libjpeg writes into it. */
     status_t lockSwWrite(const camera3_stream_buffer &srcBuf,
                          uint32_t frameNumber,
                          uint8_t **outBuf);
-
-    /* CPU RGBA output: demosaic (once, cached in *sharedRgba) then
-     * zoom-crop or size-adjust into the gralloc buffer. */
-    void     processRgbaOutput(const camera3_stream_buffer &srcBuf,
-                               uint8_t *buf,
-                               const FrameContext &ctx,
-                               uint8_t **sharedRgba);
 
     /* JPEG BLOB output — delegates to JpegEncoder. */
     void     processBlobOutput(uint8_t *buf,
