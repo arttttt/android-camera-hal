@@ -214,25 +214,34 @@ camera_metadata_t *Camera::staticCharacteristics() {
     int32_t scalerAvailableJpegSizes[resolutions.size() * 2];
     int64_t scalerAvailableJpegMinDurations[resolutions.size()];
 
+    /* Fallback to a conservative 30 fps cap only if the driver does not
+     * report a framerate for the mode — better for the framework than
+     * the previous 60 fps lie. */
+    static constexpr int64_t kFallbackMinFrameDurationNs = 1000000000LL / 30;
+
     size_t i4 = 0;
     size_t i2 = 0;
     size_t i1 = 0;
     /* Main stream configurations */
     for(size_t resId = 0; resId < resolutions.size(); ++resId) {
+        const auto &r = resolutions[resId];
+        int64_t minDur = mDev->minFrameDurationNs(r.width, r.height);
+        if (minDur <= 0) minDur = kFallbackMinFrameDurationNs;
+
         scalerAvailableStreamConfigurations[i4 + 0] = HAL_PIXEL_FORMAT_BLOB;
-        scalerAvailableStreamConfigurations[i4 + 1] = (int32_t)resolutions[resId].width;
-        scalerAvailableStreamConfigurations[i4 + 2] = (int32_t)resolutions[resId].height;
+        scalerAvailableStreamConfigurations[i4 + 1] = (int32_t)r.width;
+        scalerAvailableStreamConfigurations[i4 + 2] = (int32_t)r.height;
         scalerAvailableStreamConfigurations[i4 + 3] = ANDROID_SCALER_AVAILABLE_STREAM_CONFIGURATIONS_OUTPUT;
 
         scalerAvailableMinFrameDurations[i4 + 0] = HAL_PIXEL_FORMAT_BLOB;
-        scalerAvailableMinFrameDurations[i4 + 1] = (int32_t)resolutions[resId].width;
-        scalerAvailableMinFrameDurations[i4 + 2] = (int32_t)resolutions[resId].height;
-        scalerAvailableMinFrameDurations[i4 + 3] = 1000000000 / 60; /* TODO: read from the device */
+        scalerAvailableMinFrameDurations[i4 + 1] = (int32_t)r.width;
+        scalerAvailableMinFrameDurations[i4 + 2] = (int32_t)r.height;
+        scalerAvailableMinFrameDurations[i4 + 3] = minDur;
 
-        scalerAvailableJpegSizes[i2 + 0] = (int32_t)resolutions[resId].width;
-        scalerAvailableJpegSizes[i2 + 1] = (int32_t)resolutions[resId].height;
+        scalerAvailableJpegSizes[i2 + 0] = (int32_t)r.width;
+        scalerAvailableJpegSizes[i2 + 1] = (int32_t)r.height;
 
-        scalerAvailableJpegMinDurations[i1] = 1000000000 / 60; /* TODO: read from the device */
+        scalerAvailableJpegMinDurations[i1] = minDur;
 
         i4 += 4;
         i2 += 2;
@@ -242,23 +251,27 @@ camera_metadata_t *Camera::staticCharacteristics() {
     i1 = 0;
     /* Preview stream configurations */
     for(size_t resId = 0; resId < previewResolutions.size(); ++resId) {
+        const auto &r = previewResolutions[resId];
+        int64_t minDur = mDev->minFrameDurationNs(r.width, r.height);
+        if (minDur <= 0) minDur = kFallbackMinFrameDurationNs;
+
         for(size_t fmtId = 0; fmtId < NELEM(scalerAvailableFormats) - 1; ++fmtId) {
             scalerAvailableStreamConfigurations[i4 + 0] = scalerAvailableFormats[fmtId];
-            scalerAvailableStreamConfigurations[i4 + 1] = (int32_t)previewResolutions[resId].width;
-            scalerAvailableStreamConfigurations[i4 + 2] = (int32_t)previewResolutions[resId].height;
+            scalerAvailableStreamConfigurations[i4 + 1] = (int32_t)r.width;
+            scalerAvailableStreamConfigurations[i4 + 2] = (int32_t)r.height;
             scalerAvailableStreamConfigurations[i4 + 3] = ANDROID_SCALER_AVAILABLE_STREAM_CONFIGURATIONS_OUTPUT;
 
             scalerAvailableMinFrameDurations[i4 + 0] = scalerAvailableFormats[fmtId];
-            scalerAvailableMinFrameDurations[i4 + 1] = (int32_t)previewResolutions[resId].width;
-            scalerAvailableMinFrameDurations[i4 + 2] = (int32_t)previewResolutions[resId].height;
-            scalerAvailableMinFrameDurations[i4 + 3] = 1000000000 / 60; /* TODO: read from the device */
+            scalerAvailableMinFrameDurations[i4 + 1] = (int32_t)r.width;
+            scalerAvailableMinFrameDurations[i4 + 2] = (int32_t)r.height;
+            scalerAvailableMinFrameDurations[i4 + 3] = minDur;
 
             i4 += 4;
         }
-        scalerAvailableProcessedSizes[i2 + 0] = (int32_t)previewResolutions[resId].width;
-        scalerAvailableProcessedSizes[i2 + 1] = (int32_t)previewResolutions[resId].height;
+        scalerAvailableProcessedSizes[i2 + 0] = (int32_t)r.width;
+        scalerAvailableProcessedSizes[i2 + 1] = (int32_t)r.height;
 
-        scalerAvailableProcessedMinDurations[i1] = 1000000000 / 60; /* TODO: read from the device */
+        scalerAvailableProcessedMinDurations[i1] = minDur;
 
         i2 += 2;
         i1 += 1;

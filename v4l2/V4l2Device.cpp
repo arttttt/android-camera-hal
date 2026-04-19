@@ -211,6 +211,49 @@ const Vector<V4l2Device::Resolution> & V4l2Device::availableResolutions() {
  * Returns V4l2Device::Resolution with highest possible width and highest
  * possible height. This might not to be valid camera resolution.
  */
+int64_t V4l2Device::minFrameDurationNs(unsigned width, unsigned height) {
+    int fd;
+    bool fdNeedsClose = false;
+    if (mFd >= 0) {
+        fd = mFd;
+    } else {
+        fd = openFd(mDevNode);
+        fdNeedsClose = true;
+    }
+    if (fd < 0)
+        return 0;
+
+    if (!mPixelFormat)
+        negotiatePixelFormat(fd);
+
+    struct v4l2_frmivalenum e;
+    memset(&e, 0, sizeof(e));
+    e.pixel_format = mPixelFormat;
+    e.width        = width;
+    e.height       = height;
+    e.index        = 0;
+
+    int64_t minNs = 0;
+    if (ioctl(fd, VIDIOC_ENUM_FRAMEINTERVALS, &e) == 0) {
+        if (e.type == V4L2_FRMIVAL_TYPE_DISCRETE) {
+            /* Drivers list each supported period separately; we want the shortest. */
+            do {
+                int64_t ns = (int64_t)e.discrete.numerator * 1000000000LL / e.discrete.denominator;
+                if (minNs == 0 || ns < minNs)
+                    minNs = ns;
+                ++e.index;
+            } while (ioctl(fd, VIDIOC_ENUM_FRAMEINTERVALS, &e) == 0);
+        } else {
+            const auto &m = e.stepwise.min;
+            minNs = (int64_t)m.numerator * 1000000000LL / m.denominator;
+        }
+    }
+
+    if (fdNeedsClose)
+        closeFd(&fd);
+    return minNs;
+}
+
 V4l2Device::Resolution V4l2Device::sensorResolution() {
     const Vector<V4l2Device::Resolution> &formats = availableResolutions();
     V4l2Device::Resolution max = {0, 0};

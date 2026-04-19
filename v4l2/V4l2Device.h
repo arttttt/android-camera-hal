@@ -47,6 +47,11 @@ public:
     const Vector<V4l2Device::Resolution> & availableResolutions();
     V4l2Device::Resolution sensorResolution();
 
+    /* Shortest frame period the driver reports for (width, height) at the
+     * current pixel format, in nanoseconds. Returns 0 if the driver gives
+     * no framerate info for that mode. */
+    int64_t minFrameDurationNs(unsigned width, unsigned height);
+
     bool setResolution(unsigned width, unsigned height);
     V4l2Device::Resolution resolution();
 
