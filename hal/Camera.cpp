@@ -645,7 +645,8 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
         return NO_INIT;
     }
     mIsp->setEnabled(mSoftIspEnabled);
-    mIsp->setCcm((mFacing == CAMERA_FACING_BACK) ? ccm_imx179 : ccm_ov5693);
+    mIsp->setCcm((mFacing == CAMERA_FACING_BACK) ? IspCalibration::ccmImx179()
+                                                  : IspCalibration::ccmOv5693());
 
     ALOGD("V4L2 target resolution: %ux%u, soft_isp=%d",
           width, height, mSoftIspEnabled);

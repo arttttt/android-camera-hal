@@ -33,22 +33,6 @@ typedef struct VkNativeBufferANDROID {
 
 namespace android {
 
-uint8_t VulkanIspPipeline::sGammaLut[256];
-bool VulkanIspPipeline::sGammaReady = false;
-
-void VulkanIspPipeline::initGamma() {
-    if (sGammaReady) return;
-    for (int i = 0; i < 256; i++) {
-        float lin = i / 255.0f;
-        float s = (lin <= 0.0031308f) ?
-            lin * 12.92f :
-            1.055f * powf(lin, 1.0f / 2.4f) - 0.055f;
-        int v = (int)(s * 255.0f + 0.5f);
-        sGammaLut[i] = v > 255 ? 255 : (v < 0 ? 0 : (uint8_t)v);
-    }
-    sGammaReady = true;
-}
-
 VulkanIspPipeline::VulkanIspPipeline()
     : mLoader(NULL), mPfn(NULL)
     , mReady(false), mBufWidth(0), mBufHeight(0)
@@ -440,7 +424,7 @@ bool VulkanIspPipeline::init() {
         "layout(std430, binding = 2) buffer Params {\n"
         "    uint width; uint height; uint bayerPhase; uint is16bit;\n"
         "    uint wbR; uint wbG; uint wbB; uint doIsp;\n"
-        "    int ccm[9]; uint gammaLut[64];\n"
+        "    int ccm[9];\n"
         "} params;\n"
         "uint readPixel(uint x, uint y) {\n"
         "    if (params.is16bit != 0u) {\n"
@@ -756,8 +740,6 @@ bool VulkanIspPipeline::init() {
     VkFenceCreateInfo fci = {};
     fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     mPfn->CreateFence(mDevice, &fci, NULL, &mFence);
-
-    initGamma();
 
     mReady = true;
     ALOGD("Vulkan ISP initialized");

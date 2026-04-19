@@ -106,30 +106,28 @@ Split into:
   cache; takes a `VulkanDeviceState&` on construction
 - `isp/IspParams.{h,cpp}` — `IspParams` struct, default/template helpers;
   reusable by the future IPA module
-- `isp/IspLut.{h,cpp}` — canonical gamma LUT + per-sensor CCM tables
-  (see `ImageConverter` below — this is where the duplication collapses)
+- `isp/IspCalibration.{h,cpp}` — per-sensor CCM tables behind static
+  accessors. (Gamma LUT turned out to be dead on both backends: the
+  Vulkan shader computes sRGB inline via `pow()`, the CPU path is gone;
+  no LUT is needed anywhere.)
 
-#### `image/ImageConverter.cpp` (460 LOC)
+#### `image/ImageConverter.cpp`
 
-Bundled today:
-1. YUY2 / UYVY → RGBA (Bayer path never hits this on our hardware)
-2. YUY2 / UYVY → JPEG (same)
-3. CPU Bayer demosaic with WB/CCM/gamma (duplicate of Vulkan's)
-4. Static CCM tables (`ccm_imx179`, `ccm_ov5693`)
-5. Static gamma LUT generation (duplicated with `VulkanIspPipeline`)
-6. Global AWB state (`sPrevWbR`, `sPrevWbG`, `sPrevWbB`) — clashes with
-   per-pipeline AWB in Vulkan backend
+What it had before Tier 1.1 started: YUY2/UYVY → RGBA/JPEG, CPU Bayer
+demosaic with its own WB/CCM/gamma, a duplicate set of CCM tables, a
+duplicate gamma LUT init, and global AWB state `sPrevWbR/G/B`. The
+CPU Bayer path had zero live callers — Vulkan handled every Bayer
+request through `processSync` / `processToGralloc`.
 
-Split into:
-- YUY2/UYVY paths: **deleted** once Tier 1.5 lands (Tegra K1 is Bayer-only
-  per `memory/project_target_hw.md`)
-- CPU Bayer demosaic: **deleted** once Tier 1.5 lands (no CPU fallbacks)
-- CCM / gamma tables: moved to `isp/IspLut.{h,cpp}`, single source of
-  truth shared by both backends
-- Global AWB state: deleted; per-pipeline already tracks it
-- Expected end state: `ImageConverter` disappears or collapses to a pure
-  RGBA→JPEG helper. Reassess once Tier 1.5 lands whether anything is left
-  worth keeping under `image/`.
+The ISP-related portions were removed wholesale as part of the
+`IspCalibration` extraction step: `BayerToRGBA` (+ `demosaicIspLine`,
+`bayerPattern`, `bayerIs16bit`), the duplicate CCM tables, the
+duplicate gamma LUT, and the global AWB state all gone. The
+Bayer-only fields in `ConvertTask::Data` went with them.
+
+What remains: `UYVYToRGBA`, `YUY2ToRGBA`, `UYVYToJPEG`, `YUY2ToJPEG`,
+`RGBAToJPEG` — pure format conversion, no ISP math. Dies in Tier 1.5
+(Tegra K1 is Bayer-only and JPEG encode moves to a mapped dma-buf).
 
 ### Priority M
 

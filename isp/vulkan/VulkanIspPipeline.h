@@ -119,7 +119,6 @@ private:
         uint32_t wbR, wbG, wbB;
         uint32_t doIsp;
         int32_t ccm[9];
-        uint32_t gammaLut[64];
     };
 
     void fillParams(IspParams *p, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
@@ -127,10 +126,6 @@ private:
 
     IspParams mParamsTemplate;
     bool mParamsTemplateReady;
-
-    static uint8_t sGammaLut[256];
-    static bool sGammaReady;
-    static void initGamma();
 
     bool mNativeBufferAvail;
 
