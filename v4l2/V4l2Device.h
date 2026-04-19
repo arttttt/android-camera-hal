@@ -101,6 +101,14 @@ private:
     uint32_t mPixelFormat;
     uint32_t mMemoryType;                   /* V4L2_MEMORY_MMAP or _DMABUF */
     int mDmaBufFds[V4L2DEVICE_BUF_COUNT];   /* for DMABUF mode; -1 = unused */
+
+    /* Deferred-return queue for DMABUF mode: unlock() stashes the index here,
+     * and readLock() flushes the stash back to the kernel via VIDIOC_QBUF at
+     * the start of the next frame — by then the previous frame's GPU dispatch
+     * has drained (guaranteed by the ISP's WaitForFences), so VI can safely
+     * overwrite the buffer. mPendingQbufHead is -1 when the stash is empty. */
+    int mPendingQbuf[V4L2DEVICE_BUF_COUNT];
+    int mPendingQbufCount;
     Vector<V4l2Device::Resolution> mAvailableResolutions;
     struct v4l2_format mFormat;
     VBuffer mBuf[V4L2DEVICE_BUF_COUNT];

@@ -79,12 +79,14 @@ V4l2Device::V4l2Device(const char *devNode)
     , mDevNode(strdup(devNode))
     , mPixelFormat(0)
     , mMemoryType(V4L2_MEMORY_MMAP)
+    , mPendingQbufCount(0)
     , mFocuserFd(-1)
 {
     memset(&mFormat, 0, sizeof(mFormat));
     for (int i = 0; i < V4L2DEVICE_BUF_COUNT; i++) {
         mDmaBufFds[i] = -1;
         mBuf[i].index = i;
+        mPendingQbuf[i] = -1;
     }
     mPFd.fd = -1;
     mPFd.events = POLLIN | POLLRDNORM;
@@ -432,6 +434,20 @@ bool V4l2Device::setStreaming(bool enable) {
 const V4l2Device::VBuffer * V4l2Device::readLock() {
     assert(isConnected());
     assert(isStreaming());
+
+    /* Flush deferred-QBUFs before dequeueing this frame. In DMABUF mode the
+     * previous frame's GPU dispatch may still be reading its input slot at
+     * Camera::unlock() time; deferring QBUF to the next readLock() trades a
+     * one-frame return delay for guaranteed no V4L2↔GPU write/read overlap
+     * (by this point the ISP's WaitForFences has drained frame N-1). */
+    for (int i = 0; i < mPendingQbufCount; i++) {
+        int id = mPendingQbuf[i];
+        mPendingQbuf[i] = -1;
+        if (!queueBuffer(id))
+            ALOGE("deferred QBUF of slot %d failed: %s (%d)", id, strerror(errno), errno);
+    }
+    mPendingQbufCount = 0;
+
     int id = 0;
     if((id = dequeueBuffer()) < 0) {
         ALOGE("Could not dequeue buffer: %s (%d)", strerror(errno), errno);
@@ -447,6 +463,13 @@ const V4l2Device::VBuffer * V4l2Device::readLock() {
 bool V4l2Device::unlock(const VBuffer *buf) {
     if(!buf || buf->index < 0 || buf->index >= V4L2DEVICE_BUF_COUNT)
         return false;
+
+    if (mMemoryType == V4L2_MEMORY_DMABUF) {
+        /* Defer return; see note in readLock(). */
+        assert(mPendingQbufCount < V4L2DEVICE_BUF_COUNT);
+        mPendingQbuf[mPendingQbufCount++] = buf->index;
+        return true;
+    }
 
     if(!queueBuffer(buf->index)) {
         ALOGE("Could not queue buffer %d: %s (%d)", buf->index, strerror(errno), errno);
