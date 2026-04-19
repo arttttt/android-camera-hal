@@ -65,7 +65,7 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mScratchImg(VK_NULL_HANDLE), mScratchMem(VK_NULL_HANDLE), mScratchView(VK_NULL_HANDLE)
     , mFence(VK_NULL_HANDLE), mPrevDst(NULL), mPrevPending(false)
     , mParamsTemplateReady(false)
-    , mNativeBufferAvail(false), mNativeBufferProbed(false) {}
+    , mNativeBufferAvail(false) {}
 
 VulkanIspPipeline::~VulkanIspPipeline() { destroy(); }
 
@@ -571,6 +571,9 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
 
     if (!recreate) return true;
 
+    /* Any cached gralloc images were sized for old resolution — drop them. */
+    clearGrallocImages();
+
     if (mInMap)  { mPfn->UnmapMemory(mDevice, mInMem);  mInMap = NULL; }
     if (mOutMap) { mPfn->UnmapMemory(mDevice, mOutMem); mOutMap = NULL; }
 
@@ -580,6 +583,8 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
     if (mScratchView) { mPfn->DestroyImageView(mDevice, mScratchView, NULL); mScratchView = VK_NULL_HANDLE; }
     if (mScratchImg)  { mPfn->DestroyImage(mDevice, mScratchImg, NULL);      mScratchImg = VK_NULL_HANDLE; }
     if (mScratchMem)  { mPfn->FreeMemory(mDevice, mScratchMem, NULL);        mScratchMem = VK_NULL_HANDLE; }
+
+    clearGrallocImages();
 
     if (!createBuffer(&mInBuf,  &mInMem,  inSize,  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
         !createBuffer(&mOutBuf, &mOutMem, outSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) {
@@ -862,51 +867,114 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
                                           unsigned width, unsigned height,
                                           uint32_t pixFmt,
                                           int acquireFence, int *releaseFence) {
-    (void)src; (void)pixFmt; (void)acquireFence;
+    (void)acquireFence;
     *releaseFence = -1;
 
-    if (mNativeBufferProbed || !mReady || !nativeBuffer)
+    if (!mReady || !nativeBuffer || !mNativeBufferAvail)
         return false;
-    mNativeBufferProbed = true;
 
-    if (!mNativeBufferAvail) {
-        ALOGW("PROBE: VK_ANDROID_native_buffer not available on this device");
+    bool is16 = (pixFmt == V4L2_PIX_FMT_SRGGB10 || pixFmt == V4L2_PIX_FMT_SGRBG10 ||
+                 pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SBGGR10);
+    if (!ensureBuffers(width, height, is16))
         return false;
-    }
 
     ANativeWindowBuffer *anwb = (ANativeWindowBuffer *)nativeBuffer;
-    VkNativeBufferANDROID nbInfo = {};
-    nbInfo.sType  = VK_STRUCTURE_TYPE_NATIVE_BUFFER_ANDROID;
-    nbInfo.handle = anwb->handle;
-    nbInfo.stride = anwb->stride;
-    nbInfo.format = anwb->format;
-    nbInfo.usage  = anwb->usage;
+    GrallocEntry *entry = NULL;
+    if (!getOrCreateGrallocImage(anwb, width, height, &entry))
+        return false;
 
-    VkImageCreateInfo ici = {};
-    ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    ici.pNext         = &nbInfo;
-    ici.imageType     = VK_IMAGE_TYPE_2D;
-    ici.format        = VK_FORMAT_R8G8B8A8_UNORM;
-    ici.extent.width  = width;
-    ici.extent.height = height;
-    ici.extent.depth  = 1;
-    ici.mipLevels     = 1;
-    ici.arrayLayers   = 1;
-    ici.samples       = VK_SAMPLE_COUNT_1_BIT;
-    ici.tiling        = VK_IMAGE_TILING_OPTIMAL;
-    ici.usage         = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
-    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    int64_t t0 = nowMs();
 
-    VkImage img = VK_NULL_HANDLE;
-    VkResult r = mPfn->CreateImage(mDevice, &ici, NULL, &img);
-    ALOGD("PROBE: vkCreateImage from gralloc = %d", (int)r);
-    if (r == VK_SUCCESS && mPfn->DestroyImage) {
-        mPfn->DestroyImage(mDevice, img, NULL);
-        ALOGD("PROBE RESULT: native_buffer usable on production stack");
+    /* Drain any previous async process() work — we reuse mFence. */
+    if (mPrevPending) {
+        mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
+        mPfn->ResetFences(mDevice, 1, &mFence);
+        mPrevPending = false;
+        mPrevDst = NULL;
     }
 
-    return false;
+    memcpy(mInMap, src, mInSize);
+    IspParams params;
+    fillParams(&params, width, height, is16, pixFmt);
+    memcpy(mParamMap, &params, sizeof(IspParams));
+
+    VkMappedMemoryRange flushRanges[2] = {};
+    flushRanges[0].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    flushRanges[0].memory = mInMem;
+    flushRanges[0].size = VK_WHOLE_SIZE;
+    flushRanges[1].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    flushRanges[1].memory = mParamMem;
+    flushRanges[1].size = VK_WHOLE_SIZE;
+    mPfn->FlushMappedMemoryRanges(mDevice, 2, flushRanges);
+
+    int64_t t1 = nowMs();
+
+    /* Rebind descriptor binding=1 to the gralloc image view. */
+    VkDescriptorImageInfo imgInfo = {};
+    imgInfo.imageView = entry->view;
+    imgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    VkWriteDescriptorSet write = {};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = mDescSet; write.dstBinding = 1;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    write.pImageInfo = &imgInfo;
+    mPfn->UpdateDescriptorSets(mDevice, 1, &write, 0, NULL);
+
+    /* Record: barrier (UNDEFINED|GENERAL → GENERAL) + compute dispatch. */
+    VkCommandBufferBeginInfo bi = {};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    mPfn->ResetCommandBuffer(mCmdBuf, 0);
+    mPfn->BeginCommandBuffer(mCmdBuf, &bi);
+
+    VkImageMemoryBarrier imb = {};
+    imb.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    imb.oldLayout = entry->layoutReady ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED;
+    imb.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    imb.srcAccessMask = entry->layoutReady ? VK_ACCESS_SHADER_WRITE_BIT : 0;
+    imb.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    imb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    imb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    imb.image = entry->image;
+    imb.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    imb.subresourceRange.levelCount = 1;
+    imb.subresourceRange.layerCount = 1;
+    mPfn->CmdPipelineBarrier(mCmdBuf,
+        entry->layoutReady ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                           : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 0, NULL, 0, NULL, 1, &imb);
+
+    mPfn->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
+    mPfn->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                mPipeLayout, 0, 1, &mDescSet, 0, NULL);
+    mPfn->CmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
+    mPfn->EndCommandBuffer(mCmdBuf);
+
+    entry->layoutReady = true;
+
+    VkSubmitInfo si = {};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &mCmdBuf;
+    mPfn->QueueSubmit(mQueue, 1, &si, mFence);
+
+    /* C2: CPU-synchronous wait. Release fence propagation comes in C3. */
+    mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
+    mPfn->ResetFences(mDevice, 1, &mFence);
+
+    int64_t t2 = nowMs();
+
+    /* Restore descriptor binding=1 to scratch view so process/processSync still work. */
+    imgInfo.imageView = mScratchView;
+    mPfn->UpdateDescriptorSets(mDevice, 1, &write, 0, NULL);
+
+    updateAwb(src, width, height, is16, pixFmt);
+
+    ALOGD("VK gralloc: upload=%lld dispatch=%lldms", t1 - t0, t2 - t1);
+    return true;
 }
 
 /* --- cleanup --- */
@@ -918,6 +986,8 @@ void VulkanIspPipeline::destroy() {
         if (mInMap)    { mPfn->UnmapMemory(mDevice, mInMem);    mInMap = NULL; }
         if (mOutMap)   { mPfn->UnmapMemory(mDevice, mOutMem);   mOutMap = NULL; }
         if (mParamMap) { mPfn->UnmapMemory(mDevice, mParamMem); mParamMap = NULL; }
+
+        clearGrallocImages();
 
         if (mScratchView) { mPfn->DestroyImageView(mDevice, mScratchView, NULL); mScratchView = VK_NULL_HANDLE; }
         if (mScratchImg)  { mPfn->DestroyImage(mDevice, mScratchImg, NULL);      mScratchImg = VK_NULL_HANDLE; }
@@ -954,8 +1024,81 @@ void VulkanIspPipeline::destroy() {
     mBufWidth = 0; mBufHeight = 0;
     mPrevPending = false;
     mPrevDst = NULL;
-    mNativeBufferProbed = false;
     mNativeBufferAvail = false;
+}
+
+void VulkanIspPipeline::clearGrallocImages() {
+    if (!mPfn || mDevice == VK_NULL_HANDLE) {
+        mGrallocImages.clear();
+        return;
+    }
+    for (auto &kv : mGrallocImages) {
+        if (kv.second.view)  mPfn->DestroyImageView(mDevice, kv.second.view, NULL);
+        if (kv.second.image) mPfn->DestroyImage(mDevice, kv.second.image, NULL);
+    }
+    mGrallocImages.clear();
+}
+
+bool VulkanIspPipeline::getOrCreateGrallocImage(ANativeWindowBuffer *anwb,
+                                                 unsigned width, unsigned height,
+                                                 GrallocEntry **outEntry) {
+    auto it = mGrallocImages.find(anwb->handle);
+    if (it != mGrallocImages.end()) {
+        *outEntry = &it->second;
+        return true;
+    }
+
+    VkNativeBufferANDROID nbInfo = {};
+    nbInfo.sType  = VK_STRUCTURE_TYPE_NATIVE_BUFFER_ANDROID;
+    nbInfo.handle = anwb->handle;
+    nbInfo.stride = anwb->stride;
+    nbInfo.format = anwb->format;
+    nbInfo.usage  = anwb->usage;
+
+    VkImageCreateInfo ici = {};
+    ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ici.pNext         = &nbInfo;
+    ici.imageType     = VK_IMAGE_TYPE_2D;
+    ici.format        = VK_FORMAT_R8G8B8A8_UNORM;
+    ici.extent.width  = width;
+    ici.extent.height = height;
+    ici.extent.depth  = 1;
+    ici.mipLevels     = 1;
+    ici.arrayLayers   = 1;
+    ici.samples       = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling        = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage         = VK_IMAGE_USAGE_STORAGE_BIT;
+    ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    GrallocEntry entry = {};
+    VkResult r = mPfn->CreateImage(mDevice, &ici, NULL, &entry.image);
+    if (r != VK_SUCCESS) {
+        ALOGE("gralloc vkCreateImage failed: %d", (int)r);
+        return false;
+    }
+
+    VkImageViewCreateInfo vci = {};
+    vci.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vci.image    = entry.image;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format   = VK_FORMAT_R8G8B8A8_UNORM;
+    vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    vci.subresourceRange.levelCount = 1;
+    vci.subresourceRange.layerCount = 1;
+    r = mPfn->CreateImageView(mDevice, &vci, NULL, &entry.view);
+    if (r != VK_SUCCESS) {
+        ALOGE("gralloc vkCreateImageView failed: %d", (int)r);
+        mPfn->DestroyImage(mDevice, entry.image, NULL);
+        return false;
+    }
+
+    entry.layoutReady = false;
+    auto res = mGrallocImages.emplace(anwb->handle, entry);
+    *outEntry = &res.first->second;
+    ALOGD("gralloc image cached: handle=%p image=%p view=%p (size=%zu)",
+          anwb->handle, entry.image, entry.view, mGrallocImages.size());
+    return true;
 }
 
 }; /* namespace android */

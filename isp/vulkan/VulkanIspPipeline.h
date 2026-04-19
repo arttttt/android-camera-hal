@@ -3,8 +3,13 @@
 
 #include "IspPipeline.h"
 
+#include <cutils/native_handle.h>
+#include <unordered_map>
+
 #define VK_USE_PLATFORM_ANDROID_KHR
 #include <vulkan/vulkan.h>
+
+struct ANativeWindowBuffer;
 
 namespace android {
 
@@ -105,7 +110,20 @@ private:
     static void initGamma();
 
     bool mNativeBufferAvail;
-    bool mNativeBufferProbed;
+
+    /* Cached VkImage + view per gralloc buffer_handle_t for zero-copy output.
+     * Gralloc owns the backing memory; we only track the Vulkan wrappers. */
+    struct GrallocEntry {
+        VkImage image;
+        VkImageView view;
+        bool layoutReady;  /* UNDEFINED → GENERAL transition has been submitted */
+    };
+    std::unordered_map<buffer_handle_t, GrallocEntry> mGrallocImages;
+
+    bool getOrCreateGrallocImage(ANativeWindowBuffer *anwb,
+                                  unsigned width, unsigned height,
+                                  GrallocEntry **outEntry);
+    void clearGrallocImages();
 };
 
 }; /* namespace android */
