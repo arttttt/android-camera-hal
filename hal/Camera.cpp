@@ -82,6 +82,7 @@ Camera::Camera(const char *devNode, int facing)
     mValid = true;
     mIsp = NULL;
     mAf = NULL;
+    mExposure = NULL;
     mDev = new V4l2Device(devNode);
     if(!mDev) {
         mValid = false;
@@ -92,6 +93,7 @@ Camera::~Camera() {
     DBGUTILS_AUTOLOGCALL(__func__);
     gWorkers.stop();
     delete mAf;
+    delete mExposure;
     if (mIsp) { mIsp->destroy(); delete mIsp; }
     mDev->disconnect();
     delete mDev;
@@ -449,10 +451,12 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
     mSensorCfg = (mFacing == CAMERA_FACING_BACK) ?
         SensorConfig::imx179() : SensorConfig::ov5693();
 
-    /* Set exposure/gain BEFORE STREAMON — only with soft ISP */
+    /* Exposure/gain are only driven by the HAL on the soft ISP path —
+     * the HW ISP firmware owns those controls otherwise. */
+    if (mExposure) { delete mExposure; mExposure = NULL; }
     if (mSoftIspEnabled) {
-        mDev->setControl(V4L2_CID_EXPOSURE, mSensorCfg.exposureDefault);
-        mDev->setControl(V4L2_CID_GAIN, mSensorCfg.gainDefault);
+        mExposure = new ExposureControl(mDev, mSensorCfg);
+        mExposure->applyDefaults();
     }
 
     if(!mDev->setStreaming(true)) {
@@ -547,44 +551,15 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
     }
 
     /* Actual applied exposure/gain — echoed back in result metadata.
-     * Seeded from sensor defaults so HW-ISP path (which doesn't compute
-     * them here) still reports sane values. */
+     * Seeded from sensor defaults so the HW-ISP path (which leaves
+     * mExposure null) still reports sane values. */
     int32_t appliedExposureUs = mSensorCfg.exposureDefault;
     int32_t appliedGain       = mSensorCfg.gainDefault;
-
-    /* Apply exposure/gain from request metadata — only with soft ISP */
-    if (mSoftIspEnabled) {
-        int32_t exposureUs = mSensorCfg.exposureDefault;
-        if (cm.exists(ANDROID_SENSOR_EXPOSURE_TIME)) {
-            int64_t exposureNs = *cm.find(ANDROID_SENSOR_EXPOSURE_TIME).data.i64;
-            exposureUs = (int32_t)(exposureNs / 1000);
-        }
-        /* EV compensation applied on top of exposure time */
-        if (cm.exists(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION)) {
-            int32_t evComp = *cm.find(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION).data.i32;
-            if (evComp > 0)
-                for (int i = 0; i < evComp; i++) exposureUs = exposureUs * 5 / 4;
-            else
-                for (int i = 0; i < -evComp; i++) exposureUs = exposureUs * 4 / 5;
-        }
-        if (exposureUs < 100) exposureUs = 100;
-        if (exposureUs > 200000) exposureUs = 200000;
-
-        /* Split into exposure + gain to preserve FPS */
-        int32_t actualExposure, extraGainQ8;
-        mSensorCfg.splitExposureGain(exposureUs, &actualExposure, &extraGainQ8);
-        mDev->setControl(V4L2_CID_EXPOSURE, actualExposure);
-
-        int32_t gain = mSensorCfg.gainUnit; /* 1x */
-        if (cm.exists(ANDROID_SENSOR_SENSITIVITY))
-            gain = mSensorCfg.isoToGain(*cm.find(ANDROID_SENSOR_SENSITIVITY).data.i32);
-        gain = (int32_t)((int64_t)gain * extraGainQ8 / 256);
-        if (gain < 1) gain = 1;
-        if (gain > mSensorCfg.gainMax) gain = mSensorCfg.gainMax;
-        mDev->setControl(V4L2_CID_GAIN, gain);
-
-        appliedExposureUs = actualExposure * mSensorCfg.lineTimeUs;
-        appliedGain       = gain;
+    if (mExposure) {
+        mExposure->onSettings(cm);
+        ExposureControl::Report r = mExposure->report();
+        appliedExposureUs = r.appliedExposureUs;
+        appliedGain       = r.appliedGain;
     }
 
     if (mAf)

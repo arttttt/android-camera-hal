@@ -13,6 +13,7 @@
 #include "sensor/SensorConfig.h"
 #include "IspPipeline.h"
 #include "3a/AutoFocusController.h"
+#include "3a/ExposureControl.h"
 #include "DbgUtils.h"
 
 namespace android {
@@ -67,6 +68,7 @@ private:
     ImageConverter mConverter;
     IspPipeline *mIsp;
     AutoFocusController *mAf;
+    ExposureControl *mExposure;
     Mutex mMutex;
 
     /* STATIC WRAPPERS */
