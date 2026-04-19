@@ -834,19 +834,19 @@ bool VulkanIspPipeline::process(const uint8_t *src, uint8_t *dst,
     return processSync(NULL, dst, width, height, pixFmt);
 }
 
-bool VulkanIspPipeline::processSync(const uint8_t *src, uint8_t *dst,
-                                     unsigned width, unsigned height,
-                                     uint32_t pixFmt,
-                                     int srcInputSlot) {
+const uint8_t *VulkanIspPipeline::processToCpu(const uint8_t *src,
+                                                 unsigned width, unsigned height,
+                                                 uint32_t pixFmt,
+                                                 int srcInputSlot) {
     (void)src;
-    if (!mReady) return false;
+    if (!mReady) return NULL;
     if (srcInputSlot < 0 || srcInputSlot >= mInputRing.slotCount())
-        return false;
+        return NULL;
 
     bool is16 = (pixFmt == V4L2_PIX_FMT_SRGGB10 || pixFmt == V4L2_PIX_FMT_SGRBG10 ||
                  pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SBGGR10);
     if (!ensureBuffers(width, height, is16))
-        return false;
+        return NULL;
 
     drainPendingFence();
     mInputRing.invalidateFromGpu(srcInputSlot);
@@ -861,12 +861,21 @@ bool VulkanIspPipeline::processSync(const uint8_t *src, uint8_t *dst,
     mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence);
 
     VkMappedMemoryRange outRange = {};
-    outRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    outRange.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
     outRange.memory = mOutMem;
-    outRange.size = VK_WHOLE_SIZE;
+    outRange.size   = VK_WHOLE_SIZE;
     mDeviceState.pfn()->InvalidateMappedMemoryRanges(mDeviceState.device(), 1, &outRange);
-    memcpy(dst, mOutMap, mOutSize);
+    return (const uint8_t *)mOutMap;
+}
 
+bool VulkanIspPipeline::processSync(const uint8_t *src, uint8_t *dst,
+                                     unsigned width, unsigned height,
+                                     uint32_t pixFmt,
+                                     int srcInputSlot) {
+    const uint8_t *p = processToCpu(src, width, height, pixFmt, srcInputSlot);
+    if (!p)
+        return false;
+    memcpy(dst, p, (size_t)width * height * 4);
     return true;
 }
 

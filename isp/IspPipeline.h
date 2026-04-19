@@ -37,6 +37,21 @@ public:
         return process(src, dst, width, height, pixFmt);
     }
 
+    /* Synchronous demosaic into an internal CPU-readable RGBA buffer
+     * owned by the backend. Returns a pointer to tightly-packed RGBA8
+     * (row stride = width * 4), valid until the next process*() call
+     * on this pipeline. Returns NULL on failure.
+     *
+     * Lets callers skip an extra CPU memcpy vs processSync() — used
+     * by the JPEG path where libjpeg reads the RGBA directly. */
+    virtual const uint8_t *processToCpu(const uint8_t *src,
+                                         unsigned width, unsigned height,
+                                         uint32_t pixFmt,
+                                         int srcInputSlot) {
+        (void)src; (void)width; (void)height; (void)pixFmt; (void)srcInputSlot;
+        return NULL;
+    }
+
     /* Run a dummy dispatch at the target stream dimensions so the backend's
      * shader / GPU state is warm before the first real frame. Default no-op. */
     virtual void prewarm(unsigned width, unsigned height, uint32_t pixFmt) {

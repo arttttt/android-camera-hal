@@ -31,6 +31,11 @@ public:
                       uint32_t pixFmt,
                       int srcInputSlot = -1) override;
 
+    const uint8_t *processToCpu(const uint8_t *src,
+                                 unsigned width, unsigned height,
+                                 uint32_t pixFmt,
+                                 int srcInputSlot) override;
+
     void prewarm(unsigned width, unsigned height, uint32_t pixFmt) override;
 
     bool processToGralloc(const uint8_t *src, void *nativeBuffer,
