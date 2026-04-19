@@ -921,7 +921,7 @@ skip_focus:
                             GraphicBufferMapper::get().unlock(*srcBuf.buffer);
                             sp<GraphicBuffer> gb = new GraphicBuffer(streamW, streamH,
                                 HAL_PIXEL_FORMAT_RGBA_8888,
-                                GRALLOC_USAGE_HW_RENDER | GRALLOC_USAGE_HW_COMPOSER,
+                                GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_COMPOSER,
                                 streamW, const_cast<native_handle_t *>(*srcBuf.buffer),
                                 false);
                             int releaseFd = -1;
