@@ -29,6 +29,12 @@ public:
     virtual int closeDevice();
 
 
+    /* Single-buffered synchronous pipeline: processCaptureRequest holds
+     * mMutex end-to-end and emits one result per call. Raise both when
+     * the request-queue refactor (Tier 3) introduces real pipelining. */
+    static constexpr uint8_t kPipelineMaxDepth   = 1;
+    static constexpr int32_t kPartialResultCount = 1;
+
 protected:
     virtual camera_metadata_t * staticCharacteristics();
     virtual int initialize(const camera3_callback_ops_t *callbackOps);
