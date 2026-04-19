@@ -70,8 +70,9 @@ model. ~50 lines.
 
 ### Graceful ISP backend fallback (S)
 
-`Hw → Vulkan → GLES → CPU` on `init` failure. Currently we proceed with
-a broken ISP. Cheap resilience.
+`Hw → Vulkan` on `init` failure. Currently we proceed with a broken
+ISP. Cheap resilience. (CPU / GLES backends were removed — adding
+either back purely as a fallback is not worth the maintenance cost.)
 
 ### JSON tuning file per sensor (M)
 

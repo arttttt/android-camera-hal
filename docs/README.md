@@ -10,7 +10,7 @@ the Tegra T124 Android Camera HAL3 implementation in this repository.
 | [latency-and-buffers.md](latency-and-buffers.md) | V4L2 buffer-queue latency analysis, frame-skip strategies, delayed-controls problem |
 | [open-source-references.md](open-source-references.md) | What libcamera, RkISP1, RPi, cros-camera and AOSP V4L2 HAL do differently — patterns worth stealing |
 | [roadmap.md](roadmap.md) | Prioritized list of improvements with effort estimates |
-| [isp-pipeline.md](isp-pipeline.md) | Current IspPipeline abstraction and the four backends (CPU/GLES/Vulkan/Hw) |
+| [isp-pipeline.md](isp-pipeline.md) | Current IspPipeline abstraction and the two live backends (Vulkan soft-ISP / Hw) |
 
 ## Scope
 

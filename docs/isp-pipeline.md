@@ -1,8 +1,10 @@
 # ISP pipeline abstraction
 
 The `IspPipeline` interface (`isp/IspPipeline.h`) hides which backend
-performs demosaic / colour correction / format conversion. Four
-implementations exist today.
+performs demosaic / colour correction / format conversion. Two
+implementations are live today: `VulkanIspPipeline` (the default
+soft-ISP) and `HwIspPipeline` (the Tegra hardware ISP via the
+`libnvisp_v3` blob — kept for reference, only partially working).
 
 ## Interface
 
@@ -12,137 +14,169 @@ public:
     virtual bool init() = 0;
     virtual void destroy() = 0;
 
-    // Blocking CPU path: src → dst, both in system memory.
+    // Synchronous RGBA readback into dst. CPU-fallback path for JPEG
+    // encode or when zero-copy output is ineligible.
+    virtual bool process(const uint8_t *src, uint8_t *dst,
+                         unsigned width, unsigned height,
+                         uint32_t pixFmt) = 0;
+
     virtual bool processSync(const uint8_t *src, uint8_t *dst,
                              unsigned width, unsigned height,
-                             uint32_t pixFmt) = 0;
+                             uint32_t pixFmt,
+                             int srcInputSlot = -1);
 
-    // dmabuf-in, CPU-mapped-buffer-out. Fast path for GPU backends
-    // that can consume dmabuf directly; CPU fallback pointer is
-    // provided for backends that cannot.
-    virtual bool processFromDmabuf(int dmabufFd, const uint8_t *cpuFallback,
-                                   uint8_t *dst,
-                                   unsigned width, unsigned height,
-                                   uint32_t pixFmt) = 0;
+    // Warm shader / command-buffer state at the target stream size so
+    // the first real frame isn't JIT-stalled.
+    virtual void prewarm(unsigned width, unsigned height, uint32_t pixFmt);
 
-    // dmabuf-in, gralloc-out. Zero-copy end-to-end on GPU backends —
-    // writes directly into the compositor-facing RGBA buffer. Not all
-    // backends implement it (returns false to signal fallback).
+    // Zero-copy RGBA output: GPU writes straight into the gralloc
+    // buffer; release fence is emitted through *releaseFence for the
+    // framework to wait on before compositing. Returns false when the
+    // backend can't do zero-copy for this call (caller falls back to
+    // process()).
     virtual bool processToGralloc(const uint8_t *src, void *nativeBuffer,
-                                  unsigned srcW, unsigned srcH,
-                                  unsigned dstW, unsigned dstH,
-                                  uint32_t pixFmt);
+                                  unsigned width, unsigned height,
+                                  uint32_t pixFmt,
+                                  int acquireFence, int *releaseFence,
+                                  int srcInputSlot = -1);
 
-    // AWB lock toggle used during AF sweeps. Default no-op for backends
-    // without an AWB loop.
-    virtual void setAwbLock(bool locked) {}
+    // DMABUF input ring: backends that can consume V4L2 capture
+    // directly into device-visible memory advertise a non-zero count
+    // here; the capture code then exports fds and hands them to V4L2
+    // via setDmaBufFds(). process*(srcInputSlot=N) references slot N
+    // of this ring instead of memcpy-ing from src.
+    virtual int    inputBufferCount() const;
+    virtual size_t inputBufferSize()  const;
+    virtual int    exportInputBufferFd(int idx);
+
+    // Block until async GPU work from the previous process*() call
+    // has completed. Called before V4L2 reuses a DMABUF slot.
+    virtual void   waitForPreviousFrame();
+
+    // 3A helpers.
+    void setWbGains(unsigned r, unsigned g, unsigned b);
+    void setCcm(const int16_t *ccm);
+    void setEnabled(bool en);
+    void setAwbLock(bool lock);
 };
 ```
 
 `src` layout depends on `pixFmt`:
 
-- `V4L2_PIX_FMT_UYVY`, `V4L2_PIX_FMT_YUYV` — packed YUV. Backends skip
-  demosaic, just do colour-space conversion to RGBA.
+- `V4L2_PIX_FMT_UYVY`, `V4L2_PIX_FMT_YUYV` — packed YUV. Never hits
+  `IspPipeline` on this SoC; `ImageConverter` handles them directly.
 - `V4L2_PIX_FMT_SRGGB10` / `SGRBG10` / `SGBRG10` / `SBGGR10` — 10-bit
-  Bayer packed 16-bit. Backends do full debayer + white-balance +
-  colour-correction + gamma.
+  Bayer packed in 16-bit containers. Backends do full debayer + white
+  balance + colour correction + gamma.
 
 ## Backends
 
-### `CpuIspPipeline`
-
-`isp/cpu/CpuIspPipeline.cpp`. libyuv-based, runs on `Workers` thread pool for
-row parallelism. Slow on Bayer input (naive bilinear demosaic in C++).
-Fine on packed YUV. Kept for debug / correctness reference.
-
-### `GlesIspPipeline`
-
-`isp/gles/GlesIspPipeline.cpp`. OpenGL ES 3.0 pipeline, EGL-initialised. Runs as
-a fragment shader reading a GL_TEXTURE_2D_RGBA sampled as packed Bayer,
-writing into a gralloc-backed EGLImage via FBO when `processToGralloc`
-is called. Zero-copy output on the golden path; dmabuf input via
-`EGL_LINUX_DMA_BUF_EXT`.
-
 ### `VulkanIspPipeline`
 
-`isp/vulkan/VulkanIspPipeline.cpp`. Compute-shader pipeline. Consumes dmabuf via
-`VK_EXT_external_memory_dma_buf`, outputs either to mapped system
-memory or to gralloc through `VK_ANDROID_external_memory_android_hardware_buffer`.
-Currently the preferred soft-ISP path on this HAL when
-`soft_isp=1`: modestly faster than GLES, cleaner code.
+`isp/vulkan/VulkanIspPipeline.cpp`. The production soft-ISP. Pipeline per frame:
+
+1. **Input:** V4L2 writes Bayer straight into slot `i` of the Vulkan
+   input ring (`mInBuf[i]`, 4 slots, `VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR`-
+   exportable `VkBuffer`s handed to V4L2 via `setDmaBufFds`).
+   No CPU memcpy.
+2. **Compute dispatch** reads `mInBuf[i]` as an SSBO, runs Malvar-He-Cutler
+   demosaic + WB + CCM + sRGB gamma, writes packed RGBA8 via
+   `imageStore` into `mScratchImg` (pitchlinear `STORAGE` image,
+   device-local).
+3. **Graphics pipeline** — full-screen triangle, fragment shader
+   `imageLoad`s from `mScratchImg` and outputs to a colour attachment
+   bound to a gralloc-backed `VkImage`. This is the only blocklinear-
+   aware write path exposed on Tegra Vulkan — compute-store and
+   `vkCmdCopyImage` targeting `VK_ANDROID_native_buffer` both produce
+   swizzled garbage.
+4. **Release:** `vkQueueSignalReleaseImageANDROID` emits a sync_fence
+   fd; `Camera::processCaptureRequest` plugs it into
+   `camera3_stream_buffer.release_fence` and returns without any
+   SW lock on the gralloc buffer.
+
+The gralloc `VkImage` + `VkImageView` + `VkFramebuffer` are cached per
+`native_handle_t *` in `mGrallocImages` (see `GrallocEntry`), so the
+per-frame cost is just two descriptor rebinds and a command buffer
+record / submit.
+
+Vulkan functions are loaded through `VulkanLoader` +
+`VulkanPfn` dispatch table instead of linking `libvulkan` directly.
+The HAL-variant `HalHmiVulkanLoader` bypasses Android 7's libvulkan
+filter and exposes `VK_ANDROID_native_buffer`, which is unavailable to
+app-side consumers.
 
 ### `HwIspPipeline`
 
-`isp/hw/HwIspPipeline.cpp`. Uses Tegra ISP-A via the MIUI `libnvisp_v3.so` blob.
-Flow, per `isp/hw/HwIspPipeline.h`:
+`isp/hw/HwIspPipeline.cpp`. Uses Tegra ISP-A through the MIUI
+`libnvisp_v3.so` blob. Flow:
 
 1. `dlopen` the blob stack (`libnvos`, `libnvrm`, `libnvrm_graphics`,
    `libnvisp_v3`). Requires `nvrm_shim.so` via `LD_PRELOAD` for
    `NVMAP_IOC_MMAP` compat on newer kernels.
-2. `NvIspOpen`, `HwSettingsCreate`, `HwSettingsApply` — applies
-   calibration baked into the blob.
+2. `NvIspOpen`, `HwSettingsCreate`, `HwSettingsApply` — applies the
+   blob's baked calibration.
 3. Per frame: allocate nvmap handles for input / output / stats / cmd,
    upload raw, submit an ISP "reprocess gather" with format `0x43`,
    wait on syncpoint, read output RGBA.
-4. On teardown, `NvIspClose`, `HwSettingsDestroy`, free nvmap.
+4. `NvIspClose`, `HwSettingsDestroy`, free nvmap on teardown.
 
-Selected when `ro.hal.camera.soft_isp=0`. Fastest and highest quality
-path — full hardware ISP with tuned calibration — but fragile: depends
-on NVIDIA blobs matching the kernel, and we do not own the tuning.
+Selected when `persist.camera.soft_isp=0`. Partially works — most of
+the time the blob matches the kernel well enough to produce frames,
+but output is sometimes corrupt and there's no path to owning the
+tuning. Kept around as a reference for what a hardware ISP path looks
+like from userspace, not as a production target.
 
 ## Backend selection
 
-At `Camera` construction time (`hal/Camera.cpp` around `mSoftIspEnabled`):
+`IspPipeline *createIspPipeline()` in `isp/IspPipeline.cpp`, driven by
+`persist.camera.soft_isp` (default `1`):
 
 ```cpp
-mSoftIspEnabled = property_get_bool("ro.hal.camera.soft_isp", true);
-if (mSoftIspEnabled) {
-    mIsp = new VulkanIspPipeline();      // or GlesIspPipeline as fallback
-} else {
-    mIsp = new HwIspPipeline();
-}
+char val[PROPERTY_VALUE_MAX] = {0};
+property_get("persist.camera.soft_isp", val, "1");
+return (val[0] != '0') ? (IspPipeline *) new VulkanIspPipeline()
+                       : (IspPipeline *) new HwIspPipeline();
 ```
 
-There is no runtime fallback if the chosen backend fails `init()` — we
-log the error and the HAL proceeds with a broken ISP. Adding a graceful
-fallback chain `Hw → Vulkan → GLES → CPU` is a low-effort resilience
-win.
+No runtime fallback: if the chosen backend fails `init()`,
+`Camera::configureStreams` returns `NO_INIT` and the HAL proceeds with
+no ISP. A `Hw → Vulkan` fallback chain would be a cheap resilience
+win — tracked in [roadmap.md](roadmap.md).
 
-## Things this abstraction does not do today
+## What this abstraction does NOT do today
 
 - **No statistics output.** AF reads the rendered preview. AE / AWB
-  have no feedback at all. A proper ISP exposes an AE histogram, AWB
-  patch averages, and an AF sharpness grid via a separate output
-  channel — `HwIspPipeline` actually has a `mStatsHandle` nvmap
-  allocation (`isp/hw/HwIspPipeline.h:72`), but nothing reads it. Surfacing
-  statistics would be the single biggest quality upgrade.
+  have no feedback at all. `HwIspPipeline` allocates a stats nvmap
+  handle (`mStatsHandle`, `isp/hw/HwIspPipeline.h:72`) but nothing reads
+  it. Surfacing statistics would be the single biggest quality
+  upgrade.
 
-- **No per-frame tuning parameters.** `processSync` etc. take only
-  `width, height, pixFmt`. Exposure / gain / WB gains / CCM matrix /
-  gamma are either baked into the blob (`HwIspPipeline`) or hardcoded
-  (`VulkanIspPipeline`). A useful evolution: add a
-  `IspParameters { awbGainR, awbGainB, ccm[3][3], blackLevel, … }` struct
-  passed to every `process*` call, populated by the 3A module.
+- **No per-frame tuning-parameter channel.** `process*` take only
+  `width, height, pixFmt`. CCM / gamma / WB are set once via `setCcm`
+  / `setWbGains`. A useful evolution: an `IspParameters` struct
+  populated by a 3A module and passed per-frame.
 
 - **No shared temp buffer pool.** `mRgbaTemp` is a single buffer per
-  `Camera`; if we ever pipeline multiple requests we need a small pool.
+  `Camera`; if we ever pipeline multiple in-flight requests, we need
+  a small pool.
 
-- **No explicit GPU fence returned.** `processFromDmabuf` waits inside
-  the call (`vkQueueWaitIdle` or `glFinish`). Returning a sync fd
-  would let the framework thread proceed while the GPU is still
-  writing, overlapping with JPEG encode / result marshalling. Covered
-  in [roadmap.md](roadmap.md).
+- **No CPU/GPU frame overlap.** `VulkanIspPipeline` submits async and
+  returns immediately, but a single `mCmdBuf` / `mFence` forces the
+  next frame to wait on `waitForPreviousFrame()` before recording.
+  Ping-pong command buffers + the request-queue refactor in
+  [roadmap.md](roadmap.md) (Tier 3) would double throughput.
 
 ## Adding a new backend
 
 1. Subclass `IspPipeline`.
 2. Implement `init` (allocate context, shaders, buffers) and
    `destroy` (release).
-3. Implement at least `processSync`. `processFromDmabuf` and
-   `processToGralloc` are optional — the default
-   `processToGralloc` returns `false` which triggers the CPU readback
-   path in `hal/Camera.cpp`.
-4. Wire into the `Camera` constructor selector and `Android.mk`.
+3. Implement at least `process` (synchronous CPU readback fallback).
+   `processToGralloc` and the DMABUF-input methods are optional —
+   default impls return `false` / `0` and the camera stays on the
+   CPU path.
+4. Wire into `createIspPipeline()` and `Android.mk`.
 
-Keep the class self-contained (no direct V4L2 knowledge, no Camera3
-metadata) — the only input is `(src, width, height, pixFmt)`.
+Keep the class self-contained — no direct V4L2 knowledge, no Camera3
+metadata. The only input is `(src-or-srcInputSlot, width, height,
+pixFmt)`.

@@ -17,19 +17,24 @@
                         │           │
               ┌─────────▼───┐   ┌───▼────────────┐
               │  V4l2Device │   │   IspPipeline  │
-              │ (/dev/video0)│   │  (interface)   │
+              │(/dev/video0)│   │  (interface)   │
               └──────┬──────┘   └───┬────────────┘
                      │              │
-                     │    ┌─────────┴──────────┬──────────────┬──────────────┐
-                     │    │                    │              │              │
-                     │ ┌──▼─────┐        ┌─────▼───┐    ┌─────▼────┐  ┌──────▼─────┐
-                     │ │CpuIsp  │        │GlesIsp  │    │VulkanIsp │  │  HwIsp     │
-                     │ │(libyuv)│        │(shaders)│    │(compute) │  │(libnvisp_v3)│
-                     │ └────────┘        └─────────┘    └──────────┘  └────────────┘
-                     │
+                     │        ┌─────┴──────┐
+                     │        │            │
+                     │   ┌────▼──────┐ ┌───▼────────────┐
+                     │   │ VulkanIsp │ │     HwIsp      │
+                     │   │(compute + │ │(libnvisp_v3)   │
+                     │   │ fragment) │ │                │
+                     │   └───────────┘ └────────────────┘
                      ▼
               /dev/v4l-subdev* (focuser/VCM)
 ```
+
+`V4l2Device` hands `VulkanIspPipeline`-exported dma-buf fds to
+`VIDIOC_QBUF` so the VI DMA writes captured Bayer directly into the
+GPU-visible input ring — no CPU copy on the hot path. See
+[isp-pipeline.md](isp-pipeline.md) for the full ISP flow.
 
 The main objects:
 
@@ -40,12 +45,16 @@ The main objects:
   cached `V4l2Device` pointer, `IspPipeline*`, AF state machine.
 
 - **`V4l2Device`** (`v4l2/V4l2Device.cpp/.h`) — thin C++ wrapper over
-  `/dev/video0`. Manages mmap buffers, `VIDIOC_QBUF`/`VIDIOC_DQBUF`,
-  `VIDIOC_S_CTRL` for sensor controls, `VIDIOC_EXPBUF` for dmabuf export.
-  Also opens the focuser subdev (`/dev/v4l-subdev*`) when found.
+  `/dev/video0`. Speaks both `V4L2_MEMORY_MMAP` and `V4L2_MEMORY_DMABUF`;
+  `setDmaBufFds()` switches into DMABUF mode with caller-supplied
+  capture fds. Manages `VIDIOC_QBUF`/`VIDIOC_DQBUF`, `VIDIOC_S_CTRL`
+  for sensor controls. Deferred-QBUF on unlock (DMABUF mode only) so
+  V4L2 never reuses a slot the shader is still reading. Also opens
+  the focuser subdev (`/dev/v4l-subdev*`) when found.
 
-- **`IspPipeline`** (`isp/IspPipeline.h`) — abstract base for demosaic / color
-  processing. See [isp-pipeline.md](isp-pipeline.md) for the four backends.
+- **`IspPipeline`** (`isp/IspPipeline.h`) — abstract base for demosaic
+  / colour processing. See [isp-pipeline.md](isp-pipeline.md) for the
+  two live backends.
 
 - **`ImageConverter`** (`image/ImageConverter.cpp`) — libyuv-backed YUV/UYVY/YUYV →
   RGBA / JPEG paths, used when the sensor emits packed YUV (no ISP needed).
@@ -65,18 +74,21 @@ single-buffer:
 2. Apply settings via VIDIOC_S_CTRL (exposure, gain, frame length)
 3. Handle AF trigger state machine (start/cancel sweep)
 4. notifyShutter(frame_number, timestamp)
-5. mDev->readLock()                     ← DQBUF one V4L2 buffer (blocking)
-6. for each output buffer:
+5. mIsp->waitForPreviousFrame()         ← drain prev GPU work so V4L2
+                                          can reuse the input slot
+6. mDev->readLock()                     ← DQBUF one V4L2 buffer (blocking);
+                                          also flushes deferred QBUFs
+7. for each output buffer:
    a. Wait acquire fence
-   b. Lock gralloc buffer
-   c. Convert / process into gralloc buffer
-      - RGBA: mIsp->processToGralloc() or processFromDmabuf()
-      - BLOB: ImageConverter or mIsp->processSync() + JPEG encode
-   d. Unlock gralloc buffer
-7. AF sweep: evaluate sharpness, move VCM, update state
-8. mDev->unlock(frame)                  ← QBUF buffer back to V4L2
-9. Build result metadata
-10. callbacks.process_capture_result(result)
+   b. RGBA: mIsp->processToGralloc(src_slot=frame->index, …) — GPU
+            submits async, returns a release_fence fd for the buffer
+   c. BLOB: mIsp->processSync() into mRgbaTemp, then JPEG encode
+8. AF sweep: evaluate sharpness, move VCM, update state
+9. mDev->unlock(frame)                  ← in DMABUF mode: stash slot
+                                          for deferred QBUF at step 6
+                                          of the next frame
+10. Build result metadata
+11. callbacks.process_capture_result(result)
 ```
 
 The entire sequence runs under `mMutex` (held from step 1 through step 10).
@@ -90,23 +102,30 @@ one at a time.
 
 1. Picks a single V4L2 resolution to request from the sensor — typically
    the largest stream's resolution, clamped to supported sensor modes.
-2. Calls `V4l2Device::setResolution()` → `VIDIOC_S_FMT` + `REQBUFS` +
-   mmap + `VIDIOC_QBUF` all buffers.
-3. Remaps `HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED` → `RGBA_8888`.
-4. Rejects ZSL and input streams.
-5. Sets `max_buffers = 4` on every output stream (matches
+2. Creates the soft-ISP backend, prewarms it (allocates the Vulkan
+   input ring at target size) and exports each slot as an OPAQUE_FD
+   dma-buf.
+3. Calls `V4l2Device::setDmaBufFds(fds, N)` to switch V4L2 into
+   `V4L2_MEMORY_DMABUF` mode, then `setResolution()` →
+   `VIDIOC_S_FMT` + `REQBUFS(DMABUF)` + `VIDIOC_QBUF(.m.fd=fds[i])`.
+   If export fails the code silently stays in MMAP + memcpy mode.
+4. Remaps `HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED` → `RGBA_8888`.
+5. Rejects ZSL and input streams.
+6. Sets `max_buffers = 4` on every output stream (matches
    `V4L2DEVICE_BUF_COUNT`).
 
-No per-stream buffer allocation happens in the HAL — gralloc buffers come
-from the framework. The HAL owns only the V4L2 mmap buffers.
+No per-stream output-buffer allocation happens in the HAL — gralloc
+buffers come from the framework. The HAL owns the V4L2 capture
+buffers (MMAP) or, in DMABUF mode, the Vulkan input ring (exported
+to V4L2 via fds).
 
 ## Threading
 
 - **Framework thread** — calls `processCaptureRequest`. This is where all
   real work happens.
-- **Worker pool** (`Workers::gWorkers`) — CPU worker threads for parallel
-  rows in `CpuIspPipeline` and `ImageConverter`. Synchronous fork/join:
-  framework thread blocks until workers are done.
+- **Worker pool** (`Workers::gWorkers`) — CPU worker threads for
+  parallel rows in `ImageConverter` (UYVY/YUYV paths). Synchronous
+  fork/join: framework thread blocks until workers are done.
 - **Camera3 callback thread** — the framework's thread on which we
   invoke `notify` and `process_capture_result`. Currently we call these
   from the framework thread itself (tail of `processCaptureRequest`),
