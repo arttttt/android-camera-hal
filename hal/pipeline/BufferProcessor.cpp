@@ -72,9 +72,14 @@ bool BufferProcessor::tryZeroCopy(const camera3_stream_buffer &srcBuf,
     int zcReleaseFd = -1;
     bool zcOk = false;
     BENCHMARK_SECTION("Raw->RGBA") {
+        /* Identity crop — zcEligible still guards on needZoom and
+         * matching resolution. Real crop/scale arrives in a later step
+         * once the shader supports it. */
+        CropRect crop = { 0, 0, (int)streamW, (int)streamH };
         zcOk = mDeps.isp->processToGralloc(ctx.frameBuf, gb->getNativeBuffer(),
                                             streamW, streamH, ctx.pixFmt,
-                                            -1, &zcReleaseFd, ctx.frameSlotIdx);
+                                            -1, &zcReleaseFd, ctx.frameSlotIdx,
+                                            crop);
     }
     if (!zcOk)
         return false;

@@ -823,9 +823,11 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
                                           unsigned width, unsigned height,
                                           uint32_t pixFmt,
                                           int acquireFence, int *releaseFence,
-                                          int srcInputSlot) {
+                                          int srcInputSlot,
+                                          const CropRect &crop) {
     (void)src;
     (void)acquireFence;
+    (void)crop; /* TODO(t1.5-step1): route into shader push-constants */
     *releaseFence = -1;
 
     if (!mReady || !nativeBuffer || !mDeviceState.nativeBufferAvailable())

@@ -37,7 +37,8 @@ public:
                            unsigned width, unsigned height,
                            uint32_t pixFmt,
                            int acquireFence, int *releaseFence,
-                           int srcInputSlot = -1) override;
+                           int srcInputSlot,
+                           const CropRect &crop) override;
 
     int    inputBufferCount() const override { return mInputRing.slotCount(); }
     size_t inputBufferSize()  const override { return mInputRing.slotSize(); }

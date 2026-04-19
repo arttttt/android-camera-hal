@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include "CropRect.h"
+
 namespace android {
 
 /* Common ISP interface — CPU and GPU implementations */
@@ -52,14 +54,20 @@ public:
      *               ring slot `srcInputSlot` (DMABUF capture path); `src` is
      *               ignored. If -1, the backend memcpy's `src` into its own
      *               staging buffer.
+     * crop:         sub-region of the demosaiced scratch image to sample from,
+     *               in source pixel coordinates. Identity is {0, 0, width, height}.
+     *               Backends that do not support GPU crop/scale may ignore a
+     *               non-identity rect and reject the call (return false) so the
+     *               caller can fall back to CPU.
      * Returns false if not supported — caller falls back to process(). */
     virtual bool processToGralloc(const uint8_t *src, void *nativeBuffer,
                                    unsigned width, unsigned height,
                                    uint32_t pixFmt,
                                    int acquireFence, int *releaseFence,
-                                   int srcInputSlot = -1) {
+                                   int srcInputSlot,
+                                   const CropRect &crop) {
         (void)src; (void)nativeBuffer; (void)width; (void)height; (void)pixFmt;
-        (void)acquireFence; (void)srcInputSlot;
+        (void)acquireFence; (void)srcInputSlot; (void)crop;
         *releaseFence = -1;
         return false;
     }
