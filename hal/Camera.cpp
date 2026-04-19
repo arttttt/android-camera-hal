@@ -40,7 +40,7 @@
 
 #include "DbgUtils.h"
 #include "Camera.h"
-#include "CameraStaticMetadata.h"
+#include "metadata/CameraStaticMetadata.h"
 #include "ImageConverter.h"
 #include "IspPipeline.h"
 #include "sensor/IspCalibration.h"

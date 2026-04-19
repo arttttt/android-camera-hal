@@ -67,7 +67,7 @@ LOCAL_C_INCLUDES += \
 LOCAL_SRC_FILES += \
     hal/HalModule.cpp \
     hal/Camera.cpp \
-    hal/CameraStaticMetadata.cpp \
+    hal/metadata/CameraStaticMetadata.cpp \
     hal/3a/AutoFocusController.cpp \
     v4l2/V4l2Device.cpp \
     image/ImageConverter.cpp \
