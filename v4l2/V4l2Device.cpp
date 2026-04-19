@@ -510,7 +510,7 @@ const V4l2Device::VBuffer * V4l2Device::readLock() {
         ++dropped;
     }
     if (dropped)
-        ALOGV("readLock: skipped %d stale frame(s)", dropped);
+        ALOGD("readLock: skipped %d stale frame(s)", dropped);
 
     return &mBuf[id];
 }
