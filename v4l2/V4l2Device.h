@@ -113,10 +113,6 @@ private:
     VBuffer mBuf[V4L2DEVICE_BUF_COUNT];
     struct pollfd mPFd;
     int mFocuserFd;
-
-#if V4L2DEVICE_FPS_LIMIT > 0
-    nsecs_t mLastTimestamp;
-#endif
 };
 
 }; /* namespace android */

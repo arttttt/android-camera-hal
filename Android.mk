@@ -14,14 +14,10 @@ LOCAL_CFLAGS += -fno-short-enums
 LOCAL_CFLAGS += -Wno-unused-parameter -Wno-missing-field-initializers
 LOCAL_CFLAGS += -pthread
 
-LOCAL_CFLAGS += -DV4L2DEVICE_FPS_LIMIT=0
-
 LOCAL_CFLAGS += -DV4L2DEVICE_BUF_COUNT=4
 
 # Configure and open device once on HAL start
 LOCAL_CFLAGS += -DV4L2DEVICE_OPEN_ONCE
-
-LOCAL_CFLAGS += -DV4L2DEVICE_USE_POLL
 
 
 # Compile debug code - comment out to disable

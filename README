@@ -27,33 +27,15 @@ In Android.mk there are some flags which control how the driver works. Some
 of them might not always work.
 
 
-  LOCAL_CFLAGS += -DV4L2DEVICE_FPS_LIMIT=<NNN>
-
-  <NNN> is positive integer. Limits framerate at the driver level. Helps when
-  the kernel's V4L2 driver allows to read the buffers faster than it fills them
-  with a new frames. Comment out to disable the limit.
-
-
   LOCAL_CFLAGS += -DV4L2DEVICE_BUF_COUNT=<NNN>
 
   <NNN> is a positive integer (4 by default) - V4L2 buffers count.
-
-
-  LOCAL_CFLAGS += -DV4L2DEVICE_PIXEL_FORMAT=V4L2_PIX_FMT_UYVY
-  #LOCAL_CFLAGS += -DV4L2DEVICE_PIXEL_FORMAT=V4L2_PIX_FMT_YUYV
-
-  V4L2 source color format.
 
 
   LOCAL_CFLAGS += -DV4L2DEVICE_OPEN_ONCE
 
   Opens and initializes /dev/video0 during boot time. Comment out to open/close
   the device when a camera app is opened/closed.
-
-
-  LOCAL_CFLAGS += -DV4L2DEVICE_USE_POLL
-
-  Use poll() before dequeueing a buffer.
 
 
 

@@ -199,14 +199,11 @@ statistics channel. This is a known limitation — see
 
 Compile-time, defined in `Android.mk`:
 
-- `V4L2DEVICE_BUF_COUNT` — V4L2 mmap buffer count. Currently `4`.
+- `V4L2DEVICE_BUF_COUNT` — V4L2 buffer count. Currently `4`.
   See [latency-and-buffers.md](latency-and-buffers.md) for context on
   why this value matters.
-- `V4L2DEVICE_FPS_LIMIT` — soft fps cap via `usleep` between DQBUFs.
-  Currently `0` (disabled).
 - `V4L2DEVICE_OPEN_ONCE` — open `/dev/video0` once at HAL start vs.
   per `open()` call.
-- `V4L2DEVICE_USE_POLL` — use `poll()` before `DQBUF` (timeout 5 s).
 
 Runtime knobs via setprop (`hal/Camera.cpp` parses `persist.camera.*`):
 

@@ -41,11 +41,7 @@ namespace android {
 
 static inline int openFd(const char *path) {
     assert(path);
-    int flags = O_RDWR;
-#ifdef V4L2DEVICE_USE_POLL
-    flags |= O_NONBLOCK;
-#endif
-    int fd = open(path, flags);
+    int fd = open(path, O_RDWR | O_NONBLOCK);
     ALOGV("open %s = %d", path, fd);
     return fd;
 }
@@ -90,10 +86,6 @@ V4l2Device::V4l2Device(const char *devNode)
     }
     mPFd.fd = -1;
     mPFd.events = POLLIN | POLLRDNORM;
-
-#if V4L2DEVICE_FPS_LIMIT > 0
-    mLastTimestamp = 0;
-#endif
 
 #ifdef V4L2DEVICE_OPEN_ONCE
     connect();
@@ -573,21 +565,11 @@ int V4l2Device::dequeueBuffer() {
     bufInfo.memory = mMemoryType;
     bufInfo.index = 0;
 
-#if V4L2DEVICE_FPS_LIMIT > 0
-    auto timestamp = systemTime();
-    nsecs_t extraTime = 1000000000LL / V4L2DEVICE_FPS_LIMIT - (timestamp - mLastTimestamp);
-    if(extraTime / 1000 > 0)
-        usleep((unsigned)(extraTime / 1000));
-    mLastTimestamp = systemTime();
-#endif
-
     do {
-#ifdef V4L2DEVICE_USE_POLL
         if((errno = 0, poll(&mPFd, 1, 5000)) <= 0) {
             errno = ETIME;
             return -1;
         }
-#endif
     } while((errno = 0, ioctl(mFd, VIDIOC_DQBUF, &bufInfo)) < 0 && (errno == EINVAL || errno == EAGAIN));
     if(errno)
         return -1;
