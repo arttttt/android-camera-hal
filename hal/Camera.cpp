@@ -765,6 +765,7 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
 
     if(request->settings == NULL && mLastRequestSettings.isEmpty()) {
         ALOGE("First request does not have metadata");
+        notifyError(request->frame_number, NULL, CAMERA3_MSG_ERROR_REQUEST);
         return BAD_VALUE;
     }
 
@@ -890,6 +891,7 @@ skip_focus:
     int64_t t1 = systemTime();
 
     if(!frame) {
+        notifyError(request->frame_number, NULL, CAMERA3_MSG_ERROR_REQUEST);
         return NOT_ENOUGH_DATA;
     }
 
@@ -943,6 +945,7 @@ skip_focus:
         }
         if(e != NO_ERROR) {
             do GraphicBufferMapper::get().unlock(*request->output_buffers[i].buffer); while(i--);
+            notifyError(request->frame_number, NULL, CAMERA3_MSG_ERROR_REQUEST);
             return NO_INIT;
         }
 
@@ -997,6 +1000,7 @@ skip_focus:
             if(e != NO_ERROR) {
                 ALOGE("buffer %p  frame %-4u  lock failed", srcBuf.buffer, request->frame_number);
                 do GraphicBufferMapper::get().unlock(*request->output_buffers[i].buffer); while(i--);
+                notifyError(request->frame_number, NULL, CAMERA3_MSG_ERROR_REQUEST);
                 return NO_INIT;
             }
         }
@@ -1280,6 +1284,15 @@ inline void Camera::notifyShutter(uint32_t frameNumber, uint64_t timestamp) {
     msg.type = CAMERA3_MSG_SHUTTER;
     msg.message.shutter.frame_number = frameNumber;
     msg.message.shutter.timestamp = timestamp;
+    mCallbackOps->notify(mCallbackOps, &msg);
+}
+
+void Camera::notifyError(uint32_t frameNumber, camera3_stream_t *stream, int errorCode) {
+    camera3_notify_msg_t msg;
+    msg.type = CAMERA3_MSG_ERROR;
+    msg.message.error.frame_number = frameNumber;
+    msg.message.error.error_stream = stream;
+    msg.message.error.error_code   = errorCode;
     mCallbackOps->notify(mCallbackOps, &msg);
 }
 

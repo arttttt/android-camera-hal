@@ -40,6 +40,7 @@ protected:
     /* HELPERS/SUBPROCEDURES */
 
     void notifyShutter(uint32_t frameNumber, uint64_t timestamp);
+    void notifyError(uint32_t frameNumber, camera3_stream_t *stream, int errorCode);
     void processCaptureResult(uint32_t frameNumber, const camera_metadata_t *result, const Vector<camera3_stream_buffer> &buffers);
 
     camera_metadata_t *mStaticCharacteristics;
