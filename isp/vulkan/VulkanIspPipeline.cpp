@@ -170,20 +170,50 @@ bool VulkanIspPipeline::init() {
         destroy();
         return false;
     }
-
-    VkShaderModuleCreateInfo smi = {};
-    smi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    smi.codeSize = strlen(kDemosaicComputeGlsl);
-    smi.pCode = (const uint32_t *)kDemosaicComputeGlsl;
-
-    if (mDeviceState.pfn()->CreateShaderModule(mDeviceState.device(), &smi, NULL, &mShader) != VK_SUCCESS) {
-        ALOGE("vkCreateShaderModule failed");
+    if (!createShaders() ||
+        !createDescriptorLayouts() ||
+        !createComputePipeline() ||
+        !createGraphicsPipeline() ||
+        !allocateDescriptorSet() ||
+        !createCommandObjects()) {
         destroy();
         return false;
     }
 
-    /* Descriptor set layout — binding 0/2 = storage buffer (compute reads Bayer
-     * + params), binding 1 = storage image (compute writes, fragment reads). */
+    mReady = true;
+    ALOGD("Vulkan ISP initialized");
+    return true;
+}
+
+bool VulkanIspPipeline::compileShader(const char *glsl, VkShaderModule *out) {
+    VkShaderModuleCreateInfo smi = {};
+    smi.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    smi.codeSize = strlen(glsl);
+    smi.pCode    = (const uint32_t *)glsl;
+    return mDeviceState.pfn()->CreateShaderModule(
+               mDeviceState.device(), &smi, NULL, out) == VK_SUCCESS;
+}
+
+bool VulkanIspPipeline::createShaders() {
+    if (!compileShader(kDemosaicComputeGlsl, &mShader)) {
+        ALOGE("compute shader compile failed");
+        return false;
+    }
+    if (!compileShader(kBlitVertexGlsl, &mVertShader)) {
+        ALOGE("vertex shader compile failed");
+        return false;
+    }
+    if (!compileShader(kBlitFragmentGlsl, &mFragShader)) {
+        ALOGE("fragment shader compile failed");
+        return false;
+    }
+    return true;
+}
+
+bool VulkanIspPipeline::createDescriptorLayouts() {
+    /* Descriptor set layout — binding 0/2 = storage buffer (compute reads
+     * Bayer + params), binding 1 = storage image (compute writes, fragment
+     * reads). Layout is shared by both compute and graphics pipelines. */
     VkDescriptorSetLayoutBinding bindings[3] = {};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -197,62 +227,49 @@ bool VulkanIspPipeline::init() {
     bindings[2].binding = 2;
 
     VkDescriptorSetLayoutCreateInfo dslci = {};
-    dslci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    dslci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     dslci.bindingCount = 3;
-    dslci.pBindings = bindings;
-    if (mDeviceState.pfn()->CreateDescriptorSetLayout(mDeviceState.device(), &dslci, NULL, &mDescLayout) != VK_SUCCESS) {
+    dslci.pBindings    = bindings;
+    if (mDeviceState.pfn()->CreateDescriptorSetLayout(
+            mDeviceState.device(), &dslci, NULL, &mDescLayout) != VK_SUCCESS) {
         ALOGE("vkCreateDescriptorSetLayout failed");
-        destroy();
         return false;
     }
 
-    /* Pipeline layout */
     VkPipelineLayoutCreateInfo plci = {};
-    plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plci.sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     plci.setLayoutCount = 1;
-    plci.pSetLayouts = &mDescLayout;
-    if (mDeviceState.pfn()->CreatePipelineLayout(mDeviceState.device(), &plci, NULL, &mPipeLayout) != VK_SUCCESS) {
+    plci.pSetLayouts    = &mDescLayout;
+    if (mDeviceState.pfn()->CreatePipelineLayout(
+            mDeviceState.device(), &plci, NULL, &mPipeLayout) != VK_SUCCESS) {
         ALOGE("vkCreatePipelineLayout failed");
-        destroy();
         return false;
     }
+    return true;
+}
 
-    /* Compute pipeline */
+bool VulkanIspPipeline::createComputePipeline() {
     VkComputePipelineCreateInfo cpci = {};
-    cpci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    cpci.sType        = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    cpci.stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    cpci.stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
     cpci.stage.module = mShader;
-    cpci.stage.pName = "main";
-    cpci.layout = mPipeLayout;
+    cpci.stage.pName  = "main";
+    cpci.layout       = mPipeLayout;
 
-    if (mDeviceState.pfn()->CreateComputePipelines(mDeviceState.device(), VK_NULL_HANDLE, 1, &cpci, NULL, &mPipeline) != VK_SUCCESS) {
+    if (mDeviceState.pfn()->CreateComputePipelines(
+            mDeviceState.device(), VK_NULL_HANDLE, 1, &cpci, NULL, &mPipeline) != VK_SUCCESS) {
         ALOGE("vkCreateComputePipelines failed");
-        destroy();
         return false;
     }
+    return true;
+}
 
-    /* Graphics pipeline — blits scratch image → gralloc colour attachment
-     * through the driver's ROP path, which is the only write path that
-     * knows about nvgralloc's blocklinear layout on Tegra. */
-    VkShaderModuleCreateInfo vsmi = {};
-    vsmi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    vsmi.codeSize = strlen(kBlitVertexGlsl);
-    vsmi.pCode = (const uint32_t *)kBlitVertexGlsl;
-    if (mDeviceState.pfn()->CreateShaderModule(mDeviceState.device(), &vsmi, NULL, &mVertShader) != VK_SUCCESS) {
-        ALOGE("vertex vkCreateShaderModule failed");
-        destroy();
-        return false;
-    }
-    vsmi.codeSize = strlen(kBlitFragmentGlsl);
-    vsmi.pCode = (const uint32_t *)kBlitFragmentGlsl;
-    if (mDeviceState.pfn()->CreateShaderModule(mDeviceState.device(), &vsmi, NULL, &mFragShader) != VK_SUCCESS) {
-        ALOGE("fragment vkCreateShaderModule failed");
-        destroy();
-        return false;
-    }
-
-    /* Render pass — single RGBA8 colour attachment, DONT_CARE→STORE. */
+bool VulkanIspPipeline::createGraphicsPipeline() {
+    /* Render pass — single RGBA8 colour attachment, DONT_CARE → STORE. The
+     * ROP path is the only blocklinear-aware write surface on Tegra, so the
+     * blit step needs the full graphics pipeline instead of a plain
+     * vkCmdCopyImage. */
     VkAttachmentDescription att = {};
     att.format         = VK_FORMAT_R8G8B8A8_UNORM;
     att.samples        = VK_SAMPLE_COUNT_1_BIT;
@@ -278,45 +295,44 @@ bool VulkanIspPipeline::init() {
     rpci.pAttachments    = &att;
     rpci.subpassCount    = 1;
     rpci.pSubpasses      = &subpass;
-    if (mDeviceState.pfn()->CreateRenderPass(mDeviceState.device(), &rpci, NULL, &mRenderPass) != VK_SUCCESS) {
+    if (mDeviceState.pfn()->CreateRenderPass(
+            mDeviceState.device(), &rpci, NULL, &mRenderPass) != VK_SUCCESS) {
         ALOGE("vkCreateRenderPass failed");
-        destroy();
         return false;
     }
     mGrallocCache.setRenderPass(mRenderPass);
 
-    /* Graphics pipeline. */
     VkPipelineShaderStageCreateInfo stages[2] = {};
-    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
     stages[0].module = mVertShader;
-    stages[0].pName = "main";
-    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[0].pName  = "main";
+    stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
     stages[1].module = mFragShader;
-    stages[1].pName = "main";
+    stages[1].pName  = "main";
 
     VkPipelineVertexInputStateCreateInfo vis = {};
     vis.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 
     VkPipelineInputAssemblyStateCreateInfo ias = {};
-    ias.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ias.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
     ias.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
     VkPipelineViewportStateCreateInfo vps = {};
-    vps.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vps.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
     vps.viewportCount = 1;
     vps.scissorCount  = 1;
 
     VkPipelineRasterizationStateCreateInfo rs = {};
-    rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rs.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rs.polygonMode = VK_POLYGON_MODE_FILL;
     rs.cullMode    = VK_CULL_MODE_NONE;
     rs.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rs.lineWidth   = 1.0f;
 
     VkPipelineMultisampleStateCreateInfo ms = {};
-    ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
     VkPipelineColorBlendAttachmentState cba = {};
@@ -324,13 +340,13 @@ bool VulkanIspPipeline::init() {
                          VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 
     VkPipelineColorBlendStateCreateInfo cbs = {};
-    cbs.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    cbs.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     cbs.attachmentCount = 1;
     cbs.pAttachments    = &cba;
 
     VkDynamicState dyns[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
     VkPipelineDynamicStateCreateInfo ds = {};
-    ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    ds.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
     ds.dynamicStateCount = 2;
     ds.pDynamicStates    = dyns;
 
@@ -349,71 +365,72 @@ bool VulkanIspPipeline::init() {
     gpci.renderPass          = mRenderPass;
     gpci.subpass             = 0;
 
-    if (mDeviceState.pfn()->CreateGraphicsPipelines(mDeviceState.device(), VK_NULL_HANDLE, 1, &gpci, NULL,
-                                        &mBlitPipeline) != VK_SUCCESS) {
+    if (mDeviceState.pfn()->CreateGraphicsPipelines(
+            mDeviceState.device(), VK_NULL_HANDLE, 1, &gpci, NULL, &mBlitPipeline) != VK_SUCCESS) {
         ALOGE("vkCreateGraphicsPipelines failed");
-        destroy();
         return false;
     }
+    return true;
+}
 
-    /* Descriptor pool — 2 storage buffers (input, params) + 1 storage image (output) */
+bool VulkanIspPipeline::allocateDescriptorSet() {
+    /* 2 storage buffers (input, params) + 1 storage image (output). */
     VkDescriptorPoolSize poolSizes[2] = {};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSizes[0].type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     poolSizes[0].descriptorCount = 2;
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    poolSizes[1].type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     poolSizes[1].descriptorCount = 1;
 
     VkDescriptorPoolCreateInfo dpci = {};
-    dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dpci.maxSets = 1;
+    dpci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    dpci.maxSets       = 1;
     dpci.poolSizeCount = 2;
-    dpci.pPoolSizes = poolSizes;
-    if (mDeviceState.pfn()->CreateDescriptorPool(mDeviceState.device(), &dpci, NULL, &mDescPool) != VK_SUCCESS) {
+    dpci.pPoolSizes    = poolSizes;
+    if (mDeviceState.pfn()->CreateDescriptorPool(
+            mDeviceState.device(), &dpci, NULL, &mDescPool) != VK_SUCCESS) {
         ALOGE("vkCreateDescriptorPool failed");
-        destroy();
         return false;
     }
 
     VkDescriptorSetAllocateInfo dsai = {};
-    dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    dsai.descriptorPool = mDescPool;
+    dsai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dsai.descriptorPool     = mDescPool;
     dsai.descriptorSetCount = 1;
-    dsai.pSetLayouts = &mDescLayout;
-    if (mDeviceState.pfn()->AllocateDescriptorSets(mDeviceState.device(), &dsai, &mDescSet) != VK_SUCCESS) {
+    dsai.pSetLayouts        = &mDescLayout;
+    if (mDeviceState.pfn()->AllocateDescriptorSets(
+            mDeviceState.device(), &dsai, &mDescSet) != VK_SUCCESS) {
         ALOGE("vkAllocateDescriptorSets failed");
-        destroy();
         return false;
     }
+    return true;
+}
 
-    /* Command pool + buffer */
+bool VulkanIspPipeline::createCommandObjects() {
     VkCommandPoolCreateInfo cpi = {};
-    cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    cpi.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     cpi.queueFamilyIndex = mDeviceState.queueFamily();
-    cpi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    cpi.flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     mDeviceState.pfn()->CreateCommandPool(mDeviceState.device(), &cpi, NULL, &mCmdPool);
 
     VkCommandBufferAllocateInfo cbai = {};
-    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    cbai.commandPool = mCmdPool;
-    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbai.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cbai.commandPool        = mCmdPool;
+    cbai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbai.commandBufferCount = 1;
     mDeviceState.pfn()->AllocateCommandBuffers(mDeviceState.device(), &cbai, &mCmdBuf);
 
-    /* Params buffer — persistent map */
+    /* Persistently-mapped parameter buffer — one IspParams per frame. */
     if (!mDeviceState.createBuffer(&mParamBuf, &mParamMem, sizeof(IspParams),
-                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
+                                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
         ALOGE("Failed to create params buffer");
-        destroy();
         return false;
     }
-    mDeviceState.pfn()->MapMemory(mDeviceState.device(), mParamMem, 0, sizeof(IspParams), 0, &mParamMap);
+    mDeviceState.pfn()->MapMemory(mDeviceState.device(), mParamMem, 0,
+                                   sizeof(IspParams), 0, &mParamMap);
 
     VkFenceCreateInfo fci = {};
     fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     mDeviceState.pfn()->CreateFence(mDeviceState.device(), &fci, NULL, &mFence);
-
-    mReady = true;
-    ALOGD("Vulkan ISP initialized");
     return true;
 }
 

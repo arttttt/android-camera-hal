@@ -45,6 +45,16 @@ public:
     void   waitForPreviousFrame() override;
 
 private:
+    /* init() sub-steps. Each returns false on Vulkan failure; init() calls
+     * destroy() on any false return so a partial state is never left behind. */
+    bool compileShader(const char *glsl, VkShaderModule *out);
+    bool createShaders();
+    bool createDescriptorLayouts();
+    bool createComputePipeline();
+    bool createGraphicsPipeline();
+    bool allocateDescriptorSet();
+    bool createCommandObjects();
+
     bool ensureBuffers(unsigned width, unsigned height, bool is16bit);
 
     /* Record mCmdBuf with pipeline+descriptor bind and a single compute
