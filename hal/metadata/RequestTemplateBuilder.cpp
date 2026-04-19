@@ -13,9 +13,11 @@
 
 namespace android {
 
-camera_metadata_t *RequestTemplateBuilder::build(int type, V4l2Device *dev, int facing) {
-    CameraMetadata cm;
+namespace {
 
+/* Request envelope — identifier, lens focus, crop region. The crop
+ * region defaults to the full active array (no zoom). */
+void writeFrameState(CameraMetadata &cm, V4l2Device *dev) {
     static const int32_t requestId = 0;
     cm.update(ANDROID_REQUEST_ID, &requestId, 1);
 
@@ -28,7 +30,11 @@ camera_metadata_t *RequestTemplateBuilder::build(int type, V4l2Device *dev, int 
         (int32_t)sensorSize.width,  (int32_t)sensorSize.height
     };
     cm.update(ANDROID_SCALER_CROP_REGION, scalerCropRegion, NELEM(scalerCropRegion));
+}
 
+/* JPEG encoder defaults — thumbnail geometry, GPS placeholders,
+ * orientation. All overwritten at capture time by the app. */
+void writeJpegDefaults(CameraMetadata &cm) {
     static const int32_t jpegThumbnailSize[] = {
         0, 0
     };
@@ -50,9 +56,11 @@ camera_metadata_t *RequestTemplateBuilder::build(int type, V4l2Device *dev, int 
 
     static const int32_t jpegOrientation = 0;
     cm.update(ANDROID_JPEG_ORIENTATION, &jpegOrientation, 1);
+}
 
-    /** android.stats */
-
+/* Statistics modes — all OFF by default; no histogram/sharpness-map
+ * generation happens unless an app opts in. */
+void writeStatisticsDefaults(CameraMetadata &cm) {
     static const uint8_t statisticsFaceDetectMode = ANDROID_STATISTICS_FACE_DETECT_MODE_OFF;
     cm.update(ANDROID_STATISTICS_FACE_DETECT_MODE, &statisticsFaceDetectMode, 1);
 
@@ -61,7 +69,12 @@ camera_metadata_t *RequestTemplateBuilder::build(int type, V4l2Device *dev, int 
 
     static const uint8_t statisticsSharpnessMapMode = ANDROID_STATISTICS_SHARPNESS_MAP_MODE_OFF;
     cm.update(ANDROID_STATISTICS_SHARPNESS_MAP_MODE, &statisticsSharpnessMapMode, 1);
+}
 
+/* 3A + capture-intent defaults. capture_intent varies by template
+ * type; AF mode depends on camera facing (the front lens has no VCM
+ * so only MODE_OFF is valid). */
+void writeControlDefaults(CameraMetadata &cm, int type, V4l2Device *dev, int facing) {
     uint8_t controlCaptureIntent = 0;
     switch (type) {
         case CAMERA3_TEMPLATE_PREVIEW:          controlCaptureIntent = ANDROID_CONTROL_CAPTURE_INTENT_PREVIEW;             break;
@@ -88,14 +101,15 @@ camera_metadata_t *RequestTemplateBuilder::build(int type, V4l2Device *dev, int 
     static const uint8_t controlAeLock = ANDROID_CONTROL_AE_LOCK_OFF;
     cm.update(ANDROID_CONTROL_AE_LOCK, &controlAeLock, 1);
 
-    static const int32_t controlAeRegions[] = {
+    auto sensorSize = dev->sensorResolution();
+    const int32_t controlAeRegions[] = {
         0,                          0,
         (int32_t)sensorSize.width,  (int32_t)sensorSize.height,
         1000
     };
-    cm.update(ANDROID_CONTROL_AE_REGIONS, controlAeRegions, NELEM(controlAeRegions));
+    cm.update(ANDROID_CONTROL_AE_REGIONS,  controlAeRegions, NELEM(controlAeRegions));
     cm.update(ANDROID_CONTROL_AWB_REGIONS, controlAeRegions, NELEM(controlAeRegions));
-    cm.update(ANDROID_CONTROL_AF_REGIONS, controlAeRegions, NELEM(controlAeRegions));
+    cm.update(ANDROID_CONTROL_AF_REGIONS,  controlAeRegions, NELEM(controlAeRegions));
 
     static const int32_t controlAeExposureCompensation = 0;
     cm.update(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION, &controlAeExposureCompensation, 1);
@@ -133,7 +147,16 @@ camera_metadata_t *RequestTemplateBuilder::build(int type, V4l2Device *dev, int 
 
     static const int32_t controlAfTriggerId = 0;
     cm.update(ANDROID_CONTROL_AF_TRIGGER_ID, &controlAfTriggerId, 1);
+}
 
+} /* namespace */
+
+camera_metadata_t *RequestTemplateBuilder::build(int type, V4l2Device *dev, int facing) {
+    CameraMetadata cm;
+    writeFrameState         (cm, dev);
+    writeJpegDefaults       (cm);
+    writeStatisticsDefaults (cm);
+    writeControlDefaults    (cm, type, dev, facing);
     return cm.release();
 }
 
