@@ -18,9 +18,6 @@ public:
     uint8_t * UYVYToRGBA(const uint8_t *src, uint8_t *dst, unsigned width, unsigned height);
     uint8_t * UYVYToJPEG(const uint8_t *src, uint8_t *dst, unsigned width, unsigned height, size_t dstLen, uint8_t quality);
 
-    /* Encode RGBA buffer to JPEG. Returns pointer past end of JPEG data, or dst on failure. */
-    static uint8_t * RGBAToJPEG(const uint8_t *rgba, uint8_t *dst, unsigned width, unsigned height, size_t dstLen, uint8_t quality);
-
 protected:
     uint8_t * splitRunWait(const uint8_t *src, uint8_t *dst, unsigned width, unsigned height, Workers::Task::Function fn);
 

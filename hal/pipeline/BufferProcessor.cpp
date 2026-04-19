@@ -181,7 +181,7 @@ void BufferProcessor::processBlobOutput(uint8_t *buf, const FrameContext &ctx,
         jsrc.pixFmt       = ctx.pixFmt;
         jsrc.width        = ctx.resW;
         jsrc.height       = ctx.resH;
-        mDeps.jpeg->encode(buf, ctx.jpegBufferSize, jsrc, cm, ctx.rgbaScratch);
+        mDeps.jpeg->encode(buf, ctx.jpegBufferSize, jsrc, cm);
     }
 }
 

@@ -32,17 +32,14 @@ public:
     /* Encode `src` into the BLOB buffer `dst` (reserved `bufferSize`
      * bytes, which must include the camera3_jpeg_blob footer).
      *
-     * cm:          reads ANDROID_JPEG_QUALITY and (Bayer path only)
-     *              ANDROID_JPEG_ORIENTATION.
-     * rgbaScratch: caller-owned, >= width*height*4 bytes; only touched
-     *              on the Bayer path.
+     * cm: reads ANDROID_JPEG_QUALITY and (Bayer path only)
+     *     ANDROID_JPEG_ORIENTATION.
      *
      * Returns true on success, with the jpeg_blob footer written at the
      * end of `dst`. */
     bool encode(uint8_t *dst, size_t bufferSize,
                 const JpegSource &src,
-                const CameraMetadata &cm,
-                uint8_t *rgbaScratch) const;
+                const CameraMetadata &cm) const;
 
 private:
     IspPipeline    *mIsp;

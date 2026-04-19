@@ -130,8 +130,7 @@ JpegEncoder::JpegEncoder(IspPipeline *isp, ImageConverter *converter)
 
 bool JpegEncoder::encode(uint8_t *dst, size_t bufferSize,
                          const JpegSource &src,
-                         const CameraMetadata &cm,
-                         uint8_t *rgbaScratch) const {
+                         const CameraMetadata &cm) const {
     const size_t maxImageSize = bufferSize - sizeof(camera3_jpeg_blob);
 
     uint8_t jpegQuality = kDefaultJpegQuality;
@@ -153,7 +152,6 @@ bool JpegEncoder::encode(uint8_t *dst, size_t bufferSize,
          * buffer, no intermediate RGBA copy. libjpeg reads from that
          * buffer and writes JPEG into `dst`. Orientation is encoded
          * in the EXIF APP1 marker — no pixel rotation in HAL. */
-        (void)rgbaScratch; /* unused on the Bayer path; removed in t1.5.3.3 */
         const uint8_t *rgba = mIsp->processToCpu(src.frameBuf,
                                                   src.width, src.height,
                                                   src.pixFmt, src.srcInputSlot);
