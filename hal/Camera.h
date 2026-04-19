@@ -16,6 +16,7 @@
 #include "3a/ExposureControl.h"
 #include "jpeg/JpegEncoder.h"
 #include "pipeline/BufferProcessor.h"
+#include "pipeline/StreamConfig.h"
 #include "DbgUtils.h"
 
 namespace android {

@@ -74,6 +74,7 @@ LOCAL_SRC_FILES += \
     hal/3a/ExposureControl.cpp \
     hal/jpeg/JpegEncoder.cpp \
     hal/pipeline/BufferProcessor.cpp \
+    hal/pipeline/StreamConfig.cpp \
     v4l2/V4l2Device.cpp \
     image/ImageConverter.cpp \
     image/Yuv422UyvyToJpegEncoder.cpp \

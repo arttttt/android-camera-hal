@@ -190,71 +190,12 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
     }
     ALOGV("+-------------------------------------------------------------------------------");
 
-    camera3_stream_t *inStream = NULL;
-    unsigned width = 0;
+    unsigned width  = 0;
     unsigned height = 0;
-    for(size_t i = 0; i < streamList->num_streams; ++i) {
-        camera3_stream_t *newStream = streamList->streams[i];
-
-        if(newStream->stream_type == CAMERA3_STREAM_INPUT || newStream->stream_type == CAMERA3_STREAM_BIDIRECTIONAL) {
-            if(inStream) {
-                ALOGE("Only one input/bidirectional stream allowed (previous is %p, this %p)", inStream, newStream);
-                return BAD_VALUE;
-            }
-            inStream = newStream;
-        }
-
-        if(newStream->format == HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED) {
-            newStream->format = HAL_PIXEL_FORMAT_RGBA_8888;
-        }
-
-        if(newStream->usage & GRALLOC_USAGE_HW_CAMERA_ZSL) {
-            ALOGE("ZSL not supported. Add camera.disable_zsl_mode=1 to build.prop");
-            return BAD_VALUE;
-        }
-
-        /* Save original usage before overwrite — framework sets HW_VIDEO_ENCODER for video streams */
-        uint32_t origUsage = newStream->usage;
-        ALOGD("Stream[%zu]: %ux%u fmt=0x%x usage=0x%x", i,
-              newStream->width, newStream->height, newStream->format, origUsage);
-
-        switch(newStream->stream_type) {
-            case CAMERA3_STREAM_OUTPUT:         newStream->usage = GRALLOC_USAGE_SW_WRITE_OFTEN;                                break;
-            case CAMERA3_STREAM_INPUT:          newStream->usage = GRALLOC_USAGE_SW_READ_OFTEN;                                 break;
-            case CAMERA3_STREAM_BIDIRECTIONAL:  newStream->usage = GRALLOC_USAGE_SW_WRITE_OFTEN | GRALLOC_USAGE_SW_READ_OFTEN;  break;
-        }
-        newStream->max_buffers = 4;
-
-        /*
-         * V4L2 resolution selection:
-         * - If a video stream exists (HW_VIDEO_ENCODER), use its resolution
-         *   so the sensor switches to the matching FPS mode (e.g. 720p@90fps).
-         * - Otherwise use the largest non-BLOB stream.
-         */
-        if(newStream->format != HAL_PIXEL_FORMAT_BLOB) {
-            bool isVideo = (origUsage & GRALLOC_USAGE_HW_VIDEO_ENCODER) != 0;
-            if (isVideo) {
-                /* Video stream takes priority */
-                width = newStream->width;
-                height = newStream->height;
-                ALOGD("Video stream detected: %ux%u", width, height);
-            } else if (!width || !height ||
-                       (newStream->width * newStream->height > width * height)) {
-                width = newStream->width;
-                height = newStream->height;
-            }
-        }
-    }
-
-    /* Fallback: if only BLOB streams, use the largest */
-    if (!width || !height) {
-        for(size_t i = 0; i < streamList->num_streams; ++i) {
-            camera3_stream_t *s = streamList->streams[i];
-            if(s->width * s->height > width * height) {
-                width = s->width;
-                height = s->height;
-            }
-        }
+    {
+        status_t e = StreamConfig::normalize(streamList, &width, &height);
+        if (e != NO_ERROR)
+            return e;
     }
 
     char propVal[PROPERTY_VALUE_MAX] = {0};
