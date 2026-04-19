@@ -2,6 +2,7 @@
 #define ISP_PIPELINE_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 namespace android {
 
@@ -68,6 +69,20 @@ public:
 
     /* Lock AWB — freeze gains during AF sweep */
     void setAwbLock(bool lock) { mAwbLocked = lock; }
+
+    /* Number of exportable Bayer input buffers the backend has pre-allocated.
+     * 0 means the backend does not support DMABUF input — callers must feed
+     * Bayer data through process()/processToGralloc's src pointer instead. */
+    virtual int inputBufferCount() const { return 0; }
+
+    /* Size (bytes) of each input buffer. Valid once the backend has been
+     * configured for the current resolution (after prewarm()). */
+    virtual size_t inputBufferSize() const { return 0; }
+
+    /* Export input buffer `idx` as an OPAQUE_FD dma-buf fd. Returns -1 on
+     * failure. Caller owns the fd and must close it when done; the backend
+     * keeps its own reference to the underlying VkDeviceMemory. */
+    virtual int exportInputBufferFd(int idx) { (void)idx; return -1; }
 
 protected:
     unsigned mWbR = 256, mWbG = 256, mWbB = 256;

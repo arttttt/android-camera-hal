@@ -39,9 +39,19 @@ public:
                            uint32_t pixFmt,
                            int acquireFence, int *releaseFence) override;
 
+    int    inputBufferCount() const override { return kInputBufferCount; }
+    size_t inputBufferSize()  const override { return mInSize; }
+    int    exportInputBufferFd(int idx) override;
+
+    /* Ring depth for V4L2 ↔ Vulkan Bayer input hand-off. Four matches the
+     * default V4L2 queue depth and gives the capture thread one buffer of
+     * slack between DQBUF and GPU-consume. */
+    static const int kInputBufferCount = 4;
+
 private:
     bool createBuffer(VkBuffer *buf, VkDeviceMemory *mem,
-                      VkDeviceSize size, VkBufferUsageFlags usage);
+                      VkDeviceSize size, VkBufferUsageFlags usage,
+                      bool exportable = false);
     void destroyBuffer(VkBuffer buf, VkDeviceMemory mem);
     uint32_t findMemoryType(uint32_t filter, VkMemoryPropertyFlags props);
 
@@ -83,10 +93,15 @@ private:
     VkCommandPool mCmdPool;
     VkCommandBuffer mCmdBuf;
 
-    VkBuffer mInBuf, mOutBuf, mParamBuf;
-    VkDeviceMemory mInMem, mOutMem, mParamMem;
+    /* Ring of exportable Bayer input buffers (dma-buf fds handed to V4L2). */
+    VkBuffer       mInBuf[kInputBufferCount];
+    VkDeviceMemory mInMem[kInputBufferCount];
+    void          *mInMap[kInputBufferCount];
+
+    VkBuffer mOutBuf, mParamBuf;
+    VkDeviceMemory mOutMem, mParamMem;
     size_t mInSize, mOutSize;
-    void *mInMap, *mOutMap, *mParamMap;
+    void *mOutMap, *mParamMap;
 
     /* Shader output image for CPU-readback paths; copied to mOutBuf after dispatch. */
     VkImage        mScratchImg;

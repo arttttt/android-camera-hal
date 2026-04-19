@@ -60,14 +60,21 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mBlitPipeline(VK_NULL_HANDLE), mRenderPass(VK_NULL_HANDLE)
     , mDescPool(VK_NULL_HANDLE), mDescSet(VK_NULL_HANDLE)
     , mCmdPool(VK_NULL_HANDLE), mCmdBuf(VK_NULL_HANDLE)
-    , mInBuf(VK_NULL_HANDLE), mOutBuf(VK_NULL_HANDLE), mParamBuf(VK_NULL_HANDLE)
-    , mInMem(VK_NULL_HANDLE), mOutMem(VK_NULL_HANDLE), mParamMem(VK_NULL_HANDLE)
+    , mOutBuf(VK_NULL_HANDLE), mParamBuf(VK_NULL_HANDLE)
+    , mOutMem(VK_NULL_HANDLE), mParamMem(VK_NULL_HANDLE)
     , mInSize(0), mOutSize(0)
-    , mInMap(NULL), mOutMap(NULL), mParamMap(NULL)
+    , mOutMap(NULL), mParamMap(NULL)
     , mScratchImg(VK_NULL_HANDLE), mScratchMem(VK_NULL_HANDLE), mScratchView(VK_NULL_HANDLE)
     , mFence(VK_NULL_HANDLE), mPrevPending(false)
     , mParamsTemplateReady(false)
-    , mNativeBufferAvail(false) {}
+    , mNativeBufferAvail(false)
+{
+    for (int i = 0; i < kInputBufferCount; i++) {
+        mInBuf[i] = VK_NULL_HANDLE;
+        mInMem[i] = VK_NULL_HANDLE;
+        mInMap[i] = NULL;
+    }
+}
 
 VulkanIspPipeline::~VulkanIspPipeline() { destroy(); }
 
@@ -150,9 +157,15 @@ uint32_t VulkanIspPipeline::findMemoryType(uint32_t filter, VkMemoryPropertyFlag
 }
 
 bool VulkanIspPipeline::createBuffer(VkBuffer *buf, VkDeviceMemory *mem,
-                                      VkDeviceSize size, VkBufferUsageFlags usage) {
+                                      VkDeviceSize size, VkBufferUsageFlags usage,
+                                      bool exportable) {
+    VkExternalMemoryBufferCreateInfoKHR emb = {};
+    emb.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO_KHR;
+    emb.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR;
+
     VkBufferCreateInfo ci = {};
     ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    ci.pNext = exportable ? &emb : NULL;
     ci.size = size;
     ci.usage = usage;
     ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -163,8 +176,13 @@ bool VulkanIspPipeline::createBuffer(VkBuffer *buf, VkDeviceMemory *mem,
     VkMemoryRequirements req;
     mPfn->GetBufferMemoryRequirements(mDevice, *buf, &req);
 
+    VkExportMemoryAllocateInfoKHR emi = {};
+    emi.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO_KHR;
+    emi.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR;
+
     VkMemoryAllocateInfo ai = {};
     ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.pNext = exportable ? &emi : NULL;
     ai.allocationSize = req.size;
     ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
@@ -834,10 +852,14 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
     /* Any cached gralloc images were sized for old resolution — drop them. */
     clearGrallocImages();
 
-    if (mInMap)  { mPfn->UnmapMemory(mDevice, mInMem);  mInMap = NULL; }
+    for (int i = 0; i < kInputBufferCount; i++) {
+        if (mInMap[i]) { mPfn->UnmapMemory(mDevice, mInMem[i]); mInMap[i] = NULL; }
+        destroyBuffer(mInBuf[i], mInMem[i]);
+        mInBuf[i] = VK_NULL_HANDLE;
+        mInMem[i] = VK_NULL_HANDLE;
+    }
     if (mOutMap) { mPfn->UnmapMemory(mDevice, mOutMem); mOutMap = NULL; }
 
-    destroyBuffer(mInBuf, mInMem);   mInBuf = VK_NULL_HANDLE;  mInMem = VK_NULL_HANDLE;
     destroyBuffer(mOutBuf, mOutMem); mOutBuf = VK_NULL_HANDLE; mOutMem = VK_NULL_HANDLE;
 
     if (mScratchView) { mPfn->DestroyImageView(mDevice, mScratchView, NULL); mScratchView = VK_NULL_HANDLE; }
@@ -846,15 +868,24 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
 
     clearGrallocImages();
 
-    if (!createBuffer(&mInBuf,  &mInMem,  inSize,  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
-        !createBuffer(&mOutBuf, &mOutMem, outSize,
+    for (int i = 0; i < kInputBufferCount; i++) {
+        if (!createBuffer(&mInBuf[i], &mInMem[i], inSize,
+                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                          /*exportable=*/true)) {
+            ALOGE("Failed to allocate exportable input buffer %d (%ux%u)",
+                  i, width, height);
+            return false;
+        }
+        mPfn->MapMemory(mDevice, mInMem[i], 0, inSize, 0, &mInMap[i]);
+    }
+
+    if (!createBuffer(&mOutBuf, &mOutMem, outSize,
                       VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT)) {
-        ALOGE("Failed to allocate Vulkan buffers %ux%u", width, height);
+        ALOGE("Failed to allocate Vulkan output buffer %ux%u", width, height);
         return false;
     }
 
-    mPfn->MapMemory(mDevice, mInMem,  0, inSize,  0, &mInMap);
     mPfn->MapMemory(mDevice, mOutMem, 0, outSize, 0, &mOutMap);
 
     mInSize = inSize; mOutSize = outSize;
@@ -944,9 +975,11 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
     mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
     mPfn->ResetFences(mDevice, 1, &mFence);
 
-    /* Descriptor set — bind input buffer, scratch image, params buffer. */
+    /* Descriptor set — bind input buffer 0 by default; per-frame paths that
+     * rotate through the ring of N input buffers can rebind binding=0 before
+     * recording the command buffer. */
     VkDescriptorBufferInfo inInfo = {};
-    inInfo.buffer = mInBuf;    inInfo.range = mInSize;
+    inInfo.buffer = mInBuf[0]; inInfo.range = mInSize;
     VkDescriptorImageInfo imgInfo = {};
     imgInfo.imageView = mScratchView;
     imgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -1005,14 +1038,14 @@ bool VulkanIspPipeline::processSync(const uint8_t *src, uint8_t *dst,
         mPrevPending = false;
     }
 
-    memcpy(mInMap, src, mInSize);
+    memcpy(mInMap[0], src, mInSize);
     IspParams params;
     fillParams(&params, width, height, is16, pixFmt);
     memcpy(mParamMap, &params, sizeof(IspParams));
 
     VkMappedMemoryRange flushRanges[2] = {};
     flushRanges[0].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    flushRanges[0].memory = mInMem;
+    flushRanges[0].memory = mInMem[0];
     flushRanges[0].size = VK_WHOLE_SIZE;
     flushRanges[1].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
     flushRanges[1].memory = mParamMem;
@@ -1092,14 +1125,14 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
         mPrevPending = false;
     }
 
-    memcpy(mInMap, src, mInSize);
+    memcpy(mInMap[0], src, mInSize);
     IspParams params;
     fillParams(&params, width, height, is16, pixFmt);
     memcpy(mParamMap, &params, sizeof(IspParams));
 
     VkMappedMemoryRange flushRanges[2] = {};
     flushRanges[0].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    flushRanges[0].memory = mInMem;
+    flushRanges[0].memory = mInMem[0];
     flushRanges[0].size = VK_WHOLE_SIZE;
     flushRanges[1].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
     flushRanges[1].memory = mParamMem;
@@ -1207,7 +1240,9 @@ void VulkanIspPipeline::destroy() {
     if (mDevice != VK_NULL_HANDLE && mPfn && mPfn->DeviceWaitIdle) {
         mPfn->DeviceWaitIdle(mDevice);
 
-        if (mInMap)    { mPfn->UnmapMemory(mDevice, mInMem);    mInMap = NULL; }
+        for (int i = 0; i < kInputBufferCount; i++) {
+            if (mInMap[i]) { mPfn->UnmapMemory(mDevice, mInMem[i]); mInMap[i] = NULL; }
+        }
         if (mOutMap)   { mPfn->UnmapMemory(mDevice, mOutMem);   mOutMap = NULL; }
         if (mParamMap) { mPfn->UnmapMemory(mDevice, mParamMem); mParamMap = NULL; }
 
@@ -1217,10 +1252,13 @@ void VulkanIspPipeline::destroy() {
         if (mScratchImg)  { mPfn->DestroyImage(mDevice, mScratchImg, NULL);      mScratchImg = VK_NULL_HANDLE; }
         if (mScratchMem)  { mPfn->FreeMemory(mDevice, mScratchMem, NULL);        mScratchMem = VK_NULL_HANDLE; }
 
-        destroyBuffer(mInBuf,    mInMem);
+        for (int i = 0; i < kInputBufferCount; i++) {
+            destroyBuffer(mInBuf[i], mInMem[i]);
+            mInBuf[i] = VK_NULL_HANDLE;
+            mInMem[i] = VK_NULL_HANDLE;
+        }
         destroyBuffer(mOutBuf,   mOutMem);
         destroyBuffer(mParamBuf, mParamMem);
-        mInBuf = VK_NULL_HANDLE;  mInMem = VK_NULL_HANDLE;
         mOutBuf = VK_NULL_HANDLE; mOutMem = VK_NULL_HANDLE;
         mParamBuf = VK_NULL_HANDLE; mParamMem = VK_NULL_HANDLE;
 
@@ -1252,6 +1290,24 @@ void VulkanIspPipeline::destroy() {
     mBufWidth = 0; mBufHeight = 0;
     mPrevPending = false;
     mNativeBufferAvail = false;
+}
+
+int VulkanIspPipeline::exportInputBufferFd(int idx) {
+    if (idx < 0 || idx >= kInputBufferCount) return -1;
+    if (!mPfn || !mPfn->GetMemoryFdKHR) return -1;
+    if (mInMem[idx] == VK_NULL_HANDLE) return -1;
+
+    VkMemoryGetFdInfoKHR gfi = {};
+    gfi.sType      = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
+    gfi.memory     = mInMem[idx];
+    gfi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR;
+    int fd = -1;
+    VkResult r = mPfn->GetMemoryFdKHR(mDevice, &gfi, &fd);
+    if (r != VK_SUCCESS) {
+        ALOGE("exportInputBufferFd[%d]: vkGetMemoryFdKHR → %d", idx, (int)r);
+        return -1;
+    }
+    return fd;  /* caller owns, must close */
 }
 
 void VulkanIspPipeline::clearGrallocImages() {
