@@ -76,6 +76,9 @@ private:
     bool iocSFmt(unsigned width, unsigned height);
     bool iocReqBufs(unsigned *count);
     bool iocReleaseBufs();
+    /* Diagnostic: probe whether the driver accepts V4L2_MEMORY_DMABUF and
+     * V4L2_MEMORY_USERPTR modes. Logs to logcat, leaves queue empty. */
+    void probeBufferModes();
     bool iocQueryBuf(unsigned id, unsigned *offset, unsigned *len);
 
     bool setResolutionAndAllocateBuffers(unsigned width, unsigned height);

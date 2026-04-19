@@ -615,6 +615,32 @@ bool V4l2Device::iocReqBufs(unsigned *count) {
     return !errno;
 }
 
+void V4l2Device::probeBufferModes() {
+    assert(mFd >= 0);
+    struct { const char *name; uint32_t mem; } modes[] = {
+        { "DMABUF",  V4L2_MEMORY_DMABUF  },
+        { "USERPTR", V4L2_MEMORY_USERPTR },
+    };
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+        struct v4l2_requestbuffers rb;
+        memset(&rb, 0, sizeof(rb));
+        rb.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        rb.memory = modes[i].mem;
+        rb.count  = 1;
+        errno = 0;
+        int ret = ioctl(mFd, VIDIOC_REQBUFS, &rb);
+        ALOGD("probe: REQBUFS %-7s count=1 → ret=%d allocated=%u errno=%d (%s)",
+              modes[i].name, ret, rb.count, errno, strerror(errno));
+        if (ret == 0) {
+            memset(&rb, 0, sizeof(rb));
+            rb.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            rb.memory = modes[i].mem;
+            rb.count  = 0;
+            ioctl(mFd, VIDIOC_REQBUFS, &rb);
+        }
+    }
+}
+
 bool V4l2Device::iocReleaseBufs() {
     assert(mFd >= 0);
 
@@ -668,6 +694,8 @@ bool V4l2Device::setResolutionAndAllocateBuffers(unsigned width, unsigned height
         ALOGE("Could not set pixel format to %dx%d: %s (%d)", width, height, strerror(errno), errno);
         return false;
     }
+
+    probeBufferModes();
 
     unsigned bufCount = V4L2DEVICE_BUF_COUNT;
     if(!iocReqBufs(&bufCount)) {

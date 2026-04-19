@@ -741,9 +741,83 @@ bool VulkanIspPipeline::init() {
 
     initGamma();
 
+    probeExportFd();
+
     mReady = true;
     ALOGD("Vulkan ISP initialized");
     return true;
+}
+
+void VulkanIspPipeline::probeExportFd() {
+    if (!mPfn->GetMemoryFdKHR) {
+        ALOGD("probe: vkGetMemoryFdKHR PFN not resolved");
+        return;
+    }
+
+    VkExternalMemoryBufferCreateInfoKHR emb = {};
+    emb.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO_KHR;
+    emb.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR;
+
+    VkBufferCreateInfo bci = {};
+    bci.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bci.pNext       = &emb;
+    bci.size        = 65536;
+    bci.usage       = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VkBuffer buf = VK_NULL_HANDLE;
+    VkResult r = mPfn->CreateBuffer(mDevice, &bci, NULL, &buf);
+    if (r != VK_SUCCESS) {
+        ALOGD("probe: vkCreateBuffer(external-memory) → %d", (int)r);
+        return;
+    }
+
+    VkMemoryRequirements req;
+    mPfn->GetBufferMemoryRequirements(mDevice, buf, &req);
+
+    VkExportMemoryAllocateInfoKHR emi = {};
+    emi.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO_KHR;
+    emi.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR;
+
+    VkMemoryAllocateInfo ai = {};
+    ai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.pNext           = &emi;
+    ai.allocationSize  = req.size;
+    ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    if (ai.memoryTypeIndex == UINT32_MAX)
+        ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    r = mPfn->AllocateMemory(mDevice, &ai, NULL, &mem);
+    if (r != VK_SUCCESS) {
+        ALOGD("probe: vkAllocateMemory(export OPAQUE_FD, typeIdx=%u) → %d",
+              ai.memoryTypeIndex, (int)r);
+        mPfn->DestroyBuffer(mDevice, buf, NULL);
+        return;
+    }
+
+    mPfn->BindBufferMemory(mDevice, buf, mem, 0);
+
+    VkMemoryGetFdInfoKHR gfi = {};
+    gfi.sType      = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
+    gfi.memory     = mem;
+    gfi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR;
+    int fd = -1;
+    r = mPfn->GetMemoryFdKHR(mDevice, &gfi, &fd);
+    ALOGD("probe: vkGetMemoryFdKHR OPAQUE_FD → result=%d fd=%d", (int)r, fd);
+
+    if (r == VK_SUCCESS && fd >= 0) {
+        char link[64], target[256];
+        snprintf(link, sizeof(link), "/proc/self/fd/%d", fd);
+        ssize_t n = readlink(link, target, sizeof(target) - 1);
+        if (n > 0) { target[n] = '\0'; ALOGD("probe: export fd → %s", target); }
+        close(fd);
+    }
+
+    mPfn->FreeMemory(mDevice, mem, NULL);
+    mPfn->DestroyBuffer(mDevice, buf, NULL);
 }
 
 /* --- per-frame buffer management --- */

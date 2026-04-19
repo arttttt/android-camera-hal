@@ -29,8 +29,11 @@ typedef enum VkExternalMemoryHandleTypeFlagBitsKHR {
     VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT           = 0x00000200,
 } VkExternalMemoryHandleTypeFlagBitsKHR;
 
-#define VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR  ((VkStructureType)1000074000)
-#define VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR   ((VkStructureType)1000074001)
+#define VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR            ((VkStructureType)1000074000)
+#define VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR             ((VkStructureType)1000074001)
+#define VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR               ((VkStructureType)1000074002)
+#define VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO_KHR      ((VkStructureType)1000072002)
+#define VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO_KHR ((VkStructureType)1000072000)
 
 typedef struct VkImportMemoryFdInfoKHR {
     VkStructureType                       sType;
@@ -45,9 +48,30 @@ typedef struct VkMemoryFdPropertiesKHR {
     uint32_t        memoryTypeBits;
 } VkMemoryFdPropertiesKHR;
 
+typedef struct VkMemoryGetFdInfoKHR {
+    VkStructureType                       sType;
+    const void                           *pNext;
+    VkDeviceMemory                        memory;
+    VkExternalMemoryHandleTypeFlagBitsKHR handleType;
+} VkMemoryGetFdInfoKHR;
+
+typedef struct VkExportMemoryAllocateInfoKHR {
+    VkStructureType sType;
+    const void     *pNext;
+    uint32_t        handleTypes;
+} VkExportMemoryAllocateInfoKHR;
+
+typedef struct VkExternalMemoryBufferCreateInfoKHR {
+    VkStructureType sType;
+    const void     *pNext;
+    uint32_t        handleTypes;
+} VkExternalMemoryBufferCreateInfoKHR;
+
 typedef VkResult (VKAPI_PTR *PFN_vkGetMemoryFdPropertiesKHR)(
     VkDevice device, VkExternalMemoryHandleTypeFlagBitsKHR handleType,
     int fd, VkMemoryFdPropertiesKHR *pMemoryFdProperties);
+typedef VkResult (VKAPI_PTR *PFN_vkGetMemoryFdKHR)(
+    VkDevice device, const VkMemoryGetFdInfoKHR *pGetFdInfo, int *pFd);
 #endif
 
 namespace android {
@@ -146,8 +170,9 @@ struct VulkanPfn {
     PFN_vkAcquireImageANDROID                       AcquireImageANDROID;
     PFN_vkQueueSignalReleaseImageANDROID            QueueSignalReleaseImageANDROID;
 
-    /* VK_KHR_external_memory_fd — for importing gralloc dma-buf fd as VkDeviceMemory */
+    /* VK_KHR_external_memory_fd — import / export VkDeviceMemory as dma-buf fd */
     PFN_vkGetMemoryFdPropertiesKHR                  GetMemoryFdPropertiesKHR;
+    PFN_vkGetMemoryFdKHR                            GetMemoryFdKHR;
 };
 
 }; /* namespace android */
