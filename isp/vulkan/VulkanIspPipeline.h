@@ -118,7 +118,7 @@ private:
         VkImageView view;
         bool layoutReady;  /* UNDEFINED → GENERAL transition has been submitted */
     };
-    std::unordered_map<buffer_handle_t, GrallocEntry> mGrallocImages;
+    std::unordered_map<const native_handle_t *, GrallocEntry> mGrallocImages;
 
     bool getOrCreateGrallocImage(ANativeWindowBuffer *anwb,
                                   unsigned width, unsigned height,
