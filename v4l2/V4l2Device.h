@@ -10,7 +10,7 @@
 #include <utils/Timers.h>
 
 #ifndef V4L2DEVICE_BUF_COUNT
-# define V4L2DEVICE_BUF_COUNT 4
+# error "V4L2DEVICE_BUF_COUNT must be defined via -DV4L2DEVICE_BUF_COUNT=<N> in Android.mk"
 #endif
 
 namespace android {

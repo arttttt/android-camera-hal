@@ -44,10 +44,8 @@ public:
     int    exportInputBufferFd(int idx) override;
 
     /* Ring depth for V4L2 ↔ Vulkan Bayer input hand-off. Same as the V4L2
-     * queue depth so each V4L2 slot owns exactly one Vulkan buffer. */
-#ifndef V4L2DEVICE_BUF_COUNT
-#  define V4L2DEVICE_BUF_COUNT 4
-#endif
+     * queue depth so each V4L2 slot owns exactly one Vulkan buffer; the
+     * value comes from -DV4L2DEVICE_BUF_COUNT in Android.mk. */
     static const int kInputBufferCount = V4L2DEVICE_BUF_COUNT;
 
 private:
