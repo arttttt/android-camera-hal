@@ -78,9 +78,14 @@ V4l2Device::V4l2Device(const char *devNode)
     , mStreaming(false)
     , mDevNode(strdup(devNode))
     , mPixelFormat(0)
+    , mMemoryType(V4L2_MEMORY_MMAP)
     , mFocuserFd(-1)
 {
     memset(&mFormat, 0, sizeof(mFormat));
+    for (int i = 0; i < V4L2DEVICE_BUF_COUNT; i++) {
+        mDmaBufFds[i] = -1;
+        mBuf[i].index = i;
+    }
     mPFd.fd = -1;
     mPFd.events = POLLIN | POLLRDNORM;
 
@@ -440,19 +445,14 @@ const V4l2Device::VBuffer * V4l2Device::readLock() {
  * Unlocks previously locked buffer.
  */
 bool V4l2Device::unlock(const VBuffer *buf) {
-    if(!buf)
+    if(!buf || buf->index < 0 || buf->index >= V4L2DEVICE_BUF_COUNT)
         return false;
 
-    for(unsigned i = 0; i < NELEM(mBuf); ++i) {
-        if(mBuf[i].buf == buf->buf) {
-            if(!queueBuffer(i)) {
-                ALOGE("Could not queue buffer %d: %s (%d)", i, strerror(errno), errno);
-                return false;
-            }
-            return true;
-        }
+    if(!queueBuffer(buf->index)) {
+        ALOGE("Could not queue buffer %d: %s (%d)", buf->index, strerror(errno), errno);
+        return false;
     }
-    return false;
+    return true;
 }
 
 /**
@@ -464,13 +464,26 @@ bool V4l2Device::queueBuffer(unsigned id) {
     struct v4l2_buffer bufInfo;
     memset(&bufInfo, 0, sizeof(bufInfo));
     bufInfo.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    bufInfo.memory = V4L2_MEMORY_MMAP;
+    bufInfo.memory = mMemoryType;
     bufInfo.index = id;
+    if (mMemoryType == V4L2_MEMORY_DMABUF)
+        bufInfo.m.fd = mDmaBufFds[id];
 
     if(ioctl(mFd, VIDIOC_QBUF, &bufInfo) < 0)
         return false;
 
     return true;
+}
+
+void V4l2Device::setDmaBufFds(const int *fds, int count) {
+    if (fds == NULL || count <= 0) {
+        mMemoryType = V4L2_MEMORY_MMAP;
+        for (int i = 0; i < V4L2DEVICE_BUF_COUNT; i++) mDmaBufFds[i] = -1;
+        return;
+    }
+    assert(count == V4L2DEVICE_BUF_COUNT);
+    mMemoryType = V4L2_MEMORY_DMABUF;
+    for (int i = 0; i < count; i++) mDmaBufFds[i] = fds[i];
 }
 
 /**
@@ -483,7 +496,7 @@ int V4l2Device::dequeueBuffer() {
 
     memset(&bufInfo, 0, sizeof(bufInfo));
     bufInfo.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    bufInfo.memory = V4L2_MEMORY_MMAP;
+    bufInfo.memory = mMemoryType;
     bufInfo.index = 0;
 
 #if V4L2DEVICE_FPS_LIMIT > 0
@@ -602,7 +615,7 @@ bool V4l2Device::iocReqBufs(unsigned *count) {
     memset(&bufRequest, 0, sizeof(bufRequest));
 
     bufRequest.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    bufRequest.memory = V4L2_MEMORY_MMAP;
+    bufRequest.memory = mMemoryType;
     bufRequest.count = *count;
 
     errno = 0;
@@ -647,7 +660,7 @@ bool V4l2Device::iocReleaseBufs() {
     struct v4l2_requestbuffers bufRequest;
     memset(&bufRequest, 0, sizeof(bufRequest));
     bufRequest.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    bufRequest.memory = V4L2_MEMORY_MMAP;
+    bufRequest.memory = mMemoryType;
     bufRequest.count = 0;
 
     errno = 0;
@@ -703,19 +716,27 @@ bool V4l2Device::setResolutionAndAllocateBuffers(unsigned width, unsigned height
         return false;
     }
 
-    unsigned bufLen[V4L2DEVICE_BUF_COUNT] = {0};
-
     for(unsigned i = 0; i < bufCount; ++i) {
-        unsigned offset;
-        if(!iocQueryBuf(i, &offset, &bufLen[i])) {
-            ALOGE("Could not query buffer %d: %s (%d)", i, strerror(errno), errno);
-            return false;
-        }
-
-        if(!mBuf[i].map(mFd, offset, bufLen[i], mPixelFormat)) {
-            ALOGE("Could not allocate buffer %d (len = %d): %s (%d)", i, bufLen[i], strerror(errno), errno);
-            while(i--) mBuf[i].unmap();
-            return false;
+        /* DMABUF mode: the caller (Vulkan ISP) owns the backing memory; we
+         * only bind the fd to queue slot i. No mmap, no per-buffer length. */
+        if (mMemoryType == V4L2_MEMORY_DMABUF) {
+            mBuf[i].buf    = NULL;
+            mBuf[i].len    = 0;
+            mBuf[i].pixFmt = mPixelFormat;
+            mBuf[i].index  = i;
+        } else {
+            unsigned offset;
+            unsigned len;
+            if(!iocQueryBuf(i, &offset, &len)) {
+                ALOGE("Could not query buffer %d: %s (%d)", i, strerror(errno), errno);
+                return false;
+            }
+            if(!mBuf[i].map(mFd, offset, len, mPixelFormat)) {
+                ALOGE("Could not allocate buffer %d (len = %d): %s (%d)", i, len, strerror(errno), errno);
+                while(i--) mBuf[i].unmap();
+                return false;
+            }
+            mBuf[i].index = i;
         }
 
         if(!queueBuffer(i)) {

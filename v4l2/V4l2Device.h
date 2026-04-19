@@ -25,12 +25,13 @@ public:
 
     class VBuffer {
     public:
-        uint8_t *buf;
+        uint8_t *buf;     /* CPU-visible pointer (MMAP mode); NULL in DMABUF mode */
         uint32_t len;
         uint32_t pixFmt;
+        int      index;   /* V4L2 queue index, valid in both modes */
 
     private:
-        VBuffer(): buf(NULL), len(0) {}
+        VBuffer(): buf(NULL), len(0), pixFmt(0), index(-1) {}
         ~VBuffer();
 
         bool map(int fd, unsigned offset, unsigned len, uint32_t pixelFormat);
@@ -58,6 +59,13 @@ public:
 
     const VBuffer * readLock();
     bool unlock(const VBuffer *buf);
+
+    /* Switch capture memory model from the default V4L2_MEMORY_MMAP to
+     * V4L2_MEMORY_DMABUF, using the caller-owned dma-buf fds as capture
+     * targets. Each fd i is bound to V4L2 queue index i. Must be called
+     * BEFORE setResolution()/connect()'s buffer allocation; takes effect
+     * the next time buffers are (re-)allocated. Pass count=0 to revert. */
+    void setDmaBufFds(const int *fds, int count);
 
     bool setControl(uint32_t id, int32_t value);
     bool queryControl(uint32_t id, int32_t *min, int32_t *max, int32_t *def);
@@ -91,6 +99,8 @@ private:
     bool mStreaming;
     const char *mDevNode;
     uint32_t mPixelFormat;
+    uint32_t mMemoryType;                   /* V4L2_MEMORY_MMAP or _DMABUF */
+    int mDmaBufFds[V4L2DEVICE_BUF_COUNT];   /* for DMABUF mode; -1 = unused */
     Vector<V4l2Device::Resolution> mAvailableResolutions;
     struct v4l2_format mFormat;
     VBuffer mBuf[V4L2DEVICE_BUF_COUNT];
