@@ -43,10 +43,12 @@ public:
     size_t inputBufferSize()  const override { return mInSize; }
     int    exportInputBufferFd(int idx) override;
 
-    /* Ring depth for V4L2 ↔ Vulkan Bayer input hand-off. Four matches the
-     * default V4L2 queue depth and gives the capture thread one buffer of
-     * slack between DQBUF and GPU-consume. */
-    static const int kInputBufferCount = 4;
+    /* Ring depth for V4L2 ↔ Vulkan Bayer input hand-off. Same as the V4L2
+     * queue depth so each V4L2 slot owns exactly one Vulkan buffer. */
+#ifndef V4L2DEVICE_BUF_COUNT
+#  define V4L2DEVICE_BUF_COUNT 4
+#endif
+    static const int kInputBufferCount = V4L2DEVICE_BUF_COUNT;
 
 private:
     bool createBuffer(VkBuffer *buf, VkDeviceMemory *mem,
