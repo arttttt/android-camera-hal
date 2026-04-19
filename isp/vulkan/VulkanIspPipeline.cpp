@@ -1048,6 +1048,18 @@ bool VulkanIspPipeline::getOrCreateGrallocImage(ANativeWindowBuffer *anwb,
         return true;
     }
 
+    /* Diagnostic: dump anwb metadata + native_handle payload. nvgralloc encodes
+     * layout (Pitch vs Blocklinear, kind, BlockHeightLog2, pitch) inside data[]. */
+    const native_handle_t *nh = anwb->handle;
+    ALOGD("gralloc diag: anwb w=%d h=%d stride=%d fmt=0x%x usage=0x%x",
+          anwb->width, anwb->height, anwb->stride, anwb->format, anwb->usage);
+    ALOGD("gralloc diag: handle=%p numFds=%d numInts=%d",
+          nh, nh->numFds, nh->numInts);
+    for (int i = 0; i < nh->numInts && i < 24; i++) {
+        ALOGD("gralloc diag: data[%d + numFds(%d)] = 0x%08x (%d)",
+              i, nh->numFds, nh->data[nh->numFds + i], nh->data[nh->numFds + i]);
+    }
+
     VkNativeBufferANDROID nbInfo = {};
     nbInfo.sType  = VK_STRUCTURE_TYPE_NATIVE_BUFFER_ANDROID;
     nbInfo.handle = anwb->handle;
