@@ -951,6 +951,12 @@ skip_focus:
                                         GRALLOC_USAGE_SW_READ_OFTEN, rect, (void **)&buf);
                                     rgbaBuffer = buf;
                                 } else {
+                                    /* buf points to the initial SW_WRITE_OFTEN
+                                     * lock that we unlocked before the zero-copy
+                                     * trial — it's dangling. Clear it so the
+                                     * Zoom/Copy block below doesn't memcpy from
+                                     * a NULL rgbaBuffer into it. */
+                                    buf = NULL;
                                     needsFinalUnlock[i] = false;
                                 }
                             } else {
