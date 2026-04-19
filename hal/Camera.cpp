@@ -376,6 +376,15 @@ camera_metadata_t *Camera::staticCharacteristics() {
     const uint8_t infoSupportedHardwareLevel = ANDROID_INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED;
     cm.update(ANDROID_INFO_SUPPORTED_HARDWARE_LEVEL, &infoSupportedHardwareLevel, 1);
 
+    /* Single-buffered synchronous pipeline today — processCaptureRequest
+     * holds mMutex end-to-end and emits exactly one result. Bump when
+     * the request-queue refactor (Tier 3) lands. */
+    static const uint8_t requestPipelineMaxDepth = 1;
+    cm.update(ANDROID_REQUEST_PIPELINE_MAX_DEPTH, &requestPipelineMaxDepth, 1);
+
+    static const int32_t requestPartialResultCount = 1;
+    cm.update(ANDROID_REQUEST_PARTIAL_RESULT_COUNT, &requestPartialResultCount, 1);
+
     /***********************************\
     |*  END OF CAMERA CHARACTERISTICS  *|
     \***********************************/
