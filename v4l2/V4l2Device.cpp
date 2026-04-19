@@ -631,6 +631,10 @@ bool V4l2Device::iocSFmt(unsigned width, unsigned height) {
     errno = 0;
     if(ioctl(mFd, VIDIOC_S_FMT, &format) == 0) {
         mFormat = format;
+        ALOGD("S_FMT: %ux%u pixfmt=0x%08x bytesperline=%u sizeimage=%u",
+              format.fmt.pix.width, format.fmt.pix.height,
+              format.fmt.pix.pixelformat,
+              format.fmt.pix.bytesperline, format.fmt.pix.sizeimage);
     } else {
         ALOGV("%s(w=%u, h=%u): %s (%d)", __FUNCTION__, width, height, strerror(errno), errno);
     }
