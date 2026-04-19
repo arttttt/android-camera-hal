@@ -1,12 +1,16 @@
 # Architecture
 
+Targets the Xiaomi Mi Pad 1 (Tegra K1, codename `mocha`) running
+LineageOS 14.1 / Android 7.1.2. Bayer-only Vulkan ISP is the one and
+only data path; the HAL has no CPU fallback.
+
 ## Component overview
 
 ```
                       Android camera framework
                                │
                      ┌─────────▼─────────┐
-                     │    CameraModule   │  (CameraModule.cpp)
+                     │    CameraModule   │  (hal/HalModule.cpp)
                      │   (HAL module)    │
                      └─────────┬─────────┘
                                │ opens per-camera
@@ -16,19 +20,17 @@
                      └──┬───────────┬────┘
                         │           │
               ┌─────────▼───┐   ┌───▼────────────┐
-              │  V4l2Device │   │   IspPipeline  │
-              │(/dev/video0)│   │  (interface)   │
-              └──────┬──────┘   └───┬────────────┘
-                     │              │
-                     │        ┌─────┴──────┐
-                     │        │            │
-                     │   ┌────▼──────┐ ┌───▼────────────┐
-                     │   │ VulkanIsp │ │     HwIsp      │
-                     │   │(compute + │ │(libnvisp_v3)   │
-                     │   │ fragment) │ │                │
-                     │   └───────────┘ └────────────────┘
-                     ▼
-              /dev/v4l-subdev* (focuser/VCM)
+              │  V4l2Device │   │ VulkanIsp      │
+              │(/dev/video0)│   │ Pipeline       │
+              └──────┬──────┘   │ (compute +     │
+                     │          │  fragment)     │
+                     │          └───┬────────────┘
+                     ▼              │
+              /dev/v4l-subdev*      │
+              (focuser / VCM)       │
+                                    ▼
+                             gralloc (preview)
+                             libjpeg (BLOB)
 ```
 
 `V4l2Device` hands `VulkanIspPipeline`-exported dma-buf fds to
@@ -40,9 +42,8 @@ The main objects:
 
 - **`Camera`** (`hal/Camera.cpp`, `hal/Camera.h`) — one instance per physical
   camera. Implements the Camera3 device ops (`process_capture_request`,
-  `configure_streams`, `construct_default_request_settings`, …). After
-  the Tier 1.1 refactor it is a thin dispatcher; feature logic lives in
-  sub-packages under `hal/`:
+  `configure_streams`, `construct_default_request_settings`, …). Feature
+  logic lives in sub-packages under `hal/`:
   - `hal/3a/` — per-frame AE/AF controllers (`ExposureControl`,
     `AutoFocusController`).
   - `hal/metadata/` — stateless builders for static characteristics,
@@ -52,7 +53,7 @@ The main objects:
   - `hal/jpeg/` — `JpegEncoder` (BLOB path).
   - `hal/pipeline/` — `StreamConfig` (stream-list normalisation +
     V4L2 resolution pick) and `BufferProcessor` (per-output-buffer
-    zero-copy / CPU-fallback logic).
+    zero-copy / BLOB dispatch).
 
 - **`V4l2Device`** (`v4l2/V4l2Device.cpp/.h`) — thin C++ wrapper over
   `/dev/video0`. Speaks both `V4L2_MEMORY_MMAP` and `V4L2_MEMORY_DMABUF`;
@@ -64,18 +65,12 @@ The main objects:
   struct used across V4L2 / streams / metadata lives in its own
   header (`v4l2/Resolution.h`).
 
-- **`IspPipeline`** (`isp/IspPipeline.h`) — abstract base for demosaic
-  / colour processing. See [isp-pipeline.md](isp-pipeline.md) for the
-  two live backends.
-
-- **`ImageConverter`** (`image/ImageConverter.cpp`) — libyuv-backed
-  UYVY/YUY2 → RGBA / JPEG paths, used when the sensor emits packed YUV
-  (no ISP needed). Dies in Tier 1.5 along with the rest of the CPU
-  fallback.
-
-- **`Workers`** (`util/Workers.cpp/h`) — a generic thread pool. Currently used
-  only by `ImageConverter` for parallelising row-wise work. **Not**
-  used for request pipelining.
+- **`IspPipeline`** (`isp/IspPipeline.h`) — abstract base with one
+  concrete backend (`VulkanIspPipeline`). The interface is deliberately
+  narrow: `processToGralloc` (zero-copy RGBA blit) + `processToCpu`
+  (synchronous demosaic into a CPU-mapped VkBuffer for the JPEG path) +
+  `prewarm` + the DMABUF input-ring helpers. See
+  [isp-pipeline.md](isp-pipeline.md) for the Vulkan path detail.
 
 - **Debug helpers** (`util/`) — `AutoLogCall.h`, `FpsCounter.h`,
   `Benchmark.h` hold the three per-call/per-frame instrumentation
@@ -102,10 +97,10 @@ The flow is **strictly synchronous**, single-threaded, single-buffer:
 8. for each output buffer:
      mBufferProcessor->processOne(...)  ← per-buffer dispatch:
        - Wait acquire fence
-       - Zero-copy: processToGralloc(src_slot=frame->index, …) — GPU
-         submits async, returns a release_fence fd for the buffer
-       - CPU fallback (RGBA): demosaic → zoom-crop into gralloc
-       - CPU fallback (BLOB): JpegEncoder::encode
+       - RGBA_8888 → processToGralloc: GPU demosaic + crop/scale + blit
+         to gralloc, submits async, returns a release_fence fd.
+       - BLOB     → SW_WRITE_OFTEN lock + JpegEncoder::encode
+                    (synchronous processToCpu → libjpeg).
 9. mAf->onFrameData(rgba, …)            ← contrast metric for the sweep
 10. mDev->unlock(frame)                 ← in DMABUF mode: stash slot
                                           for deferred QBUF at step 5
@@ -117,6 +112,11 @@ The flow is **strictly synchronous**, single-threaded, single-buffer:
 The entire sequence runs under `mMutex` (held from step 1 through step 10).
 Framework may have queued N capture requests ahead, but they are dispatched
 one at a time.
+
+There is **no CPU RGBA fallback**: a `processToGralloc` failure is a
+hardware / driver error and propagates as `NO_INIT`. Packed-YUV sensors
+(UYVY / YUYV) are also not supported — the target hardware is Bayer
+only.
 
 ## Stream configuration
 
@@ -131,9 +131,8 @@ one at a time.
    - Picks the V4L2 capture resolution: an `HW_VIDEO_ENCODER` stream
      wins (so the sensor locks to the matching FPS mode), else the
      largest non-BLOB stream, else the largest BLOB.
-2. Creates the soft-ISP backend, prewarms it (allocates the Vulkan
-   input ring at target size) and exports each slot as an OPAQUE_FD
-   dma-buf.
+2. Creates the Vulkan ISP, prewarms it (allocates the Vulkan input
+   ring at target size) and exports each slot as an OPAQUE_FD dma-buf.
 3. Calls `V4l2Device::setDmaBufFds(fds, N)` to switch V4L2 into
    `V4L2_MEMORY_DMABUF` mode, then `setResolution()` →
    `VIDIOC_S_FMT` + `REQBUFS(DMABUF)` + `VIDIOC_QBUF(.m.fd=fds[i])`.
@@ -150,10 +149,12 @@ to V4L2 via fds).
 ## Threading
 
 - **Framework thread** — calls `processCaptureRequest`. This is where all
-  real work happens.
-- **Worker pool** (`Workers::gWorkers`) — CPU worker threads for
-  parallel rows in `ImageConverter` (UYVY/YUY2 paths). Synchronous
-  fork/join: framework thread blocks until workers are done.
+  host work happens.
+- **GPU queue** — the Vulkan queue runs compute demosaic + fragment
+  blit asynchronously with respect to the framework thread. Completion
+  is communicated via a sync_fence fd returned as the gralloc
+  buffer's `release_fence`; the framework composites once the fence
+  signals.
 - **Camera3 callback thread** — the framework's thread on which we
   invoke `notify` and `process_capture_result`. Currently we call these
   from the framework thread itself (tail of `processCaptureRequest`),
@@ -207,7 +208,10 @@ Compile-time, defined in `Android.mk`:
   per `open()` call.
 - `V4L2DEVICE_USE_POLL` — use `poll()` before `DQBUF` (timeout 5 s).
 
-Runtime knobs via setprop (`hal/Camera.cpp` parses `ro.hal.camera.*`):
+Runtime knobs via setprop (`hal/Camera.cpp` parses `persist.camera.*`):
 
-- `soft_isp` — `0`/`1` toggle between hardware ISP (Tegra `libnvisp_v3`)
-  and software pipeline.
+- `persist.camera.soft_isp` — `0` / `1`. `1` (default) enables the
+  Vulkan ISP and the 3A controllers. `0` disables 3A and leaves
+  exposure/gain under whatever the sensor kernel driver defaults to;
+  kept as a fallback while porting but no longer exercised on the
+  production path.

@@ -31,28 +31,20 @@ could be rejected in `StreamConfig::normalize` with BAD_VALUE so the
 framework picks a different configuration, but that's a worse UX
 than "appears configurable, then fails on first frame".
 
-## JPEG orientation not applied
+## Open Camera photos come out sideways (app-side, not HAL)
 
-**Symptom:** Photos from both back and front cameras come out on their
-side — 1920×1080 pixels, no EXIF Orientation tag, no pixel rotation.
-Reproducible in OpenCamera on Shield Tablet.
+**Symptom:** Photos taken with Open Camera (Mark Harman) come out
+landscape when the tablet is held portrait, because `EXIF Orientation
+= 1`. Libre Camera on the same device rotates correctly.
 
-**Location:** `hal/Camera.cpp` — `HAL_PIXEL_FORMAT_BLOB` branch in
-`processCaptureRequest`, the `jpegOri` read + `libyuv::ARGBRotate`
-path.
+**Investigation (2026-04-20):** the HAL writes an EXIF Orientation
+APP1 marker matching `ANDROID_JPEG_ORIENTATION` from the request.
+Logs show Open Camera sending `req=0` regardless of how the tablet is
+held; diagnostic on the Mi Pad 1 confirmed the device's rotation
+sensors are broken and `mUserRotation` is locked to 0. Open Camera
+relies on those sensors to compute orientation; Libre Camera uses a
+different strategy and works.
 
-**Expected behaviour:** pixels rotated by `ANDROID_JPEG_ORIENTATION`
-(HAL's current contract) *or* EXIF Orientation tag written by the JPEG
-encoder (stdlib contract). Either satisfies viewers.
-
-**Likely cause:** `cm.exists(ANDROID_JPEG_ORIENTATION)` returns false,
-or value is 0. Default request template in
-`constructDefaultRequestSettings` hardcodes `jpegOrientation = 0`;
-OpenCamera may not override. Unconfirmed — needs a `jpegOri` log line.
-
-**Confirmed pre-existing:** photo taken before the echo-metadata
-changes (`IMG_20260419_035946.jpg`, 03:59) shows the same symptom.
-
-**Fix plan:** folds into Tier 1.5 item 4 (zero-copy JPEG). The new
-shader-rotation path naturally respects `JPEG_ORIENTATION`. If Tier 1.5
-slips, short-term fix is to log `jpegOri` and investigate why it's 0.
+**Status:** **not a HAL bug**. No fix planned here. Users on this
+device can either unbreak the sensors or use Libre Camera. If
+anything, the workaround would be in the app, not the HAL.

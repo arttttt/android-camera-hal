@@ -136,8 +136,7 @@ Move the DQBUF/QBUF loop off the framework thread entirely.
   extra QBUF round-trips on the hot path.
 
 Cost: one thread, one mutex + condition variable, and careful shutdown
-/ restart on `configure_streams`. Fits naturally with
-`util/Workers.cpp` style.
+/ restart on `configure_streams`.
 
 This is how libcamera and cros-camera both do it. See
 [open-source-references.md](open-source-references.md).
