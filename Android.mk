@@ -70,6 +70,7 @@ LOCAL_SRC_FILES += \
     hal/metadata/CameraStaticMetadata.cpp \
     hal/3a/AutoFocusController.cpp \
     hal/3a/ExposureControl.cpp \
+    hal/jpeg/JpegEncoder.cpp \
     v4l2/V4l2Device.cpp \
     image/ImageConverter.cpp \
     image/Yuv422UyvyToJpegEncoder.cpp \
