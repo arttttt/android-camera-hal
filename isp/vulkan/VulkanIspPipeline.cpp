@@ -956,50 +956,65 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
 
     int64_t t1 = nowMs();
 
-    /* Rebind descriptor binding=1 to the gralloc image view. */
-    VkDescriptorImageInfo imgInfo = {};
-    imgInfo.imageView = entry->view;
-    imgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-    VkWriteDescriptorSet write = {};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = mDescSet; write.dstBinding = 1;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    write.pImageInfo = &imgInfo;
-    mPfn->UpdateDescriptorSets(mDevice, 1, &write, 0, NULL);
-
-    /* Record: barrier (UNDEFINED|GENERAL → GENERAL) + compute dispatch. */
+    /* Record: dispatch (writes to mScratchImg via binding=1 set in ensureBuffers)
+     * → barrier → vkCmdCopyImage(scratch → gralloc). Driver's tiler translates
+     * pitchlinear scratch to whatever layout the gralloc handle dictates. */
     VkCommandBufferBeginInfo bi = {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     mPfn->ResetCommandBuffer(mCmdBuf, 0);
     mPfn->BeginCommandBuffer(mCmdBuf, &bi);
 
-    VkImageMemoryBarrier imb = {};
-    imb.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    imb.oldLayout = entry->layoutReady ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED;
-    imb.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    imb.srcAccessMask = entry->layoutReady ? VK_ACCESS_SHADER_WRITE_BIT : 0;
-    imb.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    imb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    imb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    imb.image = entry->image;
-    imb.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    imb.subresourceRange.levelCount = 1;
-    imb.subresourceRange.layerCount = 1;
-    mPfn->CmdPipelineBarrier(mCmdBuf,
-        entry->layoutReady ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
-                           : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        0, 0, NULL, 0, NULL, 1, &imb);
-
     mPfn->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
     mPfn->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 mPipeLayout, 0, 1, &mDescSet, 0, NULL);
     mPfn->CmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
-    mPfn->EndCommandBuffer(mCmdBuf);
 
+    VkImageMemoryBarrier barriers[2] = {};
+    /* scratch: SHADER_WRITE → TRANSFER_READ, layout unchanged (GENERAL). */
+    barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barriers[0].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barriers[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barriers[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].image = mScratchImg;
+    barriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barriers[0].subresourceRange.levelCount = 1;
+    barriers[0].subresourceRange.layerCount = 1;
+    /* gralloc: first use UNDEFINED → TRANSFER_DST_OPTIMAL, later unchanged. */
+    barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barriers[1].oldLayout = entry->layoutReady ?
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+    barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barriers[1].srcAccessMask = entry->layoutReady ? VK_ACCESS_TRANSFER_WRITE_BIT : 0;
+    barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[1].image = entry->image;
+    barriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barriers[1].subresourceRange.levelCount = 1;
+    barriers[1].subresourceRange.layerCount = 1;
+    mPfn->CmdPipelineBarrier(mCmdBuf,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0, 0, NULL, 0, NULL, 2, barriers);
+
+    VkImageCopy region = {};
+    region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.srcSubresource.layerCount = 1;
+    region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.dstSubresource.layerCount = 1;
+    region.extent.width  = width;
+    region.extent.height = height;
+    region.extent.depth  = 1;
+    mPfn->CmdCopyImage(mCmdBuf,
+        mScratchImg, VK_IMAGE_LAYOUT_GENERAL,
+        entry->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1, &region);
+
+    mPfn->EndCommandBuffer(mCmdBuf);
     entry->layoutReady = true;
 
     VkSubmitInfo si = {};
@@ -1014,13 +1029,9 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
 
     int64_t t2 = nowMs();
 
-    /* Restore descriptor binding=1 to scratch view so process/processSync still work. */
-    imgInfo.imageView = mScratchView;
-    mPfn->UpdateDescriptorSets(mDevice, 1, &write, 0, NULL);
-
     updateAwb(src, width, height, is16, pixFmt);
 
-    ALOGD("VK gralloc: upload=%lld dispatch=%lldms", t1 - t0, t2 - t1);
+    ALOGD("VK gralloc: upload=%lld dispatch+copy=%lldms", t1 - t0, t2 - t1);
     return true;
 }
 
@@ -1095,74 +1106,6 @@ bool VulkanIspPipeline::getOrCreateGrallocImage(ANativeWindowBuffer *anwb,
         return true;
     }
 
-    /* Diagnostic: dump native_handle fd dev-nodes. Useful to see if the nvmap
-     * fd is importable as OPAQUE_FD / DMA_BUF via VK_KHR_external_memory_fd. */
-    const native_handle_t *nh = anwb->handle;
-    ALOGD("gralloc diag: anwb w=%d h=%d stride=%d fmt=0x%x usage=0x%x",
-          anwb->width, anwb->height, anwb->stride, anwb->format, anwb->usage);
-    ALOGD("gralloc diag: handle=%p numFds=%d numInts=%d",
-          nh, nh->numFds, nh->numInts);
-    for (int i = 0; i < nh->numFds; i++) {
-        int fd = nh->data[i];
-        char procPath[64], target[256];
-        snprintf(procPath, sizeof(procPath), "/proc/self/fd/%d", fd);
-        ssize_t nr = readlink(procPath, target, sizeof(target) - 1);
-        if (nr > 0) target[nr] = '\0';
-        else        strcpy(target, "<readlink failed>");
-        ALOGD("gralloc diag: fd[%d]=%d → %s", i, fd, target);
-    }
-
-    /* Phase B: one-shot import test of fd[1] (gralloc dma-buf) as OPAQUE_FD.
-     * We want a VkDeviceMemory over the same bytes so we can create a VkBuffer
-     * SSBO and do manual blocklinear addressing in the compute shader. */
-    static bool sImportTried = false;
-    if (!sImportTried && mPfn->GetMemoryFdPropertiesKHR && nh->numFds >= 2) {
-        sImportTried = true;
-        int origFd = nh->data[1];
-
-        /* dup() so we can test multiple strategies without losing the fd.
-         * AllocateMemory takes ownership of the fd on SUCCESS only. */
-        int dupFd = ::dup(origFd);
-        VkMemoryFdPropertiesKHR mfp = {};
-        mfp.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR;
-        VkResult r = mPfn->GetMemoryFdPropertiesKHR(mDevice,
-            VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR, dupFd, &mfp);
-        ALOGD("import test: GetMemoryFdPropertiesKHR OPAQUE_FD fd=%d → result=%d typeBits=0x%x",
-              dupFd, (int)r, mfp.memoryTypeBits);
-
-        if (r == VK_SUCCESS && mfp.memoryTypeBits != 0) {
-            /* Try each permitted memory type. Use dedicated allocation hint. */
-            for (uint32_t i = 0; i < 32; i++) {
-                if (!(mfp.memoryTypeBits & (1u << i))) continue;
-
-                int attemptFd = ::dup(origFd);
-                VkImportMemoryFdInfoKHR imi = {};
-                imi.sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
-                imi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR;
-                imi.fd         = attemptFd;
-
-                VkMemoryAllocateInfo ai = {};
-                ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-                ai.pNext = &imi;
-                ai.allocationSize = (VkDeviceSize)width * height * 4;
-                ai.memoryTypeIndex = i;
-
-                VkDeviceMemory mem = VK_NULL_HANDLE;
-                VkResult ar = mPfn->AllocateMemory(mDevice, &ai, NULL, &mem);
-                ALOGD("import test: AllocateMemory typeIdx=%d size=%lld → result=%d",
-                      i, (long long)ai.allocationSize, (int)ar);
-                if (ar == VK_SUCCESS) {
-                    mPfn->FreeMemory(mDevice, mem, NULL);
-                    /* On success Vulkan owned the fd; on failure we need to close it. */
-                    break;
-                } else {
-                    ::close(attemptFd);
-                }
-            }
-        }
-        ::close(dupFd);
-    }
-
     VkNativeBufferANDROID nbInfo = {};
     nbInfo.sType  = VK_STRUCTURE_TYPE_NATIVE_BUFFER_ANDROID;
     nbInfo.handle = anwb->handle;
@@ -1182,7 +1125,9 @@ bool VulkanIspPipeline::getOrCreateGrallocImage(ANativeWindowBuffer *anwb,
     ici.arrayLayers   = 1;
     ici.samples       = VK_SAMPLE_COUNT_1_BIT;
     ici.tiling        = VK_IMAGE_TILING_OPTIMAL;
-    ici.usage         = VK_IMAGE_USAGE_STORAGE_BIT;
+    /* Compute-store to blocklinear is unsupported by this driver — we copy from
+     * a pitchlinear scratch image instead; the tiler handles layout. */
+    ici.usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
