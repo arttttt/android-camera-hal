@@ -57,12 +57,37 @@ private:
 
     bool ensureBuffers(unsigned width, unsigned height, bool is16bit);
 
+    /* Wait + reset mFence when mPrevPending is set; no-op otherwise.
+     * Used to sync with the async processToGralloc submit before the
+     * next frame starts touching mCmdBuf / mDescSet / mParamMap. */
+    void drainPendingFence();
+
+    /* Write `p` into mParamMap and flush the memory range so the GPU
+     * sees the new parameters on the next dispatch. */
+    void uploadParams(const IspParams &p);
+
+    /* Rebind descriptor binding=0 to the input ring slot — cheap (one
+     * vkUpdateDescriptorSets call) compared to re-allocating the set. */
+    void rebindInputDescriptor(int slot);
+
     /* Record mCmdBuf with pipeline+descriptor bind and a single compute
      * dispatch sized for (width, height); optionally append an image→buffer
      * copy of mScratchImg into mOutBuf so CPU can read the result via mOutMap.
      * Submits to mQueue signalling `fence` (VK_NULL_HANDLE = no fence). */
     void recordAndSubmit(unsigned width, unsigned height, VkFence fence,
                           bool copyToOutBuf);
+
+    /* Zero-copy gralloc path: record compute → memory barrier → render
+     * pass blit of mScratchImg into the entry's framebuffer, no final
+     * submit. Caller follows with submitWithReleaseFence(). */
+    void recordGrallocBlit(VulkanGrallocCache::Entry *entry,
+                            unsigned width, unsigned height);
+
+    /* Submit mCmdBuf on mFence and ask the driver for a sync_fence fd
+     * that signals once the blit completes — the framework waits on it
+     * before compositing. Writes -1 to *releaseFence on failure. */
+    void submitWithReleaseFence(VulkanGrallocCache::Entry *entry,
+                                 int *releaseFence);
 
     VulkanDeviceState mDeviceState;
     VulkanInputRing   mInputRing;

@@ -110,6 +110,130 @@ void VulkanIspPipeline::updateAwb(const uint8_t *raw, unsigned w, unsigned h,
 }
 
 
+/* --- frame helpers shared between the process* paths --- */
+
+void VulkanIspPipeline::drainPendingFence() {
+    if (!mPrevPending) return;
+    mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1, &mFence, VK_TRUE, UINT64_MAX);
+    mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence);
+    mPrevPending = false;
+}
+
+void VulkanIspPipeline::uploadParams(const IspParams &p) {
+    memcpy(mParamMap, &p, sizeof(IspParams));
+
+    VkMappedMemoryRange range = {};
+    range.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    range.memory = mParamMem;
+    range.size   = VK_WHOLE_SIZE;
+    mDeviceState.pfn()->FlushMappedMemoryRanges(mDeviceState.device(), 1, &range);
+}
+
+void VulkanIspPipeline::rebindInputDescriptor(int slot) {
+    VkDescriptorBufferInfo inInfo = {};
+    inInfo.buffer = mInputRing.buffer(slot);
+    inInfo.range  = mInputRing.slotSize();
+
+    VkWriteDescriptorSet inWrite = {};
+    inWrite.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    inWrite.dstSet          = mDescSet;
+    inWrite.dstBinding      = 0;
+    inWrite.descriptorCount = 1;
+    inWrite.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    inWrite.pBufferInfo     = &inInfo;
+    mDeviceState.pfn()->UpdateDescriptorSets(mDeviceState.device(), 1, &inWrite, 0, NULL);
+}
+
+void VulkanIspPipeline::recordGrallocBlit(VulkanGrallocCache::Entry *entry,
+                                           unsigned width, unsigned height) {
+    VkCommandBufferBeginInfo bi = {};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    mDeviceState.pfn()->ResetCommandBuffer(mCmdBuf, 0);
+    mDeviceState.pfn()->BeginCommandBuffer(mCmdBuf, &bi);
+
+    /* Compute: Bayer → mScratchImg (via binding=1 storage image, set once
+     * in ensureBuffers). */
+    mDeviceState.pfn()->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
+    mDeviceState.pfn()->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                               mPipeLayout, 0, 1, &mDescSet, 0, NULL);
+    mDeviceState.pfn()->CmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
+
+    /* scratch SHADER_WRITE → SHADER_READ for the fragment pass. */
+    VkImageMemoryBarrier scratchB = {};
+    scratchB.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    scratchB.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    scratchB.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    scratchB.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    scratchB.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    scratchB.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    scratchB.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    scratchB.image = mScratchImg;
+    scratchB.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    scratchB.subresourceRange.levelCount = 1;
+    scratchB.subresourceRange.layerCount = 1;
+    mDeviceState.pfn()->CmdPipelineBarrier(mCmdBuf,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, NULL, 0, NULL, 1, &scratchB);
+
+    /* Fragment pass: full-screen triangle samples scratch, driver's ROP
+     * rasterizes into gralloc's blocklinear layout correctly. */
+    VkRenderPassBeginInfo rpbi = {};
+    rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpbi.renderPass  = mRenderPass;
+    rpbi.framebuffer = entry->framebuffer;
+    rpbi.renderArea.extent.width  = width;
+    rpbi.renderArea.extent.height = height;
+
+    mDeviceState.pfn()->CmdBeginRenderPass(mCmdBuf, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+    mDeviceState.pfn()->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, mBlitPipeline);
+    mDeviceState.pfn()->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                               mPipeLayout, 0, 1, &mDescSet, 0, NULL);
+
+    VkViewport vp = {};
+    vp.width    = (float)width;
+    vp.height   = (float)height;
+    vp.minDepth = 0.0f;
+    vp.maxDepth = 1.0f;
+    mDeviceState.pfn()->CmdSetViewport(mCmdBuf, 0, 1, &vp);
+
+    VkRect2D sc = {};
+    sc.extent.width  = width;
+    sc.extent.height = height;
+    mDeviceState.pfn()->CmdSetScissor(mCmdBuf, 0, 1, &sc);
+
+    mDeviceState.pfn()->CmdDraw(mCmdBuf, 3, 1, 0, 0);
+    mDeviceState.pfn()->CmdEndRenderPass(mCmdBuf);
+
+    mDeviceState.pfn()->EndCommandBuffer(mCmdBuf);
+    entry->layoutReady = true;
+}
+
+void VulkanIspPipeline::submitWithReleaseFence(VulkanGrallocCache::Entry *entry,
+                                                int *releaseFence) {
+    *releaseFence = -1;
+
+    VkSubmitInfo si = {};
+    si.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers    = &mCmdBuf;
+    mDeviceState.pfn()->QueueSubmit(mDeviceState.queue(), 1, &si, mFence);
+
+    /* sync_fence fd for the framework's release wait — signals once the
+     * submit above plus any driver-internal release barrier completes. */
+    if (mDeviceState.pfn()->QueueSignalReleaseImageANDROID) {
+        int fd = -1;
+        VkResult qr = mDeviceState.pfn()->QueueSignalReleaseImageANDROID(
+            mDeviceState.queue(), 0, NULL, entry->image, &fd);
+        if (qr == VK_SUCCESS) {
+            *releaseFence = fd;
+        } else {
+            ALOGW("vkQueueSignalReleaseImageANDROID failed: %d", (int)qr);
+        }
+    }
+}
+
 void VulkanIspPipeline::recordAndSubmit(unsigned width, unsigned height, VkFence fence,
                                          bool copyToOutBuf) {
     VkCommandBufferBeginInfo beginInfo = {};
@@ -639,35 +763,13 @@ bool VulkanIspPipeline::processSync(const uint8_t *src, uint8_t *dst,
     if (!ensureBuffers(width, height, is16))
         return false;
 
-    if (mPrevPending) {
-        mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1, &mFence, VK_TRUE, UINT64_MAX);
-        mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence);
-        mPrevPending = false;
-    }
-
+    drainPendingFence();
     mInputRing.invalidateFromGpu(srcInputSlot);
 
     IspParams params;
     fillParams(&params, width, height, is16, pixFmt);
-    memcpy(mParamMap, &params, sizeof(IspParams));
-
-    VkMappedMemoryRange paramRange = {};
-    paramRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    paramRange.memory = mParamMem;
-    paramRange.size = VK_WHOLE_SIZE;
-    mDeviceState.pfn()->FlushMappedMemoryRanges(mDeviceState.device(), 1, &paramRange);
-
-    VkDescriptorBufferInfo inInfo = {};
-    inInfo.buffer = mInputRing.buffer(srcInputSlot);
-    inInfo.range  = mInputRing.slotSize();
-    VkWriteDescriptorSet inWrite = {};
-    inWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    inWrite.dstSet = mDescSet;
-    inWrite.dstBinding = 0;
-    inWrite.descriptorCount = 1;
-    inWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    inWrite.pBufferInfo = &inInfo;
-    mDeviceState.pfn()->UpdateDescriptorSets(mDeviceState.device(), 1, &inWrite, 0, NULL);
+    uploadParams(params);
+    rebindInputDescriptor(srcInputSlot);
 
     recordAndSubmit(width, height, mFence, true);
     mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1, &mFence, VK_TRUE, UINT64_MAX);
@@ -691,23 +793,15 @@ void VulkanIspPipeline::prewarm(unsigned width, unsigned height, uint32_t pixFmt
     if (!ensureBuffers(width, height, is16))
         return;
 
-    IspParams params = {};
-    params.width = width;
-    params.height = height;
+    IspParams params;
+    params.reset();
+    params.width   = width;
+    params.height  = height;
     params.is16bit = is16 ? 1 : 0;
-    params.wbR = 256;
-    params.wbG = 256;
-    params.wbB = 256;
-    params.ccm[0] = 1024;
-    params.ccm[4] = 1024;
-    params.ccm[8] = 1024;
-    memcpy(mParamMap, &params, sizeof(IspParams));
-
-    VkMappedMemoryRange paramRange = {};
-    paramRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    paramRange.memory = mParamMem;
-    paramRange.size = VK_WHOLE_SIZE;
-    mDeviceState.pfn()->FlushMappedMemoryRanges(mDeviceState.device(), 1, &paramRange);
+    params.wbR     = 256;
+    params.wbG     = 256;
+    params.wbB     = 256;
+    uploadParams(params);
 
     int64_t start = nowMs();
     recordAndSubmit(width, height, mFence, false);
@@ -742,12 +836,7 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
         return false;
 
     int64_t t0 = nowMs();
-
-    if (mPrevPending) {
-        mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1, &mFence, VK_TRUE, UINT64_MAX);
-        mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence);
-        mPrevPending = false;
-    }
+    drainPendingFence();
 
     /* V4L2 wrote directly into the input slot via DMABUF — invalidate any
      * stale CPU cache lines so updateAwb() below sees the device-side writes. */
@@ -755,114 +844,13 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
 
     IspParams params;
     fillParams(&params, width, height, is16, pixFmt);
-    memcpy(mParamMap, &params, sizeof(IspParams));
-
-    VkMappedMemoryRange paramRange = {};
-    paramRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    paramRange.memory = mParamMem;
-    paramRange.size = VK_WHOLE_SIZE;
-    mDeviceState.pfn()->FlushMappedMemoryRanges(mDeviceState.device(), 1, &paramRange);
-
-    /* Rebind descriptor binding=0 to the chosen input slot. */
-    VkDescriptorBufferInfo inInfo = {};
-    inInfo.buffer = mInputRing.buffer(srcInputSlot);
-    inInfo.range  = mInputRing.slotSize();
-    VkWriteDescriptorSet inWrite = {};
-    inWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    inWrite.dstSet = mDescSet;
-    inWrite.dstBinding = 0;
-    inWrite.descriptorCount = 1;
-    inWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    inWrite.pBufferInfo = &inInfo;
-    mDeviceState.pfn()->UpdateDescriptorSets(mDeviceState.device(), 1, &inWrite, 0, NULL);
+    uploadParams(params);
+    rebindInputDescriptor(srcInputSlot);
 
     int64_t t1 = nowMs();
-
-    /* Record: dispatch (writes to mScratchImg via binding=1 set in ensureBuffers)
-     * → barrier → vkCmdCopyImage(scratch → gralloc). Driver's tiler translates
-     * pitchlinear scratch to whatever layout the gralloc handle dictates. */
-    VkCommandBufferBeginInfo bi = {};
-    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    mDeviceState.pfn()->ResetCommandBuffer(mCmdBuf, 0);
-    mDeviceState.pfn()->BeginCommandBuffer(mCmdBuf, &bi);
-
-    /* Compute: Bayer → mScratchImg (via binding=1 storage image, set once in
-     * ensureBuffers). */
-    mDeviceState.pfn()->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
-    mDeviceState.pfn()->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                mPipeLayout, 0, 1, &mDescSet, 0, NULL);
-    mDeviceState.pfn()->CmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
-
-    /* scratch SHADER_WRITE → SHADER_READ for the fragment pass. */
-    VkImageMemoryBarrier scratchB = {};
-    scratchB.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    scratchB.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-    scratchB.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    scratchB.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    scratchB.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    scratchB.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    scratchB.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    scratchB.image = mScratchImg;
-    scratchB.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    scratchB.subresourceRange.levelCount = 1;
-    scratchB.subresourceRange.layerCount = 1;
-    mDeviceState.pfn()->CmdPipelineBarrier(mCmdBuf,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        0, 0, NULL, 0, NULL, 1, &scratchB);
-
-    /* Fragment pass: full-screen triangle samples scratch, driver's ROP
-     * rasterizes into gralloc's blocklinear layout correctly. */
-    VkRenderPassBeginInfo rpbi = {};
-    rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpbi.renderPass = mRenderPass;
-    rpbi.framebuffer = entry->framebuffer;
-    rpbi.renderArea.extent.width  = width;
-    rpbi.renderArea.extent.height = height;
-
-    mDeviceState.pfn()->CmdBeginRenderPass(mCmdBuf, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-    mDeviceState.pfn()->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, mBlitPipeline);
-    mDeviceState.pfn()->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                mPipeLayout, 0, 1, &mDescSet, 0, NULL);
-
-    VkViewport vp = {};
-    vp.width  = (float)width;
-    vp.height = (float)height;
-    vp.minDepth = 0.0f;
-    vp.maxDepth = 1.0f;
-    mDeviceState.pfn()->CmdSetViewport(mCmdBuf, 0, 1, &vp);
-
-    VkRect2D sc = {};
-    sc.extent.width  = width;
-    sc.extent.height = height;
-    mDeviceState.pfn()->CmdSetScissor(mCmdBuf, 0, 1, &sc);
-
-    mDeviceState.pfn()->CmdDraw(mCmdBuf, 3, 1, 0, 0);
-    mDeviceState.pfn()->CmdEndRenderPass(mCmdBuf);
-
-    mDeviceState.pfn()->EndCommandBuffer(mCmdBuf);
-    entry->layoutReady = true;
-
-    VkSubmitInfo si = {};
-    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &mCmdBuf;
-    mDeviceState.pfn()->QueueSubmit(mDeviceState.queue(), 1, &si, mFence);
-
-    /* Ask the driver to emit a sync_fence fd that signals once the main submit
-     * above (plus any internal release barrier) completes. The framework owns
-     * this fd and waits on it before the compositor samples the buffer. */
-    if (mDeviceState.pfn()->QueueSignalReleaseImageANDROID) {
-        int fd = -1;
-        VkResult qr = mDeviceState.pfn()->QueueSignalReleaseImageANDROID(mDeviceState.queue(), 0, NULL,
-                                                            entry->image, &fd);
-        if (qr == VK_SUCCESS) *releaseFence = fd;
-        else ALOGW("vkQueueSignalReleaseImageANDROID failed: %d", (int)qr);
-    }
-
+    recordGrallocBlit(entry, width, height);
+    submitWithReleaseFence(entry, releaseFence);
     mPrevPending = true;
-
     int64_t t2 = nowMs();
 
     updateAwb((const uint8_t *)mInputRing.mapped(srcInputSlot),
