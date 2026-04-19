@@ -65,7 +65,7 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mInSize(0), mOutSize(0)
     , mInMap(NULL), mOutMap(NULL), mParamMap(NULL)
     , mScratchImg(VK_NULL_HANDLE), mScratchMem(VK_NULL_HANDLE), mScratchView(VK_NULL_HANDLE)
-    , mFence(VK_NULL_HANDLE), mPrevDst(NULL), mPrevPending(false)
+    , mFence(VK_NULL_HANDLE), mPrevPending(false)
     , mParamsTemplateReady(false)
     , mNativeBufferAvail(false) {}
 
@@ -908,74 +908,11 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
 bool VulkanIspPipeline::process(const uint8_t *src, uint8_t *dst,
                                  unsigned width, unsigned height,
                                  uint32_t pixFmt) {
-    if (!mReady) return false;
-
-    bool is16 = (pixFmt == V4L2_PIX_FMT_SRGGB10 || pixFmt == V4L2_PIX_FMT_SGRBG10 ||
-                 pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SBGGR10);
-
-    if (!ensureBuffers(width, height, is16))
-        return false;
-
-    int64_t t0 = nowMs();
-
-    if (mPrevPending) {
-        mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
-        mPfn->ResetFences(mDevice, 1, &mFence);
-
-        if (mPrevDst) {
-            VkMappedMemoryRange outRange = {};
-            outRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-            outRange.memory = mOutMem;
-            outRange.size = VK_WHOLE_SIZE;
-            mPfn->InvalidateMappedMemoryRanges(mDevice, 1, &outRange);
-            memcpy(mPrevDst, mOutMap, mOutSize);
-        }
-        mPrevPending = false;
-    }
-
-    int64_t t1 = nowMs();
-
-    memcpy(mInMap, src, mInSize);
-
-    IspParams params;
-    fillParams(&params, width, height, is16, pixFmt);
-    memcpy(mParamMap, &params, sizeof(IspParams));
-
-    VkMappedMemoryRange flushRanges[2] = {};
-    flushRanges[0].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    flushRanges[0].memory = mInMem;
-    flushRanges[0].size = VK_WHOLE_SIZE;
-    flushRanges[1].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    flushRanges[1].memory = mParamMem;
-    flushRanges[1].size = VK_WHOLE_SIZE;
-    mPfn->FlushMappedMemoryRanges(mDevice, 2, flushRanges);
-
-    int64_t t2 = nowMs();
-
-    recordAndSubmit(width, height, mFence, true);
-
-    mPrevDst = dst;
-    mPrevPending = true;
-
-    static bool firstFrame = true;
-    if (firstFrame) {
-        firstFrame = false;
-        mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
-        mPfn->ResetFences(mDevice, 1, &mFence);
-        VkMappedMemoryRange outRange = {};
-        outRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-        outRange.memory = mOutMem;
-        outRange.size = VK_WHOLE_SIZE;
-        mPfn->InvalidateMappedMemoryRanges(mDevice, 1, &outRange);
-        memcpy(dst, mOutMap, mOutSize);
-        mPrevPending = false;
-    }
-
-    int64_t t3 = nowMs();
-    ALOGD("VK: prev_wait=%lld upload=%lld submit=%lldms", t1 - t0, t2 - t1, t3 - t2);
-
-    updateAwb(src, width, height, is16, pixFmt);
-    return true;
+    /* CPU-fallback path (zero-copy disabled or gralloc ineligible) — synchronous.
+     * The old deferred-readback 1-frame overlap was removed: zero-copy is now
+     * the primary path and this one is rare; the added complexity bought us
+     * nothing in the fallback. */
+    return processSync(src, dst, width, height, pixFmt);
 }
 
 bool VulkanIspPipeline::processSync(const uint8_t *src, uint8_t *dst,
@@ -992,7 +929,6 @@ bool VulkanIspPipeline::processSync(const uint8_t *src, uint8_t *dst,
         mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
         mPfn->ResetFences(mDevice, 1, &mFence);
         mPrevPending = false;
-        mPrevDst = NULL;
     }
 
     memcpy(mInMap, src, mInSize);
@@ -1079,16 +1015,6 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
     if (mPrevPending) {
         mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
         mPfn->ResetFences(mDevice, 1, &mFence);
-        if (mPrevDst) {
-            /* Previous caller was process() and expected deferred readback. */
-            VkMappedMemoryRange outRange = {};
-            outRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-            outRange.memory = mOutMem;
-            outRange.size = VK_WHOLE_SIZE;
-            mPfn->InvalidateMappedMemoryRanges(mDevice, 1, &outRange);
-            memcpy(mPrevDst, mOutMap, mOutSize);
-            mPrevDst = NULL;
-        }
         mPrevPending = false;
     }
 
@@ -1192,7 +1118,6 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
     }
 
     mPrevPending = true;
-    mPrevDst = NULL;
 
     int64_t t2 = nowMs();
 
@@ -1252,7 +1177,6 @@ void VulkanIspPipeline::destroy() {
     mInSize = 0; mOutSize = 0;
     mBufWidth = 0; mBufHeight = 0;
     mPrevPending = false;
-    mPrevDst = NULL;
     mNativeBufferAvail = false;
 }
 

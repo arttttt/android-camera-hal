@@ -89,7 +89,8 @@ private:
     VkImageView    mScratchView;
 
     VkFence mFence;
-    uint8_t *mPrevDst;
+    /* Set by the async processToGralloc path to indicate mFence / mCmdBuf /
+     * mInMap are still in use by GPU. Drained at the start of the next call. */
     bool mPrevPending;
 
     struct IspParams {
