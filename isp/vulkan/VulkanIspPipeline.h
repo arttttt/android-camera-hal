@@ -3,6 +3,7 @@
 
 #include "IspPipeline.h"
 #include "IspParams.h"
+#include "VulkanDeviceState.h"
 
 #include <cutils/native_handle.h>
 #include <unordered_map>
@@ -13,9 +14,6 @@
 struct ANativeWindowBuffer;
 
 namespace android {
-
-class VulkanLoader;
-struct VulkanPfn;
 
 class VulkanIspPipeline : public IspPipeline {
 public:
@@ -57,7 +55,6 @@ private:
                       VkDeviceSize size, VkBufferUsageFlags usage,
                       bool exportable = false);
     void destroyBuffer(VkBuffer buf, VkDeviceMemory mem);
-    uint32_t findMemoryType(uint32_t filter, VkMemoryPropertyFlags props);
     bool ensureBuffers(unsigned width, unsigned height, bool is16bit);
 
     /* Record mCmdBuf with pipeline+descriptor bind and a single compute
@@ -67,17 +64,10 @@ private:
     void recordAndSubmit(unsigned width, unsigned height, VkFence fence,
                           bool copyToOutBuf);
 
-    VulkanLoader *mLoader;
-    VulkanPfn    *mPfn;
+    VulkanDeviceState mDeviceState;
 
     bool mReady;
     unsigned mBufWidth, mBufHeight;
-
-    VkInstance mInstance;
-    VkPhysicalDevice mPhysDev;
-    VkDevice mDevice;
-    VkQueue mQueue;
-    uint32_t mQueueFamily;
 
     VkShaderModule mShader;
     VkShaderModule mVertShader;
@@ -114,8 +104,6 @@ private:
 
     void fillParams(IspParams *p, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
     void updateAwb(const uint8_t *raw, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
-
-    bool mNativeBufferAvail;
 
     /* Cached VkImage + view + framebuffer per gralloc buffer_handle_t for
      * zero-copy output. Gralloc owns the backing memory; we only track the
