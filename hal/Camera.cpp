@@ -924,8 +924,10 @@ skip_focus:
                                 GRALLOC_USAGE_HW_RENDER | GRALLOC_USAGE_HW_COMPOSER,
                                 streamW, const_cast<native_handle_t *>(*srcBuf.buffer),
                                 false);
+                            int releaseFd = -1;
                             if (mIsp->processToGralloc(frame->buf, gb->getNativeBuffer(),
-                                                        streamW, streamH, frame->pixFmt)) {
+                                                        streamW, streamH, frame->pixFmt,
+                                                        -1, &releaseFd)) {
                                 /* Success — GPU wrote directly.
                                  * Re-lock as READ to sync GPU writes for compositor, then unlock releases it */
                                 const Rect rect((int)streamW, (int)streamH);

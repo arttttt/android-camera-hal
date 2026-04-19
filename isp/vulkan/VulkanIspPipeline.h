@@ -31,7 +31,8 @@ public:
 
     bool processToGralloc(const uint8_t *src, void *nativeBuffer,
                            unsigned width, unsigned height,
-                           uint32_t pixFmt) override;
+                           uint32_t pixFmt,
+                           int acquireFence, int *releaseFence) override;
 
 private:
     bool createBuffer(VkBuffer *buf, VkDeviceMemory *mem,

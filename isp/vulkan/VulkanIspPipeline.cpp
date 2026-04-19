@@ -860,8 +860,10 @@ void VulkanIspPipeline::prewarm(unsigned width, unsigned height, uint32_t pixFmt
 
 bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
                                           unsigned width, unsigned height,
-                                          uint32_t pixFmt) {
-    (void)src; (void)pixFmt;
+                                          uint32_t pixFmt,
+                                          int acquireFence, int *releaseFence) {
+    (void)src; (void)pixFmt; (void)acquireFence;
+    *releaseFence = -1;
 
     if (mNativeBufferProbed || !mReady || !nativeBuffer)
         return false;

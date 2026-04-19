@@ -39,11 +39,19 @@ public:
 
     /* Process Bayer and blit result directly to gralloc buffer (no CPU readback).
      * nativeBuffer: ANativeWindowBuffer* cast to void*.
+     * acquireFence: caller-owned fd that signals when buffer is ready for GPU writes.
+     *               Implementation consumes (closes) it on success, leaves open on failure.
+     *               Pass -1 if no fence.
+     * releaseFence: [out] non-null. Set to sync_fence fd that signals when GPU is done.
+     *               Caller owns and must close. -1 means no fence (invalid / fell back).
      * Returns false if not supported — caller falls back to process(). */
     virtual bool processToGralloc(const uint8_t *src, void *nativeBuffer,
                                    unsigned width, unsigned height,
-                                   uint32_t pixFmt) {
+                                   uint32_t pixFmt,
+                                   int acquireFence, int *releaseFence) {
         (void)src; (void)nativeBuffer; (void)width; (void)height; (void)pixFmt;
+        (void)acquireFence;
+        *releaseFence = -1;
         return false;
     }
 
