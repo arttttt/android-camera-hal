@@ -147,14 +147,14 @@ void V4l2Device::closeFocuser() {
 /**
  * Returns array of camera's supported resolutions.
  */
-const Vector<V4l2Device::Resolution> & V4l2Device::availableResolutions() {
+const Vector<Resolution> & V4l2Device::availableResolutions() {
     if(!mAvailableResolutions.isEmpty()) {
         return mAvailableResolutions;
     }
 
     int fd;
     bool fdNeedsClose = false;
-    Vector<V4l2Device::Resolution> formats;
+    Vector<Resolution> formats;
 
     if(mFd >= 0) {
         fd = mFd;
@@ -208,7 +208,7 @@ const Vector<V4l2Device::Resolution> & V4l2Device::availableResolutions() {
 }
 
 /**
- * Returns V4l2Device::Resolution with highest possible width and highest
+ * Returns Resolution with highest possible width and highest
  * possible height. This might not to be valid camera resolution.
  */
 int64_t V4l2Device::minFrameDurationNs(unsigned width, unsigned height) {
@@ -254,9 +254,9 @@ int64_t V4l2Device::minFrameDurationNs(unsigned width, unsigned height) {
     return minNs;
 }
 
-V4l2Device::Resolution V4l2Device::sensorResolution() {
-    const Vector<V4l2Device::Resolution> &formats = availableResolutions();
-    V4l2Device::Resolution max = {0, 0};
+Resolution V4l2Device::sensorResolution() {
+    const Vector<Resolution> &formats = availableResolutions();
+    Resolution max = {0, 0};
     for(size_t i = 0; i < formats.size(); ++i) {
         if(formats[i].width > max.width)
             max.width = formats[i].width;
@@ -304,7 +304,7 @@ bool V4l2Device::setResolution(unsigned width, unsigned height) {
 /**
  * Returns current resolution
  */
-V4l2Device::Resolution V4l2Device::resolution() {
+Resolution V4l2Device::resolution() {
     Resolution res;
     res.width = mFormat.fmt.pix.width;
     res.height = mFormat.fmt.pix.height;

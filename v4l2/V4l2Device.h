@@ -9,6 +9,8 @@
 #include <utils/Mutex.h>
 #include <utils/Timers.h>
 
+#include "Resolution.h"
+
 #ifndef V4L2DEVICE_BUF_COUNT
 # error "V4L2DEVICE_BUF_COUNT must be defined via -DV4L2DEVICE_BUF_COUNT=<N> in Android.mk"
 #endif
@@ -18,11 +20,6 @@ namespace android {
 class V4l2Device
 {
 public:
-    struct Resolution {
-        unsigned width;
-        unsigned height;
-    };
-
     class VBuffer {
     public:
         uint8_t *buf;     /* CPU-visible pointer (MMAP mode); NULL in DMABUF mode */
@@ -44,8 +41,8 @@ public:
     ~V4l2Device();
 
     uint32_t pixelFormat() const { return mPixelFormat; }
-    const Vector<V4l2Device::Resolution> & availableResolutions();
-    V4l2Device::Resolution sensorResolution();
+    const Vector<Resolution> & availableResolutions();
+    Resolution sensorResolution();
 
     /* Shortest frame period the driver reports for (width, height) at the
      * current pixel format, in nanoseconds. Returns 0 if the driver gives
@@ -53,7 +50,7 @@ public:
     int64_t minFrameDurationNs(unsigned width, unsigned height);
 
     bool setResolution(unsigned width, unsigned height);
-    V4l2Device::Resolution resolution();
+    Resolution resolution();
 
     bool connect();
     bool disconnect();
@@ -111,7 +108,7 @@ private:
      * overwrite the buffer. mPendingQbufHead is -1 when the stash is empty. */
     int mPendingQbuf[V4L2DEVICE_BUF_COUNT];
     int mPendingQbufCount;
-    Vector<V4l2Device::Resolution> mAvailableResolutions;
+    Vector<Resolution> mAvailableResolutions;
     struct v4l2_format mFormat;
     VBuffer mBuf[V4L2DEVICE_BUF_COUNT];
     struct pollfd mPFd;
