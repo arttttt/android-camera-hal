@@ -57,11 +57,6 @@ private:
                       bool exportable = false);
     void destroyBuffer(VkBuffer buf, VkDeviceMemory mem);
     uint32_t findMemoryType(uint32_t filter, VkMemoryPropertyFlags props);
-
-    /* Diagnostic: allocate a small exportable VkBuffer/VkDeviceMemory and try
-     * vkGetMemoryFdKHR. Tells us whether the Tegra Vulkan driver can hand out
-     * an OPAQUE_FD that V4L2 can consume as a DMABUF input buffer. */
-    void probeExportFd();
     bool ensureBuffers(unsigned width, unsigned height, bool is16bit);
 
     /* Record mCmdBuf with pipeline+descriptor bind and a single compute
