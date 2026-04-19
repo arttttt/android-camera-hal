@@ -28,12 +28,6 @@ Helper `Camera::notifyError(frameNumber, stream, type)` called on every
 early-return path in `processCaptureRequest`. Prevents frozen-preview
 bugs.
 
-### Build `AVAILABLE_*_KEYS` arrays (S)
-
-Mechanical. Enumerate every key the HAL reads from requests, writes
-into results, or exposes in characteristics, and publish the three
-arrays. Improves framework cooperation.
-
 ### Populate `PIPELINE_MAX_DEPTH` and `PARTIAL_RESULT_COUNT` (S)
 
 Honest values: `1` and `1` today. Bump after tier 3 lands.
@@ -80,7 +74,13 @@ Responsibilities bundled today:
 Split into:
 - `hal/Camera.{h,cpp}` — callback dispatcher + result routing only
 - `hal/CameraStaticMetadata.{h,cpp}` — `buildStaticCharacteristics(Camera*, CameraMetadata&)`; all
-  resolution/format/AE/AWB/AF mode enumeration
+  resolution/format/AE/AWB/AF mode enumeration. Also the home for the
+  three `AVAILABLE_{REQUEST,RESULT,CHARACTERISTICS}_KEYS` arrays —
+  having the static-chars build and the keys-arrays in the same file
+  makes the source-of-truth rule enforceable by reading one file.
+  This subsumes Tier 1 item "Build AVAILABLE_*_KEYS" (moved here so
+  we don't pile another 40+ lines of static arrays into the existing
+  mess).
 - `hal/AutoFocusController.{h,cpp}` — sweep state machine; interface
   `onTriggerStart(mode)`, `onFrame(rgba) → ControlUpdate`, `cancel()`
 - `hal/ExposureControl.{h,cpp}` — request→V4L2 exposure/gain split, EV
