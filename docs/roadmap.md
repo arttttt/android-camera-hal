@@ -102,8 +102,8 @@ Split into:
   path only (`process*`, `prewarm`, `waitForPreviousFrame`)
 - `isp/vulkan/runtime/VulkanDeviceState.{h,cpp}` — instance/device/queue/
   descriptor-set lifecycle; RAII-owned by `VulkanIspPipeline`
-- `isp/vulkan/VulkanGrallocCache.{h,cpp}` — `GrallocEntry` + per-handle
-  cache; takes a `VulkanDeviceState&` on construction
+- `isp/vulkan/io/VulkanGrallocCache.{h,cpp}` — per-handle VkImage/view/
+  framebuffer cache; takes a `VulkanDeviceState&` on construction
 - `isp/IspParams.{h,cpp}` — `IspParams` struct, default/template helpers;
   reusable by the future IPA module
 - `isp/sensor/IspCalibration.{h,cpp}` — per-sensor CCM tables behind static

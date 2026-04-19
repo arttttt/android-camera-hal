@@ -5,9 +5,7 @@
 #include "IspParams.h"
 #include "runtime/VulkanDeviceState.h"
 #include "io/VulkanInputRing.h"
-
-#include <cutils/native_handle.h>
-#include <unordered_map>
+#include "io/VulkanGrallocCache.h"
 
 #define VK_USE_PLATFORM_ANDROID_KHR
 #include <vulkan/vulkan.h>
@@ -93,21 +91,7 @@ private:
     void fillParams(IspParams *p, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
     void updateAwb(const uint8_t *raw, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
 
-    /* Cached VkImage + view + framebuffer per gralloc buffer_handle_t for
-     * zero-copy output. Gralloc owns the backing memory; we only track the
-     * Vulkan wrappers. */
-    struct GrallocEntry {
-        VkImage image;
-        VkImageView view;
-        VkFramebuffer framebuffer;
-        bool layoutReady;  /* UNDEFINED → COLOR_ATTACHMENT_OPTIMAL transitioned */
-    };
-    std::unordered_map<const native_handle_t *, GrallocEntry> mGrallocImages;
-
-    bool getOrCreateGrallocImage(ANativeWindowBuffer *anwb,
-                                  unsigned width, unsigned height,
-                                  GrallocEntry **outEntry);
-    void clearGrallocImages();
+    VulkanGrallocCache mGrallocCache;
 };
 
 }; /* namespace android */

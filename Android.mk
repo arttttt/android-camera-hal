@@ -80,6 +80,7 @@ LOCAL_SRC_FILES += \
     isp/vulkan/runtime/loader/HalHmiVulkanLoader.cpp \
     isp/vulkan/runtime/loader/SystemVulkanLoader.cpp \
     isp/vulkan/io/VulkanInputRing.cpp \
+    isp/vulkan/io/VulkanGrallocCache.cpp \
     isp/hw/HwIspPipeline.cpp
 
 LOCAL_SHARED_LIBRARIES += libvulkan

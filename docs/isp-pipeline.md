@@ -95,9 +95,9 @@ public:
    SW lock on the gralloc buffer.
 
 The gralloc `VkImage` + `VkImageView` + `VkFramebuffer` are cached per
-`native_handle_t *` in `mGrallocImages` (see `GrallocEntry`), so the
-per-frame cost is just two descriptor rebinds and a command buffer
-record / submit.
+`native_handle_t *` inside `VulkanGrallocCache`, so the per-frame
+cost is just two descriptor rebinds and a command buffer record /
+submit.
 
 Vulkan functions are loaded through `VulkanLoader` +
 `VulkanPfn` dispatch table instead of linking `libvulkan` directly.

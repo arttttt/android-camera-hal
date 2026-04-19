@@ -14,27 +14,13 @@ static inline int64_t nowMs() {
 
 #include <system/window.h>
 #include "VulkanIspPipeline.h"
-#include "runtime/loader/VulkanLoader.h"
 #include "runtime/loader/VulkanPfn.h"
-
-/* VK_ANDROID_native_buffer types — absent from android-24 NDK vulkan.h */
-#ifndef VK_ANDROID_NATIVE_BUFFER_NUMBER
-#define VK_ANDROID_NATIVE_BUFFER_NUMBER 11
-#define VK_STRUCTURE_TYPE_NATIVE_BUFFER_ANDROID ((VkStructureType)1000010000)
-typedef struct VkNativeBufferANDROID {
-    VkStructureType sType;
-    const void *pNext;
-    const struct native_handle *handle;
-    int stride;
-    int format;
-    int usage;
-} VkNativeBufferANDROID;
-#endif
 
 namespace android {
 
 VulkanIspPipeline::VulkanIspPipeline()
     : mInputRing(mDeviceState)
+    , mGrallocCache(mDeviceState)
     , mReady(false), mBufWidth(0), mBufHeight(0)
     , mShader(VK_NULL_HANDLE), mVertShader(VK_NULL_HANDLE), mFragShader(VK_NULL_HANDLE)
     , mDescLayout(VK_NULL_HANDLE)
@@ -390,6 +376,7 @@ bool VulkanIspPipeline::init() {
         destroy();
         return false;
     }
+    mGrallocCache.setRenderPass(mRenderPass);
 
     /* Graphics pipeline. */
     VkPipelineShaderStageCreateInfo stages[2] = {};
@@ -535,7 +522,7 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
     if (!recreate) return true;
 
     /* Any cached gralloc images were sized for old resolution — drop them. */
-    clearGrallocImages();
+    mGrallocCache.clear();
 
     if (mOutMap) {
         mDeviceState.pfn()->UnmapMemory(mDeviceState.device(), mOutMem);
@@ -558,7 +545,7 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
         mScratchMem = VK_NULL_HANDLE;
     }
 
-    clearGrallocImages();
+    mGrallocCache.clear();
 
     if (!mInputRing.ensureSize(inSize)) {
         ALOGE("VulkanInputRing ensureSize(%zu) failed at %ux%u",
@@ -826,8 +813,8 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
         return false;
 
     ANativeWindowBuffer *anwb = (ANativeWindowBuffer *)nativeBuffer;
-    GrallocEntry *entry = NULL;
-    if (!getOrCreateGrallocImage(anwb, width, height, &entry))
+    VulkanGrallocCache::Entry *entry = NULL;
+    if (!mGrallocCache.getOrCreate(anwb, width, height, &entry))
         return false;
 
     int64_t t0 = nowMs();
@@ -976,7 +963,7 @@ void VulkanIspPipeline::destroy() {
             mParamMap = NULL;
         }
 
-        clearGrallocImages();
+        mGrallocCache.clear();
         mInputRing.destroy();
 
         if (mScratchView) {
@@ -1059,98 +1046,6 @@ void VulkanIspPipeline::waitForPreviousFrame() {
     mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1, &mFence, VK_TRUE, UINT64_MAX);
     mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence);
     mPrevPending = false;
-}
-
-void VulkanIspPipeline::clearGrallocImages() {
-    if (!mDeviceState.isReady() || mDeviceState.device() == VK_NULL_HANDLE) {
-        mGrallocImages.clear();
-        return;
-    }
-    for (auto &kv : mGrallocImages) {
-        if (kv.second.framebuffer) mDeviceState.pfn()->DestroyFramebuffer(mDeviceState.device(), kv.second.framebuffer, NULL);
-        if (kv.second.view)        mDeviceState.pfn()->DestroyImageView(mDeviceState.device(), kv.second.view, NULL);
-        if (kv.second.image)       mDeviceState.pfn()->DestroyImage(mDeviceState.device(), kv.second.image, NULL);
-    }
-    mGrallocImages.clear();
-}
-
-bool VulkanIspPipeline::getOrCreateGrallocImage(ANativeWindowBuffer *anwb,
-                                                 unsigned width, unsigned height,
-                                                 GrallocEntry **outEntry) {
-    auto it = mGrallocImages.find(anwb->handle);
-    if (it != mGrallocImages.end()) {
-        *outEntry = &it->second;
-        return true;
-    }
-
-    VkNativeBufferANDROID nbInfo = {};
-    nbInfo.sType  = VK_STRUCTURE_TYPE_NATIVE_BUFFER_ANDROID;
-    nbInfo.handle = anwb->handle;
-    nbInfo.stride = anwb->stride;
-    nbInfo.format = anwb->format;
-    nbInfo.usage  = anwb->usage;
-
-    VkImageCreateInfo ici = {};
-    ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    ici.pNext         = &nbInfo;
-    ici.imageType     = VK_IMAGE_TYPE_2D;
-    ici.format        = VK_FORMAT_R8G8B8A8_UNORM;
-    ici.extent.width  = width;
-    ici.extent.height = height;
-    ici.extent.depth  = 1;
-    ici.mipLevels     = 1;
-    ici.arrayLayers   = 1;
-    ici.samples       = VK_SAMPLE_COUNT_1_BIT;
-    ici.tiling        = VK_IMAGE_TILING_OPTIMAL;
-    /* Write through the ROP path: only blocklinear-aware Tegra write surface. */
-    ici.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
-    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    GrallocEntry entry = {};
-    VkResult r = mDeviceState.pfn()->CreateImage(mDeviceState.device(), &ici, NULL, &entry.image);
-    if (r != VK_SUCCESS) {
-        ALOGE("gralloc vkCreateImage failed: %d", (int)r);
-        return false;
-    }
-
-    VkImageViewCreateInfo vci = {};
-    vci.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    vci.image    = entry.image;
-    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    vci.format   = VK_FORMAT_R8G8B8A8_UNORM;
-    vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    vci.subresourceRange.levelCount = 1;
-    vci.subresourceRange.layerCount = 1;
-    r = mDeviceState.pfn()->CreateImageView(mDeviceState.device(), &vci, NULL, &entry.view);
-    if (r != VK_SUCCESS) {
-        ALOGE("gralloc vkCreateImageView failed: %d", (int)r);
-        mDeviceState.pfn()->DestroyImage(mDeviceState.device(), entry.image, NULL);
-        return false;
-    }
-
-    VkFramebufferCreateInfo fci = {};
-    fci.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fci.renderPass      = mRenderPass;
-    fci.attachmentCount = 1;
-    fci.pAttachments    = &entry.view;
-    fci.width           = width;
-    fci.height          = height;
-    fci.layers          = 1;
-    r = mDeviceState.pfn()->CreateFramebuffer(mDeviceState.device(), &fci, NULL, &entry.framebuffer);
-    if (r != VK_SUCCESS) {
-        ALOGE("gralloc vkCreateFramebuffer failed: %d", (int)r);
-        mDeviceState.pfn()->DestroyImageView(mDeviceState.device(), entry.view, NULL);
-        mDeviceState.pfn()->DestroyImage(mDeviceState.device(), entry.image, NULL);
-        return false;
-    }
-
-    entry.layoutReady = false;
-    auto res = mGrallocImages.emplace(anwb->handle, entry);
-    *outEntry = &res.first->second;
-    ALOGD("gralloc image cached: handle=%p image=%p view=%p (size=%zu)",
-          anwb->handle, entry.image, entry.view, mGrallocImages.size());
-    return true;
 }
 
 }; /* namespace android */
