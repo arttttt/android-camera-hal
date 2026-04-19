@@ -68,16 +68,7 @@ Camera::Camera(const char *devNode, int facing)
     , mRgbaTempSize(0)
     , mV4l2Width(0)
     , mV4l2Height(0)
-    , mSoftIspEnabled(true)
-    , mFocusPosition(140)
-    , mAfSweepActive(false)
-    , mAfSweepPos(0)
-    , mAfSweepStep(0)
-    , mAfSweepEnd(0)
-    , mAfSweepBestPos(140)
-    , mAfSweepBestScore(0)
-
-    , mAfSettleFrames(0) {
+    , mSoftIspEnabled(true) {
     DBGUTILS_AUTOLOGCALL(__func__);
     for(size_t i = 0; i < NELEM(mDefaultRequestSettings); i++) {
         mDefaultRequestSettings[i] = NULL;
@@ -92,6 +83,7 @@ Camera::Camera(const char *devNode, int facing)
 
     mValid = true;
     mIsp = NULL;
+    mAf = NULL;
     mDev = new V4l2Device(devNode);
     if(!mDev) {
         mValid = false;
@@ -101,6 +93,7 @@ Camera::Camera(const char *devNode, int facing)
 Camera::~Camera() {
     DBGUTILS_AUTOLOGCALL(__func__);
     gWorkers.stop();
+    delete mAf;
     if (mIsp) { mIsp->destroy(); delete mIsp; }
     mDev->disconnect();
     delete mDev;
@@ -637,6 +630,7 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
     property_get("persist.camera.soft_isp", propVal, "1");
     mSoftIspEnabled = (propVal[0] == '1');
 
+    if (mAf) { delete mAf; mAf = NULL; }
     if (mIsp) { mIsp->destroy(); delete mIsp; mIsp = NULL; }
     mIsp = createIspPipeline();
     if (!mIsp->init()) {
@@ -647,6 +641,12 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
     mIsp->setEnabled(mSoftIspEnabled);
     mIsp->setCcm((mFacing == CAMERA_FACING_BACK) ? IspCalibration::ccmImx179()
                                                   : IspCalibration::ccmOv5693());
+
+    /* AF sweep + VCM control are only meaningful with the soft ISP
+     * (which owns the AWB lock and whose RGBA output the sharpness
+     * metric runs on). On the HW ISP path mAf stays null. */
+    if (mSoftIspEnabled)
+        mAf = new AutoFocusController(mDev, mIsp);
 
     ALOGD("V4L2 target resolution: %ux%u, soft_isp=%d",
           width, height, mSoftIspEnabled);
@@ -842,58 +842,9 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
         appliedGain       = gain;
     }
 
-    /* Focus control — only with soft ISP */
-    uint8_t afMode = ANDROID_CONTROL_AF_MODE_OFF;
-    if (!mSoftIspEnabled) goto skip_focus;
-    if (cm.exists(ANDROID_CONTROL_AF_MODE))
-        afMode = *cm.find(ANDROID_CONTROL_AF_MODE).data.u8;
+    if (mAf)
+        mAf->onSettings(cm, request->frame_number);
 
-    /* Manual focus: LENS_FOCUS_DISTANCE (diopters = 1/meters) → VCM position */
-    if (afMode == ANDROID_CONTROL_AF_MODE_OFF && cm.exists(ANDROID_LENS_FOCUS_DISTANCE)) {
-        float diopter = *cm.find(ANDROID_LENS_FOCUS_DISTANCE).data.f;
-        /* Map: 0 diopters (infinity) → 140, 10 diopters (10cm) → 640 */
-        int32_t pos = 140 + (int32_t)(diopter * 50.0f);
-        if (pos < 0) pos = 0;
-        if (pos > 1023) pos = 1023;
-        mDev->setFocusPosition(pos);
-        mFocusPosition = pos;
-        mAfSweepActive = false;
-    }
-
-    /* AF trigger — start two-pass contrast-detect sweep */
-    if (cm.exists(ANDROID_CONTROL_AF_TRIGGER)) {
-        uint8_t trigger = *cm.find(ANDROID_CONTROL_AF_TRIGGER).data.u8;
-        if (trigger == ANDROID_CONTROL_AF_TRIGGER_START && !mAfSweepActive) {
-            mAfSweepActive = true;
-            mIsp->setAwbLock(true);
-            mAfSettleFrames = 0;
-            if (afMode == ANDROID_CONTROL_AF_MODE_MACRO) {
-                mAfSweepPos = 400; mAfSweepEnd = 650; mAfSweepStep = 25;
-            } else {
-                mAfSweepPos = 140; mAfSweepEnd = 640; mAfSweepStep = 25;
-            }
-            mAfSweepBestPos = mAfSweepPos;
-            mAfSweepBestScore = 0;
-            ALOGD("AF coarse sweep started (mode=%d, %d→%d step %d)",
-                  afMode, mAfSweepPos, mAfSweepEnd, mAfSweepStep);
-        } else if (trigger == ANDROID_CONTROL_AF_TRIGGER_CANCEL) {
-            mAfSweepActive = false;
-            mIsp->setAwbLock(false);
-        }
-    }
-
-    /* Continuous AF: re-trigger every ~60 frames if not sweeping */
-    if ((afMode == ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE) &&
-        !mAfSweepActive && (request->frame_number % 60 == 0)) {
-        mAfSweepActive = true;
-        mIsp->setAwbLock(true);
-        mAfSettleFrames = 0;
-        mAfSweepPos = 140; mAfSweepEnd = 640; mAfSweepStep = 25;
-        mAfSweepBestPos = mFocusPosition;
-        mAfSweepBestScore = 0;
-    }
-
-skip_focus:
     notifyShutter(request->frame_number, (uint64_t)timestamp);
 
     int64_t t0 = systemTime();
@@ -915,10 +866,8 @@ skip_focus:
         return NOT_ENOUGH_DATA;
     }
 
-    /* AF sweep: step focus position each frame, measure contrast */
-    if (mSoftIspEnabled && mAfSweepActive) {
-        mDev->setFocusPosition(mAfSweepPos);
-    }
+    if (mAf)
+        mAf->onFrameStart();
 
     buffers.setCapacity(request->num_output_buffers);
 
@@ -998,7 +947,7 @@ skip_focus:
             }
             if (zcOk) {
                 releaseFd[i] = zcReleaseFd;
-                if (mSoftIspEnabled && mAfSweepActive) {
+                if (mAf && mAf->isSweeping()) {
                     /* AF sharpness metric needs CPU-readable pixels. This lock
                      * blocks until GPU finishes (gralloc internally syncs), but
                      * AF sweeps are infrequent. */
@@ -1131,70 +1080,8 @@ skip_focus:
         }
     }
 
-    /* AF sweep: single-pass contrast-detect with VCM settling */
-    if (mSoftIspEnabled && mAfSweepActive && rgbaBuffer) {
-        /* Skip frames after VCM move to let lens settle */
-        if (mAfSettleFrames > 0) {
-            mAfSettleFrames--;
-            goto af_done;
-        }
-
-        /* Compute sharpness: normalized Laplacian in center 1/4.
-         * Laplacian = |2*center - left - right| + |2*center - up - down|
-         * Normalized by mean brightness to be AWB-independent. */
-        unsigned cx = res.width / 4, cy = res.height / 4;
-        unsigned cw = res.width / 2, ch = res.height / 2;
-        uint64_t gradSum = 0, brightSum = 0;
-        unsigned nSamples = 0;
-        for (unsigned y = cy + 1; y < cy + ch - 1; y += 4) {
-            const uint8_t *row  = rgbaBuffer + y * res.width * 4;
-            const uint8_t *rowU = rgbaBuffer + (y - 1) * res.width * 4;
-            const uint8_t *rowD = rgbaBuffer + (y + 1) * res.width * 4;
-            for (unsigned x = cx + 1; x < cx + cw - 1; x += 4) {
-                int g  = row[x*4+1];
-                int gl = row[(x-1)*4+1];
-                int gr = row[(x+1)*4+1];
-                int gu = rowU[x*4+1];
-                int gd = rowD[x*4+1];
-                /* Laplacian: horizontal + vertical */
-                int lapH = 2*g - gl - gr;
-                int lapV = 2*g - gu - gd;
-                gradSum += (lapH < 0 ? -lapH : lapH) + (lapV < 0 ? -lapV : lapV);
-                brightSum += g;
-                nSamples++;
-            }
-        }
-        /* Normalize: score = gradSum * 1000 / mean_brightness */
-        uint64_t score = 0;
-        if (brightSum > 0 && nSamples > 0)
-            score = gradSum * 1000 / (brightSum / nSamples);
-
-        if (score > mAfSweepBestScore) {
-            mAfSweepBestScore = score;
-            mAfSweepBestPos = mAfSweepPos;
-        }
-
-        ALOGD("AF: pos=%d score=%llu best=%d/%llu",
-              mAfSweepPos, (unsigned long long)score,
-              mAfSweepBestPos, (unsigned long long)mAfSweepBestScore);
-
-        mAfSweepPos += mAfSweepStep;
-        if (mAfSweepPos > mAfSweepEnd) {
-            /* Sweep done — go to best position */
-            mDev->setFocusPosition(mAfSweepBestPos);
-            mFocusPosition = mAfSweepBestPos;
-            mAfSweepActive = false;
-            mIsp->setAwbLock(false);
-            ALOGD("AF done: best=%d score=%llu", mAfSweepBestPos,
-                  (unsigned long long)mAfSweepBestScore);
-            goto af_done;
-        }
-
-        /* Move VCM and wait 2 frames for settling */
-        mDev->setFocusPosition(mAfSweepPos);
-        mAfSettleFrames = 2;
-    }
-af_done:
+    if (mAf)
+        mAf->onFrameData(rgbaBuffer, res.width, res.height);
 
     /* Unlocking all buffers in separate loop allows to copy data from already processed buffer to not yet processed one */
     for(size_t i = 0; i < request->num_output_buffers; ++i) {
@@ -1222,15 +1109,14 @@ af_done:
     cm.update(ANDROID_SENSOR_TIMESTAMP, &sensorTimestamp, 1);
     cm.update(ANDROID_SYNC_FRAME_NUMBER, &syncFrameNumber, 1);
 
-    /* Report AF state + focus distance */
-    uint8_t afState = mAfSweepActive ?
-        ANDROID_CONTROL_AF_STATE_ACTIVE_SCAN :
-        ANDROID_CONTROL_AF_STATE_FOCUSED_LOCKED;
-    cm.update(ANDROID_CONTROL_AF_STATE, &afState, 1);
-
-    float reportDiopter = (mFocusPosition - 140) / 50.0f;
-    if (reportDiopter < 0) reportDiopter = 0;
-    cm.update(ANDROID_LENS_FOCUS_DISTANCE, &reportDiopter, 1);
+    AutoFocusController::Report afReport;
+    afReport.afMode       = ANDROID_CONTROL_AF_MODE_OFF;
+    afReport.afState      = ANDROID_CONTROL_AF_STATE_INACTIVE;
+    afReport.focusDiopter = 0.0f;
+    if (mAf)
+        afReport = mAf->report();
+    cm.update(ANDROID_CONTROL_AF_STATE, &afReport.afState, 1);
+    cm.update(ANDROID_LENS_FOCUS_DISTANCE, &afReport.focusDiopter, 1);
 
     /* Echo per-frame controls in result metadata. The framework diffs
      * request vs result to know what actually applied; absence of a key
@@ -1253,7 +1139,7 @@ af_done:
         reportAwbMode = *cm.find(ANDROID_CONTROL_AWB_MODE).data.u8;
     cm.update(ANDROID_CONTROL_AWB_MODE, &reportAwbMode, 1);
 
-    cm.update(ANDROID_CONTROL_AF_MODE, &afMode, 1);
+    cm.update(ANDROID_CONTROL_AF_MODE, &afReport.afMode, 1);
 
     /* AE state: only AE_MODE_OFF is advertised, so there is no loop to
      * converge or lock — always INACTIVE. Revisit when real AE lands. */
@@ -1265,7 +1151,7 @@ af_done:
      * CONVERGED otherwise. */
     uint8_t reportAwbState = ANDROID_CONTROL_AWB_STATE_INACTIVE;
     if (reportAwbMode == ANDROID_CONTROL_AWB_MODE_AUTO) {
-        bool awbLocked = mAfSweepActive;
+        bool awbLocked = mAf && mAf->isSweeping();
         if (cm.exists(ANDROID_CONTROL_AWB_LOCK))
             awbLocked = awbLocked || (*cm.find(ANDROID_CONTROL_AWB_LOCK).data.u8
                                       == ANDROID_CONTROL_AWB_LOCK_ON);

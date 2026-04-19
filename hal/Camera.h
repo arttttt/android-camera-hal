@@ -12,6 +12,7 @@
 #include "ImageConverter.h"
 #include "sensor/SensorConfig.h"
 #include "IspPipeline.h"
+#include "3a/AutoFocusController.h"
 #include "DbgUtils.h"
 
 namespace android {
@@ -69,19 +70,10 @@ protected:
     unsigned mV4l2Height;
     SensorConfig mSensorCfg;
 
-    /* Autofocus state */
-    int32_t mFocusPosition;
-    bool mAfSweepActive;
-    int32_t mAfSweepPos;
-    int32_t mAfSweepStep;
-    int32_t mAfSweepEnd;
-    int32_t mAfSweepBestPos;
-    uint64_t mAfSweepBestScore;
-    int32_t mAfSettleFrames; /* skip frames after VCM move for settling */
-
 private:
     ImageConverter mConverter;
     IspPipeline *mIsp;
+    AutoFocusController *mAf;
     Mutex mMutex;
 
     /* STATIC WRAPPERS */
