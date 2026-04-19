@@ -16,34 +16,11 @@ public:
     virtual bool init() = 0;
     virtual void destroy() = 0;
 
-    /*
-     * Process raw Bayer frame → RGBA8888.
-     * src: Bayer input (8-bit or 10-bit 16-bit LE)
-     * dst: RGBA output buffer
-     * Returns true on success.
-     */
-    virtual bool process(const uint8_t *src, uint8_t *dst,
-                         unsigned width, unsigned height,
-                         uint32_t pixFmt) = 0;
-
-    /* Synchronous process — waits for GPU completion, result in dst immediately.
-     * For single-shot capture (JPEG). srcInputSlot has the same meaning as in
-     * processToGralloc(). Default calls process(). */
-    virtual bool processSync(const uint8_t *src, uint8_t *dst,
-                              unsigned width, unsigned height,
-                              uint32_t pixFmt,
-                              int srcInputSlot = -1) {
-        (void)srcInputSlot;
-        return process(src, dst, width, height, pixFmt);
-    }
-
     /* Synchronous demosaic into an internal CPU-readable RGBA buffer
      * owned by the backend. Returns a pointer to tightly-packed RGBA8
      * (row stride = width * 4), valid until the next process*() call
-     * on this pipeline. Returns NULL on failure.
-     *
-     * Lets callers skip an extra CPU memcpy vs processSync() — used
-     * by the JPEG path where libjpeg reads the RGBA directly. */
+     * on this pipeline. Returns NULL on failure. Used by the JPEG path
+     * where libjpeg reads the RGBA directly. */
     virtual const uint8_t *processToCpu(const uint8_t *src,
                                          unsigned width, unsigned height,
                                          uint32_t pixFmt,
@@ -73,10 +50,9 @@ public:
      *               staging buffer.
      * crop:         sub-region of the scratch image (in source coordinates)
      *               to sample into the destination. Identity is
-     *               {0, 0, srcW, srcH}. Backends that do not support GPU
-     *               crop/scale may ignore a non-identity rect and reject the
-     *               call (return false) so the caller can fall back to CPU.
-     * Returns false if not supported — caller falls back to process(). */
+     *               {0, 0, srcW, srcH}.
+     * Returns false on backend / hardware failure; the caller has no
+     * fallback on Bayer hardware and should propagate the error. */
     virtual bool processToGralloc(const uint8_t *src, void *nativeBuffer,
                                    unsigned srcW, unsigned srcH,
                                    unsigned dstW, unsigned dstH,
@@ -106,8 +82,8 @@ public:
     void setAwbLock(bool lock) { mAwbLocked = lock; }
 
     /* Number of exportable Bayer input buffers the backend has pre-allocated.
-     * 0 means the backend does not support DMABUF input — callers must feed
-     * Bayer data through process()/processToGralloc's src pointer instead. */
+     * 0 means the backend does not support DMABUF input — callers must
+     * feed Bayer data through processToGralloc's src pointer instead. */
     virtual int inputBufferCount() const { return 0; }
 
     /* Size (bytes) of each input buffer. Valid once the backend has been

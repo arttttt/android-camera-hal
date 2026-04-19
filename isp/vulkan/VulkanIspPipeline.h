@@ -22,15 +22,6 @@ public:
     bool init() override;
     void destroy() override;
 
-    bool process(const uint8_t *src, uint8_t *dst,
-                 unsigned width, unsigned height,
-                 uint32_t pixFmt) override;
-
-    bool processSync(const uint8_t *src, uint8_t *dst,
-                      unsigned width, unsigned height,
-                      uint32_t pixFmt,
-                      int srcInputSlot = -1) override;
-
     const uint8_t *processToCpu(const uint8_t *src,
                                  unsigned width, unsigned height,
                                  uint32_t pixFmt,
