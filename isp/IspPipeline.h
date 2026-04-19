@@ -45,6 +45,8 @@ public:
 
     /* Process Bayer and blit result directly to gralloc buffer (no CPU readback).
      * nativeBuffer: ANativeWindowBuffer* cast to void*.
+     * srcW, srcH:   capture (Bayer) resolution — also the ISP scratch size.
+     * dstW, dstH:   destination framebuffer (gralloc) resolution.
      * acquireFence: caller-owned fd that signals when buffer is ready for GPU writes.
      *               Implementation consumes (closes) it on success, leaves open on failure.
      *               Pass -1 if no fence.
@@ -54,20 +56,22 @@ public:
      *               ring slot `srcInputSlot` (DMABUF capture path); `src` is
      *               ignored. If -1, the backend memcpy's `src` into its own
      *               staging buffer.
-     * crop:         sub-region of the demosaiced scratch image to sample from,
-     *               in source pixel coordinates. Identity is {0, 0, width, height}.
-     *               Backends that do not support GPU crop/scale may ignore a
-     *               non-identity rect and reject the call (return false) so the
-     *               caller can fall back to CPU.
+     * crop:         sub-region of the scratch image (in source coordinates)
+     *               to sample into the destination. Identity is
+     *               {0, 0, srcW, srcH}. Backends that do not support GPU
+     *               crop/scale may ignore a non-identity rect and reject the
+     *               call (return false) so the caller can fall back to CPU.
      * Returns false if not supported — caller falls back to process(). */
     virtual bool processToGralloc(const uint8_t *src, void *nativeBuffer,
-                                   unsigned width, unsigned height,
+                                   unsigned srcW, unsigned srcH,
+                                   unsigned dstW, unsigned dstH,
                                    uint32_t pixFmt,
                                    int acquireFence, int *releaseFence,
                                    int srcInputSlot,
                                    const CropRect &crop) {
-        (void)src; (void)nativeBuffer; (void)width; (void)height; (void)pixFmt;
-        (void)acquireFence; (void)srcInputSlot; (void)crop;
+        (void)src; (void)nativeBuffer;
+        (void)srcW; (void)srcH; (void)dstW; (void)dstH;
+        (void)pixFmt; (void)acquireFence; (void)srcInputSlot; (void)crop;
         *releaseFence = -1;
         return false;
     }

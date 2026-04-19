@@ -50,15 +50,16 @@ bool BufferProcessor::tryZeroCopy(const camera3_stream_buffer &srcBuf,
                                    const FrameContext &ctx,
                                    OutputState *state,
                                    uint8_t **sharedRgba) {
-    /* Zero-copy eligibility: RGBA preview stream, matching resolution,
-     * no zoom, Bayer input. Attempt before taking SW_WRITE_OFTEN lock
-     * so we skip the ~25ms blocklinear→staging detile when the GPU can
-     * write directly into gralloc. */
+    /* Zero-copy eligibility: RGBA preview stream, Bayer input. Zoom and
+     * cross-resolution are now handled by the GPU blit shader, so no
+     * resolution match or needZoom guard. Attempt before taking
+     * SW_WRITE_OFTEN lock — the zero-copy path writes gralloc directly
+     * through the driver's blocklinear ROP and skips the ~25ms detile
+     * the SW lock would otherwise force. */
     unsigned streamW = srcBuf.stream->width;
     unsigned streamH = srcBuf.stream->height;
     bool zcEligible = (srcBuf.stream->format == HAL_PIXEL_FORMAT_RGBA_8888 &&
-                       !*sharedRgba && !ctx.needZoom &&
-                       ctx.resW == streamW && ctx.resH == streamH &&
+                       !*sharedRgba &&
                        ctx.pixFmt != V4L2_PIX_FMT_UYVY &&
                        ctx.pixFmt != V4L2_PIX_FMT_YUYV);
     if (!zcEligible)
@@ -72,12 +73,13 @@ bool BufferProcessor::tryZeroCopy(const camera3_stream_buffer &srcBuf,
     int zcReleaseFd = -1;
     bool zcOk = false;
     BENCHMARK_SECTION("Raw->RGBA") {
-        /* Identity crop — zcEligible still guards on needZoom and
-         * matching resolution. Real crop/scale arrives in a later step
-         * once the shader supports it. */
-        CropRect crop = { 0, 0, (int)streamW, (int)streamH };
+        /* Crop rect is in capture-resolution coordinates; the shader
+         * handles both the zoom crop and any src→dst rescale. */
+        CropRect crop = { ctx.cropX, ctx.cropY, ctx.cropW, ctx.cropH };
         zcOk = mDeps.isp->processToGralloc(ctx.frameBuf, gb->getNativeBuffer(),
-                                            streamW, streamH, ctx.pixFmt,
+                                            ctx.resW, ctx.resH,
+                                            streamW, streamH,
+                                            ctx.pixFmt,
                                             -1, &zcReleaseFd, ctx.frameSlotIdx,
                                             crop);
     }

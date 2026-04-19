@@ -146,7 +146,8 @@ void VulkanIspPipeline::rebindInputDescriptor(int slot) {
 }
 
 void VulkanIspPipeline::recordGrallocBlit(VulkanGrallocCache::Entry *entry,
-                                           unsigned width, unsigned height,
+                                           unsigned srcW, unsigned srcH,
+                                           unsigned dstW, unsigned dstH,
                                            const CropRect &crop) {
     VkCommandBufferBeginInfo bi = {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -155,11 +156,11 @@ void VulkanIspPipeline::recordGrallocBlit(VulkanGrallocCache::Entry *entry,
     mDeviceState.pfn()->BeginCommandBuffer(mCmdBuf, &bi);
 
     /* Compute: Bayer → mScratchImg (via binding=1 storage image, set once
-     * in ensureBuffers). */
+     * in ensureBuffers). Dispatch sized to the scratch/capture extent. */
     mDeviceState.pfn()->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
     mDeviceState.pfn()->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
                                                mPipeLayout, 0, 1, &mDescSet, 0, NULL);
-    mDeviceState.pfn()->CmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
+    mDeviceState.pfn()->CmdDispatch(mCmdBuf, (srcW + 7) / 8, (srcH + 7) / 8, 1);
 
     /* scratch SHADER_WRITE → SHADER_READ for the fragment pass. */
     VkImageMemoryBarrier scratchB = {};
@@ -180,13 +181,14 @@ void VulkanIspPipeline::recordGrallocBlit(VulkanGrallocCache::Entry *entry,
         0, 0, NULL, 0, NULL, 1, &scratchB);
 
     /* Fragment pass: full-screen triangle samples scratch, driver's ROP
-     * rasterizes into gralloc's blocklinear layout correctly. */
+     * rasterizes into gralloc's blocklinear layout correctly. Render
+     * area / viewport use the destination extent. */
     VkRenderPassBeginInfo rpbi = {};
     rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     rpbi.renderPass  = mRenderPass;
     rpbi.framebuffer = entry->framebuffer;
-    rpbi.renderArea.extent.width  = width;
-    rpbi.renderArea.extent.height = height;
+    rpbi.renderArea.extent.width  = dstW;
+    rpbi.renderArea.extent.height = dstH;
 
     mDeviceState.pfn()->CmdBeginRenderPass(mCmdBuf, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
     mDeviceState.pfn()->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, mBlitPipeline);
@@ -203,24 +205,24 @@ void VulkanIspPipeline::recordGrallocBlit(VulkanGrallocCache::Entry *entry,
     pc.cropY = crop.y;
     pc.cropW = crop.w;
     pc.cropH = crop.h;
-    pc.srcW  = (int32_t)width;
-    pc.srcH  = (int32_t)height;
-    pc.outW  = (int32_t)width;
-    pc.outH  = (int32_t)height;
+    pc.srcW  = (int32_t)srcW;
+    pc.srcH  = (int32_t)srcH;
+    pc.outW  = (int32_t)dstW;
+    pc.outH  = (int32_t)dstH;
     mDeviceState.pfn()->CmdPushConstants(mCmdBuf, mPipeLayout,
                                           VK_SHADER_STAGE_FRAGMENT_BIT,
                                           0, sizeof(pc), &pc);
 
     VkViewport vp = {};
-    vp.width    = (float)width;
-    vp.height   = (float)height;
+    vp.width    = (float)dstW;
+    vp.height   = (float)dstH;
     vp.minDepth = 0.0f;
     vp.maxDepth = 1.0f;
     mDeviceState.pfn()->CmdSetViewport(mCmdBuf, 0, 1, &vp);
 
     VkRect2D sc = {};
-    sc.extent.width  = width;
-    sc.extent.height = height;
+    sc.extent.width  = dstW;
+    sc.extent.height = dstH;
     mDeviceState.pfn()->CmdSetScissor(mCmdBuf, 0, 1, &sc);
 
     mDeviceState.pfn()->CmdDraw(mCmdBuf, 3, 1, 0, 0);
@@ -895,7 +897,8 @@ void VulkanIspPipeline::prewarm(unsigned width, unsigned height, uint32_t pixFmt
 }
 
 bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
-                                          unsigned width, unsigned height,
+                                          unsigned srcW, unsigned srcH,
+                                          unsigned dstW, unsigned dstH,
                                           uint32_t pixFmt,
                                           int acquireFence, int *releaseFence,
                                           int srcInputSlot,
@@ -911,12 +914,12 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
 
     bool is16 = (pixFmt == V4L2_PIX_FMT_SRGGB10 || pixFmt == V4L2_PIX_FMT_SGRBG10 ||
                  pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SBGGR10);
-    if (!ensureBuffers(width, height, is16))
+    if (!ensureBuffers(srcW, srcH, is16))
         return false;
 
     ANativeWindowBuffer *anwb = (ANativeWindowBuffer *)nativeBuffer;
     VulkanGrallocCache::Entry *entry = NULL;
-    if (!mGrallocCache.getOrCreate(anwb, width, height, &entry))
+    if (!mGrallocCache.getOrCreate(anwb, dstW, dstH, &entry))
         return false;
 
     int64_t t0 = nowMs();
@@ -927,18 +930,18 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
     mInputRing.invalidateFromGpu(srcInputSlot);
 
     IspParams params;
-    fillParams(&params, width, height, is16, pixFmt);
+    fillParams(&params, srcW, srcH, is16, pixFmt);
     uploadParams(params);
     rebindInputDescriptor(srcInputSlot);
 
     int64_t t1 = nowMs();
-    recordGrallocBlit(entry, width, height, crop);
+    recordGrallocBlit(entry, srcW, srcH, dstW, dstH, crop);
     submitWithReleaseFence(entry, releaseFence);
     mPrevPending = true;
     int64_t t2 = nowMs();
 
     updateAwb((const uint8_t *)mInputRing.mapped(srcInputSlot),
-              width, height, is16, pixFmt);
+              srcW, srcH, is16, pixFmt);
 
     ALOGD("VK gralloc: upload=%lld submit=%lldms", t1 - t0, t2 - t1);
     return true;

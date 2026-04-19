@@ -34,7 +34,8 @@ public:
     void prewarm(unsigned width, unsigned height, uint32_t pixFmt) override;
 
     bool processToGralloc(const uint8_t *src, void *nativeBuffer,
-                           unsigned width, unsigned height,
+                           unsigned srcW, unsigned srcH,
+                           unsigned dstW, unsigned dstH,
                            uint32_t pixFmt,
                            int acquireFence, int *releaseFence,
                            int srcInputSlot,
@@ -87,10 +88,14 @@ private:
     /* Zero-copy gralloc path: record compute → memory barrier → render
      * pass blit of mScratchImg into the entry's framebuffer, no final
      * submit. Caller follows with submitWithReleaseFence().
-     * `crop` selects a sub-region of the scratch image to sample; it is
-     * {0, 0, width, height} for an identity blit. */
+     * srcW/H:  scratch image size (matches the capture resolution the
+     *          compute demosaic writes).
+     * dstW/H:  framebuffer / gralloc output size.
+     * crop:    sub-region of the scratch to sample, in source coords.
+     *          Identity blit passes {0, 0, srcW, srcH} with dst == src. */
     void recordGrallocBlit(VulkanGrallocCache::Entry *entry,
-                            unsigned width, unsigned height,
+                            unsigned srcW, unsigned srcH,
+                            unsigned dstW, unsigned dstH,
                             const CropRect &crop);
 
     /* Submit mCmdBuf on mFence and ask the driver for a sync_fence fd
