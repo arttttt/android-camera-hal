@@ -63,10 +63,6 @@ Camera::Camera(const char *devNode, int facing)
     , mCallbackOps(NULL)
     , mFacing(facing)
     , mJpegBufferSize(0)
-    , mRgbaTemp(NULL)
-    , mRgbaTempSize(0)
-    , mV4l2Width(0)
-    , mV4l2Height(0)
     , mSoftIspEnabled(true) {
     DBGUTILS_AUTOLOGCALL(__func__);
     for(size_t i = 0; i < NELEM(mDefaultRequestSettings); i++) {
@@ -101,7 +97,6 @@ Camera::~Camera() {
     if (mIsp) { mIsp->destroy(); delete mIsp; }
     mDev->disconnect();
     delete mDev;
-    free(mRgbaTemp);
 }
 
 status_t Camera::cameraInfo(struct camera_info *info) {
@@ -310,19 +305,6 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
         }
     }
 
-    /* Cache V4L2 resolution for safe conversion */
-    auto v4l2Res = mDev->resolution();
-    mV4l2Width = v4l2Res.width;
-    mV4l2Height = v4l2Res.height;
-
-    /* Pre-allocate temp RGBA buffer for resolution mismatch */
-    size_t needed = mV4l2Width * mV4l2Height * 4;
-    if (mRgbaTempSize < needed) {
-        free(mRgbaTemp);
-        mRgbaTemp = (uint8_t *)malloc(needed);
-        mRgbaTempSize = needed;
-    }
-
     return NO_ERROR;
 }
 
@@ -466,7 +448,6 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
     fctx.cropH          = cropH;
     fctx.needZoom       = needZoom;
     fctx.jpegBufferSize = mJpegBufferSize;
-    fctx.rgbaScratch    = mRgbaTemp;
 
     for(size_t i = 0; i < request->num_output_buffers; ++i) {
         BufferProcessor::OutputState bpState;

@@ -58,11 +58,6 @@ protected:
 
     bool mSoftIspEnabled;
 
-    /* Temp RGBA buffer for resolution-mismatch conversion */
-    uint8_t *mRgbaTemp;
-    size_t mRgbaTempSize;
-    unsigned mV4l2Width;
-    unsigned mV4l2Height;
     SensorConfig mSensorCfg;
 
 private:

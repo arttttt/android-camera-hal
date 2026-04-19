@@ -40,7 +40,6 @@ public:
         int            cropH;
         bool           needZoom;
         size_t         jpegBufferSize;
-        uint8_t       *rgbaScratch;
     };
 
     struct OutputState {
