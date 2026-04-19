@@ -47,6 +47,9 @@
 extern camera_module_t HAL_MODULE_INFO_SYM;
 
 namespace android {
+
+constexpr uint8_t Camera::kPipelineMaxDepth;
+constexpr int32_t Camera::kPartialResultCount;
 /**
  * \class Camera
  *
