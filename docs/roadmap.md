@@ -234,6 +234,57 @@ from the ISP rather than the rendered preview.
 
 Unblocks real AE, real AWB, face-aware AF, metering regions. Big payoff.
 
+## Tier 3.5 — produce-once, sample-many ISP (M)
+
+Today `VulkanIspPipeline::processToGralloc` records **demosaic + blit**
+per call, and `BufferProcessor` calls it once per output buffer. With
+2 streams (preview + video_record) the demosaic runs twice per frame;
+3 streams → three times. Pure redundancy: the Bayer source is the same.
+
+The scratch image (`mScratchImg`) is already a full-resolution RGBA
+texture. Restructure the API so demosaic runs once per frame and each
+output performs only the blit step:
+
+```
+isp->beginFrame(bayer_src, w, h)    // compute demosaic into scratch
+for each output buffer:
+    isp->blitToGralloc(dst, cropRect)  // fragment blit, samples scratch
+isp->endFrame()
+```
+
+Wins:
+
+- Demosaic cost = 1 per frame regardless of stream count.
+- AF sharpness metric samples `mScratchImg` directly — one more fallback
+  deleted (today it locks the gralloc output for `SW_READ_OFTEN`).
+- Future ISP stages (denoise, tone mapping) chain naturally: each stage
+  samples the previous stage's scratch image.
+- JPEG zero-copy path (Tier 1.5 item 4) reuses the same scratch instead
+  of re-running demosaic.
+
+Prerequisites:
+
+- Tier 1.5 step 2 (scratch image switches to `USAGE_SAMPLED` + sampler)
+  already gives us the right shape — this tier is the architectural
+  follow-up.
+- Works best after Tier 3 (request queue) introduces per-frame scope —
+  `beginFrame` / `endFrame` sit cleanly at the request boundary rather
+  than at the per-buffer loop.
+
+Shape of the change:
+
+- `IspPipeline` grows `beginFrame` / `endFrame` (defaults no-op so the
+  HW ISP path is unaffected).
+- `VulkanIspPipeline`: demosaic moves out of `processToGralloc` into
+  `beginFrame`. `processToGralloc` / `processToJpegBuffer` become pure
+  blit ops sampling `mScratchImg`.
+- `BufferProcessor` calls `beginFrame` before the output-buffer loop and
+  `endFrame` after; the loop body drops any state tied to "first stream
+  did the demosaic, rest reuse".
+
+Blocked on nothing in principle; blocked on Tier 3 for a clean home for
+`beginFrame` / `endFrame` boundaries.
+
 ## Deferred / low priority
 
 ### `isp/hw/HwIspPipeline.cpp` (427 LOC)
@@ -281,4 +332,5 @@ complexity until it does.
    (cleanup that makes Tier 3 easier).
 4. **Tier 3** — branch: request-queue refactor → DelayedControls →
    IPA module split.
-5. **Tier 4** — discretionary.
+5. **Tier 3.5** — produce-once / sample-many ISP, after Tier 3 lands.
+6. **Tier 4** — discretionary.
