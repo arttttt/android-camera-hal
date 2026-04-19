@@ -31,6 +31,7 @@
 #include <libyuv/scale_argb.h>
 #include <libyuv/rotate_argb.h>
 #include <cutils/properties.h>
+#include <vector>
 
 /* Tegra camera CIDs — not in standard V4L2 headers */
 #ifndef V4L2_CID_FRAME_LENGTH
@@ -882,6 +883,16 @@ skip_focus:
     bool needZoom = (cropW != (int)res.width || cropH != (int)res.height);
 
     uint8_t *rgbaBuffer = NULL;
+    /* Per-output-buffer state for the zero-copy path:
+     *   needsFinalUnlock — whether the cleanup loop at the bottom should
+     *                      call GraphicBufferMapper::unlock on this buffer.
+     *                      False iff we successfully handed the buffer back
+     *                      unlocked via processToGralloc (framework will
+     *                      wait on the release fence).
+     *   releaseFd        — sync_fence fd returned by vkQueueSignalReleaseImageANDROID;
+     *                      propagated as camera3_stream_buffer.release_fence. */
+    std::vector<bool> needsFinalUnlock(request->num_output_buffers, true);
+    std::vector<int>  releaseFd(request->num_output_buffers, -1);
     for(size_t i = 0; i < request->num_output_buffers; ++i) {
         const camera3_stream_buffer &srcBuf = request->output_buffers[i];
         uint8_t *buf = NULL;
@@ -924,16 +935,24 @@ skip_focus:
                                 GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_COMPOSER,
                                 streamW, const_cast<native_handle_t *>(*srcBuf.buffer),
                                 false);
-                            int releaseFd = -1;
+                            int zcReleaseFd = -1;
                             if (mIsp->processToGralloc(frame->buf, gb->getNativeBuffer(),
                                                         streamW, streamH, frame->pixFmt,
-                                                        -1, &releaseFd)) {
-                                /* Success — GPU wrote directly.
-                                 * Re-lock as READ to sync GPU writes for compositor, then unlock releases it */
-                                const Rect rect((int)streamW, (int)streamH);
-                                GraphicBufferMapper::get().lock(*srcBuf.buffer,
-                                    GRALLOC_USAGE_SW_READ_OFTEN, rect, (void **)&buf);
-                                rgbaBuffer = buf;
+                                                        -1, &zcReleaseFd)) {
+                                /* Zero-copy success. Framework waits on the release
+                                 * fence before compositing, so we can leave the
+                                 * buffer unlocked and avoid the ~5-10ms SW lock
+                                 * detile. Only the AF sweep needs CPU-readable
+                                 * preview pixels — re-lock in that case. */
+                                releaseFd[i] = zcReleaseFd;
+                                if (mSoftIspEnabled && mAfSweepActive) {
+                                    const Rect rect((int)streamW, (int)streamH);
+                                    GraphicBufferMapper::get().lock(*srcBuf.buffer,
+                                        GRALLOC_USAGE_SW_READ_OFTEN, rect, (void **)&buf);
+                                    rgbaBuffer = buf;
+                                } else {
+                                    needsFinalUnlock[i] = false;
+                                }
                             } else {
                                 /* Failed — re-lock and fall back to CPU readback */
                                 const Rect rect2((int)streamW, (int)streamH);
@@ -1101,10 +1120,11 @@ af_done:
     for(size_t i = 0; i < request->num_output_buffers; ++i) {
         const camera3_stream_buffer &srcBuf = request->output_buffers[i];
 
-        GraphicBufferMapper::get().unlock(*srcBuf.buffer);
+        if (needsFinalUnlock[i])
+            GraphicBufferMapper::get().unlock(*srcBuf.buffer);
         buffers.push_back(srcBuf);
         buffers.editTop().acquire_fence = -1;
-        buffers.editTop().release_fence = -1;
+        buffers.editTop().release_fence = releaseFd[i];
         buffers.editTop().status = CAMERA3_BUFFER_STATUS_OK;
     }
 

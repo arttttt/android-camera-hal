@@ -922,13 +922,14 @@ bool VulkanIspPipeline::process(const uint8_t *src, uint8_t *dst,
         mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
         mPfn->ResetFences(mDevice, 1, &mFence);
 
-        VkMappedMemoryRange outRange = {};
-        outRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-        outRange.memory = mOutMem;
-        outRange.size = VK_WHOLE_SIZE;
-        mPfn->InvalidateMappedMemoryRanges(mDevice, 1, &outRange);
-
-        memcpy(mPrevDst, mOutMap, mOutSize);
+        if (mPrevDst) {
+            VkMappedMemoryRange outRange = {};
+            outRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+            outRange.memory = mOutMem;
+            outRange.size = VK_WHOLE_SIZE;
+            mPfn->InvalidateMappedMemoryRanges(mDevice, 1, &outRange);
+            memcpy(mPrevDst, mOutMap, mOutSize);
+        }
         mPrevPending = false;
     }
 
@@ -991,6 +992,7 @@ bool VulkanIspPipeline::processSync(const uint8_t *src, uint8_t *dst,
         mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
         mPfn->ResetFences(mDevice, 1, &mFence);
         mPrevPending = false;
+        mPrevDst = NULL;
     }
 
     memcpy(mInMap, src, mInSize);
@@ -1073,12 +1075,21 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
 
     int64_t t0 = nowMs();
 
-    /* Drain any previous async process() work — we reuse mFence. */
+    /* Drain any previous async work — we reuse mFence / mCmdBuf / mInMap. */
     if (mPrevPending) {
         mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
         mPfn->ResetFences(mDevice, 1, &mFence);
+        if (mPrevDst) {
+            /* Previous caller was process() and expected deferred readback. */
+            VkMappedMemoryRange outRange = {};
+            outRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+            outRange.memory = mOutMem;
+            outRange.size = VK_WHOLE_SIZE;
+            mPfn->InvalidateMappedMemoryRanges(mDevice, 1, &outRange);
+            memcpy(mPrevDst, mOutMap, mOutSize);
+            mPrevDst = NULL;
+        }
         mPrevPending = false;
-        mPrevDst = NULL;
     }
 
     memcpy(mInMap, src, mInSize);
@@ -1169,15 +1180,25 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
     si.pCommandBuffers = &mCmdBuf;
     mPfn->QueueSubmit(mQueue, 1, &si, mFence);
 
-    /* C2: CPU-synchronous wait. Release fence propagation comes in C3. */
-    mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
-    mPfn->ResetFences(mDevice, 1, &mFence);
+    /* Ask the driver to emit a sync_fence fd that signals once the main submit
+     * above (plus any internal release barrier) completes. The framework owns
+     * this fd and waits on it before the compositor samples the buffer. */
+    if (mPfn->QueueSignalReleaseImageANDROID) {
+        int fd = -1;
+        VkResult qr = mPfn->QueueSignalReleaseImageANDROID(mQueue, 0, NULL,
+                                                            entry->image, &fd);
+        if (qr == VK_SUCCESS) *releaseFence = fd;
+        else ALOGW("vkQueueSignalReleaseImageANDROID failed: %d", (int)qr);
+    }
+
+    mPrevPending = true;
+    mPrevDst = NULL;
 
     int64_t t2 = nowMs();
 
     updateAwb(src, width, height, is16, pixFmt);
 
-    ALOGD("VK gralloc: upload=%lld dispatch+copy=%lldms", t1 - t0, t2 - t1);
+    ALOGD("VK gralloc: upload=%lld submit=%lldms", t1 - t0, t2 - t1);
     return true;
 }
 
