@@ -27,19 +27,12 @@ constexpr int32_t  kPartialResultCount = 1;
  * for a given mode — better for the framework than a 60 fps lie. */
 constexpr int64_t  kFallbackMinFrameDurationNs = 1000000000LL / 30;
 
-} /* namespace */
-
-camera_metadata_t *CameraStaticMetadata::build(V4l2Device *dev, int facing,
-                                                size_t *jpegBufferSize) {
-    CameraMetadata cm;
-
-    auto &resolutions = dev->availableResolutions();
-    auto &previewResolutions = resolutions;
+/* Sensor + lens physical/geometric attributes. Values that come from
+ * the running V4L2 device (pixel array size) read `dev` directly;
+ * everything else is a placeholder until per-sensor tuning lands
+ * (Tier 2). */
+void writeSensorInfo(CameraMetadata &cm, V4l2Device *dev, int facing) {
     auto sensorRes = dev->sensorResolution();
-
-    /***********************************\
-    |* START OF CAMERA CHARACTERISTICS *|
-    \***********************************/
 
     /* fake, but valid aspect ratio */
     const float sensorInfoPhysicalSize[] = {
@@ -64,6 +57,7 @@ camera_metadata_t *CameraStaticMetadata::build(V4l2Device *dev, int facing,
     const uint8_t lensFacing = (facing == CAMERA_FACING_FRONT)
         ? ANDROID_LENS_FACING_FRONT : ANDROID_LENS_FACING_BACK;
     cm.update(ANDROID_LENS_FACING, &lensFacing, 1);
+
     const int32_t sensorInfoPixelArraySize[] = {
         (int32_t)sensorRes.width,
         (int32_t)sensorRes.height
@@ -75,6 +69,17 @@ camera_metadata_t *CameraStaticMetadata::build(V4l2Device *dev, int facing,
         (int32_t)sensorRes.width,   (int32_t)sensorRes.height
     };
     cm.update(ANDROID_SENSOR_INFO_ACTIVE_ARRAY_SIZE, sensorInfoActiveArraySize, NELEM(sensorInfoActiveArraySize));
+
+    const int32_t sensorOrientation = (facing == CAMERA_FACING_FRONT) ? 270 : 90;
+    cm.update(ANDROID_SENSOR_ORIENTATION, &sensorOrientation, 1);
+}
+
+/* Resolution × format tables + per-mode durations. This is the bulk of
+ * the characteristics — every supported (format, width, height) pair
+ * needs to be enumerated here so CameraX / Camera2 can pick a stream. */
+void writeScalerConfigs(CameraMetadata &cm, V4l2Device *dev) {
+    auto &resolutions = dev->availableResolutions();
+    auto &previewResolutions = resolutions;
 
     static const int32_t scalerAvailableFormats[] = {
         HAL_PIXEL_FORMAT_RGBA_8888,
@@ -164,6 +169,15 @@ camera_metadata_t *CameraStaticMetadata::build(V4l2Device *dev, int facing,
     cm.update(ANDROID_SCALER_AVAILABLE_PROCESSED_SIZES, scalerAvailableProcessedSizes, (size_t)NELEM(scalerAvailableProcessedSizes));
     cm.update(ANDROID_SCALER_AVAILABLE_PROCESSED_MIN_DURATIONS, scalerAvailableProcessedMinDurations, (size_t)NELEM(scalerAvailableProcessedMinDurations));
 
+    static const float scalerAvailableMaxDigitalZoom = 4;
+    cm.update(ANDROID_SCALER_AVAILABLE_MAX_DIGITAL_ZOOM, &scalerAvailableMaxDigitalZoom, 1);
+}
+
+/* JPEG buffer sizing + thumbnail options. Writes *jpegBufferSize so the
+ * caller can use it for BLOB allocations in configureStreams. */
+void writeJpegInfo(CameraMetadata &cm, V4l2Device *dev, size_t *jpegBufferSize) {
+    auto sensorRes = dev->sensorResolution();
+
     /* ~1.1 byte/px typical JPEG, use 2 byte/px for safety margin */
     size_t jpegBuf = sensorRes.width * sensorRes.height * 2 + sizeof(camera3_jpeg_blob);
     jpegBuf = (jpegBuf + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
@@ -176,15 +190,30 @@ camera_metadata_t *CameraStaticMetadata::build(V4l2Device *dev, int facing,
         320, 240
     };
     cm.update(ANDROID_JPEG_AVAILABLE_THUMBNAIL_SIZES, jpegAvailableThumbnailSizes, NELEM(jpegAvailableThumbnailSizes));
+}
 
-    const int32_t sensorOrientation = (facing == CAMERA_FACING_FRONT) ? 270 : 90;
-    cm.update(ANDROID_SENSOR_ORIENTATION, &sensorOrientation, 1);
+/* Declared sensor operating ranges — exposure time, ISO, analog gain
+ * ceiling. Fixed ranges for now; per-sensor tuning (Tier 2) will pull
+ * these from JSON. */
+void writeSensorRanges(CameraMetadata &cm) {
+    /* Exposure time: 0.1ms to 200ms */
+    static const int64_t sensorExposureTimeRange[] = { 100000LL, 200000000LL };
+    cm.update(ANDROID_SENSOR_INFO_EXPOSURE_TIME_RANGE, sensorExposureTimeRange, NELEM(sensorExposureTimeRange));
 
+    /* ISO sensitivity: 100 to 3200 */
+    static const int32_t sensorSensitivityRange[] = { 100, 3200 };
+    cm.update(ANDROID_SENSOR_INFO_SENSITIVITY_RANGE, sensorSensitivityRange, NELEM(sensorSensitivityRange));
+
+    static const int32_t sensorMaxAnalogSensitivity = 1600;
+    cm.update(ANDROID_SENSOR_MAX_ANALOG_SENSITIVITY, &sensorMaxAnalogSensitivity, 1);
+}
+
+/* 3A capabilities + feature flags (flash, stats, scene modes, effects,
+ * stabilization). Everything that tells the framework "what we support"
+ * outside of resolutions/ranges. */
+void writeControlInfo(CameraMetadata &cm, int facing) {
     static const uint8_t flashInfoAvailable = ANDROID_FLASH_INFO_AVAILABLE_FALSE;
     cm.update(ANDROID_FLASH_INFO_AVAILABLE, &flashInfoAvailable, 1);
-
-    static const float scalerAvailableMaxDigitalZoom = 4;
-    cm.update(ANDROID_SCALER_AVAILABLE_MAX_DIGITAL_ZOOM, &scalerAvailableMaxDigitalZoom, 1);
 
     static const uint8_t statisticsFaceDetectModes[] = {
         ANDROID_STATISTICS_FACE_DETECT_MODE_OFF
@@ -234,17 +263,6 @@ camera_metadata_t *CameraStaticMetadata::build(V4l2Device *dev, int facing,
     };
     cm.update(ANDROID_CONTROL_AE_AVAILABLE_ANTIBANDING_MODES, controlAeAvailableAntibandingModes, NELEM(controlAeAvailableAntibandingModes));
 
-    /* Exposure time: 0.1ms to 200ms */
-    static const int64_t sensorExposureTimeRange[] = { 100000LL, 200000000LL };
-    cm.update(ANDROID_SENSOR_INFO_EXPOSURE_TIME_RANGE, sensorExposureTimeRange, NELEM(sensorExposureTimeRange));
-
-    /* ISO sensitivity: 100 to 3200 */
-    static const int32_t sensorSensitivityRange[] = { 100, 3200 };
-    cm.update(ANDROID_SENSOR_INFO_SENSITIVITY_RANGE, sensorSensitivityRange, NELEM(sensorSensitivityRange));
-
-    static const int32_t sensorMaxAnalogSensitivity = 1600;
-    cm.update(ANDROID_SENSOR_MAX_ANALOG_SENSITIVITY, &sensorMaxAnalogSensitivity, 1);
-
     static const uint8_t controlAwbAvailableModes[] = {
             ANDROID_CONTROL_AWB_MODE_AUTO,
             ANDROID_CONTROL_AWB_MODE_OFF
@@ -268,17 +286,29 @@ camera_metadata_t *CameraStaticMetadata::build(V4l2Device *dev, int facing,
             ANDROID_CONTROL_VIDEO_STABILIZATION_MODE_OFF
     };
     cm.update(ANDROID_CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES, controlAvailableVideoStabilizationModes, NELEM(controlAvailableVideoStabilizationModes));
+}
 
+/* HAL capability level + request-pipeline shape. Both constants go up
+ * once the request-queue refactor (Tier 3) lands. */
+void writeHalInfo(CameraMetadata &cm) {
     const uint8_t infoSupportedHardwareLevel = ANDROID_INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED;
     cm.update(ANDROID_INFO_SUPPORTED_HARDWARE_LEVEL, &infoSupportedHardwareLevel, 1);
 
     cm.update(ANDROID_REQUEST_PIPELINE_MAX_DEPTH,   &kPipelineMaxDepth,   1);
     cm.update(ANDROID_REQUEST_PARTIAL_RESULT_COUNT, &kPartialResultCount, 1);
+}
 
-    /***********************************\
-    |*  END OF CAMERA CHARACTERISTICS  *|
-    \***********************************/
+} /* namespace */
 
+camera_metadata_t *CameraStaticMetadata::build(V4l2Device *dev, int facing,
+                                                size_t *jpegBufferSize) {
+    CameraMetadata cm;
+    writeSensorInfo   (cm, dev, facing);
+    writeScalerConfigs(cm, dev);
+    writeJpegInfo     (cm, dev, jpegBufferSize);
+    writeSensorRanges (cm);
+    writeControlInfo  (cm, facing);
+    writeHalInfo      (cm);
     return cm.release();
 }
 
