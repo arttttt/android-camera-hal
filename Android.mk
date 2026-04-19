@@ -60,7 +60,6 @@ LOCAL_C_INCLUDES += \
     $(LOCAL_PATH)/v4l2 \
     $(LOCAL_PATH)/isp \
     $(LOCAL_PATH)/isp/vulkan \
-    $(LOCAL_PATH)/isp/vulkan/loader \
     $(LOCAL_PATH)/isp/hw \
     $(LOCAL_PATH)/image \
     $(LOCAL_PATH)/util
@@ -75,12 +74,12 @@ LOCAL_SRC_FILES += \
     isp/IspPipeline.cpp \
     isp/IspParams.cpp \
     isp/sensor/IspCalibration.cpp \
-    isp/vulkan/VulkanDeviceState.cpp \
-    isp/vulkan/VulkanInputRing.cpp \
     isp/vulkan/VulkanIspPipeline.cpp \
-    isp/vulkan/loader/VulkanLoader.cpp \
-    isp/vulkan/loader/HalHmiVulkanLoader.cpp \
-    isp/vulkan/loader/SystemVulkanLoader.cpp \
+    isp/vulkan/runtime/VulkanDeviceState.cpp \
+    isp/vulkan/runtime/loader/VulkanLoader.cpp \
+    isp/vulkan/runtime/loader/HalHmiVulkanLoader.cpp \
+    isp/vulkan/runtime/loader/SystemVulkanLoader.cpp \
+    isp/vulkan/io/VulkanInputRing.cpp \
     isp/hw/HwIspPipeline.cpp
 
 LOCAL_SHARED_LIBRARIES += libvulkan

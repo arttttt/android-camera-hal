@@ -2,8 +2,8 @@
 #include <utils/Log.h>
 
 #include "VulkanInputRing.h"
-#include "VulkanDeviceState.h"
-#include "loader/VulkanPfn.h"
+#include "runtime/VulkanDeviceState.h"
+#include "runtime/loader/VulkanPfn.h"
 
 namespace android {
 

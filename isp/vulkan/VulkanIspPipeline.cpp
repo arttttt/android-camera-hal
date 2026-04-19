@@ -14,8 +14,8 @@ static inline int64_t nowMs() {
 
 #include <system/window.h>
 #include "VulkanIspPipeline.h"
-#include "VulkanLoader.h"
-#include "VulkanPfn.h"
+#include "runtime/loader/VulkanLoader.h"
+#include "runtime/loader/VulkanPfn.h"
 
 /* VK_ANDROID_native_buffer types — absent from android-24 NDK vulkan.h */
 #ifndef VK_ANDROID_NATIVE_BUFFER_NUMBER

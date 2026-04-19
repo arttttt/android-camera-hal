@@ -100,7 +100,7 @@ Bundled today:
 Split into:
 - `isp/vulkan/VulkanIspPipeline.{h,cpp}` — orchestration of the per-frame
   path only (`process*`, `prewarm`, `waitForPreviousFrame`)
-- `isp/vulkan/VulkanDeviceState.{h,cpp}` — instance/device/queue/
+- `isp/vulkan/runtime/VulkanDeviceState.{h,cpp}` — instance/device/queue/
   descriptor-set lifecycle; RAII-owned by `VulkanIspPipeline`
 - `isp/vulkan/VulkanGrallocCache.{h,cpp}` — `GrallocEntry` + per-handle
   cache; takes a `VulkanDeviceState&` on construction

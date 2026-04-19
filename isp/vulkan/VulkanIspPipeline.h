@@ -3,8 +3,8 @@
 
 #include "IspPipeline.h"
 #include "IspParams.h"
-#include "VulkanDeviceState.h"
-#include "VulkanInputRing.h"
+#include "runtime/VulkanDeviceState.h"
+#include "io/VulkanInputRing.h"
 
 #include <cutils/native_handle.h>
 #include <unordered_map>
