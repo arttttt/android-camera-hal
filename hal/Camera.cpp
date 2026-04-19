@@ -902,23 +902,65 @@ skip_focus:
         if(e == TIMED_OUT) {
             ALOGE("buffer %p  frame %-4u  Wait on acquire fence timed out", srcBuf.buffer, request->frame_number);
         }
-        if(e == NO_ERROR) {
-            const Rect rect((int)srcBuf.stream->width, (int)srcBuf.stream->height);
-            e = GraphicBufferMapper::get().lock(*srcBuf.buffer, GRALLOC_USAGE_SW_WRITE_OFTEN, rect, (void **)&buf);
-            if(e != NO_ERROR) {
-                ALOGE("buffer %p  frame %-4u  lock failed", srcBuf.buffer, request->frame_number);
-            }
-        }
         if(e != NO_ERROR) {
             do GraphicBufferMapper::get().unlock(*request->output_buffers[i].buffer); while(i--);
             return NO_INIT;
         }
 
+        /* Zero-copy eligibility: RGBA preview stream, matching resolution, no
+         * zoom, Bayer input. Attempt before taking SW_WRITE_OFTEN lock so we
+         * skip the ~25ms blocklinear→staging detile when the GPU can write
+         * directly into gralloc. */
+        unsigned streamW = srcBuf.stream->width;
+        unsigned streamH = srcBuf.stream->height;
+        bool zcEligible = (srcBuf.stream->format == HAL_PIXEL_FORMAT_RGBA_8888 &&
+                           !rgbaBuffer && !needZoom &&
+                           res.width == streamW && res.height == streamH &&
+                           frame->pixFmt != V4L2_PIX_FMT_UYVY &&
+                           frame->pixFmt != V4L2_PIX_FMT_YUYV);
+        if (zcEligible) {
+            sp<GraphicBuffer> gb = new GraphicBuffer(streamW, streamH,
+                HAL_PIXEL_FORMAT_RGBA_8888,
+                GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_COMPOSER,
+                streamW, const_cast<native_handle_t *>(*srcBuf.buffer),
+                false);
+            int zcReleaseFd = -1;
+            bool zcOk = false;
+            BENCHMARK_SECTION("Raw->RGBA") {
+                zcOk = mIsp->processToGralloc(frame->buf, gb->getNativeBuffer(),
+                                               streamW, streamH, frame->pixFmt,
+                                               -1, &zcReleaseFd);
+            }
+            if (zcOk) {
+                releaseFd[i] = zcReleaseFd;
+                if (mSoftIspEnabled && mAfSweepActive) {
+                    /* AF sharpness metric needs CPU-readable pixels. This lock
+                     * blocks until GPU finishes (gralloc internally syncs), but
+                     * AF sweeps are infrequent. */
+                    const Rect rect((int)streamW, (int)streamH);
+                    GraphicBufferMapper::get().lock(*srcBuf.buffer,
+                        GRALLOC_USAGE_SW_READ_OFTEN, rect, (void **)&buf);
+                    rgbaBuffer = buf;
+                } else {
+                    needsFinalUnlock[i] = false;
+                }
+                continue;
+            }
+            /* Fall through to CPU path on zero-copy failure. */
+        }
+
+        {
+            const Rect rect((int)streamW, (int)streamH);
+            e = GraphicBufferMapper::get().lock(*srcBuf.buffer, GRALLOC_USAGE_SW_WRITE_OFTEN, rect, (void **)&buf);
+            if(e != NO_ERROR) {
+                ALOGE("buffer %p  frame %-4u  lock failed", srcBuf.buffer, request->frame_number);
+                do GraphicBufferMapper::get().unlock(*request->output_buffers[i].buffer); while(i--);
+                return NO_INIT;
+            }
+        }
+
         switch(srcBuf.stream->format) {
             case HAL_PIXEL_FORMAT_RGBA_8888: {
-                unsigned streamW = srcBuf.stream->width;
-                unsigned streamH = srcBuf.stream->height;
-
                 if(!rgbaBuffer) {
                     BENCHMARK_SECTION("Raw->RGBA") {
                         if(frame->pixFmt == V4L2_PIX_FMT_UYVY) {
@@ -927,47 +969,6 @@ skip_focus:
                         } else if(frame->pixFmt == V4L2_PIX_FMT_YUYV) {
                             mConverter.YUY2ToRGBA(frame->buf, needZoom ? mRgbaTemp : buf, res.width, res.height);
                             rgbaBuffer = needZoom ? mRgbaTemp : buf;
-                        } else if(!needZoom && res.width == streamW && res.height == streamH) {
-                            /* Try GPU direct render to gralloc — no CPU readback */
-                            GraphicBufferMapper::get().unlock(*srcBuf.buffer);
-                            sp<GraphicBuffer> gb = new GraphicBuffer(streamW, streamH,
-                                HAL_PIXEL_FORMAT_RGBA_8888,
-                                GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_COMPOSER,
-                                streamW, const_cast<native_handle_t *>(*srcBuf.buffer),
-                                false);
-                            int zcReleaseFd = -1;
-                            if (mIsp->processToGralloc(frame->buf, gb->getNativeBuffer(),
-                                                        streamW, streamH, frame->pixFmt,
-                                                        -1, &zcReleaseFd)) {
-                                /* Zero-copy success. Framework waits on the release
-                                 * fence before compositing, so we can leave the
-                                 * buffer unlocked and avoid the ~5-10ms SW lock
-                                 * detile. Only the AF sweep needs CPU-readable
-                                 * preview pixels — re-lock in that case. */
-                                releaseFd[i] = zcReleaseFd;
-                                if (mSoftIspEnabled && mAfSweepActive) {
-                                    const Rect rect((int)streamW, (int)streamH);
-                                    GraphicBufferMapper::get().lock(*srcBuf.buffer,
-                                        GRALLOC_USAGE_SW_READ_OFTEN, rect, (void **)&buf);
-                                    rgbaBuffer = buf;
-                                } else {
-                                    /* buf points to the initial SW_WRITE_OFTEN
-                                     * lock that we unlocked before the zero-copy
-                                     * trial — it's dangling. Clear it so the
-                                     * Zoom/Copy block below doesn't memcpy from
-                                     * a NULL rgbaBuffer into it. */
-                                    buf = NULL;
-                                    needsFinalUnlock[i] = false;
-                                }
-                            } else {
-                                /* Failed — re-lock and fall back to CPU readback */
-                                const Rect rect2((int)streamW, (int)streamH);
-                                GraphicBufferMapper::get().lock(*srcBuf.buffer,
-                                    GRALLOC_USAGE_SW_WRITE_OFTEN, rect2, (void **)&buf);
-                                mIsp->process(frame->buf, buf,
-                                               res.width, res.height, frame->pixFmt);
-                                rgbaBuffer = buf;
-                            }
                         } else {
                             /* Zoom or size mismatch — CPU readback path */
                             uint8_t *convDst = needZoom ? mRgbaTemp : buf;
