@@ -112,6 +112,7 @@ private:
     VkRenderPass mRenderPass;      /* 1 color attachment, RGBA8, DONT_CARE→STORE */
     VkDescriptorPool mDescPool;
     VkDescriptorSet mDescSet;
+    VkSampler mScratchSampler;   /* linear/clamp-to-edge, bound at binding=3 */
     VkCommandPool mCmdPool;
     VkCommandBuffer mCmdBuf;
 

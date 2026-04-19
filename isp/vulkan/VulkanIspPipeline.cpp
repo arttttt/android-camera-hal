@@ -29,6 +29,7 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mPipeLayout(VK_NULL_HANDLE), mPipeline(VK_NULL_HANDLE)
     , mBlitPipeline(VK_NULL_HANDLE), mRenderPass(VK_NULL_HANDLE)
     , mDescPool(VK_NULL_HANDLE), mDescSet(VK_NULL_HANDLE)
+    , mScratchSampler(VK_NULL_HANDLE)
     , mCmdPool(VK_NULL_HANDLE), mCmdBuf(VK_NULL_HANDLE)
     , mOutBuf(VK_NULL_HANDLE), mParamBuf(VK_NULL_HANDLE)
     , mOutMem(VK_NULL_HANDLE), mParamMem(VK_NULL_HANDLE)
@@ -335,10 +336,15 @@ bool VulkanIspPipeline::createShaders() {
 }
 
 bool VulkanIspPipeline::createDescriptorLayouts() {
-    /* Descriptor set layout — binding 0/2 = storage buffer (compute reads
-     * Bayer + params), binding 1 = storage image (compute writes, fragment
-     * reads). Layout is shared by both compute and graphics pipelines. */
-    VkDescriptorSetLayoutBinding bindings[3] = {};
+    /* Descriptor set layout:
+     *   binding 0 — storage buffer, Bayer input (compute only).
+     *   binding 1 — storage image, scratch write (compute only).
+     *   binding 2 — storage buffer, IspParams (compute only).
+     *   binding 3 — combined image sampler, scratch read for the blit
+     *               (fragment only). Backed by the same VkImage+view as
+     *               binding 1; the sampler gives the fragment path the
+     *               texture cache that imageLoad bypassed. */
+    VkDescriptorSetLayoutBinding bindings[4] = {};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -346,13 +352,16 @@ bool VulkanIspPipeline::createDescriptorLayouts() {
     bindings[1] = bindings[0];
     bindings[1].binding = 1;
     bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     bindings[2] = bindings[0];
     bindings[2].binding = 2;
+    bindings[3] = bindings[0];
+    bindings[3].binding = 3;
+    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo dslci = {};
     dslci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslci.bindingCount = 3;
+    dslci.bindingCount = 4;
     dslci.pBindings    = bindings;
     if (mDeviceState.pfn()->CreateDescriptorSetLayout(
             mDeviceState.device(), &dslci, NULL, &mDescLayout) != VK_SUCCESS) {
@@ -367,6 +376,24 @@ bool VulkanIspPipeline::createDescriptorLayouts() {
     if (mDeviceState.pfn()->CreatePipelineLayout(
             mDeviceState.device(), &plci, NULL, &mPipeLayout) != VK_SUCCESS) {
         ALOGE("vkCreatePipelineLayout failed");
+        return false;
+    }
+
+    /* Sampler for the scratch read path. Linear filter / clamp-to-edge
+     * are the defaults we want for eventual bilinear crop+scale; they
+     * have no effect on texelFetch (used today for identity blit). */
+    VkSamplerCreateInfo sci = {};
+    sci.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sci.magFilter    = VK_FILTER_LINEAR;
+    sci.minFilter    = VK_FILTER_LINEAR;
+    sci.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.unnormalizedCoordinates = VK_FALSE;
+    if (mDeviceState.pfn()->CreateSampler(
+            mDeviceState.device(), &sci, NULL, &mScratchSampler) != VK_SUCCESS) {
+        ALOGE("vkCreateSampler failed");
         return false;
     }
     return true;
@@ -498,17 +525,20 @@ bool VulkanIspPipeline::createGraphicsPipeline() {
 }
 
 bool VulkanIspPipeline::allocateDescriptorSet() {
-    /* 2 storage buffers (input, params) + 1 storage image (output). */
-    VkDescriptorPoolSize poolSizes[2] = {};
+    /* 2 storage buffers (input, params) + 1 storage image (scratch
+     * write) + 1 combined image sampler (scratch read). */
+    VkDescriptorPoolSize poolSizes[3] = {};
     poolSizes[0].type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     poolSizes[0].descriptorCount = 2;
     poolSizes[1].type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     poolSizes[1].descriptorCount = 1;
+    poolSizes[2].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[2].descriptorCount = 1;
 
     VkDescriptorPoolCreateInfo dpci = {};
     dpci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     dpci.maxSets       = 1;
-    dpci.poolSizeCount = 2;
+    dpci.poolSizeCount = 3;
     dpci.pPoolSizes    = poolSizes;
     if (mDeviceState.pfn()->CreateDescriptorPool(
             mDeviceState.device(), &dpci, NULL, &mDescPool) != VK_SUCCESS) {
@@ -633,7 +663,9 @@ bool VulkanIspPipeline::createScratchImage(unsigned width, unsigned height) {
     ici.arrayLayers   = 1;
     ici.samples       = VK_SAMPLE_COUNT_1_BIT;
     ici.tiling        = VK_IMAGE_TILING_OPTIMAL;
-    ici.usage         = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    ici.usage         = VK_IMAGE_USAGE_STORAGE_BIT |
+                        VK_IMAGE_USAGE_SAMPLED_BIT |
+                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (mDeviceState.pfn()->CreateImage(mDeviceState.device(), &ici, NULL, &mScratchImg) != VK_SUCCESS) {
@@ -708,22 +740,29 @@ bool VulkanIspPipeline::createScratchImage(unsigned width, unsigned height) {
 }
 
 void VulkanIspPipeline::writeStaticDescriptors() {
-    /* Initial bind: input slot 0 (rebound per-frame via rebindInputDescriptor),
-     * scratch image (binding 1, never rebinds — same VkImage every frame),
-     * param buffer (binding 2, never rebinds — content updated via uploadParams). */
+    /* Initial bind: input slot 0 (rebound per-frame via
+     * rebindInputDescriptor), scratch image for compute write
+     * (binding 1) and for fragment sampled read (binding 3) — same
+     * VkImage+view, different descriptor type. Param buffer (binding 2)
+     * content is rewritten per-frame via uploadParams. */
     VkDescriptorBufferInfo inInfo = {};
     inInfo.buffer = mInputRing.buffer(0);
     inInfo.range  = mInputRing.slotSize();
 
-    VkDescriptorImageInfo imgInfo = {};
-    imgInfo.imageView   = mScratchView;
-    imgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkDescriptorImageInfo storageInfo = {};
+    storageInfo.imageView   = mScratchView;
+    storageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
     VkDescriptorBufferInfo paramInfo = {};
     paramInfo.buffer = mParamBuf;
     paramInfo.range  = sizeof(IspParams);
 
-    VkWriteDescriptorSet writes[3] = {};
+    VkDescriptorImageInfo sampledInfo = {};
+    sampledInfo.sampler     = mScratchSampler;
+    sampledInfo.imageView   = mScratchView;
+    sampledInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    VkWriteDescriptorSet writes[4] = {};
     writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet          = mDescSet;
     writes[0].dstBinding      = 0;
@@ -736,7 +775,7 @@ void VulkanIspPipeline::writeStaticDescriptors() {
     writes[1].dstBinding      = 1;
     writes[1].descriptorCount = 1;
     writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    writes[1].pImageInfo      = &imgInfo;
+    writes[1].pImageInfo      = &storageInfo;
 
     writes[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[2].dstSet          = mDescSet;
@@ -745,7 +784,14 @@ void VulkanIspPipeline::writeStaticDescriptors() {
     writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[2].pBufferInfo     = &paramInfo;
 
-    mDeviceState.pfn()->UpdateDescriptorSets(mDeviceState.device(), 3, writes, 0, NULL);
+    writes[3].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet          = mDescSet;
+    writes[3].dstBinding      = 3;
+    writes[3].descriptorCount = 1;
+    writes[3].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[3].pImageInfo      = &sampledInfo;
+
+    mDeviceState.pfn()->UpdateDescriptorSets(mDeviceState.device(), 4, writes, 0, NULL);
 }
 
 /* --- main processing paths --- */
@@ -939,6 +985,10 @@ void VulkanIspPipeline::destroy() {
         if (mDescLayout) {
             mDeviceState.pfn()->DestroyDescriptorSetLayout(mDeviceState.device(), mDescLayout, NULL);
             mDescLayout = VK_NULL_HANDLE;
+        }
+        if (mScratchSampler) {
+            mDeviceState.pfn()->DestroySampler(mDeviceState.device(), mScratchSampler, NULL);
+            mScratchSampler = VK_NULL_HANDLE;
         }
         if (mFragShader) {
             mDeviceState.pfn()->DestroyShaderModule(mDeviceState.device(), mFragShader, NULL);

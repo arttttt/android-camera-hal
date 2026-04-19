@@ -20,10 +20,13 @@ static const char kBlitVertexGlsl[] =
 
 static const char kBlitFragmentGlsl[] =
     "#version 450\n"
-    "layout(rgba8, binding = 1) uniform readonly image2D scratchImg;\n"
+    "layout(set = 0, binding = 3) uniform sampler2D scratchTex;\n"
     "layout(location = 0) out vec4 outColor;\n"
     "void main() {\n"
-    "    outColor = imageLoad(scratchImg, ivec2(gl_FragCoord.xy));\n"
+    "    /* texelFetch matches the previous imageLoad pixel-for-pixel.\n"
+    "     * The sampler is present for the forthcoming texture()-based\n"
+    "     * crop+scale path; texelFetch ignores its filter/addressing. */\n"
+    "    outColor = texelFetch(scratchTex, ivec2(gl_FragCoord.xy), 0);\n"
     "}\n";
 
 }; /* namespace android */

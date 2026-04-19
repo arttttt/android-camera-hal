@@ -68,6 +68,8 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
     DEV(BindImageMemory);
     DEV(CreateImageView);
     DEV(DestroyImageView);
+    DEV(CreateSampler);
+    DEV(DestroySampler);
 
     DEV(CreateFence);
     DEV(DestroyFence);

@@ -119,6 +119,8 @@ struct VulkanPfn {
     PFN_vkBindImageMemory                           BindImageMemory;
     PFN_vkCreateImageView                           CreateImageView;
     PFN_vkDestroyImageView                          DestroyImageView;
+    PFN_vkCreateSampler                             CreateSampler;
+    PFN_vkDestroySampler                            DestroySampler;
 
     PFN_vkCreateFence                               CreateFence;
     PFN_vkDestroyFence                              DestroyFence;
