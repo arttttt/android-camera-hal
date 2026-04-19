@@ -1,0 +1,93 @@
+#ifndef ISP_VULKAN_SHADERS_DEMOSAIC_COMPUTE_H
+#define ISP_VULKAN_SHADERS_DEMOSAIC_COMPUTE_H
+
+namespace android {
+
+/* Compute shader consumed by VulkanIspPipeline: reads Bayer bytes out
+ * of the input SSBO (binding 0), runs a McGuire / Malvar-He-Cutler 5x5
+ * demosaic, applies WB + CCM + sRGB gamma when params.doIsp is set,
+ * writes RGBA8 into the scratch storage image (binding 1). The
+ * parameter buffer layout (binding 2) mirrors IspParams in
+ * isp/IspParams.h — keep the two in sync. */
+static const char kDemosaicComputeGlsl[] =
+    "#version 450\n"
+    "layout(local_size_x = 8, local_size_y = 8) in;\n"
+    "layout(std430, binding = 0) buffer InputBuf  { uint data[]; } inBuf;\n"
+    "layout(rgba8, binding = 1) writeonly uniform image2D outImg;\n"
+    "layout(std430, binding = 2) buffer Params {\n"
+    "    uint width; uint height; uint bayerPhase; uint is16bit;\n"
+    "    uint wbR; uint wbG; uint wbB; uint doIsp;\n"
+    "    int ccm[9];\n"
+    "} params;\n"
+    "uint readPixel(uint x, uint y) {\n"
+    "    if (params.is16bit != 0u) {\n"
+    "        uint idx = y * params.width + x;\n"
+    "        uint word = inBuf.data[idx >> 1u];\n"
+    "        uint val = ((idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16);\n"
+    "        return val >> 2;\n"
+    "    } else {\n"
+    "        uint idx = y * params.width + x;\n"
+    "        uint word = inBuf.data[idx >> 2u];\n"
+    "        return (word >> ((idx & 3u) * 8u)) & 0xFFu;\n"
+    "    }\n"
+    "}\n"
+    "float srgbGamma(float lin) {\n"
+    "    return (lin <= 0.0031308) ? lin * 12.92 : 1.055 * pow(lin, 1.0/2.4) - 0.055;\n"
+    "}\n"
+    "void main() {\n"
+    "    uint x = gl_GlobalInvocationID.x, y = gl_GlobalInvocationID.y;\n"
+    "    if (x >= params.width || y >= params.height) return;\n"
+    "\n"
+    "    /* McGuire/Malvar-He-Cutler 5x5 demosaic - 13 samples, branch-free */\n"
+    "    int ix = int(x), iy = int(y);\n"
+    "    int iw = int(params.width) - 1, ih = int(params.height) - 1;\n"
+    "#define PX(dx, dy) float(readPixel(uint(clamp(ix+(dx), 0, iw)), uint(clamp(iy+(dy), 0, ih))))\n"
+    "    float pC  = PX(0, 0);\n"
+    "    float pN  = PX(0,-1);  float pS  = PX(0, 1);\n"
+    "    float pW  = PX(-1, 0); float pE  = PX(1, 0);\n"
+    "    float pN2 = PX(0,-2);  float pS2 = PX(0, 2);\n"
+    "    float pW2 = PX(-2, 0); float pE2 = PX(2, 0);\n"
+    "    float pNW = PX(-1,-1); float pNE = PX(1,-1);\n"
+    "    float pSW = PX(-1, 1); float pSE = PX(1, 1);\n"
+    "#undef PX\n"
+    "    float vFar  = pN2 + pS2;\n"
+    "    float vNear = pN + pS;\n"
+    "    float diag  = pNW + pNE + pSW + pSE;\n"
+    "    float hFar  = pW2 + pE2;\n"
+    "    float hNear = pW + pE;\n"
+    "\n"
+    "    float Pcross = (4.0*pC - vFar + 2.0*vNear - hFar + 2.0*hNear) * 0.125;\n"
+    "    float Pcheck = (6.0*pC - 1.5*vFar + 2.0*diag - 1.5*hFar) * 0.125;\n"
+    "    float Ptheta = (5.0*pC + 0.5*vFar - diag - hFar + 4.0*hNear) * 0.125;\n"
+    "    float Pphi   = (5.0*pC - vFar - diag + 0.5*hFar + 4.0*vNear) * 0.125;\n"
+    "\n"
+    "    /* Branch-free Bayer position selection */\n"
+    "    uint rX = params.bayerPhase & 1u;\n"
+    "    uint rY = (params.bayerPhase >> 1) & 1u;\n"
+    "    bool isRedRow = ((y + rY) & 1u) == 0u;\n"
+    "    bool isRedCol = ((x + rX) & 1u) == 0u;\n"
+    "    float fR = isRedRow ? (isRedCol ? pC : Ptheta) : (isRedCol ? Pphi : Pcheck);\n"
+    "    float fG = (isRedRow == isRedCol) ? Pcross : pC;\n"
+    "    float fB = isRedRow ? (isRedCol ? Pcheck : Pphi) : (isRedCol ? Ptheta : pC);\n"
+    "    int R = clamp(int(fR + 0.5), 0, 255);\n"
+    "    int G = clamp(int(fG + 0.5), 0, 255);\n"
+    "    int B = clamp(int(fB + 0.5), 0, 255);\n"
+    "\n"
+    "    if (params.doIsp != 0u) {\n"
+    "        R = clamp((R * int(params.wbR)) >> 8, 0, 255);\n"
+    "        G = clamp((G * int(params.wbG)) >> 8, 0, 255);\n"
+    "        B = clamp((B * int(params.wbB)) >> 8, 0, 255);\n"
+    "        int rr = clamp((params.ccm[0]*R + params.ccm[1]*G + params.ccm[2]*B) >> 10, 0, 255);\n"
+    "        int gg = clamp((params.ccm[3]*R + params.ccm[4]*G + params.ccm[5]*B) >> 10, 0, 255);\n"
+    "        int bb = clamp((params.ccm[6]*R + params.ccm[7]*G + params.ccm[8]*B) >> 10, 0, 255);\n"
+    "        R = clamp(int(srgbGamma(float(rr)/255.0) * 255.0 + 0.5), 0, 255);\n"
+    "        G = clamp(int(srgbGamma(float(gg)/255.0) * 255.0 + 0.5), 0, 255);\n"
+    "        B = clamp(int(srgbGamma(float(bb)/255.0) * 255.0 + 0.5), 0, 255);\n"
+    "    }\n"
+    "    imageStore(outImg, ivec2(int(x), int(y)),\n"
+    "               vec4(float(R), float(G), float(B), 255.0) / 255.0);\n"
+    "}\n";
+
+}; /* namespace android */
+
+#endif /* ISP_VULKAN_SHADERS_DEMOSAIC_COMPUTE_H */

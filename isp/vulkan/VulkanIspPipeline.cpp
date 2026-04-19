@@ -15,6 +15,8 @@ static inline int64_t nowMs() {
 #include <system/window.h>
 #include "VulkanIspPipeline.h"
 #include "runtime/loader/VulkanPfn.h"
+#include "shaders/DemosaicCompute.h"
+#include "shaders/Blit.h"
 
 namespace android {
 
@@ -169,90 +171,10 @@ bool VulkanIspPipeline::init() {
         return false;
     }
 
-    /* Shader module — GLSL source via VK_NV_glsl_shader */
-    static const char *kGlslShaderSrc =
-        "#version 450\n"
-        "layout(local_size_x = 8, local_size_y = 8) in;\n"
-        "layout(std430, binding = 0) buffer InputBuf  { uint data[]; } inBuf;\n"
-        "layout(rgba8, binding = 1) writeonly uniform image2D outImg;\n"
-        "layout(std430, binding = 2) buffer Params {\n"
-        "    uint width; uint height; uint bayerPhase; uint is16bit;\n"
-        "    uint wbR; uint wbG; uint wbB; uint doIsp;\n"
-        "    int ccm[9];\n"
-        "} params;\n"
-        "uint readPixel(uint x, uint y) {\n"
-        "    if (params.is16bit != 0u) {\n"
-        "        uint idx = y * params.width + x;\n"
-        "        uint word = inBuf.data[idx >> 1u];\n"
-        "        uint val = ((idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16);\n"
-        "        return val >> 2;\n"
-        "    } else {\n"
-        "        uint idx = y * params.width + x;\n"
-        "        uint word = inBuf.data[idx >> 2u];\n"
-        "        return (word >> ((idx & 3u) * 8u)) & 0xFFu;\n"
-        "    }\n"
-        "}\n"
-        "float srgbGamma(float lin) {\n"
-        "    return (lin <= 0.0031308) ? lin * 12.92 : 1.055 * pow(lin, 1.0/2.4) - 0.055;\n"
-        "}\n"
-        "void main() {\n"
-        "    uint x = gl_GlobalInvocationID.x, y = gl_GlobalInvocationID.y;\n"
-        "    if (x >= params.width || y >= params.height) return;\n"
-        "\n"
-        "    /* McGuire/Malvar-He-Cutler 5x5 demosaic — 13 samples, branch-free */\n"
-        "    int ix = int(x), iy = int(y);\n"
-        "    int iw = int(params.width) - 1, ih = int(params.height) - 1;\n"
-        "#define PX(dx, dy) float(readPixel(uint(clamp(ix+(dx), 0, iw)), uint(clamp(iy+(dy), 0, ih))))\n"
-        "    float pC  = PX(0, 0);\n"
-        "    float pN  = PX(0,-1);  float pS  = PX(0, 1);\n"
-        "    float pW  = PX(-1, 0); float pE  = PX(1, 0);\n"
-        "    float pN2 = PX(0,-2);  float pS2 = PX(0, 2);\n"
-        "    float pW2 = PX(-2, 0); float pE2 = PX(2, 0);\n"
-        "    float pNW = PX(-1,-1); float pNE = PX(1,-1);\n"
-        "    float pSW = PX(-1, 1); float pSE = PX(1, 1);\n"
-        "#undef PX\n"
-        "    float vFar  = pN2 + pS2;\n"
-        "    float vNear = pN + pS;\n"
-        "    float diag  = pNW + pNE + pSW + pSE;\n"
-        "    float hFar  = pW2 + pE2;\n"
-        "    float hNear = pW + pE;\n"
-        "\n"
-        "    float Pcross = (4.0*pC - vFar + 2.0*vNear - hFar + 2.0*hNear) * 0.125;\n"
-        "    float Pcheck = (6.0*pC - 1.5*vFar + 2.0*diag - 1.5*hFar) * 0.125;\n"
-        "    float Ptheta = (5.0*pC + 0.5*vFar - diag - hFar + 4.0*hNear) * 0.125;\n"
-        "    float Pphi   = (5.0*pC - vFar - diag + 0.5*hFar + 4.0*vNear) * 0.125;\n"
-        "\n"
-        "    /* Branch-free Bayer position selection */\n"
-        "    uint rX = params.bayerPhase & 1u;\n"
-        "    uint rY = (params.bayerPhase >> 1) & 1u;\n"
-        "    bool isRedRow = ((y + rY) & 1u) == 0u;\n"
-        "    bool isRedCol = ((x + rX) & 1u) == 0u;\n"
-        "    float fR = isRedRow ? (isRedCol ? pC : Ptheta) : (isRedCol ? Pphi : Pcheck);\n"
-        "    float fG = (isRedRow == isRedCol) ? Pcross : pC;\n"
-        "    float fB = isRedRow ? (isRedCol ? Pcheck : Pphi) : (isRedCol ? Ptheta : pC);\n"
-        "    int R = clamp(int(fR + 0.5), 0, 255);\n"
-        "    int G = clamp(int(fG + 0.5), 0, 255);\n"
-        "    int B = clamp(int(fB + 0.5), 0, 255);\n"
-        "\n"
-        "    if (params.doIsp != 0u) {\n"
-        "        R = clamp((R * int(params.wbR)) >> 8, 0, 255);\n"
-        "        G = clamp((G * int(params.wbG)) >> 8, 0, 255);\n"
-        "        B = clamp((B * int(params.wbB)) >> 8, 0, 255);\n"
-        "        int rr = clamp((params.ccm[0]*R + params.ccm[1]*G + params.ccm[2]*B) >> 10, 0, 255);\n"
-        "        int gg = clamp((params.ccm[3]*R + params.ccm[4]*G + params.ccm[5]*B) >> 10, 0, 255);\n"
-        "        int bb = clamp((params.ccm[6]*R + params.ccm[7]*G + params.ccm[8]*B) >> 10, 0, 255);\n"
-        "        R = clamp(int(srgbGamma(float(rr)/255.0) * 255.0 + 0.5), 0, 255);\n"
-        "        G = clamp(int(srgbGamma(float(gg)/255.0) * 255.0 + 0.5), 0, 255);\n"
-        "        B = clamp(int(srgbGamma(float(bb)/255.0) * 255.0 + 0.5), 0, 255);\n"
-        "    }\n"
-        "    imageStore(outImg, ivec2(int(x), int(y)),\n"
-        "               vec4(float(R), float(G), float(B), 255.0) / 255.0);\n"
-        "}\n";
-
     VkShaderModuleCreateInfo smi = {};
     smi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    smi.codeSize = strlen(kGlslShaderSrc);
-    smi.pCode = (const uint32_t *)kGlslShaderSrc;
+    smi.codeSize = strlen(kDemosaicComputeGlsl);
+    smi.pCode = (const uint32_t *)kDemosaicComputeGlsl;
 
     if (mDeviceState.pfn()->CreateShaderModule(mDeviceState.device(), &smi, NULL, &mShader) != VK_SUCCESS) {
         ALOGE("vkCreateShaderModule failed");
@@ -313,32 +235,17 @@ bool VulkanIspPipeline::init() {
     /* Graphics pipeline — blits scratch image → gralloc colour attachment
      * through the driver's ROP path, which is the only write path that
      * knows about nvgralloc's blocklinear layout on Tegra. */
-    static const char *kVertexShaderSrc =
-        "#version 450\n"
-        "void main() {\n"
-        "    float x = float((gl_VertexIndex << 1) & 2) * 2.0 - 1.0;\n"
-        "    float y = float(gl_VertexIndex & 2) * 2.0 - 1.0;\n"
-        "    gl_Position = vec4(x, y, 0.0, 1.0);\n"
-        "}\n";
-    static const char *kFragmentShaderSrc =
-        "#version 450\n"
-        "layout(rgba8, binding = 1) uniform readonly image2D scratchImg;\n"
-        "layout(location = 0) out vec4 outColor;\n"
-        "void main() {\n"
-        "    outColor = imageLoad(scratchImg, ivec2(gl_FragCoord.xy));\n"
-        "}\n";
-
     VkShaderModuleCreateInfo vsmi = {};
     vsmi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    vsmi.codeSize = strlen(kVertexShaderSrc);
-    vsmi.pCode = (const uint32_t *)kVertexShaderSrc;
+    vsmi.codeSize = strlen(kBlitVertexGlsl);
+    vsmi.pCode = (const uint32_t *)kBlitVertexGlsl;
     if (mDeviceState.pfn()->CreateShaderModule(mDeviceState.device(), &vsmi, NULL, &mVertShader) != VK_SUCCESS) {
         ALOGE("vertex vkCreateShaderModule failed");
         destroy();
         return false;
     }
-    vsmi.codeSize = strlen(kFragmentShaderSrc);
-    vsmi.pCode = (const uint32_t *)kFragmentShaderSrc;
+    vsmi.codeSize = strlen(kBlitFragmentGlsl);
+    vsmi.pCode = (const uint32_t *)kBlitFragmentGlsl;
     if (mDeviceState.pfn()->CreateShaderModule(mDeviceState.device(), &vsmi, NULL, &mFragShader) != VK_SUCCESS) {
         ALOGE("fragment vkCreateShaderModule failed");
         destroy();
