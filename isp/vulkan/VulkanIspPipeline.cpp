@@ -1353,6 +1353,13 @@ void VulkanIspPipeline::destroy() {
     mNativeBufferAvail = false;
 }
 
+void VulkanIspPipeline::waitForPreviousFrame() {
+    if (!mReady || !mPrevPending) return;
+    mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
+    mPfn->ResetFences(mDevice, 1, &mFence);
+    mPrevPending = false;
+}
+
 int VulkanIspPipeline::exportInputBufferFd(int idx) {
     if (idx < 0 || idx >= kInputBufferCount) return -1;
     if (!mPfn || !mPfn->GetMemoryFdKHR) return -1;

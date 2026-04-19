@@ -44,6 +44,7 @@ public:
     int    inputBufferCount() const override { return kInputBufferCount; }
     size_t inputBufferSize()  const override { return mInSize; }
     int    exportInputBufferFd(int idx) override;
+    void   waitForPreviousFrame() override;
 
     /* Ring depth for V4L2 ↔ Vulkan Bayer input hand-off. Same as the V4L2
      * queue depth so each V4L2 slot owns exactly one Vulkan buffer; the

@@ -866,6 +866,11 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
 skip_focus:
     notifyShutter(request->frame_number, (uint64_t)timestamp);
 
+    /* Drain the previous frame's GPU work before V4L2 can reuse any input
+     * buffer slot (readLock flushes deferred QBUFs internally). Without
+     * this, VI starts overwriting a slot the shader is still reading. */
+    mIsp->waitForPreviousFrame();
+
     int64_t t0 = systemTime();
     BENCHMARK_SECTION("Lock/Read") {
         frame = mDev->readLock();

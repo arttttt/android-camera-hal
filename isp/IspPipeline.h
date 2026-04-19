@@ -92,6 +92,12 @@ public:
      * keeps its own reference to the underlying VkDeviceMemory. */
     virtual int exportInputBufferFd(int idx) { (void)idx; return -1; }
 
+    /* Block until any async GPU work submitted by the previous process*
+     * call has completed. Safe to call unconditionally. Needed before
+     * returning an input buffer to V4L2 on the DMABUF capture path so VI
+     * doesn't overwrite a slot the shader is still reading. */
+    virtual void waitForPreviousFrame() {}
+
 protected:
     unsigned mWbR = 256, mWbG = 256, mWbB = 256;
     const int16_t *mCcm = nullptr;
