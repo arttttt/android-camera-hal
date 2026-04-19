@@ -635,12 +635,34 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
         ALOGE("Could not stop streaming");
         return NO_INIT;
     }
+
+    /* Allocate Vulkan input buffers at the target resolution before V4L2 so
+     * we can hand their dma-buf fds to VIDIOC_REQBUFS(DMABUF). If any step of
+     * the export fails we fall back to MMAP + memcpy silently. */
+    mIsp->prewarm(width, height, mDev->pixelFormat());
+    {
+        int n = mIsp->inputBufferCount();
+        if (n > 0 && n == V4L2DEVICE_BUF_COUNT) {
+            int fds[V4L2DEVICE_BUF_COUNT];
+            bool allOk = true;
+            for (int i = 0; i < n; i++) {
+                fds[i] = mIsp->exportInputBufferFd(i);
+                if (fds[i] < 0) { allOk = false; break; }
+            }
+            if (allOk) {
+                mDev->setDmaBufFds(fds, n);
+                ALOGD("V4L2 input: DMABUF mode, %d slots", n);
+            } else {
+                for (int i = 0; i < n; i++) if (fds[i] >= 0) ::close(fds[i]);
+                ALOGW("V4L2 input: DMABUF export failed, falling back to MMAP");
+            }
+        }
+    }
+
     if(!mDev->setResolution(width, height)) {
         ALOGE("Could not set resolution");
         return NO_INIT;
     }
-
-    mIsp->prewarm(width, height, mDev->pixelFormat());
 
     ALOGV("+-------------------------------------------------------------------------------");
     ALOGV("| STREAMS AFTER CHANGES");
@@ -927,9 +949,12 @@ skip_focus:
             int zcReleaseFd = -1;
             bool zcOk = false;
             BENCHMARK_SECTION("Raw->RGBA") {
+                /* DMABUF capture: frame->buf is NULL, Bayer already sits in
+                 * the Vulkan input slot identified by frame->index. */
+                int srcSlot = (frame->buf == NULL) ? frame->index : -1;
                 zcOk = mIsp->processToGralloc(frame->buf, gb->getNativeBuffer(),
                                                streamW, streamH, frame->pixFmt,
-                                               -1, &zcReleaseFd);
+                                               -1, &zcReleaseFd, srcSlot);
             }
             if (zcOk) {
                 releaseFd[i] = zcReleaseFd;
@@ -1016,7 +1041,10 @@ skip_focus:
                         bufEnd = mConverter.YUY2ToJPEG(frame->buf, buf, res.width, res.height, maxImageSize, jpegQuality);
                     else {
                         /* Bayer: synchronous demosaic + rotate + JPEG encode */
-                        mIsp->processSync(frame->buf, mRgbaTemp, res.width, res.height, frame->pixFmt);
+                        int srcSlot = (frame->buf == NULL) ? frame->index : -1;
+                        mIsp->processSync(frame->buf, mRgbaTemp,
+                                          res.width, res.height, frame->pixFmt,
+                                          srcSlot);
 
                         /* Apply JPEG orientation by rotating pixels */
                         int32_t jpegOri = 0;

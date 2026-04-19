@@ -30,14 +30,16 @@ public:
 
     bool processSync(const uint8_t *src, uint8_t *dst,
                       unsigned width, unsigned height,
-                      uint32_t pixFmt) override;
+                      uint32_t pixFmt,
+                      int srcInputSlot = -1) override;
 
     void prewarm(unsigned width, unsigned height, uint32_t pixFmt) override;
 
     bool processToGralloc(const uint8_t *src, void *nativeBuffer,
                            unsigned width, unsigned height,
                            uint32_t pixFmt,
-                           int acquireFence, int *releaseFence) override;
+                           int acquireFence, int *releaseFence,
+                           int srcInputSlot = -1) override;
 
     int    inputBufferCount() const override { return kInputBufferCount; }
     size_t inputBufferSize()  const override { return mInSize; }

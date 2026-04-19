@@ -1016,16 +1016,17 @@ bool VulkanIspPipeline::process(const uint8_t *src, uint8_t *dst,
                                  unsigned width, unsigned height,
                                  uint32_t pixFmt) {
     /* CPU-fallback path (zero-copy disabled or gralloc ineligible) — synchronous.
-     * The old deferred-readback 1-frame overlap was removed: zero-copy is now
-     * the primary path and this one is rare; the added complexity bought us
-     * nothing in the fallback. */
+     * Forward to processSync; srcInputSlot defaults to -1 which forces the
+     * CPU-memcpy path suitable for MMAP input. */
     return processSync(src, dst, width, height, pixFmt);
 }
 
 bool VulkanIspPipeline::processSync(const uint8_t *src, uint8_t *dst,
                                      unsigned width, unsigned height,
-                                     uint32_t pixFmt) {
+                                     uint32_t pixFmt,
+                                     int srcInputSlot) {
     if (!mReady) return false;
+    if (srcInputSlot >= kInputBufferCount) return false;
 
     bool is16 = (pixFmt == V4L2_PIX_FMT_SRGGB10 || pixFmt == V4L2_PIX_FMT_SGRBG10 ||
                  pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SBGGR10);
@@ -1038,19 +1039,43 @@ bool VulkanIspPipeline::processSync(const uint8_t *src, uint8_t *dst,
         mPrevPending = false;
     }
 
-    memcpy(mInMap[0], src, mInSize);
+    const int inSlot = (srcInputSlot >= 0) ? srcInputSlot : 0;
+    if (srcInputSlot < 0) {
+        memcpy(mInMap[0], src, mInSize);
+    } else {
+        VkMappedMemoryRange inv = {};
+        inv.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        inv.memory = mInMem[inSlot];
+        inv.size = VK_WHOLE_SIZE;
+        mPfn->InvalidateMappedMemoryRanges(mDevice, 1, &inv);
+    }
+
     IspParams params;
     fillParams(&params, width, height, is16, pixFmt);
     memcpy(mParamMap, &params, sizeof(IspParams));
 
     VkMappedMemoryRange flushRanges[2] = {};
     flushRanges[0].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    flushRanges[0].memory = mInMem[0];
+    flushRanges[0].memory = mInMem[inSlot];
     flushRanges[0].size = VK_WHOLE_SIZE;
     flushRanges[1].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
     flushRanges[1].memory = mParamMem;
     flushRanges[1].size = VK_WHOLE_SIZE;
-    mPfn->FlushMappedMemoryRanges(mDevice, 2, flushRanges);
+    mPfn->FlushMappedMemoryRanges(mDevice,
+        (srcInputSlot < 0) ? 2 : 1,
+        (srcInputSlot < 0) ? flushRanges : flushRanges + 1);
+
+    VkDescriptorBufferInfo inInfo = {};
+    inInfo.buffer = mInBuf[inSlot];
+    inInfo.range  = mInSize;
+    VkWriteDescriptorSet inWrite = {};
+    inWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    inWrite.dstSet = mDescSet;
+    inWrite.dstBinding = 0;
+    inWrite.descriptorCount = 1;
+    inWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    inWrite.pBufferInfo = &inInfo;
+    mPfn->UpdateDescriptorSets(mDevice, 1, &inWrite, 0, NULL);
 
     recordAndSubmit(width, height, mFence, true);
     mPfn->WaitForFences(mDevice, 1, &mFence, VK_TRUE, UINT64_MAX);
@@ -1099,12 +1124,14 @@ void VulkanIspPipeline::prewarm(unsigned width, unsigned height, uint32_t pixFmt
 bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
                                           unsigned width, unsigned height,
                                           uint32_t pixFmt,
-                                          int acquireFence, int *releaseFence) {
+                                          int acquireFence, int *releaseFence,
+                                          int srcInputSlot) {
     (void)acquireFence;
     *releaseFence = -1;
 
     if (!mReady || !nativeBuffer || !mNativeBufferAvail)
         return false;
+    if (srcInputSlot >= kInputBufferCount) return false;
 
     bool is16 = (pixFmt == V4L2_PIX_FMT_SRGGB10 || pixFmt == V4L2_PIX_FMT_SGRBG10 ||
                  pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SBGGR10);
@@ -1125,19 +1152,52 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
         mPrevPending = false;
     }
 
-    memcpy(mInMap[0], src, mInSize);
+    const int inSlot = (srcInputSlot >= 0) ? srcInputSlot : 0;
+
+    if (srcInputSlot < 0) {
+        /* MMAP fallback: V4L2 wrote to a CPU-mapped buffer; copy into our
+         * staging slot 0. On HOST_CACHED memory we must flush afterwards. */
+        memcpy(mInMap[0], src, mInSize);
+    } else {
+        /* DMABUF capture: V4L2 wrote directly into mInBuf[inSlot]. No memcpy.
+         * Invalidate CPU caches for that range so any subsequent CPU read
+         * (e.g. AWB) sees the device-side writes. */
+        VkMappedMemoryRange inv = {};
+        inv.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        inv.memory = mInMem[inSlot];
+        inv.size = VK_WHOLE_SIZE;
+        mPfn->InvalidateMappedMemoryRanges(mDevice, 1, &inv);
+    }
+
     IspParams params;
     fillParams(&params, width, height, is16, pixFmt);
     memcpy(mParamMap, &params, sizeof(IspParams));
 
     VkMappedMemoryRange flushRanges[2] = {};
     flushRanges[0].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    flushRanges[0].memory = mInMem[0];
+    flushRanges[0].memory = mInMem[inSlot];
     flushRanges[0].size = VK_WHOLE_SIZE;
     flushRanges[1].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
     flushRanges[1].memory = mParamMem;
     flushRanges[1].size = VK_WHOLE_SIZE;
-    mPfn->FlushMappedMemoryRanges(mDevice, 2, flushRanges);
+    /* Flush only the input slot we wrote to via CPU. In DMABUF mode no CPU
+     * write happened to mInMem[inSlot], so just flush params. */
+    mPfn->FlushMappedMemoryRanges(mDevice,
+        (srcInputSlot < 0) ? 2 : 1,
+        (srcInputSlot < 0) ? flushRanges : flushRanges + 1);
+
+    /* Rebind descriptor binding=0 to the chosen input slot. */
+    VkDescriptorBufferInfo inInfo = {};
+    inInfo.buffer = mInBuf[inSlot];
+    inInfo.range  = mInSize;
+    VkWriteDescriptorSet inWrite = {};
+    inWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    inWrite.dstSet = mDescSet;
+    inWrite.dstBinding = 0;
+    inWrite.descriptorCount = 1;
+    inWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    inWrite.pBufferInfo = &inInfo;
+    mPfn->UpdateDescriptorSets(mDevice, 1, &inWrite, 0, NULL);
 
     int64_t t1 = nowMs();
 
@@ -1228,7 +1288,8 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
 
     int64_t t2 = nowMs();
 
-    updateAwb(src, width, height, is16, pixFmt);
+    updateAwb((srcInputSlot < 0) ? src : (const uint8_t *)mInMap[inSlot],
+              width, height, is16, pixFmt);
 
     ALOGD("VK gralloc: upload=%lld submit=%lldms", t1 - t0, t2 - t1);
     return true;

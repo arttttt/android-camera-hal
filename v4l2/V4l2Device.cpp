@@ -476,13 +476,21 @@ bool V4l2Device::queueBuffer(unsigned id) {
 }
 
 void V4l2Device::setDmaBufFds(const int *fds, int count) {
+    /* Close any fds we already own. */
+    for (int i = 0; i < V4L2DEVICE_BUF_COUNT; i++) {
+        if (mDmaBufFds[i] >= 0) {
+            ::close(mDmaBufFds[i]);
+            mDmaBufFds[i] = -1;
+        }
+    }
+
     if (fds == NULL || count <= 0) {
         mMemoryType = V4L2_MEMORY_MMAP;
-        for (int i = 0; i < V4L2DEVICE_BUF_COUNT; i++) mDmaBufFds[i] = -1;
         return;
     }
     assert(count == V4L2DEVICE_BUF_COUNT);
     mMemoryType = V4L2_MEMORY_DMABUF;
+    /* Take ownership of the fds — we will close them on destroy / re-call. */
     for (int i = 0; i < count; i++) mDmaBufFds[i] = fds[i];
 }
 
@@ -753,6 +761,9 @@ void V4l2Device::cleanup() {
     for(int i = 0; i < V4L2DEVICE_BUF_COUNT; ++i) {
         mBuf[i].unmap();
     }
+
+    /* Release ownership of any imported dma-buf fds. */
+    setDmaBufFds(NULL, 0);
 
     closeFd(&mFd);
     mPFd.fd = -1;

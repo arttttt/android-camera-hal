@@ -25,10 +25,13 @@ public:
                          uint32_t pixFmt) = 0;
 
     /* Synchronous process — waits for GPU completion, result in dst immediately.
-     * For single-shot capture (JPEG). Default calls process(). */
+     * For single-shot capture (JPEG). srcInputSlot has the same meaning as in
+     * processToGralloc(). Default calls process(). */
     virtual bool processSync(const uint8_t *src, uint8_t *dst,
                               unsigned width, unsigned height,
-                              uint32_t pixFmt) {
+                              uint32_t pixFmt,
+                              int srcInputSlot = -1) {
+        (void)srcInputSlot;
         return process(src, dst, width, height, pixFmt);
     }
 
@@ -45,13 +48,18 @@ public:
      *               Pass -1 if no fence.
      * releaseFence: [out] non-null. Set to sync_fence fd that signals when GPU is done.
      *               Caller owns and must close. -1 means no fence (invalid / fell back).
+     * srcInputSlot: if >=0, the Bayer data is already in the backend's input
+     *               ring slot `srcInputSlot` (DMABUF capture path); `src` is
+     *               ignored. If -1, the backend memcpy's `src` into its own
+     *               staging buffer.
      * Returns false if not supported — caller falls back to process(). */
     virtual bool processToGralloc(const uint8_t *src, void *nativeBuffer,
                                    unsigned width, unsigned height,
                                    uint32_t pixFmt,
-                                   int acquireFence, int *releaseFence) {
+                                   int acquireFence, int *releaseFence,
+                                   int srcInputSlot = -1) {
         (void)src; (void)nativeBuffer; (void)width; (void)height; (void)pixFmt;
-        (void)acquireFence;
+        (void)acquireFence; (void)srcInputSlot;
         *releaseFence = -1;
         return false;
     }
