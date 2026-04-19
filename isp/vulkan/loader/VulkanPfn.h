@@ -15,6 +15,41 @@ typedef VkResult (VKAPI_PTR *PFN_vkQueueSignalReleaseImageANDROID)(
     const VkSemaphore *pWaitSemaphores, VkImage image, int *pNativeFenceFd);
 #endif
 
+/* VK_KHR_external_memory + VK_KHR_external_memory_fd — also absent in android-24 */
+#ifndef VK_KHR_EXTERNAL_MEMORY_FD_FALLBACK
+#define VK_KHR_EXTERNAL_MEMORY_FD_FALLBACK
+typedef enum VkExternalMemoryHandleTypeFlagBitsKHR {
+    VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR         = 0x00000001,
+    VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT_KHR      = 0x00000002,
+    VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT_KHR  = 0x00000004,
+    VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT_KHR     = 0x00000008,
+    VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT_KHR = 0x00000010,
+    VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_HEAP_BIT_KHR        = 0x00000020,
+    VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT_KHR    = 0x00000040,
+    VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT           = 0x00000200,
+} VkExternalMemoryHandleTypeFlagBitsKHR;
+
+#define VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR  ((VkStructureType)1000074000)
+#define VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR   ((VkStructureType)1000074001)
+
+typedef struct VkImportMemoryFdInfoKHR {
+    VkStructureType                       sType;
+    const void                           *pNext;
+    VkExternalMemoryHandleTypeFlagBitsKHR handleType;
+    int                                   fd;
+} VkImportMemoryFdInfoKHR;
+
+typedef struct VkMemoryFdPropertiesKHR {
+    VkStructureType sType;
+    void           *pNext;
+    uint32_t        memoryTypeBits;
+} VkMemoryFdPropertiesKHR;
+
+typedef VkResult (VKAPI_PTR *PFN_vkGetMemoryFdPropertiesKHR)(
+    VkDevice device, VkExternalMemoryHandleTypeFlagBitsKHR handleType,
+    int fd, VkMemoryFdPropertiesKHR *pMemoryFdProperties);
+#endif
+
 namespace android {
 
 /* Dispatch table of Vulkan function pointers populated by VulkanLoader.
