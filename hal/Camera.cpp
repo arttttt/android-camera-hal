@@ -1003,12 +1003,16 @@ skip_focus:
                             mConverter.YUY2ToRGBA(frame->buf, needZoom ? mRgbaTemp : buf, res.width, res.height);
                             rgbaBuffer = needZoom ? mRgbaTemp : buf;
                         } else {
-                            /* Zoom or size mismatch — CPU readback path */
+                            /* Zoom or size mismatch — CPU readback path.
+                             * processSync honours srcInputSlot so DMABUF
+                             * capture (frame->buf == NULL) still resolves. */
                             uint8_t *convDst = needZoom ? mRgbaTemp : buf;
                             if (!needZoom && (res.width != streamW || res.height != streamH))
                                 convDst = mRgbaTemp;
-                            mIsp->process(frame->buf, convDst,
-                                           res.width, res.height, frame->pixFmt);
+                            int srcSlot = (frame->buf == NULL) ? frame->index : -1;
+                            mIsp->processSync(frame->buf, convDst,
+                                               res.width, res.height, frame->pixFmt,
+                                               srcSlot);
                             rgbaBuffer = convDst;
                         }
                     }
