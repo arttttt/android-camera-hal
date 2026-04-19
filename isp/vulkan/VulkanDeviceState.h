@@ -41,6 +41,16 @@ public:
      * flags, or UINT32_MAX when no match exists. */
     uint32_t findMemoryType(uint32_t filter, VkMemoryPropertyFlags props) const;
 
+    /* Allocate a buffer + backing memory and bind them. When exportable
+     * is true the memory is allocated with VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR
+     * so its fd can be pulled out via vkGetMemoryFdKHR and handed to
+     * V4L2 in DMABUF mode. Returns false and leaves *buf / *mem untouched
+     * on failure. */
+    bool createBuffer(VkBuffer *buf, VkDeviceMemory *mem,
+                      VkDeviceSize size, VkBufferUsageFlags usage,
+                      bool exportable = false) const;
+    void destroyBuffer(VkBuffer buf, VkDeviceMemory mem) const;
+
 private:
     VulkanLoader    *mLoader;
     VulkanPfn       *mPfn;

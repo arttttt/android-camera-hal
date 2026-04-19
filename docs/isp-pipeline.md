@@ -76,10 +76,10 @@ public:
 `isp/vulkan/VulkanIspPipeline.cpp`. The production soft-ISP. Pipeline per frame:
 
 1. **Input:** V4L2 writes Bayer straight into slot `i` of the Vulkan
-   input ring (`mInBuf[i]`, 4 slots, `VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR`-
-   exportable `VkBuffer`s handed to V4L2 via `setDmaBufFds`).
-   No CPU memcpy.
-2. **Compute dispatch** reads `mInBuf[i]` as an SSBO, runs Malvar-He-Cutler
+   input ring (owned by `VulkanInputRing`; 4 slots,
+   `VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR`-exportable
+   `VkBuffer`s handed to V4L2 via `setDmaBufFds`). No CPU memcpy.
+2. **Compute dispatch** reads the slot's `VkBuffer` as an SSBO, runs Malvar-He-Cutler
    demosaic + WB + CCM + sRGB gamma, writes packed RGBA8 via
    `imageStore` into `mScratchImg` (pitchlinear `STORAGE` image,
    device-local).

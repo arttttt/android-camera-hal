@@ -4,6 +4,7 @@
 #include "IspPipeline.h"
 #include "IspParams.h"
 #include "VulkanDeviceState.h"
+#include "VulkanInputRing.h"
 
 #include <cutils/native_handle.h>
 #include <unordered_map>
@@ -40,21 +41,12 @@ public:
                            int acquireFence, int *releaseFence,
                            int srcInputSlot = -1) override;
 
-    int    inputBufferCount() const override { return kInputBufferCount; }
-    size_t inputBufferSize()  const override { return mInSize; }
-    int    exportInputBufferFd(int idx) override;
+    int    inputBufferCount() const override { return mInputRing.slotCount(); }
+    size_t inputBufferSize()  const override { return mInputRing.slotSize(); }
+    int    exportInputBufferFd(int idx) override { return mInputRing.exportFd(idx); }
     void   waitForPreviousFrame() override;
 
-    /* Ring depth for V4L2 ↔ Vulkan Bayer input hand-off. Same as the V4L2
-     * queue depth so each V4L2 slot owns exactly one Vulkan buffer; the
-     * value comes from -DV4L2DEVICE_BUF_COUNT in Android.mk. */
-    static const int kInputBufferCount = V4L2DEVICE_BUF_COUNT;
-
 private:
-    bool createBuffer(VkBuffer *buf, VkDeviceMemory *mem,
-                      VkDeviceSize size, VkBufferUsageFlags usage,
-                      bool exportable = false);
-    void destroyBuffer(VkBuffer buf, VkDeviceMemory mem);
     bool ensureBuffers(unsigned width, unsigned height, bool is16bit);
 
     /* Record mCmdBuf with pipeline+descriptor bind and a single compute
@@ -65,6 +57,7 @@ private:
                           bool copyToOutBuf);
 
     VulkanDeviceState mDeviceState;
+    VulkanInputRing   mInputRing;
 
     bool mReady;
     unsigned mBufWidth, mBufHeight;
@@ -82,14 +75,9 @@ private:
     VkCommandPool mCmdPool;
     VkCommandBuffer mCmdBuf;
 
-    /* Ring of exportable Bayer input buffers (dma-buf fds handed to V4L2). */
-    VkBuffer       mInBuf[kInputBufferCount];
-    VkDeviceMemory mInMem[kInputBufferCount];
-    void          *mInMap[kInputBufferCount];
-
     VkBuffer mOutBuf, mParamBuf;
     VkDeviceMemory mOutMem, mParamMem;
-    size_t mInSize, mOutSize;
+    size_t mOutSize;
     void *mOutMap, *mParamMap;
 
     /* Shader output image for CPU-readback paths; copied to mOutBuf after dispatch. */
@@ -98,8 +86,8 @@ private:
     VkImageView    mScratchView;
 
     VkFence mFence;
-    /* Set by the async processToGralloc path to indicate mFence / mCmdBuf /
-     * mInMap are still in use by GPU. Drained at the start of the next call. */
+    /* Set by the async processToGralloc path to indicate mFence / mCmdBuf
+     * are still in use by GPU. Drained at the start of the next call. */
     bool mPrevPending;
 
     void fillParams(IspParams *p, unsigned w, unsigned h, bool is16, uint32_t pixFmt);

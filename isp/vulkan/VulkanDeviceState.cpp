@@ -224,4 +224,54 @@ uint32_t VulkanDeviceState::findMemoryType(uint32_t filter, VkMemoryPropertyFlag
     return UINT32_MAX;
 }
 
+bool VulkanDeviceState::createBuffer(VkBuffer *buf, VkDeviceMemory *mem,
+                                      VkDeviceSize size, VkBufferUsageFlags usage,
+                                      bool exportable) const {
+    VkExternalMemoryBufferCreateInfoKHR emb = {};
+    emb.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO_KHR;
+    emb.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR;
+
+    VkBufferCreateInfo ci = {};
+    ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    ci.pNext = exportable ? &emb : NULL;
+    ci.size = size;
+    ci.usage = usage;
+    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (mPfn->CreateBuffer(mDevice, &ci, NULL, buf) != VK_SUCCESS)
+        return false;
+
+    VkMemoryRequirements req;
+    mPfn->GetBufferMemoryRequirements(mDevice, *buf, &req);
+
+    VkExportMemoryAllocateInfoKHR emi = {};
+    emi.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO_KHR;
+    emi.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR;
+
+    VkMemoryAllocateInfo ai = {};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.pNext = exportable ? &emi : NULL;
+    ai.allocationSize = req.size;
+    ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    if (ai.memoryTypeIndex == UINT32_MAX)
+        ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (ai.memoryTypeIndex == UINT32_MAX ||
+        mPfn->AllocateMemory(mDevice, &ai, NULL, mem) != VK_SUCCESS) {
+        mPfn->DestroyBuffer(mDevice, *buf, NULL);
+        *buf = VK_NULL_HANDLE;
+        return false;
+    }
+
+    mPfn->BindBufferMemory(mDevice, *buf, *mem, 0);
+    return true;
+}
+
+void VulkanDeviceState::destroyBuffer(VkBuffer buf, VkDeviceMemory mem) const {
+    if (buf != VK_NULL_HANDLE) mPfn->DestroyBuffer(mDevice, buf, NULL);
+    if (mem != VK_NULL_HANDLE) mPfn->FreeMemory(mDevice, mem, NULL);
+}
+
 }; /* namespace android */
