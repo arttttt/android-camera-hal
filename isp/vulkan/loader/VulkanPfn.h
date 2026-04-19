@@ -115,6 +115,12 @@ struct VulkanPfn {
     PFN_vkAllocateDescriptorSets                    AllocateDescriptorSets;
     PFN_vkUpdateDescriptorSets                      UpdateDescriptorSets;
 
+    PFN_vkCreateRenderPass                          CreateRenderPass;
+    PFN_vkDestroyRenderPass                         DestroyRenderPass;
+    PFN_vkCreateFramebuffer                         CreateFramebuffer;
+    PFN_vkDestroyFramebuffer                        DestroyFramebuffer;
+    PFN_vkCreateGraphicsPipelines                   CreateGraphicsPipelines;
+
     PFN_vkCreateCommandPool                         CreateCommandPool;
     PFN_vkDestroyCommandPool                        DestroyCommandPool;
     PFN_vkAllocateCommandBuffers                    AllocateCommandBuffers;
@@ -129,6 +135,12 @@ struct VulkanPfn {
     PFN_vkCmdCopyImageToBuffer                      CmdCopyImageToBuffer;
     PFN_vkCmdCopyImage                              CmdCopyImage;
     PFN_vkCmdCopyBufferToImage                      CmdCopyBufferToImage;
+
+    PFN_vkCmdBeginRenderPass                        CmdBeginRenderPass;
+    PFN_vkCmdEndRenderPass                          CmdEndRenderPass;
+    PFN_vkCmdDraw                                   CmdDraw;
+    PFN_vkCmdSetViewport                            CmdSetViewport;
+    PFN_vkCmdSetScissor                             CmdSetScissor;
 
     /* VK_ANDROID_native_buffer (HAL-only extension, gralloc zero-copy) */
     PFN_vkAcquireImageANDROID                       AcquireImageANDROID;

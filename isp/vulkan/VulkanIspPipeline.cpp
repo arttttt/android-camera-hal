@@ -54,8 +54,10 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mReady(false), mBufWidth(0), mBufHeight(0)
     , mInstance(VK_NULL_HANDLE), mPhysDev(VK_NULL_HANDLE)
     , mDevice(VK_NULL_HANDLE), mQueue(VK_NULL_HANDLE), mQueueFamily(0)
-    , mShader(VK_NULL_HANDLE), mDescLayout(VK_NULL_HANDLE)
+    , mShader(VK_NULL_HANDLE), mVertShader(VK_NULL_HANDLE), mFragShader(VK_NULL_HANDLE)
+    , mDescLayout(VK_NULL_HANDLE)
     , mPipeLayout(VK_NULL_HANDLE), mPipeline(VK_NULL_HANDLE)
+    , mBlitPipeline(VK_NULL_HANDLE), mRenderPass(VK_NULL_HANDLE)
     , mDescPool(VK_NULL_HANDLE), mDescSet(VK_NULL_HANDLE)
     , mCmdPool(VK_NULL_HANDLE), mCmdBuf(VK_NULL_HANDLE)
     , mInBuf(VK_NULL_HANDLE), mOutBuf(VK_NULL_HANDLE), mParamBuf(VK_NULL_HANDLE)
@@ -502,7 +504,8 @@ bool VulkanIspPipeline::init() {
         return false;
     }
 
-    /* Descriptor set layout — binding 0/2 = storage buffer, binding 1 = storage image */
+    /* Descriptor set layout — binding 0/2 = storage buffer (compute reads Bayer
+     * + params), binding 1 = storage image (compute writes, fragment reads). */
     VkDescriptorSetLayoutBinding bindings[3] = {};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -510,6 +513,7 @@ bool VulkanIspPipeline::init() {
     bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     bindings[1] = bindings[0]; bindings[1].binding = 1;
     bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     bindings[2] = bindings[0]; bindings[2].binding = 2;
 
     VkDescriptorSetLayoutCreateInfo dslci = {};
@@ -542,6 +546,141 @@ bool VulkanIspPipeline::init() {
 
     if (mPfn->CreateComputePipelines(mDevice, VK_NULL_HANDLE, 1, &cpci, NULL, &mPipeline) != VK_SUCCESS) {
         ALOGE("vkCreateComputePipelines failed");
+        destroy();
+        return false;
+    }
+
+    /* Graphics pipeline — blits scratch image → gralloc colour attachment
+     * through the driver's ROP path, which is the only write path that
+     * knows about nvgralloc's blocklinear layout on Tegra. */
+    static const char *kVertexShaderSrc =
+        "#version 450\n"
+        "void main() {\n"
+        "    float x = float((gl_VertexIndex << 1) & 2) * 2.0 - 1.0;\n"
+        "    float y = float(gl_VertexIndex & 2) * 2.0 - 1.0;\n"
+        "    gl_Position = vec4(x, y, 0.0, 1.0);\n"
+        "}\n";
+    static const char *kFragmentShaderSrc =
+        "#version 450\n"
+        "layout(rgba8, binding = 1) uniform readonly image2D scratchImg;\n"
+        "layout(location = 0) out vec4 outColor;\n"
+        "void main() {\n"
+        "    outColor = imageLoad(scratchImg, ivec2(gl_FragCoord.xy));\n"
+        "}\n";
+
+    VkShaderModuleCreateInfo vsmi = {};
+    vsmi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    vsmi.codeSize = strlen(kVertexShaderSrc);
+    vsmi.pCode = (const uint32_t *)kVertexShaderSrc;
+    if (mPfn->CreateShaderModule(mDevice, &vsmi, NULL, &mVertShader) != VK_SUCCESS) {
+        ALOGE("vertex vkCreateShaderModule failed");
+        destroy(); return false;
+    }
+    vsmi.codeSize = strlen(kFragmentShaderSrc);
+    vsmi.pCode = (const uint32_t *)kFragmentShaderSrc;
+    if (mPfn->CreateShaderModule(mDevice, &vsmi, NULL, &mFragShader) != VK_SUCCESS) {
+        ALOGE("fragment vkCreateShaderModule failed");
+        destroy(); return false;
+    }
+
+    /* Render pass — single RGBA8 colour attachment, DONT_CARE→STORE. */
+    VkAttachmentDescription att = {};
+    att.format         = VK_FORMAT_R8G8B8A8_UNORM;
+    att.samples        = VK_SAMPLE_COUNT_1_BIT;
+    att.loadOp         = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    att.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+    att.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    att.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+    att.finalLayout    = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference attRef = {};
+    attRef.attachment = 0;
+    attRef.layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkSubpassDescription subpass = {};
+    subpass.pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments    = &attRef;
+
+    VkRenderPassCreateInfo rpci = {};
+    rpci.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    rpci.attachmentCount = 1;
+    rpci.pAttachments    = &att;
+    rpci.subpassCount    = 1;
+    rpci.pSubpasses      = &subpass;
+    if (mPfn->CreateRenderPass(mDevice, &rpci, NULL, &mRenderPass) != VK_SUCCESS) {
+        ALOGE("vkCreateRenderPass failed");
+        destroy(); return false;
+    }
+
+    /* Graphics pipeline. */
+    VkPipelineShaderStageCreateInfo stages[2] = {};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = mVertShader;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = mFragShader;
+    stages[1].pName = "main";
+
+    VkPipelineVertexInputStateCreateInfo vis = {};
+    vis.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+    VkPipelineInputAssemblyStateCreateInfo ias = {};
+    ias.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ias.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo vps = {};
+    vps.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vps.viewportCount = 1;
+    vps.scissorCount  = 1;
+
+    VkPipelineRasterizationStateCreateInfo rs = {};
+    rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode    = VK_CULL_MODE_NONE;
+    rs.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rs.lineWidth   = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo ms = {};
+    ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineColorBlendAttachmentState cba = {};
+    cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+    VkPipelineColorBlendStateCreateInfo cbs = {};
+    cbs.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    cbs.attachmentCount = 1;
+    cbs.pAttachments    = &cba;
+
+    VkDynamicState dyns[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo ds = {};
+    ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    ds.dynamicStateCount = 2;
+    ds.pDynamicStates    = dyns;
+
+    VkGraphicsPipelineCreateInfo gpci = {};
+    gpci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    gpci.stageCount          = 2;
+    gpci.pStages             = stages;
+    gpci.pVertexInputState   = &vis;
+    gpci.pInputAssemblyState = &ias;
+    gpci.pViewportState      = &vps;
+    gpci.pRasterizationState = &rs;
+    gpci.pMultisampleState   = &ms;
+    gpci.pColorBlendState    = &cbs;
+    gpci.pDynamicState       = &ds;
+    gpci.layout              = mPipeLayout;
+    gpci.renderPass          = mRenderPass;
+    gpci.subpass             = 0;
+
+    if (mPfn->CreateGraphicsPipelines(mDevice, VK_NULL_HANDLE, 1, &gpci, NULL,
+                                        &mBlitPipeline) != VK_SUCCESS) {
+        ALOGE("vkCreateGraphicsPipelines failed");
         destroy();
         return false;
     }
@@ -967,19 +1106,20 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
     mPfn->ResetCommandBuffer(mCmdBuf, 0);
     mPfn->BeginCommandBuffer(mCmdBuf, &bi);
 
+    /* Compute: Bayer → mScratchImg (via binding=1 storage image, set once in
+     * ensureBuffers). */
     mPfn->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
     mPfn->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 mPipeLayout, 0, 1, &mDescSet, 0, NULL);
     mPfn->CmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
 
-    /* Stage 1: scratch (GENERAL, SHADER_WRITE) → CopyImageToBuffer → mOutBuf.
-     * This is the detile path the driver already handles for CPU readback. */
+    /* scratch SHADER_WRITE → SHADER_READ for the fragment pass. */
     VkImageMemoryBarrier scratchB = {};
     scratchB.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     scratchB.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
     scratchB.newLayout = VK_IMAGE_LAYOUT_GENERAL;
     scratchB.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    scratchB.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    scratchB.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     scratchB.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     scratchB.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     scratchB.image = mScratchImg;
@@ -988,52 +1128,37 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
     scratchB.subresourceRange.layerCount = 1;
     mPfn->CmdPipelineBarrier(mCmdBuf,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
         0, 0, NULL, 0, NULL, 1, &scratchB);
 
-    VkBufferImageCopy bic = {};
-    bic.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    bic.imageSubresource.layerCount = 1;
-    bic.imageExtent.width  = width;
-    bic.imageExtent.height = height;
-    bic.imageExtent.depth  = 1;
-    mPfn->CmdCopyImageToBuffer(mCmdBuf, mScratchImg, VK_IMAGE_LAYOUT_GENERAL,
-                                mOutBuf, 1, &bic);
+    /* Fragment pass: full-screen triangle samples scratch, driver's ROP
+     * rasterizes into gralloc's blocklinear layout correctly. */
+    VkRenderPassBeginInfo rpbi = {};
+    rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpbi.renderPass = mRenderPass;
+    rpbi.framebuffer = entry->framebuffer;
+    rpbi.renderArea.extent.width  = width;
+    rpbi.renderArea.extent.height = height;
 
-    /* Stage 2: mOutBuf (TRANSFER_WRITE) → CopyBufferToImage → gralloc (retile
-     * into whatever layout gralloc dictates; mirror of stage 1). */
-    VkBufferMemoryBarrier bufB = {};
-    bufB.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-    bufB.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    bufB.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    bufB.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    bufB.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    bufB.buffer = mOutBuf;
-    bufB.offset = 0;
-    bufB.size = VK_WHOLE_SIZE;
+    mPfn->CmdBeginRenderPass(mCmdBuf, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+    mPfn->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, mBlitPipeline);
+    mPfn->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                mPipeLayout, 0, 1, &mDescSet, 0, NULL);
 
-    VkImageMemoryBarrier grallocB = {};
-    grallocB.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    grallocB.oldLayout = entry->layoutReady ?
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
-    grallocB.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    grallocB.srcAccessMask = entry->layoutReady ? VK_ACCESS_TRANSFER_WRITE_BIT : 0;
-    grallocB.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    grallocB.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    grallocB.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    grallocB.image = entry->image;
-    grallocB.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    grallocB.subresourceRange.levelCount = 1;
-    grallocB.subresourceRange.layerCount = 1;
+    VkViewport vp = {};
+    vp.width  = (float)width;
+    vp.height = (float)height;
+    vp.minDepth = 0.0f;
+    vp.maxDepth = 1.0f;
+    mPfn->CmdSetViewport(mCmdBuf, 0, 1, &vp);
 
-    mPfn->CmdPipelineBarrier(mCmdBuf,
-        VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        0, 0, NULL, 1, &bufB, 1, &grallocB);
+    VkRect2D sc = {};
+    sc.extent.width  = width;
+    sc.extent.height = height;
+    mPfn->CmdSetScissor(mCmdBuf, 0, 1, &sc);
 
-    mPfn->CmdCopyBufferToImage(mCmdBuf, mOutBuf,
-        entry->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        1, &bic);
+    mPfn->CmdDraw(mCmdBuf, 3, 1, 0, 0);
+    mPfn->CmdEndRenderPass(mCmdBuf);
 
     mPfn->EndCommandBuffer(mCmdBuf);
     entry->layoutReady = true;
@@ -1079,13 +1204,17 @@ void VulkanIspPipeline::destroy() {
         mOutBuf = VK_NULL_HANDLE; mOutMem = VK_NULL_HANDLE;
         mParamBuf = VK_NULL_HANDLE; mParamMem = VK_NULL_HANDLE;
 
-        if (mFence)      { mPfn->DestroyFence(mDevice, mFence, NULL);                 mFence = VK_NULL_HANDLE; }
-        if (mCmdPool)    { mPfn->DestroyCommandPool(mDevice, mCmdPool, NULL);         mCmdPool = VK_NULL_HANDLE; }
-        if (mDescPool)   { mPfn->DestroyDescriptorPool(mDevice, mDescPool, NULL);     mDescPool = VK_NULL_HANDLE; }
-        if (mPipeline)   { mPfn->DestroyPipeline(mDevice, mPipeline, NULL);           mPipeline = VK_NULL_HANDLE; }
-        if (mPipeLayout) { mPfn->DestroyPipelineLayout(mDevice, mPipeLayout, NULL);   mPipeLayout = VK_NULL_HANDLE; }
-        if (mDescLayout) { mPfn->DestroyDescriptorSetLayout(mDevice, mDescLayout, NULL); mDescLayout = VK_NULL_HANDLE; }
-        if (mShader)     { mPfn->DestroyShaderModule(mDevice, mShader, NULL);         mShader = VK_NULL_HANDLE; }
+        if (mFence)        { mPfn->DestroyFence(mDevice, mFence, NULL);                     mFence = VK_NULL_HANDLE; }
+        if (mCmdPool)      { mPfn->DestroyCommandPool(mDevice, mCmdPool, NULL);             mCmdPool = VK_NULL_HANDLE; }
+        if (mDescPool)     { mPfn->DestroyDescriptorPool(mDevice, mDescPool, NULL);         mDescPool = VK_NULL_HANDLE; }
+        if (mBlitPipeline) { mPfn->DestroyPipeline(mDevice, mBlitPipeline, NULL);           mBlitPipeline = VK_NULL_HANDLE; }
+        if (mPipeline)     { mPfn->DestroyPipeline(mDevice, mPipeline, NULL);               mPipeline = VK_NULL_HANDLE; }
+        if (mRenderPass)   { mPfn->DestroyRenderPass(mDevice, mRenderPass, NULL);           mRenderPass = VK_NULL_HANDLE; }
+        if (mPipeLayout)   { mPfn->DestroyPipelineLayout(mDevice, mPipeLayout, NULL);       mPipeLayout = VK_NULL_HANDLE; }
+        if (mDescLayout)   { mPfn->DestroyDescriptorSetLayout(mDevice, mDescLayout, NULL);  mDescLayout = VK_NULL_HANDLE; }
+        if (mFragShader)   { mPfn->DestroyShaderModule(mDevice, mFragShader, NULL);         mFragShader = VK_NULL_HANDLE; }
+        if (mVertShader)   { mPfn->DestroyShaderModule(mDevice, mVertShader, NULL);         mVertShader = VK_NULL_HANDLE; }
+        if (mShader)       { mPfn->DestroyShaderModule(mDevice, mShader, NULL);             mShader = VK_NULL_HANDLE; }
         if (mPfn->DestroyDevice) mPfn->DestroyDevice(mDevice, NULL);
         mDevice = VK_NULL_HANDLE;
     }
@@ -1112,8 +1241,9 @@ void VulkanIspPipeline::clearGrallocImages() {
         return;
     }
     for (auto &kv : mGrallocImages) {
-        if (kv.second.view)  mPfn->DestroyImageView(mDevice, kv.second.view, NULL);
-        if (kv.second.image) mPfn->DestroyImage(mDevice, kv.second.image, NULL);
+        if (kv.second.framebuffer) mPfn->DestroyFramebuffer(mDevice, kv.second.framebuffer, NULL);
+        if (kv.second.view)        mPfn->DestroyImageView(mDevice, kv.second.view, NULL);
+        if (kv.second.image)       mPfn->DestroyImage(mDevice, kv.second.image, NULL);
     }
     mGrallocImages.clear();
 }
@@ -1146,9 +1276,8 @@ bool VulkanIspPipeline::getOrCreateGrallocImage(ANativeWindowBuffer *anwb,
     ici.arrayLayers   = 1;
     ici.samples       = VK_SAMPLE_COUNT_1_BIT;
     ici.tiling        = VK_IMAGE_TILING_OPTIMAL;
-    /* Compute-store to blocklinear is unsupported by this driver — we copy from
-     * a pitchlinear scratch image instead; the tiler handles layout. */
-    ici.usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    /* Write through the ROP path: only blocklinear-aware Tegra write surface. */
+    ici.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -1170,6 +1299,22 @@ bool VulkanIspPipeline::getOrCreateGrallocImage(ANativeWindowBuffer *anwb,
     r = mPfn->CreateImageView(mDevice, &vci, NULL, &entry.view);
     if (r != VK_SUCCESS) {
         ALOGE("gralloc vkCreateImageView failed: %d", (int)r);
+        mPfn->DestroyImage(mDevice, entry.image, NULL);
+        return false;
+    }
+
+    VkFramebufferCreateInfo fci = {};
+    fci.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    fci.renderPass      = mRenderPass;
+    fci.attachmentCount = 1;
+    fci.pAttachments    = &entry.view;
+    fci.width           = width;
+    fci.height          = height;
+    fci.layers          = 1;
+    r = mPfn->CreateFramebuffer(mDevice, &fci, NULL, &entry.framebuffer);
+    if (r != VK_SUCCESS) {
+        ALOGE("gralloc vkCreateFramebuffer failed: %d", (int)r);
+        mPfn->DestroyImageView(mDevice, entry.view, NULL);
         mPfn->DestroyImage(mDevice, entry.image, NULL);
         return false;
     }

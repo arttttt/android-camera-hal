@@ -88,6 +88,12 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
     DEV(AllocateDescriptorSets);
     DEV(UpdateDescriptorSets);
 
+    DEV(CreateRenderPass);
+    DEV(DestroyRenderPass);
+    DEV(CreateFramebuffer);
+    DEV(DestroyFramebuffer);
+    DEV(CreateGraphicsPipelines);
+
     DEV(CreateCommandPool);
     DEV(DestroyCommandPool);
     DEV(AllocateCommandBuffers);
@@ -102,6 +108,12 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
     DEV(CmdCopyImageToBuffer);
     DEV(CmdCopyImage);
     DEV(CmdCopyBufferToImage);
+
+    DEV(CmdBeginRenderPass);
+    DEV(CmdEndRenderPass);
+    DEV(CmdDraw);
+    DEV(CmdSetViewport);
+    DEV(CmdSetScissor);
 
     /* VK_ANDROID_native_buffer — only present when extension enabled on device */
     DEV(AcquireImageANDROID);

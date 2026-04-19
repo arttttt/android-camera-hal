@@ -66,9 +66,13 @@ private:
     uint32_t mQueueFamily;
 
     VkShaderModule mShader;
+    VkShaderModule mVertShader;
+    VkShaderModule mFragShader;
     VkDescriptorSetLayout mDescLayout;
     VkPipelineLayout mPipeLayout;
-    VkPipeline mPipeline;
+    VkPipeline mPipeline;          /* compute: Bayer → scratch image */
+    VkPipeline mBlitPipeline;      /* graphics: scratch → gralloc via ROP */
+    VkRenderPass mRenderPass;      /* 1 color attachment, RGBA8, DONT_CARE→STORE */
     VkDescriptorPool mDescPool;
     VkDescriptorSet mDescSet;
     VkCommandPool mCmdPool;
@@ -111,12 +115,14 @@ private:
 
     bool mNativeBufferAvail;
 
-    /* Cached VkImage + view per gralloc buffer_handle_t for zero-copy output.
-     * Gralloc owns the backing memory; we only track the Vulkan wrappers. */
+    /* Cached VkImage + view + framebuffer per gralloc buffer_handle_t for
+     * zero-copy output. Gralloc owns the backing memory; we only track the
+     * Vulkan wrappers. */
     struct GrallocEntry {
         VkImage image;
         VkImageView view;
-        bool layoutReady;  /* UNDEFINED → GENERAL transition has been submitted */
+        VkFramebuffer framebuffer;
+        bool layoutReady;  /* UNDEFINED → COLOR_ATTACHMENT_OPTIMAL transitioned */
     };
     std::unordered_map<const native_handle_t *, GrallocEntry> mGrallocImages;
 
