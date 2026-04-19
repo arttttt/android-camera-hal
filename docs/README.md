@@ -11,6 +11,7 @@ the Tegra T124 Android Camera HAL3 implementation in this repository.
 | [open-source-references.md](open-source-references.md) | What libcamera, RkISP1, RPi, cros-camera and AOSP V4L2 HAL do differently — patterns worth stealing |
 | [roadmap.md](roadmap.md) | Prioritized list of improvements with effort estimates |
 | [isp-pipeline.md](isp-pipeline.md) | Current IspPipeline abstraction and the two live backends (Vulkan soft-ISP / Hw) |
+| [bugs.md](bugs.md) | Known bugs found during testing but deferred; each with location, likely cause, and planned fix tier |
 
 ## Scope
 

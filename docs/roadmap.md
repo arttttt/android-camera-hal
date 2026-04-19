@@ -51,6 +51,100 @@ Ship `BLACK_LEVEL_PATTERN`, `WHITE_LEVEL`,
 `NOISE_PROFILE`. Values come from sensor datasheet or vendor tuning.
 Cheap to add, unblocks DNG capture.
 
+## Tier 1.5 — eliminate CPU fallbacks, zero-copy everything (M)
+
+Today zero-copy only triggers when **all** of these hold simultaneously:
+RGBA_8888 output, stream size equals V4L2 capture size, no zoom, Bayer
+input, first RGBA buffer of the request. Anything else falls back to a
+CPU path that demosaics → reads back → runs libyuv → encodes — killing
+the ~45 ms frame budget and re-introducing the 25 ms blocklinear detile
+cost on the `SW_WRITE_OFTEN` gralloc lock.
+
+Goal of this tier: **delete every CPU fallback** in
+`processCaptureRequest`. If a case cannot be serviced on the GPU, we
+don't support it.
+
+### 1. Zero-copy zoom
+
+`needZoom=true` today → `libyuv::ARGBScale` after a full GPU readback.
+Push the crop rect into the existing fragment-shader blit:
+
+- Feed `(cropX, cropY, cropW, cropH)` as a push constant (or small UBO)
+  to the shader that writes `mScratchImg` → gralloc.
+- Shader samples `mScratchImg` at `ivec2(cropX + u*cropW, cropY + v*cropH)`.
+- `imageLoad` is unfiltered — emulate bilinear with 4 loads + manual lerp,
+  or make `mScratchImg` a sampled image (requires checking whether Tegra
+  supports samplers on pitchlinear storage images).
+
+### 2. Zero-copy cross-resolution
+
+Same shader covers the `streamW != res.width || streamH != res.height`
+case — `cropRect` degenerates to full-frame-at-output-scale. Drop the
+resolution check from `zcEligible`.
+
+### 3. Per-stream GPU write (no `rgbaBuffer` cache)
+
+Current code short-circuits zero-copy when another output already got a
+CPU RGBA render. With (1)+(2) each stream gets its own
+`processToGralloc` call — remove the `!rgbaBuffer` clause and the
+shared-buffer cache.
+
+### 4. Zero-copy JPEG
+
+Everything before `libjpeg` moves to GPU:
+
+- Allocate a CPU-mappable dma-buf-backed `VkBuffer` (OPAQUE_FD export,
+  same pattern as the input ring). Cache per sensor resolution; one is
+  enough for JPEG's use pattern (synchronous, single outstanding).
+- Extend shader to apply `JPEG_ORIENTATION` (90/180/270) as part of the
+  blit transform — rotation collapses into the same UV math as the crop.
+- libjpeg encodes straight from the mmap'd dma-buf into the gralloc
+  BLOB. `mRgbaTemp` + `libyuv::ARGBRotate` deleted.
+
+### 5. Delete packed-YUV paths
+
+Target hw is Tegra K1 only (IMX179 / OV5693 — Bayer). `V4L2_PIX_FMT_UYVY`
+/ `YUYV` branches in `Camera.cpp` and `ImageConverter::{UYVYToRGBA,
+YUY2ToRGBA, UYVYToJPEG, YUY2ToJPEG}` are dead on our hardware — remove
+them. If `ImageConverter` has no live methods left after this, fold the
+remaining `RGBAToJPEG` call site directly into the JPEG path from (4)
+and delete the class.
+
+### 6. Purge the CPU fallback API surface
+
+After (1)–(5) the following are unreachable — remove from the codebase:
+
+- The entire `switch(srcBuf.stream->format)` block in
+  `processCaptureRequest` that runs post-`SW_WRITE_OFTEN`-lock.
+- The `SW_WRITE_OFTEN` `GraphicBufferMapper::lock` itself on the hot path.
+- `IspPipeline::process()` (synchronous CPU readback), and its override
+  in `VulkanIspPipeline`.
+- `IspPipeline::processSync()` — replaced by `processToGralloc` +
+  `processToJpegBuffer` (new) as the only output paths.
+- `mRgbaTemp` allocation (`Camera::ensureTempSize`) and the field.
+
+### End state
+
+`processCaptureRequest` has exactly two output branches per buffer:
+
+1. `RGBA_8888` → `processToGralloc(..., cropRect)` — GPU demosaic +
+   optional crop/scale straight into gralloc.
+2. `BLOB` → `processToJpegBuffer(..., cropRect, orientation)` — GPU
+   demosaic + optional rotation into a mapped dma-buf, then libjpeg to
+   the BLOB.
+
+No `mRgbaTemp`, no `libyuv` on the hot path, no `ImageConverter::*YUV*`,
+no `IspPipeline::process()`. Frame budget for zoomed / mismatched-
+resolution preview stays within the ~45 ms zero-copy envelope.
+
+### AF sweep note
+
+AF still `SW_READ_OFTEN`-locks the gralloc output for Laplacian
+measurement. That's a secondary read, not an ISP fallback, and it's
+infrequent (sweep only). Left alone for this tier; revisit when the IPA
+module lands (Tier 3) — ISP statistics will replace the CPU Laplacian
+and that lock disappears too.
+
 ## Tier 2 — structural wins (M)
 
 ### `YUV_420_888` output (M)
@@ -155,10 +249,12 @@ complexity until it does.
 ## Suggested sequencing
 
 1. Ship Tier 1 in one or two PRs. Low risk, unlocks apps today.
-2. Before diving into Tier 3: land **drain-to-latest** (Tier 2) for an
+2. Tier 1.5 (zero-copy zoom) right after — small shader change, big
+   latency payoff during pinch-to-zoom.
+3. Before diving into Tier 3: land **drain-to-latest** (Tier 2) for an
    immediate latency win, and **JSON tuning** for a cleanup that makes
    Tier 3 easier.
-3. Tier 3 in a branch, with the request-queue refactor first (no
+4. Tier 3 in a branch, with the request-queue refactor first (no
    behaviour change, just decoupling), then DelayedControls, then the
    IPA module split.
-4. Tier 4 is discretionary.
+5. Tier 4 is discretionary.
