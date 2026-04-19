@@ -4,30 +4,6 @@ Bugs found during testing that aren't being fixed right now. Each entry
 should name the symptom, where it lives, what's known about the cause,
 and when it's expected to get fixed (tier in `roadmap.md`, or "TBD").
 
-## AF trigger starts sweep even with `AF_MODE = OFF`
-
-**Symptom:** HAL runs a contrast-detect sweep when the camera app has
-turned autofocus off. Reported by user during Tier 1 testing.
-
-**Location:** `hal/Camera.cpp` — the `ANDROID_CONTROL_AF_TRIGGER` block
-in `processCaptureRequest` (the `trigger == AF_TRIGGER_START` branch
-starts a sweep without checking `afMode`).
-
-**Expected behaviour:** with `AF_MODE = OFF`, the HAL must not sweep.
-Sweeps are only valid in `AF_MODE_AUTO` / `MACRO` / `CONTINUOUS_PICTURE`.
-Manual focus from `LENS_FOCUS_DISTANCE` is the only VCM motion allowed
-when `AF_MODE = OFF`.
-
-**Likely cause:** the trigger handler doesn't guard on `afMode`. Also
-worth auditing whether the `CONTINUOUS_PICTURE` periodic re-trigger
-can bleed state if mode changes mid-session (`mAfSweepActive` cleanup
-on mode transition).
-
-**Fix plan:** will be covered when the 3A module lands (Tier 3), since
-AF behaviour gets moved out of `Camera.cpp` entirely. Short-term fix
-if the bug blocks anyone: add `&& afMode != AF_MODE_OFF` to the trigger
-guard, and clear `mAfSweepActive` on `AF_MODE` transition.
-
 ## JPEG orientation not applied
 
 **Symptom:** Photos from both back and front cameras come out on their
