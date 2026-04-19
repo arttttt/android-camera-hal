@@ -86,9 +86,12 @@ private:
 
     /* Zero-copy gralloc path: record compute → memory barrier → render
      * pass blit of mScratchImg into the entry's framebuffer, no final
-     * submit. Caller follows with submitWithReleaseFence(). */
+     * submit. Caller follows with submitWithReleaseFence().
+     * `crop` selects a sub-region of the scratch image to sample; it is
+     * {0, 0, width, height} for an identity blit. */
     void recordGrallocBlit(VulkanGrallocCache::Entry *entry,
-                            unsigned width, unsigned height);
+                            unsigned width, unsigned height,
+                            const CropRect &crop);
 
     /* Submit mCmdBuf on mFence and ask the driver for a sync_fence fd
      * that signals once the blit completes — the framework waits on it

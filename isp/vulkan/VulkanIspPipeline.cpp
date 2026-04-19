@@ -146,7 +146,8 @@ void VulkanIspPipeline::rebindInputDescriptor(int slot) {
 }
 
 void VulkanIspPipeline::recordGrallocBlit(VulkanGrallocCache::Entry *entry,
-                                           unsigned width, unsigned height) {
+                                           unsigned width, unsigned height,
+                                           const CropRect &crop) {
     VkCommandBufferBeginInfo bi = {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -191,6 +192,24 @@ void VulkanIspPipeline::recordGrallocBlit(VulkanGrallocCache::Entry *entry,
     mDeviceState.pfn()->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, mBlitPipeline);
     mDeviceState.pfn()->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                                mPipeLayout, 0, 1, &mDescSet, 0, NULL);
+
+    /* Mirrors the push_constant block declared in shaders/Blit.h. */
+    struct BlitPushConstants {
+        int32_t cropX, cropY, cropW, cropH;
+        int32_t srcW,  srcH,  outW,  outH;
+    };
+    BlitPushConstants pc = {};
+    pc.cropX = crop.x;
+    pc.cropY = crop.y;
+    pc.cropW = crop.w;
+    pc.cropH = crop.h;
+    pc.srcW  = (int32_t)width;
+    pc.srcH  = (int32_t)height;
+    pc.outW  = (int32_t)width;
+    pc.outH  = (int32_t)height;
+    mDeviceState.pfn()->CmdPushConstants(mCmdBuf, mPipeLayout,
+                                          VK_SHADER_STAGE_FRAGMENT_BIT,
+                                          0, sizeof(pc), &pc);
 
     VkViewport vp = {};
     vp.width    = (float)width;
@@ -369,10 +388,20 @@ bool VulkanIspPipeline::createDescriptorLayouts() {
         return false;
     }
 
+    /* Push-constant range for the blit shader: crop rect + scratch +
+     * output extents (see shaders/Blit.h BlitPC block). 32 bytes, fits
+     * well under the 128-byte Vulkan 1.0 guarantee. */
+    VkPushConstantRange blitPc = {};
+    blitPc.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    blitPc.offset     = 0;
+    blitPc.size       = 8 * sizeof(int32_t);
+
     VkPipelineLayoutCreateInfo plci = {};
-    plci.sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    plci.setLayoutCount = 1;
-    plci.pSetLayouts    = &mDescLayout;
+    plci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plci.setLayoutCount         = 1;
+    plci.pSetLayouts            = &mDescLayout;
+    plci.pushConstantRangeCount = 1;
+    plci.pPushConstantRanges    = &blitPc;
     if (mDeviceState.pfn()->CreatePipelineLayout(
             mDeviceState.device(), &plci, NULL, &mPipeLayout) != VK_SUCCESS) {
         ALOGE("vkCreatePipelineLayout failed");
@@ -873,7 +902,6 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
                                           const CropRect &crop) {
     (void)src;
     (void)acquireFence;
-    (void)crop; /* TODO(t1.5-step1): route into shader push-constants */
     *releaseFence = -1;
 
     if (!mReady || !nativeBuffer || !mDeviceState.nativeBufferAvailable())
@@ -904,7 +932,7 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
     rebindInputDescriptor(srcInputSlot);
 
     int64_t t1 = nowMs();
-    recordGrallocBlit(entry, width, height);
+    recordGrallocBlit(entry, width, height, crop);
     submitWithReleaseFence(entry, releaseFence);
     mPrevPending = true;
     int64_t t2 = nowMs();

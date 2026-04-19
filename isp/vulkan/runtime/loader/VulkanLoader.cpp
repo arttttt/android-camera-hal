@@ -105,6 +105,7 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
 
     DEV(CmdBindPipeline);
     DEV(CmdBindDescriptorSets);
+    DEV(CmdPushConstants);
     DEV(CmdDispatch);
     DEV(CmdPipelineBarrier);
     DEV(CmdCopyImageToBuffer);

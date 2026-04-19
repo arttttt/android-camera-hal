@@ -156,6 +156,7 @@ struct VulkanPfn {
 
     PFN_vkCmdBindPipeline                           CmdBindPipeline;
     PFN_vkCmdBindDescriptorSets                     CmdBindDescriptorSets;
+    PFN_vkCmdPushConstants                          CmdPushConstants;
     PFN_vkCmdDispatch                               CmdDispatch;
     PFN_vkCmdPipelineBarrier                        CmdPipelineBarrier;
     PFN_vkCmdCopyImageToBuffer                      CmdCopyImageToBuffer;
