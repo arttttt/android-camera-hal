@@ -285,15 +285,6 @@ Shape of the change:
 Blocked on nothing in principle; blocked on Tier 3 for a clean home for
 `beginFrame` / `endFrame` boundaries.
 
-## Deferred / low priority
-
-### `isp/hw/HwIspPipeline.cpp` (427 LOC)
-
-Dead code per `memory/project_hw_isp_status.md` — kept as reference. Skip
-until/unless we decide to revive the HW ISP path, at which point the
-nvmap/nvhost ioctl structs (lines 20–70) extract to
-`isp/hw/NvmapHelper.h` / `NvhostHelper.h`.
-
 ## Tier 4 — aspirational (L, or rewrite)
 
 ### Move sensor / ISP access to media-controller + v4l2-subdev
