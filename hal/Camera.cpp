@@ -43,7 +43,6 @@
 #include "metadata/CameraStaticMetadata.h"
 #include "metadata/RequestTemplateBuilder.h"
 #include "metadata/ResultMetadataBuilder.h"
-#include "ImageConverter.h"
 #include "IspPipeline.h"
 #include "sensor/IspCalibration.h"
 
@@ -95,7 +94,6 @@ Camera::Camera(const char *devNode, int facing)
 
 Camera::~Camera() {
     DBGUTILS_AUTOLOGCALL(__func__);
-    gWorkers.stop();
     delete mBufferProcessor;
     delete mAf;
     delete mExposure;
@@ -127,8 +125,6 @@ int Camera::openDevice(hw_device_t **device) {
     if (mFacing == CAMERA_FACING_BACK)
         mDev->openFocuser("/dev/v4l-subdev0");
 
-    gWorkers.start();
-
     return NO_ERROR;
 }
 
@@ -136,7 +132,6 @@ int Camera::closeDevice() {
     DBGUTILS_AUTOLOGCALL(__func__);
     Mutex::Autolock lock(mMutex);
 
-    gWorkers.stop();
     mDev->disconnect();
 
     return NO_ERROR;
@@ -221,7 +216,7 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
         mAf = new AutoFocusController(mDev, mIsp);
 
     if (mJpeg) { delete mJpeg; mJpeg = NULL; }
-    mJpeg = new JpegEncoder(mIsp, &mConverter);
+    mJpeg = new JpegEncoder(mIsp);
 
     if (mBufferProcessor) { delete mBufferProcessor; mBufferProcessor = NULL; }
     BufferProcessor::Deps bpDeps;

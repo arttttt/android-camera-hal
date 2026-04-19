@@ -8,8 +8,6 @@
 #include <camera/CameraMetadata.h>
 #include <utils/Mutex.h>
 
-#include "Workers.h"
-#include "ImageConverter.h"
 #include "sensor/SensorConfig.h"
 #include "IspPipeline.h"
 #include "3a/AutoFocusController.h"
@@ -68,7 +66,6 @@ protected:
     SensorConfig mSensorCfg;
 
 private:
-    ImageConverter mConverter;
     IspPipeline *mIsp;
     AutoFocusController *mAf;
     ExposureControl *mExposure;

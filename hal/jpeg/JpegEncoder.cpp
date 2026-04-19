@@ -13,7 +13,6 @@
 #include <system/camera_metadata.h>
 #include <utils/Log.h>
 
-#include "ImageConverter.h"
 #include "IspPipeline.h"
 
 namespace android {
@@ -123,9 +122,8 @@ uint8_t *encodeRgbaToJpeg(const uint8_t *rgba, uint8_t *dst, size_t dstLen,
 
 } /* namespace */
 
-JpegEncoder::JpegEncoder(IspPipeline *isp, ImageConverter *converter)
-    : mIsp(isp)
-    , mConverter(converter) {
+JpegEncoder::JpegEncoder(IspPipeline *isp)
+    : mIsp(isp) {
 }
 
 bool JpegEncoder::encode(uint8_t *dst, size_t bufferSize,
@@ -138,36 +136,25 @@ bool JpegEncoder::encode(uint8_t *dst, size_t bufferSize,
         jpegQuality = *cm.find(ANDROID_JPEG_QUALITY).data.u8;
     ALOGD("JPEG quality = %u", jpegQuality);
 
-    uint8_t *bufEnd = NULL;
-    if (src.pixFmt == V4L2_PIX_FMT_UYVY) {
-        bufEnd = mConverter->UYVYToJPEG(src.frameBuf, dst,
-                                         src.width, src.height,
-                                         maxImageSize, jpegQuality);
-    } else if (src.pixFmt == V4L2_PIX_FMT_YUYV) {
-        bufEnd = mConverter->YUY2ToJPEG(src.frameBuf, dst,
-                                         src.width, src.height,
-                                         maxImageSize, jpegQuality);
-    } else {
-        /* Bayer: GPU demosaic straight into the ISP's CPU-mapped
-         * buffer, no intermediate RGBA copy. libjpeg reads from that
-         * buffer and writes JPEG into `dst`. Orientation is encoded
-         * in the EXIF APP1 marker — no pixel rotation in HAL. */
-        const uint8_t *rgba = mIsp->processToCpu(src.frameBuf,
-                                                  src.width, src.height,
-                                                  src.pixFmt, src.srcInputSlot);
-        if (!rgba) {
-            ALOGE("processToCpu failed");
-            return false;
-        }
-
-        int32_t jpegOri = 0;
-        if (cm.exists(ANDROID_JPEG_ORIENTATION))
-            jpegOri = *cm.find(ANDROID_JPEG_ORIENTATION).data.i32;
-
-        bufEnd = encodeRgbaToJpeg(rgba, dst, maxImageSize,
-                                   src.width, src.height,
-                                   jpegQuality, jpegOri);
+    /* GPU demosaic straight into the ISP's CPU-mapped buffer, no
+     * intermediate RGBA copy. libjpeg reads from that buffer and
+     * writes JPEG into `dst`. Orientation is encoded in the EXIF APP1
+     * marker — no pixel rotation in HAL. */
+    const uint8_t *rgba = mIsp->processToCpu(src.frameBuf,
+                                              src.width, src.height,
+                                              src.pixFmt, src.srcInputSlot);
+    if (!rgba) {
+        ALOGE("processToCpu failed");
+        return false;
     }
+
+    int32_t jpegOri = 0;
+    if (cm.exists(ANDROID_JPEG_ORIENTATION))
+        jpegOri = *cm.find(ANDROID_JPEG_ORIENTATION).data.i32;
+
+    uint8_t *bufEnd = encodeRgbaToJpeg(rgba, dst, maxImageSize,
+                                        src.width, src.height,
+                                        jpegQuality, jpegOri);
 
     if (bufEnd == dst) {
         ALOGE("JPEG image too big!");

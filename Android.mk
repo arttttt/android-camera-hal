@@ -61,7 +61,6 @@ LOCAL_C_INCLUDES += \
     $(LOCAL_PATH)/isp \
     $(LOCAL_PATH)/isp/vulkan \
     $(LOCAL_PATH)/isp/hw \
-    $(LOCAL_PATH)/image \
     $(LOCAL_PATH)/util
 
 LOCAL_SRC_FILES += \
@@ -76,9 +75,6 @@ LOCAL_SRC_FILES += \
     hal/pipeline/BufferProcessor.cpp \
     hal/pipeline/StreamConfig.cpp \
     v4l2/V4l2Device.cpp \
-    image/ImageConverter.cpp \
-    image/Yuv422UyvyToJpegEncoder.cpp \
-    util/Workers.cpp \
     isp/IspPipeline.cpp \
     isp/IspParams.cpp \
     isp/sensor/IspCalibration.cpp \

@@ -8,7 +8,6 @@
 namespace android {
 
 class IspPipeline;
-class ImageConverter;
 
 /* Raw frame descriptor passed to JpegEncoder — the subset of the V4L2
  * frame state JPEG encoding needs. `frameBuf` is the MMAP pointer and
@@ -22,12 +21,11 @@ struct JpegSource {
     unsigned       height;
 };
 
-/* Produces a HAL_PIXEL_FORMAT_BLOB JPEG from a raw V4L2 frame. Bayer
- * inputs are demosaiced through the ISP first; packed-YUV inputs go
- * through the direct libjpeg path on ImageConverter. */
+/* Produces a HAL_PIXEL_FORMAT_BLOB JPEG from a raw Bayer V4L2 frame.
+ * Pipeline: ISP demosaic → libjpeg encode with EXIF Orientation tag. */
 class JpegEncoder {
 public:
-    JpegEncoder(IspPipeline *isp, ImageConverter *converter);
+    explicit JpegEncoder(IspPipeline *isp);
 
     /* Encode `src` into the BLOB buffer `dst` (reserved `bufferSize`
      * bytes, which must include the camera3_jpeg_blob footer).
@@ -42,8 +40,7 @@ public:
                 const CameraMetadata &cm) const;
 
 private:
-    IspPipeline    *mIsp;
-    ImageConverter *mConverter;
+    IspPipeline *mIsp;
 };
 
 }; /* namespace android */
