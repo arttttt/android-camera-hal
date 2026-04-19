@@ -38,13 +38,6 @@ Honest values: `1` and `1` today. Bump after tier 3 lands.
 max-fps-per-resolution so the framework stops requesting impossible
 rates on modes that can only do 30.
 
-### Sensor calibration keys (S–M)
-
-Ship `BLACK_LEVEL_PATTERN`, `WHITE_LEVEL`,
-`COLOR_FILTER_ARRANGEMENT`, the colour / forward matrices, and
-`NOISE_PROFILE`. Values come from sensor datasheet or vendor tuning.
-Cheap to add, unblocks DNG capture.
-
 ## Tier 1.1 — refactor the monoliths (M)
 
 The HAL violates its own design rules (one object per file; SRP;
@@ -80,7 +73,12 @@ Split into:
   makes the source-of-truth rule enforceable by reading one file.
   This subsumes Tier 1 item "Build AVAILABLE_*_KEYS" (moved here so
   we don't pile another 40+ lines of static arrays into the existing
-  mess).
+  mess). Sensor calibration keys (`BLACK_LEVEL_PATTERN`, `WHITE_LEVEL`,
+  `COLOR_FILTER_ARRANGEMENT`, colour/forward matrices,
+  `REFERENCE_ILLUMINANT{1,2}`, `NOISE_PROFILE`) also land here as part
+  of this extraction — per-sensor values pulled from `SensorConfig`
+  (or the JSON tuning file once it lands in Tier 2), AVAILABLE_KEYS
+  array extended in the same commit.
 - `hal/AutoFocusController.{h,cpp}` — sweep state machine; interface
   `onTriggerStart(mode)`, `onFrame(rgba) → ControlUpdate`, `cancel()`
 - `hal/ExposureControl.{h,cpp}` — request→V4L2 exposure/gain split, EV
