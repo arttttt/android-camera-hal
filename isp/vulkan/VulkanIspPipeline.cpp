@@ -258,9 +258,41 @@ bool VulkanIspPipeline::init() {
     appInfo.pApplicationName = "CameraISP";
     appInfo.apiVersion = VK_API_VERSION;
 
+    /* Enumerate + enable instance extensions relevant to external memory. */
+    bool hasGpdp2 = false, hasExtMemCaps = false, hasNvExtMemCaps = false;
+    {
+        PFN_vkEnumerateInstanceExtensionProperties gieep =
+            mLoader->getEnumerateInstanceExtensionProperties();
+        uint32_t n = 0;
+        gieep(NULL, &n, NULL);
+        VkExtensionProperties *ex = new VkExtensionProperties[n];
+        gieep(NULL, &n, ex);
+        for (uint32_t i = 0; i < n; i++) {
+            if (strstr(ex[i].extensionName, "external") ||
+                strstr(ex[i].extensionName, "get_physical_device_properties2") ||
+                strstr(ex[i].extensionName, "VK_NV_"))
+                ALOGD("Instance ext: %s", ex[i].extensionName);
+            if (!strcmp(ex[i].extensionName, "VK_KHR_get_physical_device_properties2"))
+                hasGpdp2 = true;
+            if (!strcmp(ex[i].extensionName, "VK_KHR_external_memory_capabilities"))
+                hasExtMemCaps = true;
+            if (!strcmp(ex[i].extensionName, "VK_NV_external_memory_capabilities"))
+                hasNvExtMemCaps = true;
+        }
+        delete[] ex;
+    }
+
+    const char *iexts[8];
+    uint32_t iec = 0;
+    if (hasGpdp2)       iexts[iec++] = "VK_KHR_get_physical_device_properties2";
+    if (hasExtMemCaps)  iexts[iec++] = "VK_KHR_external_memory_capabilities";
+    if (hasNvExtMemCaps)iexts[iec++] = "VK_NV_external_memory_capabilities";
+
     VkInstanceCreateInfo ici = {};
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &appInfo;
+    ici.enabledExtensionCount = iec;
+    ici.ppEnabledExtensionNames = iexts;
 
     if (mLoader->getCreateInstance()(&ici, NULL, &mInstance) != VK_SUCCESS) {
         ALOGE("vkCreateInstance failed");
@@ -286,6 +318,8 @@ bool VulkanIspPipeline::init() {
 
     /* Enumerate device extensions. */
     bool hasNvGlsl = false;
+    bool hasKhrExtMem = false, hasKhrExtMemFd = false;
+    bool hasExtExtMemDmaBuf = false, hasNvExtMem = false;
     mNativeBufferAvail = false;
     {
         uint32_t extCount = 0;
@@ -298,9 +332,19 @@ bool VulkanIspPipeline::init() {
                 hasNvGlsl = true;
             if (!strcmp(exts[i].extensionName, "VK_ANDROID_native_buffer"))
                 mNativeBufferAvail = true;
+            if (!strcmp(exts[i].extensionName, "VK_KHR_external_memory"))
+                hasKhrExtMem = true;
+            if (!strcmp(exts[i].extensionName, "VK_KHR_external_memory_fd"))
+                hasKhrExtMemFd = true;
+            if (!strcmp(exts[i].extensionName, "VK_EXT_external_memory_dma_buf"))
+                hasExtExtMemDmaBuf = true;
+            if (!strcmp(exts[i].extensionName, "VK_NV_external_memory"))
+                hasNvExtMem = true;
         }
         delete[] exts;
     }
+    ALOGD("External memory device ext: KHR_external_memory=%d fd=%d dma_buf=%d NV=%d",
+          hasKhrExtMem, hasKhrExtMemFd, hasExtExtMemDmaBuf, hasNvExtMem);
     if (!hasNvGlsl) {
         ALOGE("VK_NV_glsl_shader not supported — Vulkan ISP unavailable");
         destroy();
@@ -336,11 +380,14 @@ bool VulkanIspPipeline::init() {
     qci.queueCount = 1;
     qci.pQueuePriorities = &qPriority;
 
-    const char *enabledExts[2];
+    const char *enabledExts[8];
     uint32_t enabledExtCount = 0;
     enabledExts[enabledExtCount++] = "VK_NV_glsl_shader";
-    if (mNativeBufferAvail)
-        enabledExts[enabledExtCount++] = "VK_ANDROID_native_buffer";
+    if (mNativeBufferAvail)   enabledExts[enabledExtCount++] = "VK_ANDROID_native_buffer";
+    if (hasKhrExtMem)         enabledExts[enabledExtCount++] = "VK_KHR_external_memory";
+    if (hasKhrExtMemFd)       enabledExts[enabledExtCount++] = "VK_KHR_external_memory_fd";
+    if (hasExtExtMemDmaBuf)   enabledExts[enabledExtCount++] = "VK_EXT_external_memory_dma_buf";
+    if (hasNvExtMem)          enabledExts[enabledExtCount++] = "VK_NV_external_memory";
 
     VkDeviceCreateInfo dci = {};
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -1048,16 +1095,21 @@ bool VulkanIspPipeline::getOrCreateGrallocImage(ANativeWindowBuffer *anwb,
         return true;
     }
 
-    /* Diagnostic: dump anwb metadata + native_handle payload. nvgralloc encodes
-     * layout (Pitch vs Blocklinear, kind, BlockHeightLog2, pitch) inside data[]. */
+    /* Diagnostic: dump native_handle fd dev-nodes. Useful to see if the nvmap
+     * fd is importable as OPAQUE_FD / DMA_BUF via VK_KHR_external_memory_fd. */
     const native_handle_t *nh = anwb->handle;
     ALOGD("gralloc diag: anwb w=%d h=%d stride=%d fmt=0x%x usage=0x%x",
           anwb->width, anwb->height, anwb->stride, anwb->format, anwb->usage);
     ALOGD("gralloc diag: handle=%p numFds=%d numInts=%d",
           nh, nh->numFds, nh->numInts);
-    for (int i = 0; i < nh->numInts && i < 24; i++) {
-        ALOGD("gralloc diag: data[%d + numFds(%d)] = 0x%08x (%d)",
-              i, nh->numFds, nh->data[nh->numFds + i], nh->data[nh->numFds + i]);
+    for (int i = 0; i < nh->numFds; i++) {
+        int fd = nh->data[i];
+        char procPath[64], target[256];
+        snprintf(procPath, sizeof(procPath), "/proc/self/fd/%d", fd);
+        ssize_t nr = readlink(procPath, target, sizeof(target) - 1);
+        if (nr > 0) target[nr] = '\0';
+        else        strcpy(target, "<readlink failed>");
+        ALOGD("gralloc diag: fd[%d]=%d → %s", i, fd, target);
     }
 
     VkNativeBufferANDROID nbInfo = {};
