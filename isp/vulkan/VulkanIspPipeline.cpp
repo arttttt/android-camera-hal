@@ -1112,6 +1112,57 @@ bool VulkanIspPipeline::getOrCreateGrallocImage(ANativeWindowBuffer *anwb,
         ALOGD("gralloc diag: fd[%d]=%d → %s", i, fd, target);
     }
 
+    /* Phase B: one-shot import test of fd[1] (gralloc dma-buf) as OPAQUE_FD.
+     * We want a VkDeviceMemory over the same bytes so we can create a VkBuffer
+     * SSBO and do manual blocklinear addressing in the compute shader. */
+    static bool sImportTried = false;
+    if (!sImportTried && mPfn->GetMemoryFdPropertiesKHR && nh->numFds >= 2) {
+        sImportTried = true;
+        int origFd = nh->data[1];
+
+        /* dup() so we can test multiple strategies without losing the fd.
+         * AllocateMemory takes ownership of the fd on SUCCESS only. */
+        int dupFd = ::dup(origFd);
+        VkMemoryFdPropertiesKHR mfp = {};
+        mfp.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR;
+        VkResult r = mPfn->GetMemoryFdPropertiesKHR(mDevice,
+            VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR, dupFd, &mfp);
+        ALOGD("import test: GetMemoryFdPropertiesKHR OPAQUE_FD fd=%d → result=%d typeBits=0x%x",
+              dupFd, (int)r, mfp.memoryTypeBits);
+
+        if (r == VK_SUCCESS && mfp.memoryTypeBits != 0) {
+            /* Try each permitted memory type. Use dedicated allocation hint. */
+            for (uint32_t i = 0; i < 32; i++) {
+                if (!(mfp.memoryTypeBits & (1u << i))) continue;
+
+                int attemptFd = ::dup(origFd);
+                VkImportMemoryFdInfoKHR imi = {};
+                imi.sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
+                imi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR;
+                imi.fd         = attemptFd;
+
+                VkMemoryAllocateInfo ai = {};
+                ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+                ai.pNext = &imi;
+                ai.allocationSize = (VkDeviceSize)width * height * 4;
+                ai.memoryTypeIndex = i;
+
+                VkDeviceMemory mem = VK_NULL_HANDLE;
+                VkResult ar = mPfn->AllocateMemory(mDevice, &ai, NULL, &mem);
+                ALOGD("import test: AllocateMemory typeIdx=%d size=%lld → result=%d",
+                      i, (long long)ai.allocationSize, (int)ar);
+                if (ar == VK_SUCCESS) {
+                    mPfn->FreeMemory(mDevice, mem, NULL);
+                    /* On success Vulkan owned the fd; on failure we need to close it. */
+                    break;
+                } else {
+                    ::close(attemptFd);
+                }
+            }
+        }
+        ::close(dupFd);
+    }
+
     VkNativeBufferANDROID nbInfo = {};
     nbInfo.sType  = VK_STRUCTURE_TYPE_NATIVE_BUFFER_ANDROID;
     nbInfo.handle = anwb->handle;

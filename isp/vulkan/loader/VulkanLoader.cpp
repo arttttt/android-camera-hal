@@ -105,6 +105,9 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
     DEV(AcquireImageANDROID);
     DEV(QueueSignalReleaseImageANDROID);
 
+    /* VK_KHR_external_memory_fd */
+    DEV(GetMemoryFdPropertiesKHR);
+
     #undef DEV
 }
 

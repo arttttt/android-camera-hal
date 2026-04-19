@@ -96,6 +96,9 @@ struct VulkanPfn {
     /* VK_ANDROID_native_buffer (HAL-only extension, gralloc zero-copy) */
     PFN_vkAcquireImageANDROID                       AcquireImageANDROID;
     PFN_vkQueueSignalReleaseImageANDROID            QueueSignalReleaseImageANDROID;
+
+    /* VK_KHR_external_memory_fd — for importing gralloc dma-buf fd as VkDeviceMemory */
+    PFN_vkGetMemoryFdPropertiesKHR                  GetMemoryFdPropertiesKHR;
 };
 
 }; /* namespace android */
