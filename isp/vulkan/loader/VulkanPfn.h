@@ -128,6 +128,7 @@ struct VulkanPfn {
     PFN_vkCmdPipelineBarrier                        CmdPipelineBarrier;
     PFN_vkCmdCopyImageToBuffer                      CmdCopyImageToBuffer;
     PFN_vkCmdCopyImage                              CmdCopyImage;
+    PFN_vkCmdCopyBufferToImage                      CmdCopyBufferToImage;
 
     /* VK_ANDROID_native_buffer (HAL-only extension, gralloc zero-copy) */
     PFN_vkAcquireImageANDROID                       AcquireImageANDROID;

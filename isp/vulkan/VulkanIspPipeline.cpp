@@ -634,7 +634,9 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
     clearGrallocImages();
 
     if (!createBuffer(&mInBuf,  &mInMem,  inSize,  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
-        !createBuffer(&mOutBuf, &mOutMem, outSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) {
+        !createBuffer(&mOutBuf, &mOutMem, outSize,
+                      VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT)) {
         ALOGE("Failed to allocate Vulkan buffers %ux%u", width, height);
         return false;
     }
@@ -970,49 +972,68 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
                                 mPipeLayout, 0, 1, &mDescSet, 0, NULL);
     mPfn->CmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
 
-    VkImageMemoryBarrier barriers[2] = {};
-    /* scratch: SHADER_WRITE → TRANSFER_READ, layout unchanged (GENERAL). */
-    barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barriers[0].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-    barriers[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    barriers[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barriers[0].image = mScratchImg;
-    barriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barriers[0].subresourceRange.levelCount = 1;
-    barriers[0].subresourceRange.layerCount = 1;
-    /* gralloc: first use UNDEFINED → TRANSFER_DST_OPTIMAL, later unchanged. */
-    barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barriers[1].oldLayout = entry->layoutReady ?
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
-    barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barriers[1].srcAccessMask = entry->layoutReady ? VK_ACCESS_TRANSFER_WRITE_BIT : 0;
-    barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barriers[1].image = entry->image;
-    barriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barriers[1].subresourceRange.levelCount = 1;
-    barriers[1].subresourceRange.layerCount = 1;
+    /* Stage 1: scratch (GENERAL, SHADER_WRITE) → CopyImageToBuffer → mOutBuf.
+     * This is the detile path the driver already handles for CPU readback. */
+    VkImageMemoryBarrier scratchB = {};
+    scratchB.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    scratchB.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    scratchB.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    scratchB.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    scratchB.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    scratchB.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    scratchB.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    scratchB.image = mScratchImg;
+    scratchB.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    scratchB.subresourceRange.levelCount = 1;
+    scratchB.subresourceRange.layerCount = 1;
     mPfn->CmdPipelineBarrier(mCmdBuf,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
-        0, 0, NULL, 0, NULL, 2, barriers);
+        0, 0, NULL, 0, NULL, 1, &scratchB);
 
-    VkImageCopy region = {};
-    region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.srcSubresource.layerCount = 1;
-    region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.dstSubresource.layerCount = 1;
-    region.extent.width  = width;
-    region.extent.height = height;
-    region.extent.depth  = 1;
-    mPfn->CmdCopyImage(mCmdBuf,
-        mScratchImg, VK_IMAGE_LAYOUT_GENERAL,
+    VkBufferImageCopy bic = {};
+    bic.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    bic.imageSubresource.layerCount = 1;
+    bic.imageExtent.width  = width;
+    bic.imageExtent.height = height;
+    bic.imageExtent.depth  = 1;
+    mPfn->CmdCopyImageToBuffer(mCmdBuf, mScratchImg, VK_IMAGE_LAYOUT_GENERAL,
+                                mOutBuf, 1, &bic);
+
+    /* Stage 2: mOutBuf (TRANSFER_WRITE) → CopyBufferToImage → gralloc (retile
+     * into whatever layout gralloc dictates; mirror of stage 1). */
+    VkBufferMemoryBarrier bufB = {};
+    bufB.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    bufB.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    bufB.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    bufB.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    bufB.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    bufB.buffer = mOutBuf;
+    bufB.offset = 0;
+    bufB.size = VK_WHOLE_SIZE;
+
+    VkImageMemoryBarrier grallocB = {};
+    grallocB.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    grallocB.oldLayout = entry->layoutReady ?
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+    grallocB.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    grallocB.srcAccessMask = entry->layoutReady ? VK_ACCESS_TRANSFER_WRITE_BIT : 0;
+    grallocB.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    grallocB.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    grallocB.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    grallocB.image = entry->image;
+    grallocB.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    grallocB.subresourceRange.levelCount = 1;
+    grallocB.subresourceRange.layerCount = 1;
+
+    mPfn->CmdPipelineBarrier(mCmdBuf,
+        VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0, 0, NULL, 1, &bufB, 1, &grallocB);
+
+    mPfn->CmdCopyBufferToImage(mCmdBuf, mOutBuf,
         entry->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        1, &region);
+        1, &bic);
 
     mPfn->EndCommandBuffer(mCmdBuf);
     entry->layoutReady = true;

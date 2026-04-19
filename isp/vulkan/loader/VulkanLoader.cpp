@@ -101,6 +101,7 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
     DEV(CmdPipelineBarrier);
     DEV(CmdCopyImageToBuffer);
     DEV(CmdCopyImage);
+    DEV(CmdCopyBufferToImage);
 
     /* VK_ANDROID_native_buffer — only present when extension enabled on device */
     DEV(AcquireImageANDROID);
