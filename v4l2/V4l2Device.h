@@ -80,6 +80,7 @@ public:
 private:
     bool queueBuffer(unsigned id);
     int dequeueBuffer();
+    int dequeueBufferNonBlocking();
 
     bool iocStreamOff();
     bool iocStreamOn();

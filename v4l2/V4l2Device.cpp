@@ -483,13 +483,36 @@ const V4l2Device::VBuffer * V4l2Device::readLock() {
     }
     mPendingQbufCount = 0;
 
-    int id = 0;
-    if((id = dequeueBuffer()) < 0) {
+    int id = dequeueBuffer();
+    if(id < 0) {
         ALOGE("Could not dequeue buffer: %s (%d)", strerror(errno), errno);
         return NULL;
     }
-    auto buf = &mBuf[id];
-    return buf;
+
+    /* Drain-to-latest: the done-queue may already hold newer frames that
+     * piled up while we were processing the previous request (GPU fence
+     * wait, GC pause, …). Loop non-blocking DQBUFs, requeueing each stale
+     * slot, so we hand the caller the freshest captured frame instead of
+     * the oldest one. Bounds worst-case staleness to one frame period.
+     *
+     * Safe with the deferred-QBUF scheme above: those drained slots have
+     * never been touched by GPU (they've only been in VI's done-queue),
+     * so VIDIOC_QBUF returns them to VI immediately. */
+    int dropped = 0;
+    for (;;) {
+        int next = dequeueBufferNonBlocking();
+        if (next < 0)
+            break;
+        if (!queueBuffer(id))
+            ALOGE("drain-to-latest: QBUF of slot %d failed: %s (%d)",
+                  id, strerror(errno), errno);
+        id = next;
+        ++dropped;
+    }
+    if (dropped)
+        ALOGV("readLock: skipped %d stale frame(s)", dropped);
+
+    return &mBuf[id];
 }
 
 /**
@@ -572,6 +595,28 @@ int V4l2Device::dequeueBuffer() {
         }
     } while((errno = 0, ioctl(mFd, VIDIOC_DQBUF, &bufInfo)) < 0 && (errno == EINVAL || errno == EAGAIN));
     if(errno)
+        return -1;
+
+    return (int)bufInfo.index;
+}
+
+/**
+ * Non-blocking counterpart of dequeueBuffer(). Returns -1 immediately with
+ * errno=EAGAIN when the driver has no ready frame. Used by readLock() to
+ * drain any newer frames sitting in the done-queue after the first
+ * (blocking) DQBUF — bounds preview staleness to one frame.
+ */
+int V4l2Device::dequeueBufferNonBlocking() {
+    assert(mFd >= 0);
+
+    struct v4l2_buffer bufInfo;
+    memset(&bufInfo, 0, sizeof(bufInfo));
+    bufInfo.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    bufInfo.memory = mMemoryType;
+    bufInfo.index = 0;
+
+    errno = 0;
+    if(ioctl(mFd, VIDIOC_DQBUF, &bufInfo) < 0)
         return -1;
 
     return (int)bufInfo.index;

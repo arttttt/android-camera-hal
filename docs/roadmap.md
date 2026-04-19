@@ -87,6 +87,18 @@ demosaic, no libyuv, no packed-YUV support.
 - **Throughput**: ~18 fps → ~20 fps (bigger gains require Tier 2 / 3,
   `dqbuf` dominates the frame budget).
 
+### Tier 2 — drain-to-latest + legacy define cleanup (S)
+
+- `V4l2Device::readLock()` now drains the V4L2 done-queue to the newest
+  frame before returning: the first DQBUF is blocking (`poll()`-gated),
+  subsequent DQBUFs are non-blocking and each success requeues the
+  previous slot. Worst-case preview staleness drops from
+  `buf_count × frame_time` to `1 × frame_time` regardless of pipeline
+  spikes. See [latency-and-buffers.md](latency-and-buffers.md) fix #1.
+- The `V4L2DEVICE_USE_POLL` and `V4L2DEVICE_FPS_LIMIT` build-time knobs
+  from the Antmicro import were removed as dead flexibility —
+  `O_NONBLOCK` + `poll()` are unconditional now.
+
 ## Tier 1.2 — remaining Camera3 compliance (S)
 
 Absorbed into the `CameraStaticMetadata` home but not yet implemented.
@@ -113,12 +125,6 @@ conversion. Advertise it in stream configs.
 
 Unblocks CameraX `ImageAnalysis`, ML Kit, most third-party video
 pipelines.
-
-### Drain-to-latest in `V4l2Device::readLock` (S)
-
-See [latency-and-buffers.md](latency-and-buffers.md) fix #1. Cuts
-preview latency to 1 frame without touching queue depth or threading
-model. ~50 lines.
 
 ### JSON tuning file per sensor (M)
 

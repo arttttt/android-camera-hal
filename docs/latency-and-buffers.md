@@ -2,14 +2,14 @@
 
 ## TL;DR
 
-On `master` the HAL is effectively pipeline-depth-1 and can present the
-framework with a frame that is up to `V4L2DEVICE_BUF_COUNT - 1` frames
-older than the newest frame the sensor produced. Fixing this does not
-require reducing `V4L2DEVICE_BUF_COUNT`. Two compatible fixes:
+On `master` the HAL is effectively pipeline-depth-1. Until fix #1
+landed, it could present the framework with a frame up to
+`V4L2DEVICE_BUF_COUNT - 1` frames older than the newest frame the
+sensor produced. Three compatible fixes, in order of invasiveness:
 
-1. **Drain-to-latest in `readLock()`** — keep 4 buffers but always
-   return the newest ready one, requeueing stale ones immediately.
-   Minimal change, ~50 lines in `v4l2/V4l2Device.cpp`.
+1. **Drain-to-latest in `readLock()`** — *done* (Tier 2). Keep 4
+   buffers but always return the newest ready one, requeueing stale
+   ones immediately.
 2. **Asynchronous capture thread** — dedicate a thread to continuously
    `DQBUF → QBUF`, publishing "latest frame" via an atomic.
    `processCaptureRequest` reads latest under mutex. Larger change but
@@ -63,54 +63,39 @@ source.
 
 Reducing the count trades latency for frame drops. Not a good trade.
 
-## Fix #1 — drain-to-latest
+## Fix #1 — drain-to-latest *(done)*
 
-After the first (blocking) DQBUF that gets us a frame, loop
-non-blocking DQBUFs. Each successful non-blocking DQBUF means a newer
-frame was already waiting; requeue the previous one immediately.
-
-Sketch for `v4l2/V4l2Device.cpp:427`:
+After the first (blocking) DQBUF, `readLock()` loops non-blocking
+DQBUFs. Each successful one means a newer frame was already waiting;
+the previous slot is requeued immediately. Implementation lives in
+`V4l2Device::readLock()` + `dequeueBufferNonBlocking()`.
 
 ```cpp
-const V4l2Device::VBuffer * V4l2Device::readLock() {
-    assert(isConnected() && isStreaming());
-
-    int id = dequeueBuffer();              // existing, blocking
-    if (id < 0) return NULL;
-
-    int dropped = 0;
-    for (;;) {
-        int next = dequeueBufferNonBlocking();   // new helper
-        if (next < 0) break;                      // EAGAIN — none newer
-        queueBuffer(id);                          // old goes back
-        id = next;
-        ++dropped;
-    }
-    if (dropped) ALOGV("readLock: skipped %d stale frames", dropped);
-    return &mBuf[id];
+int id = dequeueBuffer();                   // blocking; poll() inside
+int dropped = 0;
+for (;;) {
+    int next = dequeueBufferNonBlocking();  // EAGAIN → break
+    if (next < 0) break;
+    queueBuffer(id);                         // drained slot back to VI
+    id = next;
+    ++dropped;
 }
 ```
 
-`dequeueBufferNonBlocking()` is identical to `dequeueBuffer()` but
-without the `poll()` wait and it returns `-1` immediately on
-`EAGAIN` / `EWOULDBLOCK`.
-
-**Prerequisite:** the device fd must be opened with `O_NONBLOCK`. Add
-`O_NONBLOCK` to the `open()` in `V4l2Device::connect()`. The existing
-blocking DQBUF path stays correct because it's preceded by a `poll()`
-that waits for readiness.
+`O_NONBLOCK` on the device fd is unconditional (Tier 2 cleanup, commit
+`bac0ea0`); the blocking DQBUF path stays correct because it's preceded
+by a `poll()` that waits for readiness.
 
 **Effect:** worst-case staleness drops from `buf_count × frame_time` to
 `1 × frame_time` regardless of pipeline spike size, as long as the
-average pipeline time stays under `frame_time`. During a spike you still
-catch up on the next request.
+average pipeline time stays under `frame_time`. During a spike the next
+request catches up in one drain pass.
 
 **Caveat:** monotonic frame-number association breaks. If the framework
 expects every request to consume exactly one sensor frame (it does
 assume this for timestamp/metadata correlation), dropping frames on the
-driver side means `sensor_timestamp` will jump. This is acceptable for
-preview but needs care if you rely on per-frame result metadata — see
-fix #3.
+driver side means `sensor_timestamp` will jump. Acceptable for preview
+but needs care if you rely on per-frame result metadata — see fix #3.
 
 ## Fix #2 — asynchronous capture thread
 
