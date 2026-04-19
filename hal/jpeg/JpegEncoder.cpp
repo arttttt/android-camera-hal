@@ -161,12 +161,8 @@ bool JpegEncoder::encode(uint8_t *dst, size_t bufferSize,
         }
 
         int32_t jpegOri = 0;
-        bool    jpegOriExists = cm.exists(ANDROID_JPEG_ORIENTATION);
-        if (jpegOriExists)
+        if (cm.exists(ANDROID_JPEG_ORIENTATION))
             jpegOri = *cm.find(ANDROID_JPEG_ORIENTATION).data.i32;
-        ALOGD("JPEG orientation: req=%d (exists=%d) → EXIF tag %u",
-              jpegOri, (int)jpegOriExists,
-              (unsigned)exifOrientationFromAndroid(jpegOri));
 
         bufEnd = encodeRgbaToJpeg(rgba, dst, maxImageSize,
                                    src.width, src.height,
