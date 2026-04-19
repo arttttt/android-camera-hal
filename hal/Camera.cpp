@@ -83,6 +83,7 @@ Camera::Camera(const char *devNode, int facing)
     mIsp = NULL;
     mAf = NULL;
     mExposure = NULL;
+    mJpeg = NULL;
     mDev = new V4l2Device(devNode);
     if(!mDev) {
         mValid = false;
@@ -94,6 +95,7 @@ Camera::~Camera() {
     gWorkers.stop();
     delete mAf;
     delete mExposure;
+    delete mJpeg;
     if (mIsp) { mIsp->destroy(); delete mIsp; }
     mDev->disconnect();
     delete mDev;
@@ -394,6 +396,9 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
      * metric runs on). On the HW ISP path mAf stays null. */
     if (mSoftIspEnabled)
         mAf = new AutoFocusController(mDev, mIsp);
+
+    if (mJpeg) { delete mJpeg; mJpeg = NULL; }
+    mJpeg = new JpegEncoder(mIsp, &mConverter);
 
     ALOGD("V4L2 target resolution: %ux%u, soft_isp=%d",
           width, height, mSoftIspEnabled);
@@ -741,57 +746,13 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
             }
             case HAL_PIXEL_FORMAT_BLOB: {
                 BENCHMARK_SECTION("YUV->JPEG") {
-                    const size_t maxImageSize = mJpegBufferSize - sizeof(camera3_jpeg_blob);
-                    uint8_t jpegQuality = 95;
-                    if(cm.exists(ANDROID_JPEG_QUALITY)) {
-                        jpegQuality = *cm.find(ANDROID_JPEG_QUALITY).data.u8;
-                    }
-                    ALOGD("JPEG quality = %u", jpegQuality);
-
-                    uint8_t *bufEnd = NULL;
-                    if(frame->pixFmt == V4L2_PIX_FMT_UYVY)
-                        bufEnd = mConverter.UYVYToJPEG(frame->buf, buf, res.width, res.height, maxImageSize, jpegQuality);
-                    else if(frame->pixFmt == V4L2_PIX_FMT_YUYV)
-                        bufEnd = mConverter.YUY2ToJPEG(frame->buf, buf, res.width, res.height, maxImageSize, jpegQuality);
-                    else {
-                        /* Bayer: synchronous demosaic + rotate + JPEG encode */
-                        int srcSlot = (frame->buf == NULL) ? frame->index : -1;
-                        mIsp->processSync(frame->buf, mRgbaTemp,
-                                          res.width, res.height, frame->pixFmt,
-                                          srcSlot);
-
-                        /* Apply JPEG orientation by rotating pixels */
-                        int32_t jpegOri = 0;
-                        if (cm.exists(ANDROID_JPEG_ORIENTATION))
-                            jpegOri = *cm.find(ANDROID_JPEG_ORIENTATION).data.i32;
-
-                        unsigned outW = res.width, outH = res.height;
-                        libyuv::RotationMode rot = libyuv::kRotate0;
-                        if (jpegOri == 90)       { rot = libyuv::kRotate90;  outW = res.height; outH = res.width; }
-                        else if (jpegOri == 180)  { rot = libyuv::kRotate180; }
-                        else if (jpegOri == 270)  { rot = libyuv::kRotate270; outW = res.height; outH = res.width; }
-
-                        if (rot != libyuv::kRotate0) {
-                            uint8_t *rotBuf = new uint8_t[outW * outH * 4];
-                            libyuv::ARGBRotate(mRgbaTemp, res.width * 4,
-                                               rotBuf, outW * 4,
-                                               res.width, res.height, rot);
-                            bufEnd = ImageConverter::RGBAToJPEG(rotBuf, buf,
-                                outW, outH, maxImageSize, jpegQuality);
-                            delete[] rotBuf;
-                        } else {
-                            bufEnd = ImageConverter::RGBAToJPEG(mRgbaTemp, buf,
-                                outW, outH, maxImageSize, jpegQuality);
-                        }
-                    }
-
-                    if(bufEnd != buf) {
-                        camera3_jpeg_blob *jpegBlob = reinterpret_cast<camera3_jpeg_blob*>(buf + maxImageSize);
-                        jpegBlob->jpeg_blob_id  = CAMERA3_JPEG_BLOB_ID;
-                        jpegBlob->jpeg_size     = (uint32_t)(bufEnd - buf);
-                    } else {
-                        ALOGE("%s: JPEG image too big!", __FUNCTION__);
-                    }
+                    JpegSource jsrc;
+                    jsrc.frameBuf     = frame->buf;
+                    jsrc.srcInputSlot = (frame->buf == NULL) ? frame->index : -1;
+                    jsrc.pixFmt       = frame->pixFmt;
+                    jsrc.width        = res.width;
+                    jsrc.height       = res.height;
+                    mJpeg->encode(buf, mJpegBufferSize, jsrc, cm, mRgbaTemp);
                 }
                 break;
             }

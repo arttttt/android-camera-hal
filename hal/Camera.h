@@ -14,6 +14,7 @@
 #include "IspPipeline.h"
 #include "3a/AutoFocusController.h"
 #include "3a/ExposureControl.h"
+#include "jpeg/JpegEncoder.h"
 #include "DbgUtils.h"
 
 namespace android {
@@ -69,6 +70,7 @@ private:
     IspPipeline *mIsp;
     AutoFocusController *mAf;
     ExposureControl *mExposure;
+    JpegEncoder *mJpeg;
     Mutex mMutex;
 
     /* STATIC WRAPPERS */
