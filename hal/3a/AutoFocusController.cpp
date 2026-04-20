@@ -61,7 +61,13 @@ uint64_t measureSharpness(const uint8_t *rgba, unsigned w, unsigned h) {
     }
     if (brightSum == 0 || nSamples == 0)
         return 0;
-    return gradSum * 1000 / (brightSum / nSamples);
+    /* Algebraically: gradSum * 1000 / (brightSum / nSamples).
+     * Written this way the integer truncation of brightSum / nSamples
+     * could produce zero (on very dark scenes or a buffer whose GPU
+     * write has not yet landed), causing SIGFPE in the outer division.
+     * Rearrange to keep the same quotient without the trip through
+     * zero. */
+    return (gradSum * 1000 * nSamples) / brightSum;
 }
 
 } /* namespace */
