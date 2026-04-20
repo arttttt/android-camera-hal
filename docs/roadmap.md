@@ -188,88 +188,44 @@ Each is a short edit inside that module.
   to emit them from `module.*` + `active.colorCorrection.*`. Unlocks
   DNG output.
 
-## Tier 3 — pipeline refactor (L)
+## Tier 3 — asynchronous event-driven pipeline (L)
 
-### Request queue with dedicated capture thread (L)
+Full architecture is specified in
+[**tier3_architecture.md**](tier3_architecture.md). Summary below.
 
-Introduce `CaptureRequestQueue` and an async "capture worker" between
-`processCaptureRequest` (producer) and V4L2 / ISP / gralloc (consumer).
-Targets `PIPELINE_MAX_DEPTH ≈ 3`.
+Six threads per camera; all cross-thread comms via bounded queues +
+eventfd + sync_fd. Every GPU wait is a fence fd registered in `poll()`;
+`vkWaitForFences` only on `flush()` / `close()` / hang-recovery.
 
-Gives us:
+Expected: single-stream ~20 fps → ~28–30 fps on 1080p; multi-stream
+preview+video ~13 fps → ~28 fps. Foundation for ZSL, reprocess, real
+3A, and Tier 3.5 produce-once without further rewrite.
 
-- Framework thread no longer blocks on DQBUF → ISP → JPEG serially.
-- Sensor cadence decoupled from consumer pace.
-- Foundation for proper AE precapture and reprocessing.
+Landed in eight PRs (each shippable + testable on its own; split
+chosen so `git bisect` cleanly attributes FPS and correctness shifts):
 
-See [latency-and-buffers.md](latency-and-buffers.md) fix #2 and
-[open-source-references.md](open-source-references.md) §AOSP V4L2 HAL.
+1. **PR 1** — Threading primitives: `ThreadBase`, `EventQueue<T>`,
+   `Signal<T>`, `UniqueFd`. Infra only, no consumers.
+2. **PR 2** — `RequestQueue` + `RequestThread` wrapping the current
+   synchronous path. `processCaptureRequest` returns in < 1 ms.
+3. **PR 3** — `IBayerSource` / `V4l2Source` / `CaptureThread`;
+   drain-to-latest migrates out of `V4l2Device`.
+4. **PR 4** — `DelayedControls` port (~280 LOC) with
+   `SensorTuning.controlDelay`; truthful result metadata.
+5. **PR 5** — `PipelineThread` + Vulkan `external_fence_fd` in
+   `poll()`. `waitForPreviousFrame` deleted; GPU depth > 1. **FPS
+   win lands here** (preview 20 → ~28–30).
+6. **PR 6** — `ResultThread` split. Framework callbacks off
+   `PipelineThread`; FIFO by single-thread construction.
+7. **PR 7** — `IIpa` interface + GPU statistics compute shader;
+   AE / AWB / AF driven by real stats, not gralloc-locked preview.
+8. **PR 8** — Produce-once refactor
+   (`IIsp::beginFrame` / `blitTo*` / `endFrame`) + `IPostProcessor` /
+   `JpegWorker`. **Multi-stream FPS win** (preview+video 13 → ~28).
 
-### `DelayedControls` tracking (M)
-
-Ring buffer mapping frame numbers to pending control values, with
-per-control delay (2 for exposure / gain, 1 for VCM). Used to
-populate result metadata with values that actually applied on the
-captured frame, not the values most recently requested.
-
-Prerequisite for truthful manual-exposure and HDR-bracketing support.
-
-### 3A module with statistics feedback (L)
-
-Pull the per-frame logic in `hal/3a/` behind an `IpaModule` with a
-`process(StatsBuffer) → ControlUpdate` interface. Feed it statistics
-from the Vulkan ISP rather than the rendered preview — add a
-downscaled statistics pass to the compute path (a few hundred `uvec4`
-patches + histogram). Cheap on GPU.
-
-Unblocks real AE, real AWB, face-aware AF, metering regions. Big payoff.
-
-## Tier 3.5 — produce-once, sample-many ISP (M)
-
-Today `VulkanIspPipeline::processToGralloc` records **demosaic + blit**
-per call, and `BufferProcessor` calls it once per output buffer. With
-2 streams (preview + video_record) the demosaic runs twice per frame;
-3 streams → three times. Pure redundancy: the Bayer source is the same.
-
-The scratch image (`mScratchImg`) is already a full-resolution RGBA
-texture. Restructure the API so demosaic runs once per frame and each
-output performs only the blit step:
-
-```
-isp->beginFrame(bayer_src, w, h)    // compute demosaic into scratch
-for each output buffer:
-    isp->blitToGralloc(dst, cropRect)  // fragment blit, samples scratch
-isp->endFrame()
-```
-
-Wins:
-
-- Demosaic cost = 1 per frame regardless of stream count.
-- AF sharpness metric samples `mScratchImg` directly — one more fallback
-  deleted (today it locks the gralloc output for `SW_READ_OFTEN`).
-- Future ISP stages (denoise, tone mapping) chain naturally: each stage
-  samples the previous stage's scratch image.
-- JPEG zero-copy path (Tier 1.5 item 4) reuses the same scratch instead
-  of re-running demosaic.
-
-Prerequisites:
-
-- Tier 1.5 (scratch image `USAGE_SAMPLED` + sampler, shader crop/scale)
-  already gives the right shape — this tier is the architectural
-  follow-up.
-- Works best after Tier 3 (request queue) introduces per-frame scope —
-  `beginFrame` / `endFrame` sit cleanly at the request boundary rather
-  than at the per-buffer loop.
-
-Shape of the change:
-
-- `IspPipeline` grows `beginFrame` / `endFrame`.
-- `VulkanIspPipeline`: demosaic moves out of `processToGralloc` into
-  `beginFrame`. `processToGralloc` / `processToCpu` become pure blit /
-  copy ops sampling `mScratchImg`.
-- `BufferProcessor` calls `beginFrame` before the output-buffer loop
-  and `endFrame` after; the loop body has no per-stream "did the
-  demosaic already" state.
+Deferred but slot-reserved from PR 2: `Request::inputBuffer` for
+ZSL / reprocess; ZSL ring buffer and reprocess wiring happen in
+Tier 4 with no queue-type churn.
 
 ## Tier 4 — aspirational (L, or rewrite)
 
