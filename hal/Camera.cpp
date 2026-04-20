@@ -551,6 +551,13 @@ void Camera::stopWorkers() {
      * bayer-source stop never runs. */
     if (mBayerSource)   mBayerSource->stop();
     if (mRequestThread) mRequestThread->stop();
+
+    /* Drain the last submitted GPU work. With no workers running it's
+     * safe to do this from the caller's thread; leaving mIsp with
+     * mPrevPending=true + a signalled fence would trip the next
+     * session's waitForPreviousFrame() (fence reset, but flag still
+     * set → infinite wait on an unsignalled fence). */
+    if (mIsp) mIsp->waitForPreviousFrame();
 }
 
 void Camera::startWorkers() {
