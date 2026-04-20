@@ -44,7 +44,6 @@
 #include "metadata/RequestTemplateBuilder.h"
 #include "metadata/ResultMetadataBuilder.h"
 #include "IspPipeline.h"
-#include "sensor/IspCalibration.h"
 
 extern camera_module_t HAL_MODULE_INFO_SYM;
 
@@ -201,8 +200,6 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
         return NO_INIT;
     }
     mIsp->setEnabled(mSoftIspEnabled);
-    mIsp->setCcm((mFacing == CAMERA_FACING_BACK) ? IspCalibration::ccmImx179()
-                                                  : IspCalibration::ccmOv5693());
 
     /* Mi Pad 1 sensor → module mapping — hardcoded pairs for the only
      * two modules this device has. Future: read a module ID fuse from
@@ -211,6 +208,12 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
     const char *sensorName = (mFacing == CAMERA_FACING_BACK) ? "IMX179" : "OV5693";
     const char *integrator = (mFacing == CAMERA_FACING_BACK) ? "Primax" : "Sunny";
     mTuning.load(sensorName, integrator);
+
+    /* CCM comes from tuning. Static target CCT = 5000 K (closest daylight
+     * point we have) until AWB estimates CCT dynamically. Stored on
+     * Camera so the lifetime matches IspPipeline's pointer capture. */
+    mTuning.ccmForCctQ10(5000, mCcmQ10);
+    mIsp->setCcm(mCcmQ10);
 
     /* AF sweep + VCM control are only meaningful with the soft ISP
      * (which owns the AWB lock and whose RGBA output the sharpness

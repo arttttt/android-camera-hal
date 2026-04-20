@@ -70,6 +70,13 @@ public:
     const OpticalBlack&         opticalBlack()  const { return mOpticalBlack; }
     const AwbRefs&              awbRefs()       const { return mAwbRefs; }
 
+    /* Fill `out` (9 entries, row-major 3x3) with the Q10 fixed-point CCM
+     * closest to `cctK`. Uses nearest-CCT from ccmSets(); if the tuning
+     * has no sets, writes the identity matrix (1024, 0, 0, 0, 1024, ...).
+     * Call sites keep the returned buffer alive for the consumer (the
+     * Vulkan ISP stores the pointer). */
+    void ccmForCctQ10(int cctK, int16_t out[9]) const;
+
 private:
     bool mLoaded;
     bool mHasAf;

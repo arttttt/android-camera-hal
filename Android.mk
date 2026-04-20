@@ -75,7 +75,6 @@ LOCAL_SRC_FILES += \
     v4l2/V4l2Device.cpp \
     isp/IspPipeline.cpp \
     isp/IspParams.cpp \
-    isp/sensor/IspCalibration.cpp \
     isp/sensor/SensorTuning.cpp \
     isp/vulkan/VulkanIspPipeline.cpp \
     isp/vulkan/runtime/VulkanDeviceState.cpp \

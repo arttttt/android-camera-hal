@@ -151,4 +151,36 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
     return true;
 }
 
+void SensorTuning::ccmForCctQ10(int cctK, int16_t out[9]) const {
+    if (mCcmSets.empty()) {
+        static const int16_t kIdentity[9] = {
+            1024, 0, 0,
+            0, 1024, 0,
+            0, 0, 1024,
+        };
+        memcpy(out, kIdentity, sizeof(kIdentity));
+        return;
+    }
+
+    /* Nearest-CCT pick — proper CCT-based interpolation belongs with the
+     * AWB work that estimates scene CCT per-frame. */
+    const CcmSet *best = &mCcmSets[0];
+    int bestDelta = abs(best->cctK - cctK);
+    for (size_t i = 1; i < mCcmSets.size(); i++) {
+        int d = abs(mCcmSets[i].cctK - cctK);
+        if (d < bestDelta) {
+            bestDelta = d;
+            best = &mCcmSets[i];
+        }
+    }
+    for (int r = 0; r < 3; r++) {
+        for (int c = 0; c < 3; c++) {
+            float v = best->ccMatrix[r][c] * 1024.0f;
+            if (v > 32767.0f) v = 32767.0f;
+            if (v < -32768.0f) v = -32768.0f;
+            out[r * 3 + c] = (int16_t)(v > 0 ? v + 0.5f : v - 0.5f);
+        }
+    }
+}
+
 }; /* namespace android */

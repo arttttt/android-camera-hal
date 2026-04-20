@@ -61,6 +61,7 @@ protected:
 
     SensorConfig mSensorCfg;
     SensorTuning mTuning;
+    int16_t      mCcmQ10[9];
 
 private:
     IspPipeline *mIsp;
