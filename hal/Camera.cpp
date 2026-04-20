@@ -540,8 +540,17 @@ void Camera::destroyInfrastructure() {
 }
 
 void Camera::stopWorkers() {
-    if (mRequestThread) mRequestThread->stop();
+    /* BayerSource first: the request thread may be parked inside
+     * CaptureStage waiting on acquireNextFrame's cv. Releasing the
+     * cv (stopping=true + notify_all) lets pipeline.run() unwind to
+     * ResultDispatchStage (which emits notify(ERROR_REQUEST) on the
+     * error path) so the request thread returns to its poll loop;
+     * the subsequent mRequestThread->stop() then signals stopFd and
+     * joins. The reverse order deadlocks: stop() on the request
+     * thread joins a worker that cannot make progress, and the
+     * bayer-source stop never runs. */
     if (mBayerSource)   mBayerSource->stop();
+    if (mRequestThread) mRequestThread->stop();
 }
 
 void Camera::startWorkers() {
