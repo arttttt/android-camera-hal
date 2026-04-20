@@ -204,11 +204,19 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
     mIsp->setCcm((mFacing == CAMERA_FACING_BACK) ? IspCalibration::ccmImx179()
                                                   : IspCalibration::ccmOv5693());
 
+    /* Mi Pad 1 sensor → module mapping — hardcoded pairs for the only
+     * two modules this device has. Future: read a module ID fuse from
+     * the kernel DT when a production unit with a different integrator
+     * shows up. */
+    const char *sensorName = (mFacing == CAMERA_FACING_BACK) ? "IMX179" : "OV5693";
+    const char *integrator = (mFacing == CAMERA_FACING_BACK) ? "Primax" : "Sunny";
+    mTuning.load(sensorName, integrator);
+
     /* AF sweep + VCM control are only meaningful with the soft ISP
      * (which owns the AWB lock and whose RGBA output the sharpness
      * metric runs on). On the HW ISP path mAf stays null. */
     if (mSoftIspEnabled)
-        mAf = new AutoFocusController(mDev, mIsp);
+        mAf = new AutoFocusController(mDev, mIsp, &mTuning);
 
     if (mJpeg) { delete mJpeg; mJpeg = NULL; }
     mJpeg = new JpegEncoder(mIsp);

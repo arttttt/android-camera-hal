@@ -8,6 +8,7 @@ namespace android {
 
 class V4l2Device;
 class IspPipeline;
+class SensorTuning;
 
 /* Contrast-detect autofocus for a single-VCM sensor. Drives the V4L2
  * focus subdev and integrates with the ISP AWB lock so the sharpness
@@ -20,7 +21,12 @@ public:
         float   focusDiopter;  /* 0 .. ~10, for ANDROID_LENS_FOCUS_DISTANCE */
     };
 
-    AutoFocusController(V4l2Device *dev, IspPipeline *isp);
+    /* `tuning` is optional — pass nullptr or a !isLoaded() instance and
+     * the controller falls back to compile-time VCM defaults. When the
+     * tuning provides AF data we consume it (inf/macro positions,
+     * settle time). */
+    AutoFocusController(V4l2Device *dev, IspPipeline *isp,
+                        const SensorTuning *tuning);
 
     /* Drive the state machine from request metadata. Reads AF_MODE,
      * LENS_FOCUS_DISTANCE, AF_TRIGGER; also handles the periodic
@@ -45,6 +51,14 @@ private:
 
     V4l2Device  *mDev;
     IspPipeline *mIsp;
+
+    /* Calibrated VCM positions — resolved from SensorTuning at
+     * construction when available, otherwise compile-time defaults. */
+    int32_t  mVcmInfinity;
+    int32_t  mVcmMacroStart;
+    int32_t  mVcmMacroEnd;
+    int32_t  mVcmAutoEnd;
+    int32_t  mVcmSettleFrames;
 
     uint8_t  mAfMode;
     int32_t  mFocusPosition;

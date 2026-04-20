@@ -9,6 +9,7 @@
 #include <utils/Mutex.h>
 
 #include "sensor/SensorConfig.h"
+#include "sensor/SensorTuning.h"
 #include "IspPipeline.h"
 #include "3a/AutoFocusController.h"
 #include "3a/ExposureControl.h"
@@ -59,6 +60,7 @@ protected:
     bool mSoftIspEnabled;
 
     SensorConfig mSensorCfg;
+    SensorTuning mTuning;
 
 private:
     IspPipeline *mIsp;

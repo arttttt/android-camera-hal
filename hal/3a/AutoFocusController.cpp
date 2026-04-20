@@ -7,26 +7,29 @@
 
 #include "V4l2Device.h"
 #include "IspPipeline.h"
+#include "sensor/SensorTuning.h"
 
 namespace android {
 
 namespace {
 
 /* VCM positions are raw units exposed by the focuser subdev. The map to
- * diopters is linear within the usable range: 140 is infinity, every
- * 50 units is one diopter. Values outside [kVcmMin, kVcmMax] are
- * rejected by the driver. */
-constexpr int32_t kVcmInfinity   = 140;
-constexpr int32_t kVcmMacroStart = 400;
-constexpr int32_t kVcmMacroEnd   = 650;
-constexpr int32_t kVcmAutoEnd    = 640;
+ * diopters is linear within the usable range; 50 units per diopter.
+ * Values outside [kVcmMin, kVcmMax] are rejected by the driver. The
+ * inf / macro / auto-end / settle-frames values are module-specific
+ * and come from SensorTuning (af.inf + af.inf_offset, etc.); these
+ * constants are fallbacks for when tuning is unavailable. */
+constexpr int32_t kVcmInfinityFallback  = 140;
+constexpr int32_t kVcmMacroEndFallback  = 650;
+constexpr int32_t kVcmAutoEndFallback   = 640;
+constexpr int32_t kVcmSettleFallback    = 2;
 constexpr int32_t kVcmSweepStep  = 25;
 constexpr int32_t kVcmMin        = 0;
 constexpr int32_t kVcmMax        = 1023;
 constexpr float   kVcmPerDiopter = 50.0f;
 
 constexpr uint32_t kContinuousRetriggerPeriod = 60; /* frames */
-constexpr int32_t  kSettleFrames = 2;
+constexpr int32_t  kFramePeriodMsApprox       = 33; /* 30 fps preview */
 
 /* Normalised Laplacian on the centre 1/4 of the frame. Dividing by the
  * mean brightness keeps the score comparable across sweep steps even
@@ -63,18 +66,45 @@ uint64_t measureSharpness(const uint8_t *rgba, unsigned w, unsigned h) {
 
 } /* namespace */
 
-AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp)
+AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
+                                         const SensorTuning *tuning)
     : mDev(dev)
     , mIsp(isp)
+    , mVcmInfinity(kVcmInfinityFallback)
+    , mVcmMacroStart(0)         /* filled below */
+    , mVcmMacroEnd(kVcmMacroEndFallback)
+    , mVcmAutoEnd(kVcmAutoEndFallback)
+    , mVcmSettleFrames(kVcmSettleFallback)
     , mAfMode(ANDROID_CONTROL_AF_MODE_OFF)
-    , mFocusPosition(kVcmInfinity)
+    , mFocusPosition(0)
     , mSweepActive(false)
     , mSweepPos(0)
     , mSweepStep(0)
     , mSweepEnd(0)
-    , mSweepBestPos(kVcmInfinity)
+    , mSweepBestPos(0)
     , mSweepBestScore(0)
-    , mSettleFrames(0) {
+    , mSettleFrames(0)
+{
+    if (tuning && tuning->isLoaded() && tuning->hasAf()) {
+        const SensorTuning::AfParams &af = tuning->af();
+        /* `inf + inf_offset` is the calibrated real-world infinity
+         * position (NVIDIA tuning convention — raw `inf` is the
+         * mechanical limit, the offset trims it to the lens's actual
+         * focus). Same for macro. */
+        mVcmInfinity    = af.infPos + af.infOffset;
+        mVcmMacroEnd    = af.macroPos + af.macroOffset;
+        mVcmAutoEnd     = af.macroPos;
+        /* Settle time as frames at 30 fps preview, rounded up, minimum 1. */
+        int frames = (af.settleTimeMs + kFramePeriodMsApprox - 1) / kFramePeriodMsApprox;
+        mVcmSettleFrames = frames > 0 ? frames : 1;
+        ALOGD("AF tuning: inf=%d macro=%d auto_end=%d settle=%d frame(s)",
+              mVcmInfinity, mVcmMacroEnd, mVcmAutoEnd, mVcmSettleFrames);
+    }
+    /* Macro mode starts at the midpoint between infinity and macro. */
+    mVcmMacroStart = (mVcmInfinity + mVcmMacroEnd) / 2;
+
+    mFocusPosition = mVcmInfinity;
+    mSweepBestPos  = mVcmInfinity;
 }
 
 void AutoFocusController::startSweep(uint8_t afMode) {
@@ -82,11 +112,11 @@ void AutoFocusController::startSweep(uint8_t afMode) {
     mIsp->setAwbLock(true);
     mSettleFrames = 0;
     if (afMode == ANDROID_CONTROL_AF_MODE_MACRO) {
-        mSweepPos = kVcmMacroStart;
-        mSweepEnd = kVcmMacroEnd;
+        mSweepPos = mVcmMacroStart;
+        mSweepEnd = mVcmMacroEnd;
     } else {
-        mSweepPos = kVcmInfinity;
-        mSweepEnd = kVcmAutoEnd;
+        mSweepPos = mVcmInfinity;
+        mSweepEnd = mVcmAutoEnd;
     }
     mSweepStep = kVcmSweepStep;
     mSweepBestPos = mSweepPos;
@@ -119,7 +149,7 @@ void AutoFocusController::onSettings(const CameraMetadata &cm,
     if (afMode == ANDROID_CONTROL_AF_MODE_OFF &&
         cm.exists(ANDROID_LENS_FOCUS_DISTANCE)) {
         float diopter = *cm.find(ANDROID_LENS_FOCUS_DISTANCE).data.f;
-        int32_t pos = kVcmInfinity + (int32_t)(diopter * kVcmPerDiopter);
+        int32_t pos = mVcmInfinity + (int32_t)(diopter * kVcmPerDiopter);
         if (pos < kVcmMin)
             pos = kVcmMin;
         if (pos > kVcmMax)
@@ -193,7 +223,7 @@ void AutoFocusController::onFrameData(const uint8_t *rgba,
     }
 
     mDev->setFocusPosition(mSweepPos);
-    mSettleFrames = kSettleFrames;
+    mSettleFrames = mVcmSettleFrames;
 }
 
 AutoFocusController::Report AutoFocusController::report() const {
@@ -202,7 +232,7 @@ AutoFocusController::Report AutoFocusController::report() const {
     r.afState = mSweepActive
         ? ANDROID_CONTROL_AF_STATE_ACTIVE_SCAN
         : ANDROID_CONTROL_AF_STATE_FOCUSED_LOCKED;
-    float diopter = (mFocusPosition - kVcmInfinity) / kVcmPerDiopter;
+    float diopter = (mFocusPosition - mVcmInfinity) / kVcmPerDiopter;
     if (diopter < 0)
         diopter = 0;
     r.focusDiopter = diopter;
