@@ -8,7 +8,7 @@
 namespace android {
 
 class BufferProcessor;
-class V4l2Device;
+class BayerSource;
 class AutoFocusController;
 
 /* Runs BufferProcessor::processOne for every output buffer in the
@@ -20,8 +20,8 @@ class DemosaicBlitStage : public PipelineStage {
 public:
     struct Deps {
         BufferProcessor      *bufferProcessor;
-        V4l2Device           *dev;
-        AutoFocusController **af;
+        BayerSource          *bayerSource;   /* for resolution() */
+        AutoFocusController  *af;            /* may be null */
         const size_t         *jpegBufferSize;
     };
 

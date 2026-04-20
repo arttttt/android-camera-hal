@@ -45,6 +45,8 @@
 #include "metadata/ResultMetadataBuilder.h"
 #include "IspPipeline.h"
 
+#include "BayerSource.h"
+#include "V4l2Source.h"
 #include "EventQueue.h"
 #include "pipeline/CaptureRequest.h"
 #include "pipeline/PipelineContext.h"
@@ -79,7 +81,8 @@ Camera::Camera(const char *devNode, int facing)
     , mCallbackOps(NULL)
     , mFacing(facing)
     , mJpegBufferSize(0)
-    , mSoftIspEnabled(true) {
+    , mSoftIspEnabled(true)
+    , mInfrastructureBuilt(false) {
     DBGUTILS_AUTOLOGCALL(__func__);
     for(size_t i = 0; i < NELEM(mDefaultRequestSettings); i++) {
         mDefaultRequestSettings[i] = NULL;
@@ -95,6 +98,9 @@ Camera::Camera(const char *devNode, int facing)
     mValid = true;
     mIsp = NULL;
     mAf = NULL;
+    mExposure = NULL;
+    mJpeg = NULL;
+    mBufferProcessor = NULL;
 
     /* Mi Pad 1 sensor → module mapping. Constructor is the earliest
      * point where facing is known; loading here means the tuning is
@@ -103,9 +109,19 @@ Camera::Camera(const char *devNode, int facing)
     const char *sensorName = (mFacing == CAMERA_FACING_BACK) ? "IMX179" : "OV5693";
     const char *integrator = (mFacing == CAMERA_FACING_BACK) ? "Primax" : "Sunny";
     mTuning.load(sensorName, integrator);
-    mExposure = NULL;
-    mJpeg = NULL;
-    mBufferProcessor = NULL;
+
+    /* Sensor-config (frame-length / gain ranges etc.) is a function
+     * of facing alone; load once. Driver-reported limits are merged
+     * in later at configureStreams time. */
+    mSensorCfg = (mFacing == CAMERA_FACING_BACK) ?
+        SensorConfig::imx179() : SensorConfig::ov5693();
+
+    /* Soft-ISP vs (legacy) HW-ISP selector. Read once per camera
+     * instance; toggling the property mid-session has no effect. */
+    char propVal[PROPERTY_VALUE_MAX] = {0};
+    property_get("persist.camera.soft_isp", propVal, "1");
+    mSoftIspEnabled = (propVal[0] == '1');
+
     mDev = new V4l2Device(devNode);
     if(!mDev) {
         mValid = false;
@@ -114,27 +130,13 @@ Camera::Camera(const char *devNode, int facing)
 
 Camera::~Camera() {
     DBGUTILS_AUTOLOGCALL(__func__);
-
-    /* Tear down the request pipeline first: stages hold raw pointers
-     * into mBufferProcessor / mIsp / mAf / mExposure which we're about
-     * to delete. Join the worker before touching any of that. */
-    if (mRequestThread) mRequestThread->stop();
-    mRequestThread.reset();
-    mRequestPipeline.reset();
-    if (mTracker) {
-        auto pending = mTracker->drainAll();
-        (void)pending;  /* destructors release buffer handles / fences */
+    stopWorkers();
+    destroyInfrastructure();
+    if (mDev) {
+        mDev->disconnect();
+        delete mDev;
+        mDev = NULL;
     }
-    mTracker.reset();
-    mRequestQueue.reset();
-
-    delete mBufferProcessor;
-    delete mAf;
-    delete mExposure;
-    delete mJpeg;
-    if (mIsp) { mIsp->destroy(); delete mIsp; }
-    mDev->disconnect();
-    delete mDev;
 }
 
 status_t Camera::cameraInfo(struct camera_info *info) {
@@ -158,22 +160,26 @@ int Camera::openDevice(hw_device_t **device) {
     if (mFacing == CAMERA_FACING_BACK)
         mDev->openFocuser("/dev/v4l-subdev0");
 
+    /* Lazy first-time build of the long-lived infrastructure. Kept
+     * alive across close/reopen cycles; destroyed only in ~Camera. */
+    buildInfrastructure();
+
     return NO_ERROR;
 }
 
 int Camera::closeDevice() {
     DBGUTILS_AUTOLOGCALL(__func__);
 
-    /* Stop the worker without mMutex so it can finish its last
-     * iteration (which doesn't need the mutex but may call into
-     * framework callbacks). */
-    if (mRequestThread) mRequestThread->stop();
+    /* Stop workers before taking mMutex — a worker may still be
+     * finishing its last iteration (which doesn't need the lock but
+     * may call framework callbacks). */
+    stopWorkers();
 
     Mutex::Autolock lock(mMutex);
 
     /* Error-complete any requests that got enqueued but never
-     * processed. Run the pipeline in error mode — ResultDispatchStage
-     * (alwaysRun=true) emits notify(ERROR_REQUEST). */
+     * processed. Run the pipeline in error mode so
+     * ResultDispatchStage (alwaysRun) emits notify(ERROR_REQUEST). */
     if (mTracker && mRequestPipeline) {
         auto pending = mTracker->drainAll();
         for (auto &ctx : pending) {
@@ -184,13 +190,7 @@ int Camera::closeDevice() {
         }
     }
 
-    mRequestThread.reset();
-    mRequestPipeline.reset();
-    mTracker.reset();
-    mRequestQueue.reset();
-
     mDev->disconnect();
-
     return NO_ERROR;
 }
 
@@ -251,57 +251,13 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
             return e;
     }
 
-    char propVal[PROPERTY_VALUE_MAX] = {0};
-    property_get("persist.camera.soft_isp", propVal, "1");
-    mSoftIspEnabled = (propVal[0] == '1');
+    /* Infrastructure (ISP, 3A, BufferProcessor, BayerSource, pipeline,
+     * request thread) was built on the first openDevice and lives for
+     * the Camera instance's lifetime. This function only (1) stops
+     * the workers, (2) reconfigures V4L2 + ISP for the new stream
+     * set, (3) restarts the workers. */
 
-    if (mAf) { delete mAf; mAf = NULL; }
-    if (mIsp) { mIsp->destroy(); delete mIsp; mIsp = NULL; }
-    mIsp = createIspPipeline();
-    if (!mIsp->init()) {
-        ALOGE("ISP init failed");
-        delete mIsp; mIsp = NULL;
-        return NO_INIT;
-    }
-    mIsp->setEnabled(mSoftIspEnabled);
-
-    /* Optical-black bias is the sensor-native analog floor (non-zero
-     * signal at mechanical shutter / darkest scene). Subtracting it
-     * gives us true blacks; rescaling preserves the highlight range.
-     * Constant per channel in stock tuning so one scalar is enough. */
-    if (mTuning.isLoaded())
-        mIsp->setBlackLevel(mTuning.opticalBlack().r);
-
-    /* CCM is CCT-dependent: the stock tuning carries 3-4 matrices at
-     * different colour temperatures (2400/2800/4000/5000 K), because
-     * the correct sensor-to-sRGB transform shifts with the illuminant.
-     * Pinning 5000 K is a daylight-ish compromise — in tungsten scenes
-     * the picture will drift warm, under fluorescent it will drift
-     * green. Proper fix is the Tier 3 AWB module:
-     *   1) per-frame scene-CCT estimate from gray-world / white-patch stats,
-     *   2) interpolation between the two bracketing ccmSets to avoid
-     *      visible snaps when the scene transitions,
-     *   3) per-Set `wbGain` applied *before* the CCM (not consumed yet —
-     *      our current shader uses a live gray-world WB instead).
-     * See docs/open-questions.md for the full scope of this TODO. */
-    mTuning.ccmForCctQ10(5000, mCcmQ10);
-    mIsp->setCcm(mCcmQ10);
-
-    /* AF sweep + VCM control are only meaningful with the soft ISP
-     * (which owns the AWB lock and whose RGBA output the sharpness
-     * metric runs on). On the HW ISP path mAf stays null. */
-    if (mSoftIspEnabled)
-        mAf = new AutoFocusController(mDev, mIsp, &mTuning);
-
-    if (mJpeg) { delete mJpeg; mJpeg = NULL; }
-    mJpeg = new JpegEncoder(mIsp);
-
-    if (mBufferProcessor) { delete mBufferProcessor; mBufferProcessor = NULL; }
-    BufferProcessor::Deps bpDeps;
-    bpDeps.isp  = mIsp;
-    bpDeps.jpeg = mJpeg;
-    bpDeps.af   = mAf;
-    mBufferProcessor = new BufferProcessor(bpDeps);
+    stopWorkers();
 
     ALOGD("V4L2 target resolution: %ux%u, soft_isp=%d",
           width, height, mSoftIspEnabled);
@@ -355,24 +311,14 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
     }
     ALOGV("+-------------------------------------------------------------------------------");
 
-    /* Initialize sensor config */
-    mSensorCfg = (mFacing == CAMERA_FACING_BACK) ?
-        SensorConfig::imx179() : SensorConfig::ov5693();
-
-    /* Exposure/gain are only driven by the HAL on the soft ISP path —
-     * the HW ISP firmware owns those controls otherwise. */
-    if (mExposure) { delete mExposure; mExposure = NULL; }
-    if (mSoftIspEnabled) {
-        mExposure = new ExposureControl(mDev, mSensorCfg);
-        mExposure->applyDefaults();
-    }
+    /* mExposure is long-lived (built in openDevice); push defaults
+     * each reconfigure so sensor controls reflect the new session. */
+    if (mExposure) mExposure->applyDefaults();
 
     if(!mDev->setStreaming(true)) {
         ALOGE("Could not start streaming");
         return NO_INIT;
     }
-
-    rebuildPipeline();
 
     /* Update sensor config from driver queries */
     {
@@ -390,6 +336,7 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
         }
     }
 
+    startWorkers();
     return NO_ERROR;
 }
 
@@ -484,27 +431,54 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
     return NO_ERROR;
 }
 
-void Camera::rebuildPipeline() {
-    /* mMutex held by caller. */
+void Camera::buildInfrastructure() {
+    /* Called under mMutex from the first openDevice. Builds all
+     * long-lived per-camera state; lives until ~Camera. */
+    if (mInfrastructureBuilt) return;
 
-    if (mRequestThread) {
-        mRequestThread->stop();
-        mRequestThread.reset();
+    mIsp = createIspPipeline();
+    if (!mIsp || !mIsp->init()) {
+        ALOGE("ISP init failed");
+        if (mIsp) { delete mIsp; mIsp = NULL; }
+        return;
+    }
+    mIsp->setEnabled(mSoftIspEnabled);
+
+    /* Optical-black bias: sensor-native analog floor. Constant per
+     * channel in stock tuning — one scalar is enough. */
+    if (mTuning.isLoaded())
+        mIsp->setBlackLevel(mTuning.opticalBlack().r);
+
+    /* CCM pinned at 5000 K for now. Per-CCT selection + interpolation
+     * + wbGain priors arrive with the Tier 3 AWB module; see
+     * docs/open-questions.md. */
+    mTuning.ccmForCctQ10(5000, mCcmQ10);
+    mIsp->setCcm(mCcmQ10);
+
+    /* Soft-ISP path owns exposure + AF; HW-ISP firmware owns them
+     * otherwise. */
+    if (mSoftIspEnabled) {
+        mExposure = new ExposureControl(mDev, mSensorCfg);
+        mAf       = new AutoFocusController(mDev, mIsp, &mTuning);
     }
 
-    if (!mTracker) {
-        mTracker.reset(new InFlightTracker());
-    }
-    if (!mRequestQueue) {
-        mRequestQueue.reset(new EventQueue<PipelineContext*>(REQUEST_QUEUE_CAPACITY));
-    }
+    mJpeg = new JpegEncoder(mIsp);
 
+    BufferProcessor::Deps bpDeps;
+    bpDeps.isp  = mIsp;
+    bpDeps.jpeg = mJpeg;
+    bpDeps.af   = mAf;
+    mBufferProcessor = new BufferProcessor(bpDeps);
+
+    mBayerSource.reset(new V4l2Source(mDev));
+    mTracker.reset(new InFlightTracker());
+    mRequestQueue.reset(new EventQueue<PipelineContext*>(REQUEST_QUEUE_CAPACITY));
     mRequestPipeline.reset(new Pipeline());
 
     {
         ApplySettingsStage::Deps d;
-        d.exposure  = &mExposure;
-        d.af        = &mAf;
+        d.exposure  = mExposure;
+        d.af        = mAf;
         d.sensorCfg = &mSensorCfg;
         mRequestPipeline->appendStage(
             std::unique_ptr<PipelineStage>(new ApplySettingsStage(d)));
@@ -515,9 +489,9 @@ void Camera::rebuildPipeline() {
 
     {
         CaptureStage::Deps d;
-        d.dev = mDev;
-        d.isp = mIsp;
-        d.af  = &mAf;
+        d.bayerSource = mBayerSource.get();
+        d.isp         = mIsp;
+        d.af          = mAf;
         mRequestPipeline->appendStage(
             std::unique_ptr<PipelineStage>(new CaptureStage(d)));
     }
@@ -525,8 +499,8 @@ void Camera::rebuildPipeline() {
     {
         DemosaicBlitStage::Deps d;
         d.bufferProcessor = mBufferProcessor;
-        d.dev             = mDev;
-        d.af              = &mAf;
+        d.bayerSource     = mBayerSource.get();
+        d.af              = mAf;
         d.jpegBufferSize  = &mJpegBufferSize;
         mRequestPipeline->appendStage(
             std::unique_ptr<PipelineStage>(new DemosaicBlitStage(d)));
@@ -535,8 +509,8 @@ void Camera::rebuildPipeline() {
     {
         ResultDispatchStage::Deps d;
         d.callbackOps = &mCallbackOps;
-        d.dev         = mDev;
-        d.af          = &mAf;
+        d.bayerSource = mBayerSource.get();
+        d.af          = mAf;
         d.sensorCfg   = &mSensorCfg;
         mRequestPipeline->appendStage(
             std::unique_ptr<PipelineStage>(new ResultDispatchStage(d)));
@@ -545,9 +519,42 @@ void Camera::rebuildPipeline() {
     mRequestThread.reset(new RequestThread(mRequestQueue.get(),
                                            mRequestPipeline.get(),
                                            mTracker.get()));
-    if (!mRequestThread->start("CameraRequest")) {
-        ALOGE("RequestThread failed to start");
-        mRequestThread.reset();
+
+    mInfrastructureBuilt = true;
+}
+
+void Camera::destroyInfrastructure() {
+    mRequestThread.reset();
+    mRequestPipeline.reset();
+    mTracker.reset();
+    mRequestQueue.reset();
+    mBayerSource.reset();
+
+    delete mBufferProcessor; mBufferProcessor = NULL;
+    delete mAf;              mAf = NULL;
+    delete mExposure;        mExposure = NULL;
+    delete mJpeg;            mJpeg = NULL;
+    if (mIsp) { mIsp->destroy(); delete mIsp; mIsp = NULL; }
+
+    mInfrastructureBuilt = false;
+}
+
+void Camera::stopWorkers() {
+    if (mRequestThread) mRequestThread->stop();
+    if (mBayerSource)   mBayerSource->stop();
+}
+
+void Camera::startWorkers() {
+    if (mBayerSource && !mBayerSource->isRunning()) {
+        if (!mBayerSource->start()) {
+            ALOGE("BayerSource start failed");
+            return;
+        }
+    }
+    if (mRequestThread && !mRequestThread->isRunning()) {
+        if (!mRequestThread->start("CameraRequest")) {
+            ALOGE("RequestThread start failed");
+        }
     }
 }
 

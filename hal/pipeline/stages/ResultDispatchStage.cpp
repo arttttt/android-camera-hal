@@ -10,7 +10,7 @@
 #include <ui/GraphicBufferMapper.h>
 
 #include "PipelineContext.h"
-#include "V4l2Device.h"
+#include "BayerSource.h"
 #include "3a/AutoFocusController.h"
 #include "metadata/ResultMetadataBuilder.h"
 #include "sensor/SensorConfig.h"
@@ -33,7 +33,7 @@ void ResultDispatchStage::process(PipelineContext &ctx) {
             msg.message.error.error_code   = CAMERA3_MSG_ERROR_REQUEST;
             ops->notify(ops, &msg);
         }
-        if (ctx.bayerFrame) deps.dev->unlock(ctx.bayerFrame);
+        if (ctx.bayerFrame) deps.bayerSource->releaseFrame(ctx.bayerFrame);
         return;
     }
 
@@ -53,7 +53,7 @@ void ResultDispatchStage::process(PipelineContext &ctx) {
         buffers.push_back(sb);
     }
 
-    deps.dev->unlock(ctx.bayerFrame);
+    deps.bayerSource->releaseFrame(ctx.bayerFrame);
 
     ResultMetadataBuilder::FrameState fs;
     fs.timestampNs       = ctx.tShutter ? ctx.tShutter : ctx.tAccepted;
@@ -63,8 +63,7 @@ void ResultDispatchStage::process(PipelineContext &ctx) {
     fs.af.afMode       = ANDROID_CONTROL_AF_MODE_OFF;
     fs.af.afState      = ANDROID_CONTROL_AF_STATE_INACTIVE;
     fs.af.focusDiopter = 0.0f;
-    AutoFocusController *af = *deps.af;
-    if (af) fs.af = af->report();
+    if (deps.af) fs.af = deps.af->report();
     ResultMetadataBuilder::build(ctx.request.settings, fs, *deps.sensorCfg);
 
     const camera_metadata_t *result = ctx.request.settings.getAndLock();
@@ -79,10 +78,6 @@ void ResultDispatchStage::process(PipelineContext &ctx) {
         ops->process_capture_result(ops, &cr);
     }
     ctx.request.settings.unlock(result);
-
-    /* Cache of last seen input settings is maintained on the binder
-     * thread — writing it here would race with a subsequent
-     * processCaptureRequest whose settings=NULL branch reads it. */
 
     ctx.tResultSent = systemTime();
     int64_t wait  = (ctx.tBayerDq    - ctx.tShutter) / 1000000;

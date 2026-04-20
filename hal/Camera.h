@@ -26,6 +26,7 @@ struct PipelineContext;
 class Pipeline;
 class InFlightTracker;
 class RequestThread;
+class BayerSource;
 template <typename T> class EventQueue;
 
 class Camera: public camera3_device {
@@ -79,15 +80,25 @@ private:
     BufferProcessor *mBufferProcessor;
     Mutex mMutex;
 
+    std::unique_ptr<BayerSource>                  mBayerSource;
     std::unique_ptr<InFlightTracker>              mTracker;
     std::unique_ptr<EventQueue<PipelineContext*>> mRequestQueue;
     std::unique_ptr<Pipeline>                     mRequestPipeline;
     std::unique_ptr<RequestThread>                mRequestThread;
+    bool                                          mInfrastructureBuilt;
 
-    /* Must be called under mMutex. Tears down and rebuilds
-     * mRequestPipeline + mRequestThread against the current stage
-     * dependencies (mIsp / mAf / mBufferProcessor). */
-    void rebuildPipeline();
+    /* Build the long-lived per-camera infrastructure (ISP, 3A,
+     * BufferProcessor, BayerSource, tracker, pipeline, worker
+     * thread). Called lazily from openDevice on first open; survives
+     * close/reopen cycles and is torn down only in the destructor. */
+    void buildInfrastructure();
+    void destroyInfrastructure();
+
+    /* Stop / (re)start the capture and request workers around a
+     * configure_streams boundary. Both are idempotent; starting a
+     * worker that's already running is a no-op. */
+    void stopWorkers();
+    void startWorkers();
 
     /* STATIC WRAPPERS */
 

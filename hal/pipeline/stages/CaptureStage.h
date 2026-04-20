@@ -5,20 +5,20 @@
 
 namespace android {
 
-class V4l2Device;
+class BayerSource;
 class IspPipeline;
 class AutoFocusController;
 
-/* Synchronously acquires a Bayer frame from V4L2 and parses the
- * per-request crop region (digital zoom). Will migrate to a
- * CaptureThread in a later change — at that point this stage is
- * rehomed onto that thread's Pipeline while keeping the same body. */
+/* Acquires a Bayer frame from the BayerSource and parses the
+ * per-request crop region (digital zoom). The source's own thread
+ * handles V4L2 poll + DQBUF + drain-to-latest — this stage just waits
+ * for the freshest available frame. */
 class CaptureStage : public PipelineStage {
 public:
     struct Deps {
-        V4l2Device           *dev;
-        IspPipeline          *isp;
-        AutoFocusController **af;   /* pointer-to-field; may be null per config */
+        BayerSource         *bayerSource;
+        IspPipeline         *isp;
+        AutoFocusController *af;          /* may be null */
     };
 
     explicit CaptureStage(const Deps &deps);

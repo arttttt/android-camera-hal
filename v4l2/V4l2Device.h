@@ -62,6 +62,16 @@ public:
     const VBuffer * readLock();
     bool unlock(const VBuffer *buf);
 
+    /* Lower-level capture primitives — exposed for V4l2Source which
+     * runs its own poll loop on a dedicated capture thread and cannot
+     * use the blocking readLock() path. Caller responsibility to only
+     * invoke these while isStreaming(). */
+    int  fd() const { return mFd; }
+    int  dequeueBufferBlocking();            /* waits via poll(); returns slot or -1 */
+    int  dequeueBufferNonBlockingExt();      /* EAGAIN -> -1; otherwise slot */
+    bool queueBufferExt(unsigned id);        /* V4L2 QBUF; returns false on error */
+    const VBuffer* slotAt(int id) const;     /* accessor into mBuf[id]; null on range error */
+
     /* Switch capture memory model from the default V4L2_MEMORY_MMAP to
      * V4L2_MEMORY_DMABUF, using the caller-owned dma-buf fds as capture
      * targets. Each fd i is bound to V4L2 queue index i. Must be called

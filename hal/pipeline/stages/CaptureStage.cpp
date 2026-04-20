@@ -5,7 +5,7 @@
 #include <utils/Timers.h>
 
 #include "PipelineContext.h"
-#include "V4l2Device.h"
+#include "BayerSource.h"
 #include "IspPipeline.h"
 #include "3a/AutoFocusController.h"
 
@@ -17,24 +17,25 @@ CaptureStage::CaptureStage(const Deps &d) : deps(d) {}
 
 void CaptureStage::process(PipelineContext &ctx) {
     /* Drain the previous frame's GPU work before V4L2 can reuse the
-     * input slot. Synchronous here; migrates to a fence-fd poll-set
-     * on the CaptureThread / PipelineThread in a later change. */
+     * input slot. Synchronous here; a fence-fd poll-set takes over in
+     * a later change. */
     deps.isp->waitForPreviousFrame();
 
-    const V4l2Device::VBuffer *frame = deps.dev->readLock();
+    const V4l2Device::VBuffer *frame = deps.bayerSource->acquireNextFrame();
     ctx.tBayerDq = systemTime();
 
     if (!frame) {
-        ALOGW("readLock returned null for frame %u", ctx.request.frameNumber);
+        ALOGW("acquireNextFrame returned null for frame %u",
+              ctx.request.frameNumber);
         ctx.errorCode = NOT_ENOUGH_DATA;
         return;
     }
     ctx.bayerFrame = frame;
 
-    AutoFocusController *af = *deps.af;
-    if (af) af->onFrameStart();
+    if (deps.af) deps.af->onFrameStart();
 
-    Resolution res = deps.dev->resolution();
+    Resolution res    = deps.bayerSource->resolution();
+    Resolution sensor = deps.bayerSource->sensorResolution();
 
     int cropX = 0;
     int cropY = 0;
@@ -45,7 +46,6 @@ void CaptureStage::process(PipelineContext &ctx) {
         camera_metadata_entry_t entry =
             ctx.request.settings.find(ANDROID_SCALER_CROP_REGION);
         const int32_t *crop = entry.data.i32;
-        Resolution sensor = deps.dev->sensorResolution();
         cropX = crop[0] * (int)res.width  / (int)sensor.width;
         cropY = crop[1] * (int)res.height / (int)sensor.height;
         cropW = crop[2] * (int)res.width  / (int)sensor.width;

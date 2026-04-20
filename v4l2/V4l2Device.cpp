@@ -578,6 +578,23 @@ void V4l2Device::setDmaBufFds(const int *fds, int count) {
 /**
  * Dequeues next available buffer and returns its ID.
  */
+int V4l2Device::dequeueBufferBlocking() {
+    return dequeueBuffer();
+}
+
+int V4l2Device::dequeueBufferNonBlockingExt() {
+    return dequeueBufferNonBlocking();
+}
+
+bool V4l2Device::queueBufferExt(unsigned id) {
+    return queueBuffer(id);
+}
+
+const V4l2Device::VBuffer* V4l2Device::slotAt(int id) const {
+    if (id < 0 || id >= V4L2DEVICE_BUF_COUNT) return NULL;
+    return &mBuf[id];
+}
+
 int V4l2Device::dequeueBuffer() {
     assert(mFd >= 0);
 

@@ -16,9 +16,9 @@ struct SensorConfig;
 class ApplySettingsStage : public PipelineStage {
 public:
     struct Deps {
-        ExposureControl     **exposure;   /* pointer-to-field; may become null between configures */
-        AutoFocusController **af;
-        const SensorConfig   *sensorCfg;
+        ExposureControl     *exposure;    /* may be null */
+        AutoFocusController *af;          /* may be null */
+        const SensorConfig  *sensorCfg;
     };
 
     explicit ApplySettingsStage(const Deps &deps);

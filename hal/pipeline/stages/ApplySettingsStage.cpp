@@ -15,17 +15,15 @@ void ApplySettingsStage::process(PipelineContext &ctx) {
         ctx.appliedGain       = deps.sensorCfg->gainDefault;
     }
 
-    ExposureControl *exposure = *deps.exposure;
-    if (exposure) {
-        exposure->onSettings(ctx.request.settings);
-        ExposureControl::Report r = exposure->report();
+    if (deps.exposure) {
+        deps.exposure->onSettings(ctx.request.settings);
+        ExposureControl::Report r = deps.exposure->report();
         ctx.appliedExposureUs = r.appliedExposureUs;
         ctx.appliedGain       = r.appliedGain;
     }
 
-    AutoFocusController *af = *deps.af;
-    if (af) {
-        af->onSettings(ctx.request.settings, ctx.request.frameNumber);
+    if (deps.af) {
+        deps.af->onSettings(ctx.request.settings, ctx.request.frameNumber);
     }
 }
 

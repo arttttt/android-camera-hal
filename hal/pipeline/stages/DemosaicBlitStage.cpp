@@ -10,7 +10,7 @@
 
 #include "PipelineContext.h"
 #include "BufferProcessor.h"
-#include "V4l2Device.h"
+#include "BayerSource.h"
 #include "3a/AutoFocusController.h"
 
 #define LOG_TAG "Cam-DemosaicBlitStage"
@@ -20,7 +20,7 @@ namespace android {
 DemosaicBlitStage::DemosaicBlitStage(const Deps &d) : deps(d) {}
 
 void DemosaicBlitStage::process(PipelineContext &ctx) {
-    Resolution res = deps.dev->resolution();
+    Resolution res = deps.bayerSource->resolution();
 
     BufferProcessor::FrameContext fctx;
     fctx.frameBuf       = ctx.bayerFrame->buf;
@@ -58,9 +58,6 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
         if (e != NO_ERROR) {
             ALOGE("processOne failed at output %zu for frame %u: %d",
                   i, ctx.request.frameNumber, (int)e);
-            /* Match legacy semantics: unlock every output that was
-             * locked up to and including this one. ResultDispatchStage
-             * (always-run) then emits notify(ERROR_REQUEST). */
             for (size_t j = 0; j <= i; ++j) {
                 GraphicBufferMapper::get().unlock(*ctx.request.outputBuffers[j].buffer);
             }
@@ -72,8 +69,7 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
         ctx.outputReleaseFences[i]    = state.releaseFd;
     }
 
-    AutoFocusController *af = *deps.af;
-    if (af) af->onFrameData(rgbaBuffer, res.width, res.height);
+    if (deps.af) deps.af->onFrameData(rgbaBuffer, res.width, res.height);
 }
 
 } /* namespace android */
