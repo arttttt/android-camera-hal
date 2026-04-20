@@ -11,6 +11,7 @@
 #include <utils/misc.h>
 
 #include "V4l2Device.h"
+#include "sensor/SensorTuning.h"
 
 namespace android {
 
@@ -27,32 +28,36 @@ constexpr int32_t  kPartialResultCount = 1;
  * for a given mode — better for the framework than a 60 fps lie. */
 constexpr int64_t  kFallbackMinFrameDurationNs = 1000000000LL / 30;
 
-/* Sensor + lens physical/geometric attributes. Values that come from
- * the running V4L2 device (pixel array size) read `dev` directly;
- * everything else is a placeholder until per-sensor tuning lands
- * (Tier 2). */
-void writeSensorInfo(CameraMetadata &cm, V4l2Device *dev, int facing) {
+/* Sensor + lens physical/geometric attributes. Pixel array size is
+ * queried from the running V4L2 device; physical size / focal length /
+ * minimum focus distance come from SensorTuning's `module` block
+ * (per-module datasheet values). Fall back to aspect-correct fakes
+ * when tuning isn't loaded so the framework doesn't reject the HAL. */
+void writeSensorInfo(CameraMetadata &cm, V4l2Device *dev,
+                     const SensorTuning *tuning, int facing) {
     auto sensorRes = dev->sensorResolution();
 
-    /* fake, but valid aspect ratio */
-    const float sensorInfoPhysicalSize[] = {
-        5.0f,
-        5.0f * (float)sensorRes.height / (float)sensorRes.width
-    };
-    cm.update(ANDROID_SENSOR_INFO_PHYSICAL_SIZE, sensorInfoPhysicalSize, NELEM(sensorInfoPhysicalSize));
-
-    /* fake */
-    static const float lensInfoAvailableFocalLengths[] = {3.30f};
-    cm.update(ANDROID_LENS_INFO_AVAILABLE_FOCAL_LENGTHS, lensInfoAvailableFocalLengths, NELEM(lensInfoAvailableFocalLengths));
-
-    /* Minimum focus distance > 0 tells framework this lens can focus */
-    if (facing == CAMERA_FACING_BACK) {
-        static const float lensInfoMinFocusDistance = 10.0f; /* 1/10m = 10cm macro */
-        cm.update(ANDROID_LENS_INFO_MINIMUM_FOCUS_DISTANCE, &lensInfoMinFocusDistance, 1);
+    float physSize[2];
+    float focalLength;
+    float minFocusDiopters;
+    if (tuning && tuning->isLoaded()) {
+        const auto &m = tuning->module();
+        physSize[0]      = m.physicalSizeMm[0];
+        physSize[1]      = m.physicalSizeMm[1];
+        focalLength      = m.focalLengthMm;
+        minFocusDiopters = m.minFocusDistanceDiopters;
     } else {
-        static const float lensInfoMinFocusDistance = 0.0f; /* fixed focus */
-        cm.update(ANDROID_LENS_INFO_MINIMUM_FOCUS_DISTANCE, &lensInfoMinFocusDistance, 1);
+        /* Aspect-correct fallback so framework sees a coherent sensor
+         * area when tuning failed to load. */
+        physSize[0]      = 5.0f;
+        physSize[1]      = 5.0f * (float)sensorRes.height / (float)sensorRes.width;
+        focalLength      = 3.30f;
+        minFocusDiopters = (facing == CAMERA_FACING_BACK) ? 10.0f : 0.0f;
     }
+
+    cm.update(ANDROID_SENSOR_INFO_PHYSICAL_SIZE, physSize, 2);
+    cm.update(ANDROID_LENS_INFO_AVAILABLE_FOCAL_LENGTHS, &focalLength, 1);
+    cm.update(ANDROID_LENS_INFO_MINIMUM_FOCUS_DISTANCE, &minFocusDiopters, 1);
 
     const uint8_t lensFacing = (facing == CAMERA_FACING_FRONT)
         ? ANDROID_LENS_FACING_FRONT : ANDROID_LENS_FACING_BACK;
@@ -302,9 +307,10 @@ void writeHalInfo(CameraMetadata &cm) {
 } /* namespace */
 
 camera_metadata_t *CameraStaticMetadata::build(V4l2Device *dev, int facing,
+                                                const SensorTuning *tuning,
                                                 size_t *jpegBufferSize) {
     CameraMetadata cm;
-    writeSensorInfo   (cm, dev, facing);
+    writeSensorInfo   (cm, dev, tuning, facing);
     writeScalerConfigs(cm, dev);
     writeJpegInfo     (cm, dev, jpegBufferSize);
     writeSensorRanges (cm);

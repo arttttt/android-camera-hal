@@ -7,6 +7,7 @@
 namespace android {
 
 class V4l2Device;
+class SensorTuning;
 
 /* Builds the ANDROID_* static characteristics blob for a single camera.
  * Pure builder — holds no state, called once per camera on first
@@ -15,13 +16,17 @@ class V4l2Device;
 class CameraStaticMetadata {
 public:
     /* dev:              V4L2 device the characteristics are computed from
-     *                   (resolutions, sensor size, per-mode min frame duration).
+     *                   (resolutions, per-mode min frame duration).
      * facing:           CAMERA_FACING_BACK / _FRONT.
+     * tuning:           per-module hardware info (physical size, focal
+     *                   length, min focus distance). nullptr or
+     *                   !isLoaded() falls back to compile-time defaults.
      * jpegBufferSize:   [out] page-aligned JPEG buffer size that callers
      *                   can use to size HAL_PIXEL_FORMAT_BLOB allocations.
      *                   Covers the largest resolution + camera3_jpeg_blob
      *                   footer at 2 bytes/pixel. */
     static camera_metadata_t *build(V4l2Device *dev, int facing,
+                                     const SensorTuning *tuning,
                                      size_t *jpegBufferSize);
 };
 

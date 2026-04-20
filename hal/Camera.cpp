@@ -78,6 +78,14 @@ Camera::Camera(const char *devNode, int facing)
     mValid = true;
     mIsp = NULL;
     mAf = NULL;
+
+    /* Mi Pad 1 sensor → module mapping. Constructor is the earliest
+     * point where facing is known; loading here means the tuning is
+     * ready for both staticCharacteristics() (cameraInfo) and
+     * configureStreams() (open). */
+    const char *sensorName = (mFacing == CAMERA_FACING_BACK) ? "IMX179" : "OV5693";
+    const char *integrator = (mFacing == CAMERA_FACING_BACK) ? "Primax" : "Sunny";
+    mTuning.load(sensorName, integrator);
     mExposure = NULL;
     mJpeg = NULL;
     mBufferProcessor = NULL;
@@ -134,7 +142,8 @@ int Camera::closeDevice() {
 camera_metadata_t *Camera::staticCharacteristics() {
     if(mStaticCharacteristics)
         return mStaticCharacteristics;
-    mStaticCharacteristics = CameraStaticMetadata::build(mDev, mFacing, &mJpegBufferSize);
+    mStaticCharacteristics = CameraStaticMetadata::build(mDev, mFacing, &mTuning,
+                                                          &mJpegBufferSize);
     return mStaticCharacteristics;
 }
 
@@ -200,14 +209,6 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
         return NO_INIT;
     }
     mIsp->setEnabled(mSoftIspEnabled);
-
-    /* Mi Pad 1 sensor → module mapping — hardcoded pairs for the only
-     * two modules this device has. Future: read a module ID fuse from
-     * the kernel DT when a production unit with a different integrator
-     * shows up. */
-    const char *sensorName = (mFacing == CAMERA_FACING_BACK) ? "IMX179" : "OV5693";
-    const char *integrator = (mFacing == CAMERA_FACING_BACK) ? "Primax" : "Sunny";
-    mTuning.load(sensorName, integrator);
 
     /* Optical-black bias is the sensor-native analog floor (non-zero
      * signal at mechanical shutter / darkest scene). Subtracting it
