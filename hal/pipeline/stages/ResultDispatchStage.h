@@ -25,7 +25,6 @@ public:
         V4l2Device                          *dev;
         AutoFocusController                **af;
         const SensorConfig                  *sensorCfg;
-        CameraMetadata                      *lastRequestSettings;
     };
 
     explicit ResultDispatchStage(const Deps &deps);

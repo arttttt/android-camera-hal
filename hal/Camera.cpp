@@ -446,6 +446,11 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
 
         if (request->settings) {
             ctx->request.settings = request->settings;
+            /* Update the cache synchronously: the worker that would
+             * otherwise write it runs far behind the binder thread,
+             * so a request with settings=NULL landing before frame N's
+             * worker finishes would otherwise see an empty cache. */
+            mLastRequestSettings = request->settings;
         } else {
             ctx->request.settings = mLastRequestSettings;
         }
@@ -529,11 +534,10 @@ void Camera::rebuildPipeline() {
 
     {
         ResultDispatchStage::Deps d;
-        d.callbackOps         = &mCallbackOps;
-        d.dev                 = mDev;
-        d.af                  = &mAf;
-        d.sensorCfg           = &mSensorCfg;
-        d.lastRequestSettings = &mLastRequestSettings;
+        d.callbackOps = &mCallbackOps;
+        d.dev         = mDev;
+        d.af          = &mAf;
+        d.sensorCfg   = &mSensorCfg;
         mRequestPipeline->appendStage(
             std::unique_ptr<PipelineStage>(new ResultDispatchStage(d)));
     }

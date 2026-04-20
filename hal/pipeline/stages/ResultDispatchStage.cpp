@@ -80,7 +80,9 @@ void ResultDispatchStage::process(PipelineContext &ctx) {
     }
     ctx.request.settings.unlock(result);
 
-    *deps.lastRequestSettings = ctx.request.settings;
+    /* Cache of last seen input settings is maintained on the binder
+     * thread — writing it here would race with a subsequent
+     * processCaptureRequest whose settings=NULL branch reads it. */
 
     ctx.tResultSent = systemTime();
     int64_t wait  = (ctx.tBayerDq    - ctx.tShutter) / 1000000;
