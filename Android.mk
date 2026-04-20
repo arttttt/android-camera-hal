@@ -56,6 +56,7 @@ LOCAL_C_INCLUDES += \
     $(LOCAL_PATH)/v4l2 \
     $(LOCAL_PATH)/isp \
     $(LOCAL_PATH)/isp/vulkan \
+    $(LOCAL_PATH)/isp/vulkan/encode \
     $(LOCAL_PATH)/util
 
 LOCAL_SRC_FILES += \
@@ -79,7 +80,8 @@ LOCAL_SRC_FILES += \
     isp/vulkan/runtime/loader/HalHmiVulkanLoader.cpp \
     isp/vulkan/runtime/loader/SystemVulkanLoader.cpp \
     isp/vulkan/io/VulkanInputRing.cpp \
-    isp/vulkan/io/VulkanGrallocCache.cpp
+    isp/vulkan/io/VulkanGrallocCache.cpp \
+    isp/vulkan/encode/VulkanYuvEncoder.cpp
 
 LOCAL_SHARED_LIBRARIES += libvulkan
 
