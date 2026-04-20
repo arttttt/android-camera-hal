@@ -87,3 +87,23 @@ LOCAL_SHARED_LIBRARIES += libvulkan
 
 include $(BUILD_SHARED_LIBRARY)
 
+#-----------------------------------------------------------------------------
+# Per-sensor tuning profiles (Treble-compatible /vendor path)
+#-----------------------------------------------------------------------------
+
+include $(CLEAR_VARS)
+LOCAL_MODULE       := imx179_primax_v2.27.json
+LOCAL_MODULE_CLASS := ETC
+LOCAL_MODULE_TAGS  := optional
+LOCAL_SRC_FILES    := tuning/imx179_primax_v2.27.json
+LOCAL_MODULE_PATH  := $(TARGET_OUT_VENDOR_ETC)/camera/tuning
+include $(BUILD_PREBUILT)
+
+include $(CLEAR_VARS)
+LOCAL_MODULE       := ov5693_sunny_v2.13.json
+LOCAL_MODULE_CLASS := ETC
+LOCAL_MODULE_TAGS  := optional
+LOCAL_SRC_FILES    := tuning/ov5693_sunny_v2.13.json
+LOCAL_MODULE_PATH  := $(TARGET_OUT_VENDOR_ETC)/camera/tuning
+include $(BUILD_PREBUILT)
+

@@ -1,0 +1,7 @@
+{
+  "_source": "OV5693 OmniVision product brief (1.4 um pitch, 2592x1944 active) + Mi Pad 1 Sunny module estimate",
+  "sensor_physical_size_mm": [3.629, 2.722],
+  "focal_length_mm": 2.10,
+  "min_focus_distance_diopters": 0.0,
+  "bayer_pattern": "BGGR"
+}

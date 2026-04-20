@@ -1,0 +1,6937 @@
+{
+  "schema_version": 1,
+  "sensor": {
+    "name": "OV5693",
+    "integrator": "Sunny",
+    "nvidia_header_version": "v2.13",
+    "source_file": "ov5693_sunny_v2.13.isp",
+    "nvidia_version": "v2.13"
+  },
+  "module": {
+    "_source": "OV5693 OmniVision product brief (1.4 um pitch, 2592x1944 active) + Mi Pad 1 Sunny module estimate",
+    "sensor_physical_size_mm": [
+      3.629,
+      2.722
+    ],
+    "focal_length_mm": 2.1,
+    "min_focus_distance_diopters": 0.0,
+    "bayer_pattern": "BGGR"
+  },
+  "active": {
+    "mwbCCT": {
+      "cloudy": 7000,
+      "shade": 6550,
+      "incandescent": 2800,
+      "fluorescent": 4300
+    },
+    "colorCorrection": {
+      "srgbMatrix": [
+        [
+          1.86685,
+          -0.26174,
+          -0.0149
+        ],
+        [
+          -0.84089,
+          1.54112,
+          -0.64704
+        ],
+        [
+          -0.02596,
+          -0.27938,
+          1.66194
+        ]
+      ],
+      "numColorCorrectionMatrices": 0,
+      "Set": [
+        {
+          "cct": 2400,
+          "wbGain": [
+            1.009,
+            1.113,
+            1.0
+          ],
+          "ccMatrix": [
+            [
+              2.053535,
+              -0.338796,
+              -0.097997
+            ],
+            [
+              -0.934233,
+              1.695232,
+              -0.730137
+            ],
+            [
+              -0.119303,
+              -0.356436,
+              1.828134
+            ]
+          ]
+        },
+        {
+          "cct": 3000,
+          "wbGain": [
+            1.157,
+            1.257,
+            1.0
+          ],
+          "ccMatrix": [
+            [
+              1.960193,
+              -0.300268,
+              -0.056449
+            ],
+            [
+              -0.887561,
+              1.618176,
+              -0.688589
+            ],
+            [
+              -0.072631,
+              -0.317908,
+              1.745037
+            ]
+          ]
+        },
+        {
+          "cct": 5000,
+          "wbGain": [
+            1.503,
+            1.603,
+            1.0
+          ],
+          "ccMatrix": [
+            [
+              1.86685,
+              -0.26174,
+              -0.0149
+            ],
+            [
+              -0.84089,
+              1.54112,
+              -0.64704
+            ],
+            [
+              -0.02596,
+              -0.27938,
+              1.66194
+            ]
+          ]
+        }
+      ]
+    },
+    "opticalBlack": {
+      "manualBiasR": 15,
+      "manualBiasGR": 15,
+      "manualBiasGB": 15,
+      "manualBiasB": 15
+    }
+  },
+  "_note": "`active` — consumed by the current HAL; hardcodes in code are replaced with reads from here. `reserved` — preserved verbatim from the stock NVIDIA .isp, not consumed yet; keys migrate to `active` as the corresponding shader stages ship.",
+  "reserved": {
+    "ae": {
+      "MeanAlg": {
+        "HigherTarget": 125,
+        "LowerTarget": 135,
+        "HigherBrightness": 850,
+        "LowerBrightness": 700,
+        "ToleranceIn": 0.05,
+        "ToleranceOut": 0.1,
+        "SlopFactor": 0.3,
+        "MinTailMass": 0.001,
+        "CriticalMass": 0.135,
+        "ConvergeSpeed": 0.25,
+        "MinRGBtoYMix": 0.5,
+        "MaxRGBtoYMix": 0.7
+      },
+      "MaxFstopDeltaPos": 0.4,
+      "MaxFstopDeltaNeg": 0.5,
+      "VFRTable": {
+        "Preview": [
+          [
+            1.0667,
+            15.0
+          ],
+          [
+            0.5685,
+            18.9
+          ],
+          [
+            0.3268,
+            22.2
+          ],
+          [
+            0.198,
+            24.6
+          ],
+          [
+            0.1227,
+            26.7
+          ],
+          [
+            0.0784,
+            28.2
+          ],
+          [
+            0.0508,
+            29.2
+          ],
+          [
+            0.0333,
+            30.0
+          ]
+        ],
+        "Still": [
+          [
+            1.0667,
+            15.0
+          ],
+          [
+            0.5685,
+            18.9
+          ],
+          [
+            0.3268,
+            22.2
+          ],
+          [
+            0.198,
+            24.6
+          ],
+          [
+            0.1227,
+            26.7
+          ],
+          [
+            0.0784,
+            28.2
+          ],
+          [
+            0.0508,
+            29.2
+          ],
+          [
+            0.0333,
+            30.0
+          ]
+        ],
+        "Video": [
+          [
+            0.5333,
+            30.0
+          ],
+          [
+            0.3589,
+            30.0
+          ],
+          [
+            0.2415,
+            30.0
+          ],
+          [
+            0.1625,
+            30.0
+          ],
+          [
+            0.1094,
+            30.0
+          ],
+          [
+            0.0736,
+            30.0
+          ],
+          [
+            0.0495,
+            30.0
+          ],
+          [
+            0.0333,
+            30.0
+          ]
+        ]
+      },
+      "saturation": {
+        "Preview": [
+          [
+            100,
+            100,
+            100,
+            100,
+            100,
+            100,
+            100
+          ],
+          [
+            100,
+            100,
+            100,
+            100,
+            100,
+            100,
+            100
+          ],
+          [
+            100,
+            100,
+            100,
+            100,
+            100,
+            100,
+            100
+          ],
+          [
+            100,
+            100,
+            100,
+            100,
+            100,
+            100,
+            100
+          ]
+        ],
+        "Still": [
+          [
+            100,
+            100,
+            100,
+            100,
+            100,
+            100,
+            100
+          ],
+          [
+            100,
+            100,
+            100,
+            100,
+            100,
+            100,
+            100
+          ],
+          [
+            100,
+            100,
+            100,
+            100,
+            100,
+            100,
+            100
+          ],
+          [
+            100,
+            100,
+            100,
+            100,
+            100,
+            100,
+            100
+          ]
+        ],
+        "Video": [
+          [
+            100,
+            100,
+            100,
+            100,
+            100,
+            100,
+            100
+          ],
+          [
+            100,
+            100,
+            100,
+            100,
+            100,
+            100,
+            100
+          ],
+          [
+            100,
+            100,
+            100,
+            100,
+            100,
+            100,
+            100
+          ],
+          [
+            100,
+            100,
+            100,
+            100,
+            100,
+            100,
+            100
+          ]
+        ]
+      },
+      "PerChannelGainAdjustment": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "defaults": {
+      "autoFramerateRange": [
+        7.5,
+        120.0
+      ],
+      "saturation": 1.0,
+      "hue": -3.3
+    },
+    "flicker": {
+      "CorrectionRangeMultiplier": 1.0,
+      "ConfidenceThreshold": 32,
+      "SuccessFrameCount": 8,
+      "FailureFrameCount": 3,
+      "CorrectionFreqListEntries": 2,
+      "CorrectionFreqList": [
+        100,
+        120
+      ]
+    },
+    "tc": {
+      "Enable": true,
+      "Version": "v2",
+      "v2": {
+        "NoSRGBgamma": false,
+        "user": {
+          "presets": [
+            {
+              "Gamma": {
+                "Value": 2.4
+              },
+              "UserCurve": {
+                "Enable": true,
+                "Points": [
+                  0.0,
+                  0.0,
+                  0.05098,
+                  0.007111,
+                  0.101961,
+                  0.027111,
+                  0.2,
+                  0.100111,
+                  0.4,
+                  0.357111,
+                  0.6,
+                  0.593111,
+                  0.8,
+                  0.8,
+                  0.911961,
+                  0.913111,
+                  0.96302,
+                  0.96502,
+                  1.0,
+                  1.0
+                ]
+              },
+              "CurveControl": {
+                "Enable": true,
+                "AdjustHighlights": 0.775,
+                "MidtoneBrightness": 0.5,
+                "MidtoneContrast": 0.5,
+                "AdjustShadows": 0.225
+              },
+              "Brightness": {
+                "Enable": true,
+                "Value": 1
+              }
+            },
+            {
+              "Gamma": {
+                "Value": 2.4
+              },
+              "UserCurve": {
+                "Enable": true,
+                "Points": [
+                  0.0,
+                  0.0,
+                  0.05098,
+                  0.013111,
+                  0.101961,
+                  0.039111,
+                  0.2,
+                  0.123111,
+                  0.4,
+                  0.357111,
+                  0.6,
+                  0.591111,
+                  0.8,
+                  0.787111,
+                  0.901961,
+                  0.887111,
+                  0.94902,
+                  0.939111,
+                  1.0,
+                  1.0
+                ]
+              },
+              "CurveControl": {
+                "Enable": true,
+                "AdjustHighlights": 0.775,
+                "MidtoneBrightness": 0.5,
+                "MidtoneContrast": 0.5,
+                "AdjustShadows": 0.225
+              },
+              "Brightness": {
+                "Enable": true,
+                "Value": 1
+              }
+            },
+            {
+              "Gamma": {
+                "Value": 2.4
+              },
+              "UserCurve": {
+                "Enable": true,
+                "Points": [
+                  0.0,
+                  0.0,
+                  0.05098,
+                  0.021111,
+                  0.101961,
+                  0.057111,
+                  0.2,
+                  0.153111,
+                  0.4,
+                  0.367111,
+                  0.6,
+                  0.589111,
+                  0.8,
+                  0.765111,
+                  0.901961,
+                  0.870111,
+                  0.94902,
+                  0.937111,
+                  1.0,
+                  1.0
+                ]
+              },
+              "CurveControl": {
+                "Enable": true,
+                "AdjustHighlights": 0.775,
+                "MidtoneBrightness": 0.5,
+                "MidtoneContrast": 0.5,
+                "AdjustShadows": 0.225
+              },
+              "Brightness": {
+                "Enable": true,
+                "Value": 1
+              }
+            },
+            {
+              "Gamma": {
+                "Value": 2.4
+              },
+              "UserCurve": {
+                "Enable": false,
+                "Points": [
+                  0.0,
+                  0.0,
+                  0.25,
+                  0.25,
+                  0.5,
+                  0.5,
+                  0.75,
+                  0.75,
+                  1.0,
+                  1.0
+                ]
+              },
+              "CurveControl": {
+                "Enable": true,
+                "AdjustHighlights": 0.75,
+                "MidtoneBrightness": 0.5,
+                "MidtoneContrast": 0.5,
+                "AdjustShadows": 0.25
+              },
+              "Brightness": {
+                "Enable": false,
+                "Value": 1.0
+              }
+            },
+            {
+              "Gamma": {
+                "Value": 2.4
+              },
+              "UserCurve": {
+                "Enable": false,
+                "Points": [
+                  0.0,
+                  0.0,
+                  0.25,
+                  0.25,
+                  0.5,
+                  0.5,
+                  0.75,
+                  0.75,
+                  1.0,
+                  1.0
+                ]
+              },
+              "CurveControl": {
+                "Enable": true,
+                "AdjustHighlights": 0.75,
+                "MidtoneBrightness": 0.5,
+                "MidtoneContrast": 0.5,
+                "AdjustShadows": 0.25
+              },
+              "Brightness": {
+                "Enable": false,
+                "Value": 1.0
+              }
+            },
+            {
+              "Gamma": {
+                "Value": 2.4
+              },
+              "UserCurve": {
+                "Enable": false,
+                "Points": [
+                  0.0,
+                  0.0,
+                  0.25,
+                  0.25,
+                  0.5,
+                  0.5,
+                  0.75,
+                  0.75,
+                  1.0,
+                  1.0
+                ]
+              },
+              "CurveControl": {
+                "Enable": true,
+                "AdjustHighlights": 0.75,
+                "MidtoneBrightness": 0.5,
+                "MidtoneContrast": 0.5,
+                "AdjustShadows": 0.25
+              },
+              "Brightness": {
+                "Enable": false,
+                "Value": 1.0
+              }
+            },
+            {
+              "Gamma": {
+                "Value": 2.4
+              },
+              "UserCurve": {
+                "Enable": false,
+                "Points": [
+                  0.0,
+                  0.0,
+                  0.25,
+                  0.25,
+                  0.5,
+                  0.5,
+                  0.75,
+                  0.75,
+                  1.0,
+                  1.0
+                ]
+              },
+              "CurveControl": {
+                "Enable": true,
+                "AdjustHighlights": 0.75,
+                "MidtoneBrightness": 0.5,
+                "MidtoneContrast": 0.5,
+                "AdjustShadows": 0.25
+              },
+              "Brightness": {
+                "Enable": false,
+                "Value": 1.0
+              }
+            },
+            {
+              "Gamma": {
+                "Value": 2.4
+              },
+              "UserCurve": {
+                "Enable": false,
+                "Points": [
+                  0.0,
+                  0.0,
+                  0.25,
+                  0.25,
+                  0.5,
+                  0.5,
+                  0.75,
+                  0.75,
+                  1.0,
+                  1.0
+                ]
+              },
+              "CurveControl": {
+                "Enable": true,
+                "AdjustHighlights": 0.75,
+                "MidtoneBrightness": 0.5,
+                "MidtoneContrast": 0.5,
+                "AdjustShadows": 0.25
+              },
+              "Brightness": {
+                "Enable": false,
+                "Value": 1.0
+              }
+            },
+            {
+              "Gamma": {
+                "Value": 2.4
+              },
+              "UserCurve": {
+                "Enable": false,
+                "Points": [
+                  0.0,
+                  0.0,
+                  0.25,
+                  0.25,
+                  0.5,
+                  0.5,
+                  0.75,
+                  0.75,
+                  1.0,
+                  1.0
+                ]
+              },
+              "CurveControl": {
+                "Enable": true,
+                "AdjustHighlights": 0.75,
+                "MidtoneBrightness": 0.5,
+                "MidtoneContrast": 0.5,
+                "AdjustShadows": 0.25
+              },
+              "Brightness": {
+                "Enable": false,
+                "Value": 1.0
+              }
+            }
+          ],
+          "UseIndices": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "FlashUseIndices": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        "UseAxisX": [
+          600,
+          700,
+          800,
+          900
+        ],
+        "FlashUseAxisX": [
+          600,
+          700,
+          800,
+          900
+        ],
+        "UseAxisY": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "FlashUseAxisY": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    "flash": {
+      "Led1": {
+        "FlashLevel": {
+          "1": 180
+        },
+        "TorchLevel": {
+          "1": 100
+        }
+      }
+    },
+    "noiseReduction": {
+      "v2": {
+        "MaxValue": 6,
+        "Preview": [
+          [
+            0,
+            0,
+            0,
+            0,
+            1,
+            2,
+            5
+          ],
+          [
+            0,
+            0,
+            0,
+            1,
+            2,
+            4,
+            5
+          ],
+          [
+            0,
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          [
+            0,
+            2,
+            4,
+            5,
+            5,
+            5,
+            5
+          ]
+        ],
+        "Still": [
+          [
+            0,
+            0,
+            0,
+            0,
+            1,
+            2,
+            5
+          ],
+          [
+            0,
+            0,
+            0,
+            1,
+            2,
+            4,
+            5
+          ],
+          [
+            0,
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          [
+            0,
+            2,
+            4,
+            5,
+            5,
+            5,
+            5
+          ]
+        ],
+        "Video": [
+          [
+            0,
+            0,
+            0,
+            0,
+            1,
+            2,
+            5
+          ],
+          [
+            0,
+            0,
+            0,
+            1,
+            2,
+            4,
+            5
+          ],
+          [
+            0,
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          [
+            0,
+            2,
+            4,
+            5,
+            5,
+            5,
+            5
+          ]
+        ],
+        "set": [
+          {
+            "Enable": true,
+            "HRadius": 1,
+            "VRadius": 1,
+            "MinThresRadius": 0,
+            "Threshold": 0.03125,
+            "Scale": [
+              0.0010146484375,
+              0.0010146484375,
+              0.0010146484375,
+              0.0010146484375
+            ],
+            "Bias": [
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "Enable": true,
+            "HRadius": 3,
+            "VRadius": 1,
+            "MinThresRadius": 0.000140381,
+            "Threshold": 0.03125,
+            "Scale": [
+              0.017714233,
+              0.017714233,
+              0.017714233,
+              0.017714233
+            ],
+            "Bias": [
+              0.002000122,
+              0.002000122,
+              0.002000122,
+              0.002000122
+            ]
+          },
+          {
+            "Enable": true,
+            "HRadius": 3,
+            "VRadius": 1,
+            "MinThresRadius": 0.000935872395833333,
+            "Threshold": 0.03125,
+            "Scale": [
+              0.0330118815104167,
+              0.0330118815104167,
+              0.0330118815104167,
+              0.0330118815104167
+            ],
+            "Bias": [
+              0.0133341471354167,
+              0.0133341471354167,
+              0.0133341471354167,
+              0.0133341471354167
+            ]
+          },
+          {
+            "Enable": true,
+            "HRadius": 3,
+            "VRadius": 1,
+            "MinThresRadius": 0.00140380859375,
+            "Threshold": 0.03125,
+            "Scale": [
+              0.042010498046875,
+              0.042010498046875,
+              0.042010498046875,
+              0.042010498046875
+            ],
+            "Bias": [
+              0.020001220703125,
+              0.020001220703125,
+              0.020001220703125,
+              0.020001220703125
+            ]
+          },
+          {
+            "Enable": true,
+            "HRadius": 3,
+            "VRadius": 1,
+            "MinThresRadius": 0.00233968098958333,
+            "Threshold": 0.03125,
+            "Scale": [
+              0.0600077311197917,
+              0.0600077311197917,
+              0.0600077311197917,
+              0.0600077311197917
+            ],
+            "Bias": [
+              0.0333353678385417,
+              0.0333353678385417,
+              0.0333353678385417,
+              0.0333353678385417
+            ]
+          },
+          {
+            "Enable": true,
+            "HRadius": 3,
+            "VRadius": 1,
+            "MinThresRadius": 0.00421142578125,
+            "Threshold": 0.03125,
+            "Scale": [
+              0.096002197265625,
+              0.096002197265625,
+              0.096002197265625,
+              0.096002197265625
+            ],
+            "Bias": [
+              0.060003662109375,
+              0.060003662109375,
+              0.060003662109375,
+              0.060003662109375
+            ]
+          },
+          {
+            "Enable": true,
+            "HRadius": 3,
+            "VRadius": 1,
+            "MinThresRadius": 0.005615234375,
+            "Threshold": 0.03125,
+            "Scale": [
+              0.122998046875,
+              0.122998046875,
+              0.122998046875,
+              0.122998046875
+            ],
+            "Bias": [
+              0.0800048828125,
+              0.0800048828125,
+              0.0800048828125,
+              0.0800048828125
+            ]
+          },
+          {
+            "Enable": true,
+            "HRadius": 3,
+            "VRadius": 1,
+            "MinThresRadius": 0.00701904296875,
+            "Threshold": 0.03125,
+            "Scale": [
+              0.149993896484375,
+              0.149993896484375,
+              0.149993896484375,
+              0.149993896484375
+            ],
+            "Bias": [
+              0.100006103515625,
+              0.100006103515625,
+              0.100006103515625,
+              0.100006103515625
+            ]
+          }
+        ]
+      },
+      "v6": {
+        "Chroma": {
+          "Enable": true,
+          "GainThreshold": 1.0,
+          "0": {
+            "Gain": 1.0,
+            "FilterStrength": 0.01,
+            "Levels": 2,
+            "Scaling": 1.0,
+            "SignalBoost": 1.0
+          },
+          "1": {
+            "Gain": 1.1,
+            "FilterStrength": 0.017,
+            "Levels": 2,
+            "Scaling": 1.0,
+            "SignalBoost": 1.0
+          },
+          "2": {
+            "Gain": 2,
+            "FilterStrength": 0.035,
+            "Levels": 3,
+            "Scaling": 1.0,
+            "SignalBoost": 1.0
+          },
+          "3": {
+            "Gain": 3,
+            "FilterStrength": 0.04,
+            "Levels": 3,
+            "Scaling": 1.0,
+            "SignalBoost": 1.0
+          },
+          "4": {
+            "Gain": 5,
+            "FilterStrength": 0.06,
+            "Levels": 3,
+            "Scaling": 1.0,
+            "SignalBoost": 1.0
+          },
+          "5": {
+            "Gain": 9,
+            "FilterStrength": 0.09,
+            "Levels": 3,
+            "Scaling": 1.0,
+            "SignalBoost": 1.0
+          },
+          "6": {
+            "Gain": 16,
+            "FilterStrength": 0.13,
+            "Levels": 3,
+            "Scaling": 1.0,
+            "SignalBoost": 1.0
+          }
+        },
+        "Luma": {
+          "Enable": true,
+          "GainThreshold": 1.0,
+          "0": {
+            "Gain": 1,
+            "FilterStrength": 0.01,
+            "Levels": 1,
+            "Scaling": 1.0,
+            "SignalBoost": 1.0
+          },
+          "1": {
+            "Gain": 1.1,
+            "FilterStrength": 0.02,
+            "Levels": 1,
+            "Scaling": 1.0,
+            "SignalBoost": 1.0
+          },
+          "2": {
+            "Gain": 2,
+            "FilterStrength": 0.13,
+            "Levels": 1,
+            "Scaling": 1.0,
+            "SignalBoost": 1.0
+          },
+          "3": {
+            "Gain": 3,
+            "FilterStrength": 0.4,
+            "Levels": 1,
+            "Scaling": 1.0,
+            "SignalBoost": 1.0
+          },
+          "4": {
+            "Gain": 5,
+            "FilterStrength": 0.5,
+            "Levels": 1,
+            "Scaling": 1.0,
+            "SignalBoost": 1.0
+          },
+          "5": {
+            "Gain": 9,
+            "FilterStrength": 0.8,
+            "Levels": 1,
+            "Scaling": 1.0,
+            "SignalBoost": 1.0
+          },
+          "6": {
+            "Gain": 16,
+            "FilterStrength": 0.15,
+            "Levels": 1,
+            "Scaling": 1.0,
+            "SignalBoost": 1.0
+          }
+        },
+        "NumSignalConditioningPoints": 7,
+        "SignalConditioning": [
+          {
+            "Gain": 1.0,
+            "NoiseBlend": 1.0,
+            "Shaping": 1.5
+          },
+          {
+            "Gain": 1.1,
+            "NoiseBlend": 1.0,
+            "Shaping": 1.4
+          },
+          {
+            "Gain": 2,
+            "NoiseBlend": 1.0,
+            "Shaping": 1.35
+          },
+          {
+            "Gain": 3,
+            "NoiseBlend": 1.0,
+            "Shaping": 1.4
+          },
+          {
+            "Gain": 5,
+            "NoiseBlend": 1.0,
+            "Shaping": 1.45
+          },
+          {
+            "Gain": 9,
+            "NoiseBlend": 0.8,
+            "Shaping": 1.48
+          },
+          {
+            "Gain": 16,
+            "NoiseBlend": 0.6,
+            "Shaping": 1.65
+          }
+        ],
+        "NumChromaPoints": 7,
+        "NumLumaPoints": 7
+      }
+    },
+    "deadPixelCorrection": [
+      {
+        "ObEnable": true,
+        "OrEnable": true,
+        "SapEnable": false,
+        "ObAdjust": [
+          0.015625,
+          0.015625,
+          0.015625,
+          0.015625
+        ],
+        "SapHiCoeff": 0.375,
+        "SapLoCoeff": 0.375,
+        "SapThresh": 0.09765625,
+        "OrHiStrength": 0,
+        "OrHiThresh": [
+          0.999,
+          0.001
+        ],
+        "OrLoStrength": 0,
+        "OrLoThresh": [
+          0.999,
+          0.001
+        ],
+        "OrRelaxStart": 0.024414063,
+        "OrRelaxWidthBits": 6
+      },
+      {
+        "ObEnable": true,
+        "OrEnable": true,
+        "SapEnable": false,
+        "ObAdjust": [
+          0.015625,
+          0.015625,
+          0.015625,
+          0.015625
+        ],
+        "SapHiCoeff": 0.375,
+        "SapLoCoeff": 0.375,
+        "SapThresh": 0.09765625,
+        "OrHiStrength": 0,
+        "OrHiThresh": [
+          0.999,
+          0.001
+        ],
+        "OrLoStrength": 0,
+        "OrLoThresh": [
+          0.999,
+          0.001
+        ],
+        "OrRelaxStart": 0.024414063,
+        "OrRelaxWidthBits": 6
+      },
+      {
+        "ObEnable": true,
+        "OrEnable": true,
+        "SapEnable": false,
+        "ObAdjust": [
+          0.015625,
+          0.015625,
+          0.015625,
+          0.015625
+        ],
+        "SapHiCoeff": 0.375,
+        "SapLoCoeff": 0.375,
+        "SapThresh": 0.09765625,
+        "OrHiStrength": 0,
+        "OrHiThresh": [
+          0.999,
+          0.001
+        ],
+        "OrLoStrength": 0,
+        "OrLoThresh": [
+          0.999,
+          0.001
+        ],
+        "OrRelaxStart": 0.024414063,
+        "OrRelaxWidthBits": 6
+      },
+      {
+        "ObEnable": true,
+        "OrEnable": true,
+        "SapEnable": false,
+        "ObAdjust": [
+          0.015625,
+          0.015625,
+          0.015625,
+          0.015625
+        ],
+        "SapHiCoeff": 0.375,
+        "SapLoCoeff": 0.375,
+        "SapThresh": 0.09765625,
+        "OrHiStrength": 0,
+        "OrHiThresh": [
+          0.999,
+          0.001
+        ],
+        "OrLoStrength": 0,
+        "OrLoThresh": [
+          0.999,
+          0.001
+        ],
+        "OrRelaxStart": 0.024414063,
+        "OrRelaxWidthBits": 6
+      }
+    ],
+    "colorArtifactReduction": [
+      {
+        "dif1core": 0,
+        "f1mag": 10,
+        "vf1k": 0.3125,
+        "w1": 8,
+        "dif2core": 0,
+        "f2mag": 30,
+        "vf2k": 0.3125,
+        "w2": 16
+      },
+      {
+        "dif1core": 0,
+        "f1mag": 10,
+        "vf1k": 0.3125,
+        "w1": 8,
+        "dif2core": 0,
+        "f2mag": 30,
+        "vf2k": 0.3125,
+        "w2": 16
+      },
+      {
+        "dif1core": 0,
+        "f1mag": 10,
+        "vf1k": 0.3125,
+        "w1": 8,
+        "dif2core": 0,
+        "f2mag": 30,
+        "vf2k": 0.3125,
+        "w2": 16
+      },
+      {
+        "dif1core": 0,
+        "f1mag": 10,
+        "vf1k": 0.3125,
+        "w1": 8,
+        "dif2core": 0,
+        "f2mag": 30,
+        "vf2k": 0.3125,
+        "w2": 16
+      },
+      {
+        "dif1core": 0,
+        "f1mag": 10,
+        "vf1k": 0.3125,
+        "w1": 8,
+        "dif2core": 0,
+        "f2mag": 30,
+        "vf2k": 0.3125,
+        "w2": 16
+      },
+      {
+        "dif1core": 0,
+        "f1mag": 10,
+        "vf1k": 0.3125,
+        "w1": 8,
+        "dif2core": 0,
+        "f2mag": 30,
+        "vf2k": 0.3125,
+        "w2": 16
+      }
+    ],
+    "sharpness": {
+      "v2": {
+        "Preview": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Still": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "Video": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "set": [
+          {
+            "Enable": true,
+            "FeatureDetector": {
+              "BlurGain": 100,
+              "ConstantCoeff": 0.6875,
+              "LinearCoeff": 0.75,
+              "QuadraticCoeff": 0.75,
+              "SharpGain": 0.5,
+              "SharpMax": 0.5,
+              "SharpMin": 0,
+              "Thresh": 0.0400390625
+            },
+            "Sharpening": {
+              "USMEdgeEnhanceGain": 2.5,
+              "USMEdgeEnhanceYGain": 0,
+              "IsUSMMode": false,
+              "LimitMax": 0.96875,
+              "LimitMin": 0.96875,
+              "GDEdgeEnhanceGain": 0.7,
+              "SignalThresh": 0.199951171875,
+              "GradThresh": 0.0150146484375,
+              "CoringThresh": 0.0050048828125,
+              "USMFilter": {
+                "NumCoefficients": 9,
+                "pCoefficients": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.0,
+                  0.0,
+                  -1.0,
+                  4.0
+                ]
+              }
+            },
+            "YnormalFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "YavgFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.001708984375,
+                0.036865234375,
+                0.000244140625,
+                0.037109375,
+                0.8447265625
+              ]
+            }
+          },
+          {
+            "Enable": true,
+            "FeatureDetector": {
+              "BlurGain": 100,
+              "ConstantCoeff": 0.6875,
+              "LinearCoeff": 0.75,
+              "QuadraticCoeff": 0.75,
+              "SharpGain": 0.5,
+              "SharpMax": 0.5,
+              "SharpMin": 0,
+              "Thresh": 0.0400390625
+            },
+            "Sharpening": {
+              "USMEdgeEnhanceGain": 2.5,
+              "USMEdgeEnhanceYGain": 0,
+              "IsUSMMode": false,
+              "LimitMax": 0.96875,
+              "LimitMin": 0.96875,
+              "GDEdgeEnhanceGain": 0.8,
+              "SignalThresh": 0.199951171875,
+              "GradThresh": 0.0150146484375,
+              "CoringThresh": 0.0050048828125,
+              "USMFilter": {
+                "NumCoefficients": 9,
+                "pCoefficients": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.0,
+                  0.0,
+                  -1.0,
+                  4.0
+                ]
+              }
+            },
+            "YnormalFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "YavgFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.001708984375,
+                0.036865234375,
+                0.000244140625,
+                0.037109375,
+                0.8447265625
+              ]
+            }
+          },
+          {
+            "Enable": true,
+            "FeatureDetector": {
+              "BlurGain": 100,
+              "ConstantCoeff": 0.6875,
+              "LinearCoeff": 0.75,
+              "QuadraticCoeff": 0.75,
+              "SharpGain": 0.5,
+              "SharpMax": 0.5,
+              "SharpMin": 0,
+              "Thresh": 0.0400390625
+            },
+            "Sharpening": {
+              "USMEdgeEnhanceGain": 2.5,
+              "USMEdgeEnhanceYGain": 0,
+              "IsUSMMode": false,
+              "LimitMax": 0.96875,
+              "LimitMin": 0.96875,
+              "GDEdgeEnhanceGain": 0.9,
+              "SignalThresh": 0.199951171875,
+              "GradThresh": 0.0150146484375,
+              "CoringThresh": 0.0050048828125,
+              "USMFilter": {
+                "NumCoefficients": 9,
+                "pCoefficients": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.0,
+                  0.0,
+                  -1.0,
+                  4.0
+                ]
+              }
+            },
+            "YnormalFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "YavgFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.001708984375,
+                0.036865234375,
+                0.000244140625,
+                0.037109375,
+                0.8447265625
+              ]
+            }
+          },
+          {
+            "Enable": true,
+            "FeatureDetector": {
+              "BlurGain": 100,
+              "ConstantCoeff": 0.6875,
+              "LinearCoeff": 0.75,
+              "QuadraticCoeff": 0.75,
+              "SharpGain": 0.5,
+              "SharpMax": 0.5,
+              "SharpMin": 0,
+              "Thresh": 0.0400390625
+            },
+            "Sharpening": {
+              "USMEdgeEnhanceGain": 2.5,
+              "USMEdgeEnhanceYGain": 0,
+              "IsUSMMode": false,
+              "LimitMax": 0.96875,
+              "LimitMin": 0.96875,
+              "GDEdgeEnhanceGain": 1.0,
+              "SignalThresh": 0.199951171875,
+              "GradThresh": 0.0150146484375,
+              "CoringThresh": 0.0050048828125,
+              "USMFilter": {
+                "NumCoefficients": 9,
+                "pCoefficients": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.0,
+                  0.0,
+                  -1.0,
+                  4.0
+                ]
+              }
+            },
+            "YnormalFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "YavgFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.001708984375,
+                0.036865234375,
+                0.000244140625,
+                0.037109375,
+                0.8447265625
+              ]
+            }
+          },
+          {
+            "Enable": true,
+            "FeatureDetector": {
+              "BlurGain": 100,
+              "ConstantCoeff": 0.6875,
+              "LinearCoeff": 0.75,
+              "QuadraticCoeff": 0.75,
+              "SharpGain": 0.5,
+              "SharpMax": 0.5,
+              "SharpMin": 0,
+              "Thresh": 0.0400390625
+            },
+            "Sharpening": {
+              "USMEdgeEnhanceGain": 2.5,
+              "USMEdgeEnhanceYGain": 0,
+              "IsUSMMode": false,
+              "LimitMax": 0.96875,
+              "LimitMin": 0.96875,
+              "GDEdgeEnhanceGain": 1.1,
+              "SignalThresh": 0.199951171875,
+              "GradThresh": 0.0150146484375,
+              "CoringThresh": 0.0050048828125,
+              "USMFilter": {
+                "NumCoefficients": 9,
+                "pCoefficients": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.0,
+                  0.0,
+                  -1.0,
+                  4.0
+                ]
+              }
+            },
+            "YnormalFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "YavgFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.001708984375,
+                0.036865234375,
+                0.000244140625,
+                0.037109375,
+                0.8447265625
+              ]
+            }
+          },
+          {
+            "Enable": true,
+            "FeatureDetector": {
+              "BlurGain": 100,
+              "ConstantCoeff": 0.6875,
+              "LinearCoeff": 0.75,
+              "QuadraticCoeff": 0.75,
+              "SharpGain": 0.5,
+              "SharpMax": 0.5,
+              "SharpMin": 0,
+              "Thresh": 0.0400390625
+            },
+            "Sharpening": {
+              "USMEdgeEnhanceGain": 2.5,
+              "USMEdgeEnhanceYGain": 0,
+              "IsUSMMode": false,
+              "LimitMax": 0.96875,
+              "LimitMin": 0.96875,
+              "GDEdgeEnhanceGain": 1.2,
+              "SignalThresh": 0.199951171875,
+              "GradThresh": 0.0150146484375,
+              "CoringThresh": 0.0050048828125,
+              "USMFilter": {
+                "NumCoefficients": 9,
+                "pCoefficients": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.0,
+                  0.0,
+                  -1.0,
+                  4.0
+                ]
+              }
+            },
+            "YnormalFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "YavgFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.001708984375,
+                0.036865234375,
+                0.000244140625,
+                0.037109375,
+                0.8447265625
+              ]
+            }
+          },
+          {
+            "Enable": true,
+            "FeatureDetector": {
+              "BlurGain": 100,
+              "ConstantCoeff": 0.6875,
+              "LinearCoeff": 0.75,
+              "QuadraticCoeff": 0.75,
+              "SharpGain": 0.5,
+              "SharpMax": 0.5,
+              "SharpMin": 0,
+              "Thresh": 0.0400390625
+            },
+            "Sharpening": {
+              "USMEdgeEnhanceGain": 2.5,
+              "USMEdgeEnhanceYGain": 0,
+              "IsUSMMode": false,
+              "LimitMax": 0.96875,
+              "LimitMin": 0.96875,
+              "GDEdgeEnhanceGain": 1.3,
+              "SignalThresh": 0.199951171875,
+              "GradThresh": 0.0150146484375,
+              "CoringThresh": 0.0050048828125,
+              "USMFilter": {
+                "NumCoefficients": 9,
+                "pCoefficients": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.0,
+                  0.0,
+                  -1.0,
+                  4.0
+                ]
+              }
+            },
+            "YnormalFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "YavgFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.001708984375,
+                0.036865234375,
+                0.000244140625,
+                0.037109375,
+                0.8447265625
+              ]
+            }
+          },
+          {
+            "Enable": true,
+            "FeatureDetector": {
+              "BlurGain": 100,
+              "ConstantCoeff": 0.6875,
+              "LinearCoeff": 0.75,
+              "QuadraticCoeff": 0.75,
+              "SharpGain": 0.5,
+              "SharpMax": 0.5,
+              "SharpMin": 0,
+              "Thresh": 0.0400390625
+            },
+            "Sharpening": {
+              "USMEdgeEnhanceGain": 2.5,
+              "USMEdgeEnhanceYGain": 0,
+              "IsUSMMode": false,
+              "LimitMax": 0.96875,
+              "LimitMin": 0.96875,
+              "GDEdgeEnhanceGain": 1.4,
+              "SignalThresh": 0.199951171875,
+              "GradThresh": 0.0150146484375,
+              "CoringThresh": 0.0050048828125,
+              "USMFilter": {
+                "NumCoefficients": 9,
+                "pCoefficients": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.0,
+                  0.0,
+                  -1.0,
+                  4.0
+                ]
+              }
+            },
+            "YnormalFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "YavgFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.001708984375,
+                0.036865234375,
+                0.000244140625,
+                0.037109375,
+                0.8447265625
+              ]
+            }
+          },
+          {
+            "Enable": true,
+            "FeatureDetector": {
+              "BlurGain": 100,
+              "ConstantCoeff": 0.6875,
+              "LinearCoeff": 0.75,
+              "QuadraticCoeff": 0.75,
+              "SharpGain": 0.5,
+              "SharpMax": 0.5,
+              "SharpMin": 0,
+              "Thresh": 0.0400390625
+            },
+            "Sharpening": {
+              "USMEdgeEnhanceGain": 2.5,
+              "USMEdgeEnhanceYGain": 0,
+              "IsUSMMode": false,
+              "LimitMax": 0.96875,
+              "LimitMin": 0.96875,
+              "GDEdgeEnhanceGain": 1.5,
+              "SignalThresh": 0.199951171875,
+              "GradThresh": 0.0150146484375,
+              "CoringThresh": 0.0050048828125,
+              "USMFilter": {
+                "NumCoefficients": 9,
+                "pCoefficients": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.0,
+                  0.0,
+                  -1.0,
+                  4.0
+                ]
+              }
+            },
+            "YnormalFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "YavgFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.001708984375,
+                0.036865234375,
+                0.000244140625,
+                0.037109375,
+                0.8447265625
+              ]
+            }
+          },
+          {
+            "Enable": true,
+            "FeatureDetector": {
+              "BlurGain": 100,
+              "ConstantCoeff": 0.6875,
+              "LinearCoeff": 0.75,
+              "QuadraticCoeff": 0.75,
+              "SharpGain": 0.5,
+              "SharpMax": 0.5,
+              "SharpMin": 0,
+              "Thresh": 0.0400390625
+            },
+            "Sharpening": {
+              "USMEdgeEnhanceGain": 2.5,
+              "USMEdgeEnhanceYGain": 0,
+              "IsUSMMode": false,
+              "LimitMax": 0.96875,
+              "LimitMin": 0.96875,
+              "GDEdgeEnhanceGain": 1.6,
+              "SignalThresh": 0.199951171875,
+              "GradThresh": 0.0150146484375,
+              "CoringThresh": 0.0050048828125,
+              "USMFilter": {
+                "NumCoefficients": 9,
+                "pCoefficients": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.0,
+                  0.0,
+                  -1.0,
+                  4.0
+                ]
+              }
+            },
+            "YnormalFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "YavgFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.001708984375,
+                0.036865234375,
+                0.000244140625,
+                0.037109375,
+                0.8447265625
+              ]
+            }
+          },
+          {
+            "Enable": true,
+            "FeatureDetector": {
+              "BlurGain": 100,
+              "ConstantCoeff": 0.6875,
+              "LinearCoeff": 0.75,
+              "QuadraticCoeff": 0.75,
+              "SharpGain": 0.5,
+              "SharpMax": 0.5,
+              "SharpMin": 0,
+              "Thresh": 0.0400390625
+            },
+            "Sharpening": {
+              "USMEdgeEnhanceGain": 2.5,
+              "USMEdgeEnhanceYGain": 0,
+              "IsUSMMode": false,
+              "LimitMax": 0.96875,
+              "LimitMin": 0.96875,
+              "GDEdgeEnhanceGain": 1.7,
+              "SignalThresh": 0.199951171875,
+              "GradThresh": 0.0150146484375,
+              "CoringThresh": 0.0050048828125,
+              "USMFilter": {
+                "NumCoefficients": 9,
+                "pCoefficients": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.0,
+                  0.0,
+                  -1.0,
+                  4.0
+                ]
+              }
+            },
+            "YnormalFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "YavgFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.001708984375,
+                0.036865234375,
+                0.000244140625,
+                0.037109375,
+                0.8447265625
+              ]
+            }
+          },
+          {
+            "Enable": true,
+            "FeatureDetector": {
+              "BlurGain": 100,
+              "ConstantCoeff": 0.6875,
+              "LinearCoeff": 0.75,
+              "QuadraticCoeff": 0.75,
+              "SharpGain": 0.5,
+              "SharpMax": 0.5,
+              "SharpMin": 0,
+              "Thresh": 0.0400390625
+            },
+            "Sharpening": {
+              "USMEdgeEnhanceGain": 2.5,
+              "USMEdgeEnhanceYGain": 0,
+              "IsUSMMode": false,
+              "LimitMax": 0.96875,
+              "LimitMin": 0.96875,
+              "GDEdgeEnhanceGain": 1.9,
+              "SignalThresh": 0.199951171875,
+              "GradThresh": 0.0150146484375,
+              "CoringThresh": 0.0050048828125,
+              "USMFilter": {
+                "NumCoefficients": 9,
+                "pCoefficients": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.0,
+                  0.0,
+                  -1.0,
+                  4.0
+                ]
+              }
+            },
+            "YnormalFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "YavgFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.001708984375,
+                0.036865234375,
+                0.000244140625,
+                0.037109375,
+                0.8447265625
+              ]
+            }
+          },
+          {
+            "Enable": true,
+            "FeatureDetector": {
+              "BlurGain": 100,
+              "ConstantCoeff": 0.6875,
+              "LinearCoeff": 0.75,
+              "QuadraticCoeff": 0.75,
+              "SharpGain": 0.5,
+              "SharpMax": 0.5,
+              "SharpMin": 0,
+              "Thresh": 0.0400390625
+            },
+            "Sharpening": {
+              "USMEdgeEnhanceGain": 2.5,
+              "USMEdgeEnhanceYGain": 0,
+              "IsUSMMode": false,
+              "LimitMax": 0.96875,
+              "LimitMin": 0.96875,
+              "GDEdgeEnhanceGain": 2.1,
+              "SignalThresh": 0.199951171875,
+              "GradThresh": 0.0150146484375,
+              "CoringThresh": 0.0050048828125,
+              "USMFilter": {
+                "NumCoefficients": 9,
+                "pCoefficients": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.0,
+                  0.0,
+                  -1.0,
+                  4.0
+                ]
+              }
+            },
+            "YnormalFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "YavgFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.001708984375,
+                0.036865234375,
+                0.000244140625,
+                0.037109375,
+                0.8447265625
+              ]
+            }
+          },
+          {
+            "Enable": true,
+            "FeatureDetector": {
+              "BlurGain": 100,
+              "ConstantCoeff": 0.6875,
+              "LinearCoeff": 0.75,
+              "QuadraticCoeff": 0.75,
+              "SharpGain": 0.5,
+              "SharpMax": 0.5,
+              "SharpMin": 0,
+              "Thresh": 0.0400390625
+            },
+            "Sharpening": {
+              "USMEdgeEnhanceGain": 2.5,
+              "USMEdgeEnhanceYGain": 0,
+              "IsUSMMode": false,
+              "LimitMax": 0.96875,
+              "LimitMin": 0.96875,
+              "GDEdgeEnhanceGain": 2.3,
+              "SignalThresh": 0.199951171875,
+              "GradThresh": 0.0150146484375,
+              "CoringThresh": 0.0050048828125,
+              "USMFilter": {
+                "NumCoefficients": 9,
+                "pCoefficients": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.0,
+                  0.0,
+                  -1.0,
+                  4.0
+                ]
+              }
+            },
+            "YnormalFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "YavgFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.001708984375,
+                0.036865234375,
+                0.000244140625,
+                0.037109375,
+                0.8447265625
+              ]
+            }
+          },
+          {
+            "Enable": true,
+            "FeatureDetector": {
+              "BlurGain": 100,
+              "ConstantCoeff": 0.6875,
+              "LinearCoeff": 0.75,
+              "QuadraticCoeff": 0.75,
+              "SharpGain": 0.5,
+              "SharpMax": 0.5,
+              "SharpMin": 0,
+              "Thresh": 0.0400390625
+            },
+            "Sharpening": {
+              "USMEdgeEnhanceGain": 2.5,
+              "USMEdgeEnhanceYGain": 0,
+              "IsUSMMode": false,
+              "LimitMax": 0.96875,
+              "LimitMin": 0.96875,
+              "GDEdgeEnhanceGain": 2.5,
+              "SignalThresh": 0.199951171875,
+              "GradThresh": 0.0150146484375,
+              "CoringThresh": 0.0050048828125,
+              "USMFilter": {
+                "NumCoefficients": 9,
+                "pCoefficients": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.0,
+                  0.0,
+                  -1.0,
+                  4.0
+                ]
+              }
+            },
+            "YnormalFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "YavgFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.001708984375,
+                0.036865234375,
+                0.000244140625,
+                0.037109375,
+                0.8447265625
+              ]
+            }
+          },
+          {
+            "Enable": true,
+            "FeatureDetector": {
+              "BlurGain": 100,
+              "ConstantCoeff": 0.6875,
+              "LinearCoeff": 0.75,
+              "QuadraticCoeff": 0.75,
+              "SharpGain": 0.5,
+              "SharpMax": 0.5,
+              "SharpMin": 0,
+              "Thresh": 0.0400390625
+            },
+            "Sharpening": {
+              "USMEdgeEnhanceGain": 2.5,
+              "USMEdgeEnhanceYGain": 0,
+              "IsUSMMode": false,
+              "LimitMax": 0.96875,
+              "LimitMin": 0.96875,
+              "GDEdgeEnhanceGain": 2.7,
+              "SignalThresh": 0.199951171875,
+              "GradThresh": 0.0150146484375,
+              "CoringThresh": 0.0050048828125,
+              "USMFilter": {
+                "NumCoefficients": 9,
+                "pCoefficients": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.0,
+                  0.0,
+                  -1.0,
+                  4.0
+                ]
+              }
+            },
+            "YnormalFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            },
+            "YavgFilter": {
+              "NumCoefficients": 9,
+              "pCoefficients": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.001708984375,
+                0.036865234375,
+                0.000244140625,
+                0.037109375,
+                0.8447265625
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "demosaic": {
+      "v2": {
+        "Preview": [
+          [
+            0,
+            0,
+            0,
+            0,
+            1,
+            3,
+            4
+          ],
+          [
+            0,
+            0,
+            0,
+            1,
+            3,
+            3,
+            4
+          ],
+          [
+            0,
+            0,
+            2,
+            3,
+            3,
+            3,
+            4
+          ],
+          [
+            0,
+            2,
+            3,
+            3,
+            3,
+            3,
+            4
+          ]
+        ],
+        "Still": [
+          [
+            0,
+            0,
+            0,
+            0,
+            1,
+            3,
+            4
+          ],
+          [
+            0,
+            0,
+            0,
+            1,
+            3,
+            3,
+            4
+          ],
+          [
+            0,
+            0,
+            2,
+            3,
+            3,
+            3,
+            4
+          ],
+          [
+            0,
+            2,
+            3,
+            3,
+            3,
+            3,
+            4
+          ]
+        ],
+        "Video": [
+          [
+            0,
+            0,
+            0,
+            0,
+            1,
+            3,
+            4
+          ],
+          [
+            0,
+            0,
+            0,
+            1,
+            3,
+            3,
+            4
+          ],
+          [
+            0,
+            0,
+            2,
+            3,
+            3,
+            3,
+            4
+          ],
+          [
+            0,
+            2,
+            3,
+            3,
+            3,
+            3,
+            4
+          ]
+        ],
+        "set": [
+          {
+            "enable": true,
+            "autoDemosaicEnable": true,
+            "chromaDemosaicEnable": true,
+            "numLumaCoeffs": 9,
+            "bayer2rgb_Luma_R2R": [
+              0.005242,
+              -0.15,
+              0.061916,
+              -0.15,
+              0.0,
+              0.3,
+              0.061916,
+              0.3,
+              0.731368
+            ],
+            "bayer2rgb_Luma_R2G": [
+              0.0,
+              -0.1319,
+              0.0,
+              -0.1319,
+              0.0,
+              0.5138,
+              0.0,
+              0.5138,
+              0.0
+            ],
+            "bayer2rgb_Luma_R2B": [
+              0.0,
+              -0.15,
+              0.0,
+              -0.15,
+              0.25,
+              0.3,
+              0.0,
+              0.3,
+              0.0
+            ],
+            "bayer2rgb_Luma_Gr2R": [
+              -0.225,
+              0.0362,
+              0.15,
+              0.0,
+              0.0,
+              0.0,
+              0.15,
+              0.4276,
+              0.3
+            ],
+            "bayer2rgb_Luma_Gr2G": [
+              -0.147379,
+              0.0,
+              0.030958,
+              0.0,
+              0.125,
+              0.0,
+              0.030958,
+              0.0,
+              0.965684
+            ],
+            "bayer2rgb_Luma_Gr2B": [
+              -0.225,
+              0.0,
+              0.15,
+              0.0362,
+              0.0,
+              0.4276,
+              0.15,
+              0.0,
+              0.3
+            ],
+            "bayer2rgb_Luma_Gb2R": [
+              -0.225,
+              0.0,
+              0.15,
+              0.0362,
+              0.0,
+              0.4276,
+              0.15,
+              0.0,
+              0.3
+            ],
+            "bayer2rgb_Luma_Gb2G": [
+              -0.147379,
+              0.0,
+              0.030958,
+              0.0,
+              0.125,
+              0.0,
+              0.030958,
+              0.0,
+              0.965684
+            ],
+            "bayer2rgb_Luma_Gb2B": [
+              -0.225,
+              0.0362,
+              0.15,
+              0.0,
+              0.0,
+              0.0,
+              0.15,
+              0.4276,
+              0.3
+            ],
+            "bayer2rgb_Luma_B2R": [
+              0.0,
+              -0.15,
+              0.0,
+              -0.15,
+              0.25,
+              0.3,
+              0.0,
+              0.3,
+              0.0
+            ],
+            "bayer2rgb_Luma_B2G": [
+              0.0,
+              -0.1319,
+              0.0,
+              -0.1319,
+              0.0,
+              0.5138,
+              0.0,
+              0.5138,
+              0.0
+            ],
+            "bayer2rgb_Luma_B2B": [
+              0.005242,
+              -0.15,
+              0.061916,
+              -0.15,
+              0.0,
+              0.3,
+              0.061916,
+              0.3,
+              0.731368
+            ],
+            "numChromaCoeffs": 16,
+            "bayer2rgb_ChromaU_R2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.043871,
+              -0.125,
+              0.121712,
+              0.0,
+              -0.125,
+              0.0,
+              0.25,
+              0.0,
+              0.121712,
+              0.25,
+              0.337669
+            ],
+            "bayer2rgb_ChromaU_R2G": [
+              0.0,
+              0.006021,
+              0.0,
+              0.016704,
+              0.006021,
+              0.0,
+              -0.078658,
+              0.0,
+              0.0,
+              -0.078658,
+              0.0,
+              0.378569,
+              0.016704,
+              0.0,
+              0.378569,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_R2B": [
+              0.003305,
+              0.0,
+              0.025441,
+              0.0,
+              0.0,
+              0.0,
+              -0.125,
+              0.0,
+              0.025441,
+              -0.125,
+              0.195813,
+              0.25,
+              0.0,
+              0.0,
+              0.25,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_R2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.043871,
+              -0.125,
+              0.121712,
+              0.0,
+              -0.125,
+              0.0,
+              0.25,
+              0.0,
+              0.121712,
+              0.25,
+              0.337669
+            ],
+            "bayer2rgb_ChromaV_R2G": [
+              0.0,
+              0.006021,
+              0.0,
+              0.016704,
+              0.006021,
+              0.0,
+              -0.078658,
+              0.0,
+              0.0,
+              -0.078658,
+              0.0,
+              0.378569,
+              0.016704,
+              0.0,
+              0.378569,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_R2B": [
+              0.003305,
+              0.0,
+              0.025441,
+              0.0,
+              0.0,
+              0.0,
+              -0.125,
+              0.0,
+              0.025441,
+              -0.125,
+              0.195813,
+              0.25,
+              0.0,
+              0.0,
+              0.25,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_Gr2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.012042,
+              -0.1875,
+              0.092685,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.033408,
+              0.125,
+              0.257138,
+              0.25
+            ],
+            "bayer2rgb_ChromaU_Gr2G": [
+              0.001653,
+              0.0,
+              0.01272,
+              0.0,
+              0.0,
+              -0.103065,
+              0.0,
+              0.060856,
+              0.01272,
+              0.0,
+              0.097907,
+              0.0,
+              0.0,
+              0.060856,
+              0.0,
+              0.668834
+            ],
+            "bayer2rgb_ChromaU_Gr2B": [
+              0.0,
+              0.012042,
+              0.0,
+              0.033408,
+              0.0,
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.092685,
+              0.0,
+              0.257138,
+              0.0,
+              0.125,
+              0.0,
+              0.25
+            ],
+            "bayer2rgb_ChromaV_Gr2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.012042,
+              -0.1875,
+              0.092685,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.033408,
+              0.125,
+              0.257138,
+              0.25
+            ],
+            "bayer2rgb_ChromaV_Gr2G": [
+              0.001653,
+              0.0,
+              0.01272,
+              0.0,
+              0.0,
+              -0.103065,
+              0.0,
+              0.060856,
+              0.01272,
+              0.0,
+              0.097907,
+              0.0,
+              0.0,
+              0.060856,
+              0.0,
+              0.668834
+            ],
+            "bayer2rgb_ChromaV_Gr2B": [
+              0.0,
+              0.012042,
+              0.0,
+              0.033408,
+              0.0,
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.092685,
+              0.0,
+              0.257138,
+              0.0,
+              0.125,
+              0.0,
+              0.25
+            ],
+            "bayer2rgb_ChromaU_Gb2R": [
+              0.0,
+              0.012042,
+              0.0,
+              0.033408,
+              0.0,
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.092685,
+              0.0,
+              0.257138,
+              0.0,
+              0.125,
+              0.0,
+              0.25
+            ],
+            "bayer2rgb_ChromaU_Gb2G": [
+              0.001653,
+              0.0,
+              0.01272,
+              0.0,
+              0.0,
+              -0.103065,
+              0.0,
+              0.060856,
+              0.01272,
+              0.0,
+              0.097907,
+              0.0,
+              0.0,
+              0.060856,
+              0.0,
+              0.668834
+            ],
+            "bayer2rgb_ChromaU_Gb2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.012042,
+              -0.1875,
+              0.092685,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.033408,
+              0.125,
+              0.257138,
+              0.25
+            ],
+            "bayer2rgb_ChromaV_Gb2R": [
+              0.0,
+              0.012042,
+              0.0,
+              0.033408,
+              0.0,
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.092685,
+              0.0,
+              0.257138,
+              0.0,
+              0.125,
+              0.0,
+              0.25
+            ],
+            "bayer2rgb_ChromaV_Gb2G": [
+              0.001653,
+              0.0,
+              0.01272,
+              0.0,
+              0.0,
+              -0.103065,
+              0.0,
+              0.060856,
+              0.01272,
+              0.0,
+              0.097907,
+              0.0,
+              0.0,
+              0.060856,
+              0.0,
+              0.668834
+            ],
+            "bayer2rgb_ChromaV_Gb2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.012042,
+              -0.1875,
+              0.092685,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.033408,
+              0.125,
+              0.257138,
+              0.25
+            ],
+            "bayer2rgb_ChromaU_B2R": [
+              0.003305,
+              0.0,
+              0.025441,
+              0.0,
+              0.0,
+              0.0,
+              -0.125,
+              0.0,
+              0.025441,
+              -0.125,
+              0.195813,
+              0.25,
+              0.0,
+              0.0,
+              0.25,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_B2G": [
+              0.0,
+              0.006021,
+              0.0,
+              0.016704,
+              0.006021,
+              0.0,
+              -0.078658,
+              0.0,
+              0.0,
+              -0.078658,
+              0.0,
+              0.378569,
+              0.016704,
+              0.0,
+              0.378569,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_B2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.043871,
+              -0.125,
+              0.121712,
+              0.0,
+              -0.125,
+              0.0,
+              0.25,
+              0.0,
+              0.121712,
+              0.25,
+              0.337669
+            ],
+            "bayer2rgb_ChromaV_B2R": [
+              0.003305,
+              0.0,
+              0.025441,
+              0.0,
+              0.0,
+              0.0,
+              -0.125,
+              0.0,
+              0.025441,
+              -0.125,
+              0.195813,
+              0.25,
+              0.0,
+              0.0,
+              0.25,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_B2G": [
+              0.0,
+              0.006021,
+              0.0,
+              0.016704,
+              0.006021,
+              0.0,
+              -0.078658,
+              0.0,
+              0.0,
+              -0.078658,
+              0.0,
+              0.378569,
+              0.016704,
+              0.0,
+              0.378569,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_B2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.043871,
+              -0.125,
+              0.121712,
+              0.0,
+              -0.125,
+              0.0,
+              0.25,
+              0.0,
+              0.121712,
+              0.25,
+              0.337669
+            ]
+          },
+          {
+            "enable": true,
+            "autoDemosaicEnable": true,
+            "chromaDemosaicEnable": true,
+            "numLumaCoeffs": 9,
+            "bayer2rgb_Luma_R2R": [
+              0.005242,
+              -0.15,
+              0.061916,
+              -0.15,
+              0.0,
+              0.3,
+              0.061916,
+              0.3,
+              0.731368
+            ],
+            "bayer2rgb_Luma_R2G": [
+              0.0,
+              -0.1319,
+              0.0,
+              -0.1319,
+              0.0,
+              0.5138,
+              0.0,
+              0.5138,
+              0.0
+            ],
+            "bayer2rgb_Luma_R2B": [
+              0.0,
+              -0.15,
+              0.0,
+              -0.15,
+              0.25,
+              0.3,
+              0.0,
+              0.3,
+              0.0
+            ],
+            "bayer2rgb_Luma_Gr2R": [
+              -0.225,
+              0.0362,
+              0.15,
+              0.0,
+              0.0,
+              0.0,
+              0.15,
+              0.4276,
+              0.3
+            ],
+            "bayer2rgb_Luma_Gr2G": [
+              -0.147379,
+              0.0,
+              0.030958,
+              0.0,
+              0.125,
+              0.0,
+              0.030958,
+              0.0,
+              0.965684
+            ],
+            "bayer2rgb_Luma_Gr2B": [
+              -0.225,
+              0.0,
+              0.15,
+              0.0362,
+              0.0,
+              0.4276,
+              0.15,
+              0.0,
+              0.3
+            ],
+            "bayer2rgb_Luma_Gb2R": [
+              -0.225,
+              0.0,
+              0.15,
+              0.0362,
+              0.0,
+              0.4276,
+              0.15,
+              0.0,
+              0.3
+            ],
+            "bayer2rgb_Luma_Gb2G": [
+              -0.147379,
+              0.0,
+              0.030958,
+              0.0,
+              0.125,
+              0.0,
+              0.030958,
+              0.0,
+              0.965684
+            ],
+            "bayer2rgb_Luma_Gb2B": [
+              -0.225,
+              0.0362,
+              0.15,
+              0.0,
+              0.0,
+              0.0,
+              0.15,
+              0.4276,
+              0.3
+            ],
+            "bayer2rgb_Luma_B2R": [
+              0.0,
+              -0.15,
+              0.0,
+              -0.15,
+              0.25,
+              0.3,
+              0.0,
+              0.3,
+              0.0
+            ],
+            "bayer2rgb_Luma_B2G": [
+              0.0,
+              -0.1319,
+              0.0,
+              -0.1319,
+              0.0,
+              0.5138,
+              0.0,
+              0.5138,
+              0.0
+            ],
+            "bayer2rgb_Luma_B2B": [
+              0.005242,
+              -0.15,
+              0.061916,
+              -0.15,
+              0.0,
+              0.3,
+              0.061916,
+              0.3,
+              0.731368
+            ],
+            "numChromaCoeffs": 16,
+            "bayer2rgb_ChromaU_R2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.043871,
+              -0.125,
+              0.121712,
+              0.0,
+              -0.125,
+              0.0,
+              0.25,
+              0.0,
+              0.121712,
+              0.25,
+              0.337669
+            ],
+            "bayer2rgb_ChromaU_R2G": [
+              0.0,
+              0.006021,
+              0.0,
+              0.016704,
+              0.006021,
+              0.0,
+              -0.078658,
+              0.0,
+              0.0,
+              -0.078658,
+              0.0,
+              0.378569,
+              0.016704,
+              0.0,
+              0.378569,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_R2B": [
+              0.003305,
+              0.0,
+              0.025441,
+              0.0,
+              0.0,
+              0.0,
+              -0.125,
+              0.0,
+              0.025441,
+              -0.125,
+              0.195813,
+              0.25,
+              0.0,
+              0.0,
+              0.25,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_R2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.043871,
+              -0.125,
+              0.121712,
+              0.0,
+              -0.125,
+              0.0,
+              0.25,
+              0.0,
+              0.121712,
+              0.25,
+              0.337669
+            ],
+            "bayer2rgb_ChromaV_R2G": [
+              0.0,
+              0.006021,
+              0.0,
+              0.016704,
+              0.006021,
+              0.0,
+              -0.078658,
+              0.0,
+              0.0,
+              -0.078658,
+              0.0,
+              0.378569,
+              0.016704,
+              0.0,
+              0.378569,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_R2B": [
+              0.003305,
+              0.0,
+              0.025441,
+              0.0,
+              0.0,
+              0.0,
+              -0.125,
+              0.0,
+              0.025441,
+              -0.125,
+              0.195813,
+              0.25,
+              0.0,
+              0.0,
+              0.25,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_Gr2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.012042,
+              -0.1875,
+              0.092685,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.033408,
+              0.125,
+              0.257138,
+              0.25
+            ],
+            "bayer2rgb_ChromaU_Gr2G": [
+              0.001653,
+              0.0,
+              0.01272,
+              0.0,
+              0.0,
+              -0.103065,
+              0.0,
+              0.060856,
+              0.01272,
+              0.0,
+              0.097907,
+              0.0,
+              0.0,
+              0.060856,
+              0.0,
+              0.668834
+            ],
+            "bayer2rgb_ChromaU_Gr2B": [
+              0.0,
+              0.012042,
+              0.0,
+              0.033408,
+              0.0,
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.092685,
+              0.0,
+              0.257138,
+              0.0,
+              0.125,
+              0.0,
+              0.25
+            ],
+            "bayer2rgb_ChromaV_Gr2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.012042,
+              -0.1875,
+              0.092685,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.033408,
+              0.125,
+              0.257138,
+              0.25
+            ],
+            "bayer2rgb_ChromaV_Gr2G": [
+              0.001653,
+              0.0,
+              0.01272,
+              0.0,
+              0.0,
+              -0.103065,
+              0.0,
+              0.060856,
+              0.01272,
+              0.0,
+              0.097907,
+              0.0,
+              0.0,
+              0.060856,
+              0.0,
+              0.668834
+            ],
+            "bayer2rgb_ChromaV_Gr2B": [
+              0.0,
+              0.012042,
+              0.0,
+              0.033408,
+              0.0,
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.092685,
+              0.0,
+              0.257138,
+              0.0,
+              0.125,
+              0.0,
+              0.25
+            ],
+            "bayer2rgb_ChromaU_Gb2R": [
+              0.0,
+              0.012042,
+              0.0,
+              0.033408,
+              0.0,
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.092685,
+              0.0,
+              0.257138,
+              0.0,
+              0.125,
+              0.0,
+              0.25
+            ],
+            "bayer2rgb_ChromaU_Gb2G": [
+              0.001653,
+              0.0,
+              0.01272,
+              0.0,
+              0.0,
+              -0.103065,
+              0.0,
+              0.060856,
+              0.01272,
+              0.0,
+              0.097907,
+              0.0,
+              0.0,
+              0.060856,
+              0.0,
+              0.668834
+            ],
+            "bayer2rgb_ChromaU_Gb2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.012042,
+              -0.1875,
+              0.092685,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.033408,
+              0.125,
+              0.257138,
+              0.25
+            ],
+            "bayer2rgb_ChromaV_Gb2R": [
+              0.0,
+              0.012042,
+              0.0,
+              0.033408,
+              0.0,
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.092685,
+              0.0,
+              0.257138,
+              0.0,
+              0.125,
+              0.0,
+              0.25
+            ],
+            "bayer2rgb_ChromaV_Gb2G": [
+              0.001653,
+              0.0,
+              0.01272,
+              0.0,
+              0.0,
+              -0.103065,
+              0.0,
+              0.060856,
+              0.01272,
+              0.0,
+              0.097907,
+              0.0,
+              0.0,
+              0.060856,
+              0.0,
+              0.668834
+            ],
+            "bayer2rgb_ChromaV_Gb2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.012042,
+              -0.1875,
+              0.092685,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.033408,
+              0.125,
+              0.257138,
+              0.25
+            ],
+            "bayer2rgb_ChromaU_B2R": [
+              0.003305,
+              0.0,
+              0.025441,
+              0.0,
+              0.0,
+              0.0,
+              -0.125,
+              0.0,
+              0.025441,
+              -0.125,
+              0.195813,
+              0.25,
+              0.0,
+              0.0,
+              0.25,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_B2G": [
+              0.0,
+              0.006021,
+              0.0,
+              0.016704,
+              0.006021,
+              0.0,
+              -0.078658,
+              0.0,
+              0.0,
+              -0.078658,
+              0.0,
+              0.378569,
+              0.016704,
+              0.0,
+              0.378569,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_B2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.043871,
+              -0.125,
+              0.121712,
+              0.0,
+              -0.125,
+              0.0,
+              0.25,
+              0.0,
+              0.121712,
+              0.25,
+              0.337669
+            ],
+            "bayer2rgb_ChromaV_B2R": [
+              0.003305,
+              0.0,
+              0.025441,
+              0.0,
+              0.0,
+              0.0,
+              -0.125,
+              0.0,
+              0.025441,
+              -0.125,
+              0.195813,
+              0.25,
+              0.0,
+              0.0,
+              0.25,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_B2G": [
+              0.0,
+              0.006021,
+              0.0,
+              0.016704,
+              0.006021,
+              0.0,
+              -0.078658,
+              0.0,
+              0.0,
+              -0.078658,
+              0.0,
+              0.378569,
+              0.016704,
+              0.0,
+              0.378569,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_B2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.043871,
+              -0.125,
+              0.121712,
+              0.0,
+              -0.125,
+              0.0,
+              0.25,
+              0.0,
+              0.121712,
+              0.25,
+              0.337669
+            ]
+          },
+          {
+            "enable": true,
+            "autoDemosaicEnable": true,
+            "chromaDemosaicEnable": true,
+            "numLumaCoeffs": 9,
+            "bayer2rgb_Luma_R2R": [
+              0.005242,
+              -0.15,
+              0.061916,
+              -0.15,
+              0.0,
+              0.3,
+              0.061916,
+              0.3,
+              0.731368
+            ],
+            "bayer2rgb_Luma_R2G": [
+              0.0,
+              -0.1319,
+              0.0,
+              -0.1319,
+              0.0,
+              0.5138,
+              0.0,
+              0.5138,
+              0.0
+            ],
+            "bayer2rgb_Luma_R2B": [
+              0.0,
+              -0.15,
+              0.0,
+              -0.15,
+              0.25,
+              0.3,
+              0.0,
+              0.3,
+              0.0
+            ],
+            "bayer2rgb_Luma_Gr2R": [
+              -0.225,
+              0.0362,
+              0.15,
+              0.0,
+              0.0,
+              0.0,
+              0.15,
+              0.4276,
+              0.3
+            ],
+            "bayer2rgb_Luma_Gr2G": [
+              -0.147379,
+              0.0,
+              0.030958,
+              0.0,
+              0.125,
+              0.0,
+              0.030958,
+              0.0,
+              0.965684
+            ],
+            "bayer2rgb_Luma_Gr2B": [
+              -0.225,
+              0.0,
+              0.15,
+              0.0362,
+              0.0,
+              0.4276,
+              0.15,
+              0.0,
+              0.3
+            ],
+            "bayer2rgb_Luma_Gb2R": [
+              -0.225,
+              0.0,
+              0.15,
+              0.0362,
+              0.0,
+              0.4276,
+              0.15,
+              0.0,
+              0.3
+            ],
+            "bayer2rgb_Luma_Gb2G": [
+              -0.147379,
+              0.0,
+              0.030958,
+              0.0,
+              0.125,
+              0.0,
+              0.030958,
+              0.0,
+              0.965684
+            ],
+            "bayer2rgb_Luma_Gb2B": [
+              -0.225,
+              0.0362,
+              0.15,
+              0.0,
+              0.0,
+              0.0,
+              0.15,
+              0.4276,
+              0.3
+            ],
+            "bayer2rgb_Luma_B2R": [
+              0.0,
+              -0.15,
+              0.0,
+              -0.15,
+              0.25,
+              0.3,
+              0.0,
+              0.3,
+              0.0
+            ],
+            "bayer2rgb_Luma_B2G": [
+              0.0,
+              -0.1319,
+              0.0,
+              -0.1319,
+              0.0,
+              0.5138,
+              0.0,
+              0.5138,
+              0.0
+            ],
+            "bayer2rgb_Luma_B2B": [
+              0.005242,
+              -0.15,
+              0.061916,
+              -0.15,
+              0.0,
+              0.3,
+              0.061916,
+              0.3,
+              0.731368
+            ],
+            "numChromaCoeffs": 16,
+            "bayer2rgb_ChromaU_R2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.057118,
+              -0.125,
+              0.124758,
+              0.0,
+              -0.125,
+              0.0,
+              0.25,
+              0.0,
+              0.124758,
+              0.25,
+              0.272496
+            ],
+            "bayer2rgb_ChromaU_R2G": [
+              0.0,
+              0.010354,
+              0.0,
+              0.022615,
+              0.010354,
+              0.0,
+              -0.075605,
+              0.0,
+              0.0,
+              -0.075605,
+              0.0,
+              0.357888,
+              0.022615,
+              0.0,
+              0.357888,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_R2B": [
+              0.007507,
+              0.0,
+              0.035815,
+              0.0,
+              0.0,
+              0.0,
+              -0.125,
+              0.0,
+              0.035815,
+              -0.125,
+              0.170863,
+              0.25,
+              0.0,
+              0.0,
+              0.25,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_R2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.057118,
+              -0.125,
+              0.124758,
+              0.0,
+              -0.125,
+              0.0,
+              0.25,
+              0.0,
+              0.124758,
+              0.25,
+              0.272496
+            ],
+            "bayer2rgb_ChromaV_R2G": [
+              0.0,
+              0.010354,
+              0.0,
+              0.022615,
+              0.010354,
+              0.0,
+              -0.075605,
+              0.0,
+              0.0,
+              -0.075605,
+              0.0,
+              0.357888,
+              0.022615,
+              0.0,
+              0.357888,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_R2B": [
+              0.007507,
+              0.0,
+              0.035815,
+              0.0,
+              0.0,
+              0.0,
+              -0.125,
+              0.0,
+              0.035815,
+              -0.125,
+              0.170863,
+              0.25,
+              0.0,
+              0.0,
+              0.25,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_Gr2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.020707,
+              -0.1875,
+              0.09879,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.045229,
+              0.125,
+              0.215777,
+              0.25
+            ],
+            "bayer2rgb_ChromaU_Gr2G": [
+              0.003754,
+              0.0,
+              0.017907,
+              0.0,
+              0.0,
+              -0.096441,
+              0.0,
+              0.062379,
+              0.017907,
+              0.0,
+              0.085432,
+              0.0,
+              0.0,
+              0.062379,
+              0.0,
+              0.636248
+            ],
+            "bayer2rgb_ChromaU_Gr2B": [
+              0.0,
+              0.020707,
+              0.0,
+              0.045229,
+              0.0,
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.09879,
+              0.0,
+              0.215777,
+              0.0,
+              0.125,
+              0.0,
+              0.25
+            ],
+            "bayer2rgb_ChromaV_Gr2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.020707,
+              -0.1875,
+              0.09879,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.045229,
+              0.125,
+              0.215777,
+              0.25
+            ],
+            "bayer2rgb_ChromaV_Gr2G": [
+              0.003754,
+              0.0,
+              0.017907,
+              0.0,
+              0.0,
+              -0.096441,
+              0.0,
+              0.062379,
+              0.017907,
+              0.0,
+              0.085432,
+              0.0,
+              0.0,
+              0.062379,
+              0.0,
+              0.636248
+            ],
+            "bayer2rgb_ChromaV_Gr2B": [
+              0.0,
+              0.020707,
+              0.0,
+              0.045229,
+              0.0,
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.09879,
+              0.0,
+              0.215777,
+              0.0,
+              0.125,
+              0.0,
+              0.25
+            ],
+            "bayer2rgb_ChromaU_Gb2R": [
+              0.0,
+              0.020707,
+              0.0,
+              0.045229,
+              0.0,
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.09879,
+              0.0,
+              0.215777,
+              0.0,
+              0.125,
+              0.0,
+              0.25
+            ],
+            "bayer2rgb_ChromaU_Gb2G": [
+              0.003754,
+              0.0,
+              0.017907,
+              0.0,
+              0.0,
+              -0.096441,
+              0.0,
+              0.062379,
+              0.017907,
+              0.0,
+              0.085432,
+              0.0,
+              0.0,
+              0.062379,
+              0.0,
+              0.636248
+            ],
+            "bayer2rgb_ChromaU_Gb2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.020707,
+              -0.1875,
+              0.09879,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.045229,
+              0.125,
+              0.215777,
+              0.25
+            ],
+            "bayer2rgb_ChromaV_Gb2R": [
+              0.0,
+              0.020707,
+              0.0,
+              0.045229,
+              0.0,
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.09879,
+              0.0,
+              0.215777,
+              0.0,
+              0.125,
+              0.0,
+              0.25
+            ],
+            "bayer2rgb_ChromaV_Gb2G": [
+              0.003754,
+              0.0,
+              0.017907,
+              0.0,
+              0.0,
+              -0.096441,
+              0.0,
+              0.062379,
+              0.017907,
+              0.0,
+              0.085432,
+              0.0,
+              0.0,
+              0.062379,
+              0.0,
+              0.636248
+            ],
+            "bayer2rgb_ChromaV_Gb2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.020707,
+              -0.1875,
+              0.09879,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.045229,
+              0.125,
+              0.215777,
+              0.25
+            ],
+            "bayer2rgb_ChromaU_B2R": [
+              0.007507,
+              0.0,
+              0.035815,
+              0.0,
+              0.0,
+              0.0,
+              -0.125,
+              0.0,
+              0.035815,
+              -0.125,
+              0.170863,
+              0.25,
+              0.0,
+              0.0,
+              0.25,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_B2G": [
+              0.0,
+              0.010354,
+              0.0,
+              0.022615,
+              0.010354,
+              0.0,
+              -0.075605,
+              0.0,
+              0.0,
+              -0.075605,
+              0.0,
+              0.357888,
+              0.022615,
+              0.0,
+              0.357888,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_B2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.057118,
+              -0.125,
+              0.124758,
+              0.0,
+              -0.125,
+              0.0,
+              0.25,
+              0.0,
+              0.124758,
+              0.25,
+              0.272496
+            ],
+            "bayer2rgb_ChromaV_B2R": [
+              0.007507,
+              0.0,
+              0.035815,
+              0.0,
+              0.0,
+              0.0,
+              -0.125,
+              0.0,
+              0.035815,
+              -0.125,
+              0.170863,
+              0.25,
+              0.0,
+              0.0,
+              0.25,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_B2G": [
+              0.0,
+              0.010354,
+              0.0,
+              0.022615,
+              0.010354,
+              0.0,
+              -0.075605,
+              0.0,
+              0.0,
+              -0.075605,
+              0.0,
+              0.357888,
+              0.022615,
+              0.0,
+              0.357888,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_B2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.057118,
+              -0.125,
+              0.124758,
+              0.0,
+              -0.125,
+              0.0,
+              0.25,
+              0.0,
+              0.124758,
+              0.25,
+              0.272496
+            ]
+          },
+          {
+            "enable": true,
+            "autoDemosaicEnable": true,
+            "chromaDemosaicEnable": true,
+            "numLumaCoeffs": 9,
+            "bayer2rgb_Luma_R2R": [
+              0.0,
+              -0.15,
+              0.0,
+              -0.15,
+              0.0,
+              0.3,
+              0.0,
+              0.3,
+              1.0
+            ],
+            "bayer2rgb_Luma_R2G": [
+              0.0,
+              -0.15,
+              0.0,
+              -0.15,
+              0.0,
+              0.55,
+              0.0,
+              0.55,
+              0.0
+            ],
+            "bayer2rgb_Luma_R2B": [
+              0.0,
+              -0.15,
+              0.0,
+              -0.15,
+              0.25,
+              0.3,
+              0.0,
+              0.3,
+              0.0
+            ],
+            "bayer2rgb_Luma_Gr2R": [
+              -0.225,
+              0.0,
+              0.15,
+              0.0,
+              0.0,
+              0.0,
+              0.15,
+              0.5,
+              0.3
+            ],
+            "bayer2rgb_Luma_Gr2G": [
+              -0.15,
+              0.0,
+              0.0,
+              0.0,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              1.1
+            ],
+            "bayer2rgb_Luma_Gr2B": [
+              -0.225,
+              0.0,
+              0.15,
+              0.0,
+              0.0,
+              0.5,
+              0.15,
+              0.0,
+              0.3
+            ],
+            "bayer2rgb_Luma_Gb2R": [
+              -0.225,
+              0.0,
+              0.15,
+              0.0,
+              0.0,
+              0.5,
+              0.15,
+              0.0,
+              0.3
+            ],
+            "bayer2rgb_Luma_Gb2G": [
+              -0.15,
+              0.0,
+              0.0,
+              0.0,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              1.1
+            ],
+            "bayer2rgb_Luma_Gb2B": [
+              -0.225,
+              0.0,
+              0.15,
+              0.0,
+              0.0,
+              0.0,
+              0.15,
+              0.5,
+              0.3
+            ],
+            "bayer2rgb_Luma_B2R": [
+              0.0,
+              -0.15,
+              0.0,
+              -0.15,
+              0.25,
+              0.3,
+              0.0,
+              0.3,
+              0.0
+            ],
+            "bayer2rgb_Luma_B2G": [
+              0.0,
+              -0.15,
+              0.0,
+              -0.15,
+              0.0,
+              0.55,
+              0.0,
+              0.55,
+              0.0
+            ],
+            "bayer2rgb_Luma_B2B": [
+              0.0,
+              -0.15,
+              0.0,
+              -0.15,
+              0.0,
+              0.3,
+              0.0,
+              0.3,
+              1.0
+            ],
+            "numChromaCoeffs": 16,
+            "bayer2rgb_ChromaU_R2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.057118,
+              -0.125,
+              0.124758,
+              0.0,
+              -0.125,
+              0.0,
+              0.25,
+              0.0,
+              0.124758,
+              0.25,
+              0.272496
+            ],
+            "bayer2rgb_ChromaU_R2G": [
+              0.0,
+              0.010354,
+              0.0,
+              0.022615,
+              0.010354,
+              0.0,
+              -0.075605,
+              0.0,
+              0.0,
+              -0.075605,
+              0.0,
+              0.357888,
+              0.022615,
+              0.0,
+              0.357888,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_R2B": [
+              0.007507,
+              0.0,
+              0.035815,
+              0.0,
+              0.0,
+              0.0,
+              -0.125,
+              0.0,
+              0.035815,
+              -0.125,
+              0.170863,
+              0.25,
+              0.0,
+              0.0,
+              0.25,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_R2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.057118,
+              -0.125,
+              0.124758,
+              0.0,
+              -0.125,
+              0.0,
+              0.25,
+              0.0,
+              0.124758,
+              0.25,
+              0.272496
+            ],
+            "bayer2rgb_ChromaV_R2G": [
+              0.0,
+              0.010354,
+              0.0,
+              0.022615,
+              0.010354,
+              0.0,
+              -0.075605,
+              0.0,
+              0.0,
+              -0.075605,
+              0.0,
+              0.357888,
+              0.022615,
+              0.0,
+              0.357888,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_R2B": [
+              0.007507,
+              0.0,
+              0.035815,
+              0.0,
+              0.0,
+              0.0,
+              -0.125,
+              0.0,
+              0.035815,
+              -0.125,
+              0.170863,
+              0.25,
+              0.0,
+              0.0,
+              0.25,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_Gr2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.020707,
+              -0.1875,
+              0.09879,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.045229,
+              0.125,
+              0.215777,
+              0.25
+            ],
+            "bayer2rgb_ChromaU_Gr2G": [
+              0.003754,
+              0.0,
+              0.017907,
+              0.0,
+              0.0,
+              -0.096441,
+              0.0,
+              0.062379,
+              0.017907,
+              0.0,
+              0.085432,
+              0.0,
+              0.0,
+              0.062379,
+              0.0,
+              0.636248
+            ],
+            "bayer2rgb_ChromaU_Gr2B": [
+              0.0,
+              0.020707,
+              0.0,
+              0.045229,
+              0.0,
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.09879,
+              0.0,
+              0.215777,
+              0.0,
+              0.125,
+              0.0,
+              0.25
+            ],
+            "bayer2rgb_ChromaV_Gr2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.020707,
+              -0.1875,
+              0.09879,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.045229,
+              0.125,
+              0.215777,
+              0.25
+            ],
+            "bayer2rgb_ChromaV_Gr2G": [
+              0.003754,
+              0.0,
+              0.017907,
+              0.0,
+              0.0,
+              -0.096441,
+              0.0,
+              0.062379,
+              0.017907,
+              0.0,
+              0.085432,
+              0.0,
+              0.0,
+              0.062379,
+              0.0,
+              0.636248
+            ],
+            "bayer2rgb_ChromaV_Gr2B": [
+              0.0,
+              0.020707,
+              0.0,
+              0.045229,
+              0.0,
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.09879,
+              0.0,
+              0.215777,
+              0.0,
+              0.125,
+              0.0,
+              0.25
+            ],
+            "bayer2rgb_ChromaU_Gb2R": [
+              0.0,
+              0.020707,
+              0.0,
+              0.045229,
+              0.0,
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.09879,
+              0.0,
+              0.215777,
+              0.0,
+              0.125,
+              0.0,
+              0.25
+            ],
+            "bayer2rgb_ChromaU_Gb2G": [
+              0.003754,
+              0.0,
+              0.017907,
+              0.0,
+              0.0,
+              -0.096441,
+              0.0,
+              0.062379,
+              0.017907,
+              0.0,
+              0.085432,
+              0.0,
+              0.0,
+              0.062379,
+              0.0,
+              0.636248
+            ],
+            "bayer2rgb_ChromaU_Gb2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.020707,
+              -0.1875,
+              0.09879,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.045229,
+              0.125,
+              0.215777,
+              0.25
+            ],
+            "bayer2rgb_ChromaV_Gb2R": [
+              0.0,
+              0.020707,
+              0.0,
+              0.045229,
+              0.0,
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.09879,
+              0.0,
+              0.215777,
+              0.0,
+              0.125,
+              0.0,
+              0.25
+            ],
+            "bayer2rgb_ChromaV_Gb2G": [
+              0.003754,
+              0.0,
+              0.017907,
+              0.0,
+              0.0,
+              -0.096441,
+              0.0,
+              0.062379,
+              0.017907,
+              0.0,
+              0.085432,
+              0.0,
+              0.0,
+              0.062379,
+              0.0,
+              0.636248
+            ],
+            "bayer2rgb_ChromaV_Gb2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.020707,
+              -0.1875,
+              0.09879,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.045229,
+              0.125,
+              0.215777,
+              0.25
+            ],
+            "bayer2rgb_ChromaU_B2R": [
+              0.007507,
+              0.0,
+              0.035815,
+              0.0,
+              0.0,
+              0.0,
+              -0.125,
+              0.0,
+              0.035815,
+              -0.125,
+              0.170863,
+              0.25,
+              0.0,
+              0.0,
+              0.25,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_B2G": [
+              0.0,
+              0.010354,
+              0.0,
+              0.022615,
+              0.010354,
+              0.0,
+              -0.075605,
+              0.0,
+              0.0,
+              -0.075605,
+              0.0,
+              0.357888,
+              0.022615,
+              0.0,
+              0.357888,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_B2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.057118,
+              -0.125,
+              0.124758,
+              0.0,
+              -0.125,
+              0.0,
+              0.25,
+              0.0,
+              0.124758,
+              0.25,
+              0.272496
+            ],
+            "bayer2rgb_ChromaV_B2R": [
+              0.007507,
+              0.0,
+              0.035815,
+              0.0,
+              0.0,
+              0.0,
+              -0.125,
+              0.0,
+              0.035815,
+              -0.125,
+              0.170863,
+              0.25,
+              0.0,
+              0.0,
+              0.25,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_B2G": [
+              0.0,
+              0.010354,
+              0.0,
+              0.022615,
+              0.010354,
+              0.0,
+              -0.075605,
+              0.0,
+              0.0,
+              -0.075605,
+              0.0,
+              0.357888,
+              0.022615,
+              0.0,
+              0.357888,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_B2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.057118,
+              -0.125,
+              0.124758,
+              0.0,
+              -0.125,
+              0.0,
+              0.25,
+              0.0,
+              0.124758,
+              0.25,
+              0.272496
+            ]
+          },
+          {
+            "enable": true,
+            "autoDemosaicEnable": true,
+            "chromaDemosaicEnable": true,
+            "numLumaCoeffs": 9,
+            "bayer2rgb_Luma_R2R": [
+              0.0,
+              -0.125,
+              0.0,
+              -0.125,
+              0.0,
+              0.25,
+              0.0,
+              0.25,
+              1.0
+            ],
+            "bayer2rgb_Luma_R2G": [
+              0.0,
+              -0.125,
+              0.0,
+              -0.125,
+              0.0,
+              0.5,
+              0.0,
+              0.5,
+              0.0
+            ],
+            "bayer2rgb_Luma_R2B": [
+              0.0,
+              -0.125,
+              0.0,
+              -0.125,
+              0.25,
+              0.25,
+              0.0,
+              0.25,
+              0.0
+            ],
+            "bayer2rgb_Luma_Gr2R": [
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.125,
+              0.5,
+              0.25
+            ],
+            "bayer2rgb_Luma_Gr2G": [
+              -0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "bayer2rgb_Luma_Gr2B": [
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.0,
+              0.5,
+              0.125,
+              0.0,
+              0.25
+            ],
+            "bayer2rgb_Luma_Gb2R": [
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.0,
+              0.5,
+              0.125,
+              0.0,
+              0.25
+            ],
+            "bayer2rgb_Luma_Gb2G": [
+              -0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "bayer2rgb_Luma_Gb2B": [
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.125,
+              0.5,
+              0.25
+            ],
+            "bayer2rgb_Luma_B2R": [
+              0.0,
+              -0.125,
+              0.0,
+              -0.125,
+              0.25,
+              0.25,
+              0.0,
+              0.25,
+              0.0
+            ],
+            "bayer2rgb_Luma_B2G": [
+              0.0,
+              -0.125,
+              0.0,
+              -0.125,
+              0.0,
+              0.5,
+              0.0,
+              0.5,
+              0.0
+            ],
+            "bayer2rgb_Luma_B2B": [
+              0.0,
+              -0.125,
+              0.0,
+              -0.125,
+              0.0,
+              0.25,
+              0.0,
+              0.25,
+              1.0
+            ],
+            "numChromaCoeffs": 16,
+            "bayer2rgb_ChromaU_R2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.092353,
+              0.0,
+              0.11919,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.11919,
+              0.0,
+              0.153826
+            ],
+            "bayer2rgb_ChromaU_R2G": [
+              0.0,
+              0.028501,
+              0.0,
+              0.036784,
+              0.028501,
+              0.0,
+              0.047473,
+              0.0,
+              0.0,
+              0.047473,
+              0.0,
+              0.061268,
+              0.036784,
+              0.0,
+              0.061268,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_R2B": [
+              0.035184,
+              0.0,
+              0.058603,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.058603,
+              0.0,
+              0.097611,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_R2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.092353,
+              0.0,
+              0.11919,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.11919,
+              0.0,
+              0.153826
+            ],
+            "bayer2rgb_ChromaV_R2G": [
+              0.0,
+              0.028501,
+              0.0,
+              0.036784,
+              0.028501,
+              0.0,
+              0.047473,
+              0.0,
+              0.0,
+              0.047473,
+              0.0,
+              0.061268,
+              0.036784,
+              0.0,
+              0.061268,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_R2B": [
+              0.035184,
+              0.0,
+              0.058603,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.058603,
+              0.0,
+              0.097611,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_Gr2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.057003,
+              0.0,
+              0.094946,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.073567,
+              0.0,
+              0.122536,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_Gr2G": [
+              0.017592,
+              0.0,
+              0.029301,
+              0.0,
+              0.0,
+              0.046177,
+              0.0,
+              0.059595,
+              0.029301,
+              0.0,
+              0.048805,
+              0.0,
+              0.0,
+              0.059595,
+              0.0,
+              0.076913
+            ],
+            "bayer2rgb_ChromaU_Gr2B": [
+              0.0,
+              0.057003,
+              0.0,
+              0.073567,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.094946,
+              0.0,
+              0.122536,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_Gr2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.057003,
+              0.0,
+              0.094946,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.073567,
+              0.0,
+              0.122536,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_Gr2G": [
+              0.017592,
+              0.0,
+              0.029301,
+              0.0,
+              0.0,
+              0.046177,
+              0.0,
+              0.059595,
+              0.029301,
+              0.0,
+              0.048805,
+              0.0,
+              0.0,
+              0.059595,
+              0.0,
+              0.076913
+            ],
+            "bayer2rgb_ChromaV_Gr2B": [
+              0.0,
+              0.057003,
+              0.0,
+              0.073567,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.094946,
+              0.0,
+              0.122536,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_Gb2R": [
+              0.0,
+              0.057003,
+              0.0,
+              0.073567,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.094946,
+              0.0,
+              0.122536,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_Gb2G": [
+              0.017592,
+              0.0,
+              0.029301,
+              0.0,
+              0.0,
+              0.046177,
+              0.0,
+              0.059595,
+              0.029301,
+              0.0,
+              0.048805,
+              0.0,
+              0.0,
+              0.059595,
+              0.0,
+              0.076913
+            ],
+            "bayer2rgb_ChromaU_Gb2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.057003,
+              0.0,
+              0.094946,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.073567,
+              0.0,
+              0.122536,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_Gb2R": [
+              0.0,
+              0.057003,
+              0.0,
+              0.073567,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.094946,
+              0.0,
+              0.122536,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_Gb2G": [
+              0.017592,
+              0.0,
+              0.029301,
+              0.0,
+              0.0,
+              0.046177,
+              0.0,
+              0.059595,
+              0.029301,
+              0.0,
+              0.048805,
+              0.0,
+              0.0,
+              0.059595,
+              0.0,
+              0.076913
+            ],
+            "bayer2rgb_ChromaV_Gb2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.057003,
+              0.0,
+              0.094946,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.073567,
+              0.0,
+              0.122536,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_B2R": [
+              0.035184,
+              0.0,
+              0.058603,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.058603,
+              0.0,
+              0.097611,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_B2G": [
+              0.0,
+              0.028501,
+              0.0,
+              0.036784,
+              0.028501,
+              0.0,
+              0.047473,
+              0.0,
+              0.0,
+              0.047473,
+              0.0,
+              0.061268,
+              0.036784,
+              0.0,
+              0.061268,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_B2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.092353,
+              0.0,
+              0.11919,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.11919,
+              0.0,
+              0.153826
+            ],
+            "bayer2rgb_ChromaV_B2R": [
+              0.035184,
+              0.0,
+              0.058603,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.058603,
+              0.0,
+              0.097611,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_B2G": [
+              0.0,
+              0.028501,
+              0.0,
+              0.036784,
+              0.028501,
+              0.0,
+              0.047473,
+              0.0,
+              0.0,
+              0.047473,
+              0.0,
+              0.061268,
+              0.036784,
+              0.0,
+              0.061268,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_B2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.092353,
+              0.0,
+              0.11919,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.11919,
+              0.0,
+              0.153826
+            ]
+          },
+          {
+            "numLumaCoeffs": 9,
+            "bayer2rgb_Luma_R2R": [
+              0.0,
+              -0.125,
+              0.0,
+              -0.125,
+              0.0,
+              0.25,
+              0.0,
+              0.25,
+              1.0
+            ],
+            "bayer2rgb_Luma_R2G": [
+              0.0,
+              -0.125,
+              0.0,
+              -0.125,
+              0.0,
+              0.5,
+              0.0,
+              0.5,
+              0.0
+            ],
+            "bayer2rgb_Luma_R2B": [
+              0.0,
+              -0.125,
+              0.0,
+              -0.125,
+              0.25,
+              0.25,
+              0.0,
+              0.25,
+              0.0
+            ],
+            "bayer2rgb_Luma_Gr2R": [
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.125,
+              0.5,
+              0.25
+            ],
+            "bayer2rgb_Luma_Gr2G": [
+              -0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "bayer2rgb_Luma_Gr2B": [
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.0,
+              0.5,
+              0.125,
+              0.0,
+              0.25
+            ],
+            "bayer2rgb_Luma_Gb2R": [
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.0,
+              0.5,
+              0.125,
+              0.0,
+              0.25
+            ],
+            "bayer2rgb_Luma_Gb2G": [
+              -0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "bayer2rgb_Luma_Gb2B": [
+              -0.1875,
+              0.0,
+              0.125,
+              0.0,
+              0.0,
+              0.0,
+              0.125,
+              0.5,
+              0.25
+            ],
+            "bayer2rgb_Luma_B2R": [
+              0.0,
+              -0.125,
+              0.0,
+              -0.125,
+              0.25,
+              0.25,
+              0.0,
+              0.25,
+              0.0
+            ],
+            "bayer2rgb_Luma_B2G": [
+              0.0,
+              -0.125,
+              0.0,
+              -0.125,
+              0.0,
+              0.5,
+              0.0,
+              0.5,
+              0.0
+            ],
+            "bayer2rgb_Luma_B2B": [
+              0.0,
+              -0.125,
+              0.0,
+              -0.125,
+              0.0,
+              0.25,
+              0.0,
+              0.25,
+              1.0
+            ],
+            "numChromaCoeffs": 16,
+            "bayer2rgb_ChromaU_R2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.096706,
+              -0.15,
+              0.117564,
+              0.0,
+              -0.15,
+              0.0,
+              0.3,
+              0.0,
+              0.117564,
+              0.3,
+              0.142922
+            ],
+            "bayer2rgb_ChromaU_R2G": [
+              0.0,
+              0.031375,
+              0.0,
+              0.038142,
+              0.031375,
+              0.0,
+              -0.103631,
+              0.0,
+              0.0,
+              -0.103631,
+              0.0,
+              0.35637,
+              0.038142,
+              0.0,
+              0.35637,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_R2B": [
+              0.040717,
+              0.0,
+              0.060175,
+              0.0,
+              0.0,
+              0.0,
+              -0.15,
+              0.0,
+              0.060175,
+              -0.15,
+              0.088933,
+              0.3,
+              0.0,
+              0.0,
+              0.3,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_R2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.096706,
+              -0.15,
+              0.117564,
+              0.0,
+              -0.15,
+              0.0,
+              0.3,
+              0.0,
+              0.117564,
+              0.3,
+              0.142922
+            ],
+            "bayer2rgb_ChromaV_R2G": [
+              0.0,
+              0.031375,
+              0.0,
+              0.038142,
+              0.031375,
+              0.0,
+              -0.103631,
+              0.0,
+              0.0,
+              -0.103631,
+              0.0,
+              0.35637,
+              0.038142,
+              0.0,
+              0.35637,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_R2B": [
+              0.040717,
+              0.0,
+              0.060175,
+              0.0,
+              0.0,
+              0.0,
+              -0.15,
+              0.0,
+              0.060175,
+              -0.15,
+              0.088933,
+              0.3,
+              0.0,
+              0.0,
+              0.3,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_Gr2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.06275,
+              -0.225,
+              0.092738,
+              0.15,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.076284,
+              0.15,
+              0.112741,
+              0.3
+            ],
+            "bayer2rgb_ChromaU_Gr2G": [
+              0.020358,
+              0.0,
+              0.030088,
+              0.0,
+              0.0,
+              -0.101647,
+              0.0,
+              0.058782,
+              0.030088,
+              0.0,
+              0.044467,
+              0.0,
+              0.0,
+              0.058782,
+              0.0,
+              0.671461
+            ],
+            "bayer2rgb_ChromaU_Gr2B": [
+              0.0,
+              0.06275,
+              0.0,
+              0.076284,
+              0.0,
+              -0.225,
+              0.0,
+              0.15,
+              0.0,
+              0.092738,
+              0.0,
+              0.112741,
+              0.0,
+              0.15,
+              0.0,
+              0.3
+            ],
+            "bayer2rgb_ChromaV_Gr2R": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.06275,
+              -0.225,
+              0.092738,
+              0.15,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.076284,
+              0.15,
+              0.112741,
+              0.3
+            ],
+            "bayer2rgb_ChromaV_Gr2G": [
+              0.020358,
+              0.0,
+              0.030088,
+              0.0,
+              0.0,
+              -0.101647,
+              0.0,
+              0.058782,
+              0.030088,
+              0.0,
+              0.044467,
+              0.0,
+              0.0,
+              0.058782,
+              0.0,
+              0.671461
+            ],
+            "bayer2rgb_ChromaV_Gr2B": [
+              0.0,
+              0.06275,
+              0.0,
+              0.076284,
+              0.0,
+              -0.225,
+              0.0,
+              0.15,
+              0.0,
+              0.092738,
+              0.0,
+              0.112741,
+              0.0,
+              0.15,
+              0.0,
+              0.3
+            ],
+            "enable": true,
+            "autoDemosaicEnable": true,
+            "chromaDemosaicEnable": true,
+            "bayer2rgb_ChromaU_Gb2R": [
+              0.0,
+              0.06275,
+              0.0,
+              0.076284,
+              0.0,
+              -0.225,
+              0.0,
+              0.15,
+              0.0,
+              0.092738,
+              0.0,
+              0.112741,
+              0.0,
+              0.15,
+              0.0,
+              0.3
+            ],
+            "bayer2rgb_ChromaU_Gb2G": [
+              0.020358,
+              0.0,
+              0.030088,
+              0.0,
+              0.0,
+              -0.101647,
+              0.0,
+              0.058782,
+              0.030088,
+              0.0,
+              0.044467,
+              0.0,
+              0.0,
+              0.058782,
+              0.0,
+              0.671461
+            ],
+            "bayer2rgb_ChromaU_Gb2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.06275,
+              -0.225,
+              0.092738,
+              0.15,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.076284,
+              0.15,
+              0.112741,
+              0.3
+            ],
+            "bayer2rgb_ChromaV_Gb2R": [
+              0.0,
+              0.06275,
+              0.0,
+              0.076284,
+              0.0,
+              -0.225,
+              0.0,
+              0.15,
+              0.0,
+              0.092738,
+              0.0,
+              0.112741,
+              0.0,
+              0.15,
+              0.0,
+              0.3
+            ],
+            "bayer2rgb_ChromaV_Gb2G": [
+              0.020358,
+              0.0,
+              0.030088,
+              0.0,
+              0.0,
+              -0.101647,
+              0.0,
+              0.058782,
+              0.030088,
+              0.0,
+              0.044467,
+              0.0,
+              0.0,
+              0.058782,
+              0.0,
+              0.671461
+            ],
+            "bayer2rgb_ChromaV_Gb2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.06275,
+              -0.225,
+              0.092738,
+              0.15,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.076284,
+              0.15,
+              0.112741,
+              0.3
+            ],
+            "bayer2rgb_ChromaU_B2R": [
+              0.040717,
+              0.0,
+              0.060175,
+              0.0,
+              0.0,
+              0.0,
+              -0.15,
+              0.0,
+              0.060175,
+              -0.15,
+              0.088933,
+              0.3,
+              0.0,
+              0.0,
+              0.3,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_B2G": [
+              0.0,
+              0.031375,
+              0.0,
+              0.038142,
+              0.031375,
+              0.0,
+              -0.103631,
+              0.0,
+              0.0,
+              -0.103631,
+              0.0,
+              0.35637,
+              0.038142,
+              0.0,
+              0.35637,
+              0.0
+            ],
+            "bayer2rgb_ChromaU_B2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.096706,
+              -0.15,
+              0.117564,
+              0.0,
+              -0.15,
+              0.0,
+              0.3,
+              0.0,
+              0.117564,
+              0.3,
+              0.142922
+            ],
+            "bayer2rgb_ChromaV_B2R": [
+              0.040717,
+              0.0,
+              0.060175,
+              0.0,
+              0.0,
+              0.0,
+              -0.15,
+              0.0,
+              0.060175,
+              -0.15,
+              0.088933,
+              0.3,
+              0.0,
+              0.0,
+              0.3,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_B2G": [
+              0.0,
+              0.031375,
+              0.0,
+              0.038142,
+              0.031375,
+              0.0,
+              -0.103631,
+              0.0,
+              0.0,
+              -0.103631,
+              0.0,
+              0.35637,
+              0.038142,
+              0.0,
+              0.35637,
+              0.0
+            ],
+            "bayer2rgb_ChromaV_B2B": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.096706,
+              -0.15,
+              0.117564,
+              0.0,
+              -0.15,
+              0.0,
+              0.3,
+              0.0,
+              0.117564,
+              0.3,
+              0.142922
+            ]
+          }
+        ]
+      }
+    },
+    "colorEffects": {
+      "sepia": {
+        "param1": -0.15,
+        "param2": 0.2
+      },
+      "aqua": {
+        "param1": 0.3,
+        "param2": -0.35
+      },
+      "solarize": {
+        "numPoints": 4,
+        "point": [
+          [
+            0,
+            0
+          ],
+          [
+            128,
+            160
+          ],
+          [
+            196,
+            160
+          ],
+          [
+            256,
+            0
+          ],
+          [
+            0,
+            0
+          ],
+          [
+            0,
+            0
+          ],
+          [
+            0,
+            0
+          ],
+          [
+            0,
+            0
+          ],
+          [
+            0,
+            0
+          ],
+          [
+            0,
+            0
+          ]
+        ]
+      },
+      "posterize": {
+        "numPoints": 8,
+        "point": [
+          [
+            0,
+            0
+          ],
+          [
+            54,
+            0
+          ],
+          [
+            69,
+            85
+          ],
+          [
+            123,
+            85
+          ],
+          [
+            138,
+            170
+          ],
+          [
+            192,
+            170
+          ],
+          [
+            207,
+            256
+          ],
+          [
+            256,
+            256
+          ],
+          [
+            0,
+            0
+          ],
+          [
+            0,
+            0
+          ]
+        ]
+      }
+    },
+    "lensShading": {
+      "module_cal_enable": 0,
+      "falloff_PointsCount": 5,
+      "falloff": {
+        "Preview": [
+          [
+            1.1,
+            20.0
+          ],
+          [
+            2.1,
+            20.0
+          ],
+          [
+            4.1,
+            20.0
+          ],
+          [
+            8.1,
+            20.0
+          ],
+          [
+            16.1,
+            20.0
+          ]
+        ],
+        "Still": [
+          [
+            1.1,
+            20.0
+          ],
+          [
+            2.1,
+            20.0
+          ],
+          [
+            4.1,
+            20.0
+          ],
+          [
+            8.1,
+            20.0
+          ],
+          [
+            16.1,
+            20.0
+          ]
+        ],
+        "Video": [
+          [
+            1.1,
+            20.0
+          ],
+          [
+            2.1,
+            20.0
+          ],
+          [
+            4.1,
+            20.0
+          ],
+          [
+            8.1,
+            20.0
+          ],
+          [
+            16.1,
+            20.0
+          ]
+        ]
+      },
+      "ctrlPointsCount": 4,
+      "imageHeight": 1944,
+      "imageWidth": 2592,
+      "leftPatchFactor": 0.25,
+      "centerPatchFactor": 0.5,
+      "topPatchFactor": 0.25,
+      "middlePatchFactor": 0.5,
+      "ctrlPoints": [
+        {
+          "cct": 2856,
+          "light_family": 1,
+          "controlPointR": [
+            1.983642578125,
+            1.94580078125,
+            1.85595703125,
+            1.775390625,
+            1.715576171875,
+            1.705322265625,
+            1.7412109375,
+            1.792236328125,
+            1.867919921875,
+            1.85986328125
+          ],
+          "controlPointGR": [
+            1.7705078125,
+            1.7021484375,
+            1.656494140625,
+            1.58251953125,
+            1.478271484375,
+            1.4677734375,
+            1.545654296875,
+            1.602294921875,
+            1.66259765625,
+            1.665771484375
+          ],
+          "controlPointGB": [
+            1.770263671875,
+            1.732421875,
+            1.666015625,
+            1.607421875,
+            1.502685546875,
+            1.521728515625,
+            1.5751953125,
+            1.645751953125,
+            1.688720703125,
+            1.697509765625
+          ],
+          "controlPointB": [
+            1.791015625,
+            1.728271484375,
+            1.696044921875,
+            1.605712890625,
+            1.512451171875,
+            1.516357421875,
+            1.57177734375,
+            1.646728515625,
+            1.69287109375,
+            1.67822265625
+          ]
+        },
+        {
+          "cct": 4000,
+          "light_family": 2,
+          "controlPointR": [
+            1.685791015625,
+            1.629150390625,
+            1.576904296875,
+            1.50537109375,
+            1.457275390625,
+            1.447509765625,
+            1.478515625,
+            1.515625,
+            1.578125,
+            1.572998046875
+          ],
+          "controlPointGR": [
+            1.7392578125,
+            1.689453125,
+            1.632568359375,
+            1.56396484375,
+            1.46142578125,
+            1.4560546875,
+            1.52880859375,
+            1.57666015625,
+            1.639404296875,
+            1.646728515625
+          ],
+          "controlPointGB": [
+            1.75341796875,
+            1.69873046875,
+            1.64892578125,
+            1.586669921875,
+            1.48388671875,
+            1.500732421875,
+            1.552734375,
+            1.618408203125,
+            1.66796875,
+            1.678466796875
+          ],
+          "controlPointB": [
+            1.703125,
+            1.647216796875,
+            1.61279296875,
+            1.537353515625,
+            1.446533203125,
+            1.45068359375,
+            1.505859375,
+            1.567138671875,
+            1.61767578125,
+            1.6064453125
+          ]
+        },
+        {
+          "cct": 6000,
+          "light_family": 1,
+          "controlPointR": [
+            1.8076171875,
+            1.7705078125,
+            1.676513671875,
+            1.601318359375,
+            1.54931640625,
+            1.54296875,
+            1.565185546875,
+            1.61669921875,
+            1.689697265625,
+            1.68212890625
+          ],
+          "controlPointGR": [
+            1.744384765625,
+            1.676025390625,
+            1.636474609375,
+            1.560791015625,
+            1.4619140625,
+            1.454345703125,
+            1.52294921875,
+            1.579345703125,
+            1.6337890625,
+            1.638427734375
+          ],
+          "controlPointGB": [
+            1.735107421875,
+            1.68359375,
+            1.6318359375,
+            1.563720703125,
+            1.46142578125,
+            1.477294921875,
+            1.53271484375,
+            1.60302734375,
+            1.642578125,
+            1.662353515625
+          ],
+          "controlPointB": [
+            1.696533203125,
+            1.637451171875,
+            1.60791015625,
+            1.53271484375,
+            1.43994140625,
+            1.4501953125,
+            1.499267578125,
+            1.566162109375,
+            1.600830078125,
+            1.597900390625
+          ]
+        },
+        {
+          "cct": 8000,
+          "light_family": 1,
+          "controlPointR": [
+            1.769775390625,
+            1.736572265625,
+            1.6396484375,
+            1.561767578125,
+            1.515380859375,
+            1.5078125,
+            1.527099609375,
+            1.577392578125,
+            1.657470703125,
+            1.640869140625
+          ],
+          "controlPointGR": [
+            1.7451171875,
+            1.673583984375,
+            1.636474609375,
+            1.560791015625,
+            1.460205078125,
+            1.454833984375,
+            1.521728515625,
+            1.5791015625,
+            1.6318359375,
+            1.635986328125
+          ],
+          "controlPointGB": [
+            1.73291015625,
+            1.680419921875,
+            1.628662109375,
+            1.559326171875,
+            1.456298828125,
+            1.470947265625,
+            1.528076171875,
+            1.59814453125,
+            1.63916015625,
+            1.65966796875
+          ],
+          "controlPointB": [
+            1.686767578125,
+            1.628173828125,
+            1.600830078125,
+            1.525390625,
+            1.434326171875,
+            1.443359375,
+            1.492431640625,
+            1.55810546875,
+            1.5927734375,
+            1.58984375
+          ]
+        }
+      ]
+    },
+    "awb": {
+      "module_cal_enable": 0,
+      "NumGrayLineSoftClampPoints": 10,
+      "GrayLineSoftClamp": [
+        [
+          0.5723,
+          0.5723
+        ],
+        [
+          0.711,
+          0.711
+        ],
+        [
+          0.8308,
+          0.8308
+        ],
+        [
+          0.9247,
+          0.9247
+        ],
+        [
+          1.0493,
+          1.0493
+        ],
+        [
+          1.143,
+          1.143
+        ],
+        [
+          1.2499,
+          1.2499
+        ],
+        [
+          1.308,
+          1.308
+        ],
+        [
+          1.4069,
+          1.4069
+        ],
+        [
+          1.452,
+          1.452
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "GrayLineSoftClampSlopeBeforeFirstPoint": 0.0,
+      "GrayLineSoftClampSlopeAfterLastPoint": 0.0,
+      "GrayLineThickness": 0.046,
+      "HighU": 1.4559,
+      "LowU": 0.5408,
+      "v4": {
+        "NumGrayLineSoftClampPoints": 10,
+        "GrayLineSoftClamp": [
+          [
+            0.5723,
+            0.6223,
+            0.005
+          ],
+          [
+            0.711,
+            0.721,
+            0.001
+          ],
+          [
+            0.8308,
+            0.8408,
+            0.002
+          ],
+          [
+            0.9247,
+            0.9347,
+            0.005
+          ],
+          [
+            1.0493,
+            1.0793,
+            0.007
+          ],
+          [
+            1.143,
+            1.193,
+            0.007
+          ],
+          [
+            1.2499,
+            1.2799,
+            0.005
+          ],
+          [
+            1.308,
+            1.338,
+            0.005
+          ],
+          [
+            1.4069,
+            1.4269,
+            0.005
+          ],
+          [
+            1.452,
+            1.462,
+            0.001
+          ],
+          [
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0
+          ]
+        ],
+        "GrayLineSoftClampSlopeBeforeFirstPoint": 0.0,
+        "GrayLineSoftClampSlopeAfterLastPoint": 0.0,
+        "GrayLineThickness": 0.3,
+        "HighU": 1.4559,
+        "LowU": 0.5408,
+        "Method": 3,
+        "FusionUseGray": 1,
+        "FusionUseGprob": 1,
+        "FusionUseLux": 1,
+        "FusionUseHistory": 1,
+        "GrayLineSlope": -1.1085,
+        "GrayLineIntercept": 2.4287,
+        "UtoMIRED": [
+          -345.507183664799,
+          604.396732121022
+        ],
+        "MIREDtoU": [
+          -0.002894295827,
+          1.749302939841
+        ],
+        "UtoCCT": [
+          6153.886634248389,
+          -1586.405238743936
+        ],
+        "CCTtoU": [
+          0.000162498931,
+          0.257789155542
+        ],
+        "FusionNumLights": 10,
+        "FusionLights": [
+          [
+            903,
+            837,
+            837,
+            286
+          ],
+          [
+            832,
+            904,
+            904,
+            362
+          ],
+          [
+            739,
+            904,
+            904,
+            412
+          ],
+          [
+            681,
+            902,
+            902,
+            457
+          ],
+          [
+            577,
+            907,
+            907,
+            472
+          ],
+          [
+            556,
+            905,
+            905,
+            551
+          ],
+          [
+            491,
+            905,
+            905,
+            653
+          ],
+          [
+            507,
+            901,
+            901,
+            605
+          ],
+          [
+            456,
+            904,
+            904,
+            727
+          ],
+          [
+            441,
+            903,
+            903,
+            764
+          ]
+        ],
+        "FusionInitLight": 5,
+        "VideoThrottle": 0.125,
+        "PreviewThrottle": 0.125,
+        "CStatsSaturationThreshold": 0.3,
+        "CStatsDarkThreshold": 0.006,
+        "CStatsMinThreshold": 0.02,
+        "GrayROI": [
+          0.04,
+          0.055,
+          0.0
+        ],
+        "GrayROIScale": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1.5,
+          1,
+          1.5,
+          1,
+          0,
+          0
+        ],
+        "GrayROIConf": [
+          1.0,
+          0.5,
+          0.0
+        ],
+        "GrayConfRange": [
+          0.05,
+          0.3
+        ],
+        "GrayProbCoffs": [
+          1,
+          1,
+          2,
+          3,
+          3,
+          5,
+          5,
+          3,
+          2,
+          2,
+          0,
+          0
+        ],
+        "GrayMaxConf": 1.0,
+        "GprobMaxConf": 0.05,
+        "LuxThresholds": [
+          2000,
+          4000,
+          6000,
+          0
+        ],
+        "LuxProbCoffs": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            2,
+            2,
+            0,
+            2,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            2,
+            2,
+            0,
+            2,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            10,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "LuxMaxConfs": [
+          0.25,
+          1.0,
+          4.0,
+          0
+        ],
+        "HistoryConfidencePeakMin": 0.15,
+        "HistoryAccumDeltaMiredLimit": 1000.0,
+        "HistoryDeltaMiredThreshold": 25.0,
+        "HistoryADMConfidenceThreshold": 0.2,
+        "HistoryADMAttritionFraction": 0.003,
+        "SmoothingWpTrackingFraction": 0.1
+      },
+      "GrayLineSlope": -1.1085,
+      "GrayLineIntercept": 2.4287,
+      "UtoMIRED": [
+        -345.507183664799,
+        604.396732121022
+      ],
+      "MIREDtoU": [
+        -0.002894295827,
+        1.749302939841
+      ],
+      "UtoCCT": [
+        6153.886634248389,
+        -1586.405238743936
+      ],
+      "CCTtoU": [
+        0.000162498931,
+        0.257789155542
+      ],
+      "NumDiscreteLights": 0
+    },
+    "reference": {
+      "light": [
+        {
+          "light_source": 0,
+          "R": 562,
+          "GR": 892,
+          "GB": 890,
+          "B": 527,
+          "cct": 4949,
+          "controlPointR": [
+            1.72412109375,
+            1.66943359375,
+            1.5927734375,
+            1.537353515625,
+            1.47802734375,
+            1.47607421875,
+            1.50146484375,
+            1.55029296875,
+            1.592529296875,
+            1.603271484375
+          ],
+          "controlPointGR": [
+            1.743408203125,
+            1.66943359375,
+            1.617431640625,
+            1.56005859375,
+            1.45849609375,
+            1.45703125,
+            1.520751953125,
+            1.578369140625,
+            1.607666015625,
+            1.650146484375
+          ],
+          "controlPointGB": [
+            1.737548828125,
+            1.668212890625,
+            1.620849609375,
+            1.564697265625,
+            1.466064453125,
+            1.4794921875,
+            1.535400390625,
+            1.596923828125,
+            1.626708984375,
+            1.666748046875
+          ],
+          "controlPointB": [
+            1.694580078125,
+            1.648193359375,
+            1.587890625,
+            1.537353515625,
+            1.450439453125,
+            1.457763671875,
+            1.50439453125,
+            1.556640625,
+            1.592529296875,
+            1.616943359375
+          ]
+        }
+      ]
+    },
+    "falloff_srfc": {
+      "controlPoint": [
+        1.7e-10,
+        0.1199999964,
+        0.210000006533,
+        0.269999998252,
+        0.39000000055,
+        0.390000000426,
+        0.269999998314,
+        0.210000005965,
+        0.11999999757,
+        0.0
+      ]
+    }
+  }
+}
