@@ -119,9 +119,9 @@ These are the only places a HAL-owned thread blocks on the GPU.
 
 ### Queue design
 
-All inter-thread queues are bounded MPSC (or SPSC, where applicable),
-backed by `std::deque` under `std::mutex`, woken by **eventfd**
-(not condvar) so they compose into `poll()` sets.
+All inter-thread queues are backed by `std::deque` under `std::mutex`,
+woken by **eventfd** (not condvar) so they compose into `poll()`
+sets.
 
 ```cpp
 template <typename T>
@@ -139,14 +139,45 @@ private:
 };
 ```
 
-Capacities:
+The primitive is always bounded (a hard cap in the data structure
+protects against runaway memory on bugs) but the **effective cap** per
+queue comes from the role, not the primitive:
 
-| Queue            | Capacity | Overflow policy                              |
-|------------------|----------|----------------------------------------------|
-| RequestQueue     | 4        | return `-EBUSY` to framework (Camera3 spec) |
-| CaptureQueue     | 4        | should never fill (RequestQueue caps it)    |
-| PipelineQueue    | 4        | should never fill (gated by V4L2 cadence)   |
-| CompletionQueue  | 8        | never rejects; sized > request depth        |
+| Queue            | Cap  | Overflow behaviour                                             |
+|------------------|------|----------------------------------------------------------------|
+| RequestQueue     | 256  | `LOG_ALWAYS_FATAL` — means the framework exceeded its own contract |
+| CaptureQueue     | 8    | `LOG_ALWAYS_FATAL` — HAL accounting bug                        |
+| PipelineQueue    | 8    | `LOG_ALWAYS_FATAL` — HAL accounting bug                        |
+| CompletionQueue  | 16   | `LOG_ALWAYS_FATAL` — HAL accounting bug                        |
+
+**Why no `-EBUSY` from `processCaptureRequest`.** The Camera3 contract
+(`hardware/camera3.h`) defines only `0` / `-EINVAL` / `-ENODEV` as
+valid returns from `process_capture_request`. `-EBUSY` is
+undefined — framework behaviour on it is unspecified.
+
+**Why RequestQueue doesn't need a tight cap.** Backpressure on the
+framework is already expressed through `camera3_stream_t::max_buffers`,
+set to `PIPELINE_MAX_DEPTH` (= 4) in `configureStreams`. The framework
+can never submit more in-flight requests than it has buffers for;
+since it holds those buffers and waits for us to return them via
+`process_capture_result`, our RequestQueue can never grow beyond
+`max_buffers × streamCount`. The 256 cap exists only to catch
+contract violations (our accounting bug or a misbehaving framework);
+on hit, log-fatal is preferable to silent memory growth.
+
+**Why we can't drop Request objects on overflow.** Each request owns
+framework-provided stream buffer handles and fences. The contract
+requires exactly one result per request (success or error). Silently
+dropping would leak buffers and stall the framework's buffer queue.
+For genuine drop semantics we would instead complete the request
+with `CAMERA3_MSG_ERROR_REQUEST` via `notify` — but in the normal
+path we never reach this corner.
+
+**Drain-to-latest is V4L2-only.** The `drain-to-latest` behaviour
+introduced in Tier 2 and moving to `CaptureThread` in PR 3 applies
+to **Bayer V4L2 buffers**, not to Request objects. Stale preview is
+worse than dropped preview, so the sensor drop-to-newest is
+appropriate there. Request-level drop is not.
 
 `PIPELINE_MAX_DEPTH` in static metadata is reported as **4**.
 
