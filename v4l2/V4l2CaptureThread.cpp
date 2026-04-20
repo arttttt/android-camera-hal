@@ -79,15 +79,20 @@ void V4l2CaptureThread::threadLoop() {
 
         /* Handoff: if the previous latest was never consumed, drop it
          * now (second level of drain-to-latest, at the source boundary
-         * rather than the V4L2 done-queue). */
+         * rather than the V4L2 done-queue). Use direct queueBufferExt
+         * rather than dev->unlock — the buffer never reached the GPU
+         * (consumer didn't acquire it, or we're stopping before the
+         * pipeline saw it), so deferred-QBUF isn't needed and would
+         * just pile up in V4l2Device::mPendingQbuf with nothing to
+         * flush it. */
         {
             std::lock_guard<std::mutex> lock(owner->mutex);
             if (owner->stopping) {
-                dev->unlock(frame);
+                dev->queueBufferExt(frame->index);
                 break;
             }
             if (owner->latest) {
-                dev->unlock(owner->latest);
+                dev->queueBufferExt(owner->latest->index);
             }
             owner->latest = frame;
         }
