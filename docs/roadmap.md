@@ -99,6 +99,25 @@ demosaic, no libyuv, no packed-YUV support.
   from the Antmicro import were removed as dead flexibility —
   `O_NONBLOCK` + `poll()` are unconditional now.
 
+### Tier 2 — YUV_420_888 output (M)
+
+- `IspPipeline::processToYuv420` produces NV12 in a host-mapped
+  `VkBuffer` via a dedicated `VulkanYuvEncoder` (compute shader
+  `RgbaToNv12`) composed into the pipeline's command buffer.
+- `BufferProcessor::processYuvOutput` repacks NV12 into whatever
+  chroma layout `GraphicBufferMapper::lockYCbCr` returns — NV12
+  (direct plane copies) and I420 / YV12 (`libyuv::NV12ToI420`) are
+  supported; NV21 returns `NO_INIT` for now. See
+  [open-questions.md](open-questions.md) for the full-coverage path.
+- `StreamConfig::normalize` resolves `IMPLEMENTATION_DEFINED` by
+  usage: `HW_VIDEO_ENCODER` → YUV_420_888, everything else → RGBA_8888.
+- `CameraStaticMetadata` advertises `YCbCr_420_888` output configs
+  at every sensor-supported resolution — CameraX ImageAnalysis /
+  MLKit / video encoder streams can now pick it.
+- BT.601 limited-range is hardcoded in the shader. Proper colour-space
+  metadata + BT.709 / full-range support is not scheduled — see
+  open-questions.
+
 ## Tier 1.2 — remaining Camera3 compliance (S)
 
 Absorbed into the `CameraStaticMetadata` home but not yet implemented.
@@ -116,15 +135,6 @@ Each is a short edit inside that module.
   Tier 2 lands). Unlocks DNG output.
 
 ## Tier 2 — structural wins (M)
-
-### `YUV_420_888` output (M)
-
-Add `processToYuv420()` on `IspPipeline`. Vulkan / GLES already render
-RGBA; adding NV12 is a pass of the existing shader or a libyuv
-conversion. Advertise it in stream configs.
-
-Unblocks CameraX `ImageAnalysis`, ML Kit, most third-party video
-pipelines.
 
 ### JSON tuning file per sensor (M)
 

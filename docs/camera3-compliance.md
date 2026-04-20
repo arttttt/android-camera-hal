@@ -8,11 +8,12 @@ gaps, ordered by how badly they break real applications.
 **Status (2026-04-20):** most P0 items below are already fixed —
 request-echo metadata, AE/AWB state reporting, `notifyError` wiring,
 honest `PIPELINE_MAX_DEPTH` / `PARTIAL_RESULT_COUNT`, per-mode
-`min_frame_duration`. See the Done section of [roadmap.md](roadmap.md)
-for what landed. Outstanding items (`AVAILABLE_*_KEYS` arrays,
-`YUV_420_888`, sensor calibration keys) are tracked in Tier 1.2 /
-Tier 2. Line references below may be stale after the Tier 1.1 splits
-— paths still name the right concept.
+`min_frame_duration`, **`YUV_420_888` output**. See the Done section of
+[roadmap.md](roadmap.md) for what landed. Outstanding items
+(`AVAILABLE_*_KEYS` arrays, sensor calibration keys, NV21 target
+support) are tracked in Tier 1.2 / Tier 2 /
+[open-questions.md](open-questions.md). Line references below may be
+stale after the Tier 1.1 splits — paths still name the right concept.
 
 ## Severity legend
 
