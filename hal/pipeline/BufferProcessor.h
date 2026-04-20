@@ -38,7 +38,6 @@ public:
         int            cropY;
         int            cropW;
         int            cropH;
-        bool           needZoom;
         size_t         jpegBufferSize;
     };
 

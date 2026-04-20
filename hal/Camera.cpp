@@ -45,7 +45,24 @@
 #include "metadata/ResultMetadataBuilder.h"
 #include "IspPipeline.h"
 
+#include "EventQueue.h"
+#include "pipeline/CaptureRequest.h"
+#include "pipeline/PipelineContext.h"
+#include "pipeline/Pipeline.h"
+#include "pipeline/InFlightTracker.h"
+#include "pipeline/RequestThread.h"
+#include "pipeline/stages/ApplySettingsStage.h"
+#include "pipeline/stages/ShutterNotifyStage.h"
+#include "pipeline/stages/CaptureStage.h"
+#include "pipeline/stages/DemosaicBlitStage.h"
+#include "pipeline/stages/ResultDispatchStage.h"
+
 extern camera_module_t HAL_MODULE_INFO_SYM;
+
+namespace {
+/* Soft cap; see docs/tier3_architecture.md. */
+constexpr size_t REQUEST_QUEUE_CAPACITY = 256;
+} /* namespace */
 
 namespace android {
 /**
@@ -97,6 +114,20 @@ Camera::Camera(const char *devNode, int facing)
 
 Camera::~Camera() {
     DBGUTILS_AUTOLOGCALL(__func__);
+
+    /* Tear down the request pipeline first: stages hold raw pointers
+     * into mBufferProcessor / mIsp / mAf / mExposure which we're about
+     * to delete. Join the worker before touching any of that. */
+    if (mRequestThread) mRequestThread->stop();
+    mRequestThread.reset();
+    mRequestPipeline.reset();
+    if (mTracker) {
+        auto pending = mTracker->drainAll();
+        (void)pending;  /* destructors release buffer handles / fences */
+    }
+    mTracker.reset();
+    mRequestQueue.reset();
+
     delete mBufferProcessor;
     delete mAf;
     delete mExposure;
@@ -132,7 +163,31 @@ int Camera::openDevice(hw_device_t **device) {
 
 int Camera::closeDevice() {
     DBGUTILS_AUTOLOGCALL(__func__);
+
+    /* Stop the worker without mMutex so it can finish its last
+     * iteration (which doesn't need the mutex but may call into
+     * framework callbacks). */
+    if (mRequestThread) mRequestThread->stop();
+
     Mutex::Autolock lock(mMutex);
+
+    /* Error-complete any requests that got enqueued but never
+     * processed. Run the pipeline in error mode — ResultDispatchStage
+     * (alwaysRun=true) emits notify(ERROR_REQUEST). */
+    if (mTracker && mRequestPipeline) {
+        auto pending = mTracker->drainAll();
+        for (auto &ctx : pending) {
+            if (ctx) {
+                ctx->errorCode = CAMERA3_MSG_ERROR_REQUEST;
+                mRequestPipeline->run(*ctx);
+            }
+        }
+    }
+
+    mRequestThread.reset();
+    mRequestPipeline.reset();
+    mTracker.reset();
+    mRequestQueue.reset();
 
     mDev->disconnect();
 
@@ -317,6 +372,8 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
         return NO_INIT;
     }
 
+    rebuildPipeline();
+
     /* Update sensor config from driver queries */
     {
         int32_t flMin, flMax, flDef;
@@ -352,19 +409,8 @@ int Camera::registerStreamBuffers(const camera3_stream_buffer_set_t *bufferSet) 
 
 int Camera::processCaptureRequest(camera3_capture_request_t *request) {
     assert(request != NULL);
-    Mutex::Autolock lock(mMutex);
 
-    BENCHMARK_HERE(120);
     FPSCOUNTER_HERE(120);
-
-    CameraMetadata cm;
-    const V4l2Device::VBuffer *frame = NULL;
-    auto res = mDev->resolution();
-    status_t e;
-    Vector<camera3_stream_buffer> buffers;
-
-    auto timestamp = systemTime();
-
     ALOGV("--- capture request --- f=%-5u in_buf=%p  out_bufs=%p[%u] --- fps %4.1f (avg %4.1f)",
           request->frame_number,
           request->input_buffer,
@@ -372,173 +418,133 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
           request->num_output_buffers,
           FPSCOUNTER_VALUE(1), FPSCOUNTER_VALUE());
 
-    if(request->settings == NULL && mLastRequestSettings.isEmpty()) {
-        ALOGE("First request does not have metadata");
-        notifyError(request->frame_number, NULL, CAMERA3_MSG_ERROR_REQUEST);
-        return BAD_VALUE;
-    }
-
-    if(request->input_buffer) {
-        /* Ignore input buffer */
-        /* TODO: do we expect any input buffer? */
+    /* Acknowledge unused input buffer (reprocess slot is reserved but
+     * not consumed yet). */
+    if (request->input_buffer) {
         request->input_buffer->release_fence = -1;
     }
 
-    if(!request->settings) {
-        cm.acquire(mLastRequestSettings);
-    } else {
-        cm = request->settings;
-    }
+    std::unique_ptr<PipelineContext> ctx(new PipelineContext());
+    ctx->sequence            = request->frame_number;
+    ctx->request.frameNumber = request->frame_number;
+    ctx->tAccepted           = systemTime();
 
-    /* Actual applied exposure/gain — echoed back in result metadata.
-     * Seeded from sensor defaults so the HW-ISP path (which leaves
-     * mExposure null) still reports sane values. */
-    int32_t appliedExposureUs = mSensorCfg.exposureDefault;
-    int32_t appliedGain       = mSensorCfg.gainDefault;
-    if (mExposure) {
-        mExposure->onSettings(cm);
-        ExposureControl::Report r = mExposure->report();
-        appliedExposureUs = r.appliedExposureUs;
-        appliedGain       = r.appliedGain;
-    }
+    {
+        Mutex::Autolock lock(mMutex);
 
-    if (mAf)
-        mAf->onSettings(cm, request->frame_number);
-
-    notifyShutter(request->frame_number, (uint64_t)timestamp);
-
-    int64_t t0 = systemTime();
-
-    /* Drain the previous frame's GPU work before V4L2 can reuse any input
-     * buffer slot (readLock flushes deferred QBUFs internally). Without
-     * this, VI starts overwriting a slot the shader is still reading. */
-    BENCHMARK_SECTION("GPU drain") {
-        mIsp->waitForPreviousFrame();
-    }
-
-    BENCHMARK_SECTION("Lock/Read") {
-        frame = mDev->readLock();
-    }
-    int64_t t1 = systemTime();
-
-    if(!frame) {
-        notifyError(request->frame_number, NULL, CAMERA3_MSG_ERROR_REQUEST);
-        return NOT_ENOUGH_DATA;
-    }
-
-    if (mAf)
-        mAf->onFrameStart();
-
-    buffers.setCapacity(request->num_output_buffers);
-
-    /* Parse crop region for digital zoom */
-    int cropX = 0, cropY = 0, cropW = res.width, cropH = res.height;
-    if (cm.exists(ANDROID_SCALER_CROP_REGION)) {
-        auto crop = cm.find(ANDROID_SCALER_CROP_REGION).data.i32;
-        /* crop is [x, y, width, height] in sensor coordinates */
-        auto sensor = mDev->sensorResolution();
-        /* Map from sensor coordinates to V4L2 resolution */
-        cropX = crop[0] * (int)res.width / (int)sensor.width;
-        cropY = crop[1] * (int)res.height / (int)sensor.height;
-        cropW = crop[2] * (int)res.width / (int)sensor.width;
-        cropH = crop[3] * (int)res.height / (int)sensor.height;
-        /* Clamp */
-        if (cropX < 0) cropX = 0;
-        if (cropY < 0) cropY = 0;
-        if (cropW < 16) cropW = 16;
-        if (cropH < 16) cropH = 16;
-        if (cropX + cropW > (int)res.width) cropW = res.width - cropX;
-        if (cropY + cropH > (int)res.height) cropH = res.height - cropY;
-    }
-    bool needZoom = (cropW != (int)res.width || cropH != (int)res.height);
-
-    uint8_t *rgbaBuffer = NULL;
-    /* Per-output-buffer state for the zero-copy path:
-     *   needsFinalUnlock — whether the cleanup loop at the bottom should
-     *                      call GraphicBufferMapper::unlock on this buffer.
-     *                      False iff we successfully handed the buffer back
-     *                      unlocked via processToGralloc (framework will
-     *                      wait on the release fence).
-     *   releaseFd        — sync_fence fd returned by vkQueueSignalReleaseImageANDROID;
-     *                      propagated as camera3_stream_buffer.release_fence. */
-    std::vector<bool> needsFinalUnlock(request->num_output_buffers, true);
-    std::vector<int>  releaseFd(request->num_output_buffers, -1);
-
-    BufferProcessor::FrameContext fctx;
-    fctx.frameBuf       = frame->buf;
-    fctx.frameSlotIdx   = (frame->buf == NULL) ? frame->index : -1;
-    fctx.pixFmt         = frame->pixFmt;
-    fctx.resW           = res.width;
-    fctx.resH           = res.height;
-    fctx.cropX          = cropX;
-    fctx.cropY          = cropY;
-    fctx.cropW          = cropW;
-    fctx.cropH          = cropH;
-    fctx.needZoom       = needZoom;
-    fctx.jpegBufferSize = mJpegBufferSize;
-
-    for(size_t i = 0; i < request->num_output_buffers; ++i) {
-        BufferProcessor::OutputState bpState;
-        e = mBufferProcessor->processOne(request->output_buffers[i], fctx, cm,
-                                          request->frame_number,
-                                          &bpState, &rgbaBuffer);
-        if (e != NO_ERROR) {
-            do GraphicBufferMapper::get().unlock(*request->output_buffers[i].buffer); while(i--);
+        if (!mRequestThread || !mRequestThread->isRunning()) {
+            ALOGE("processCaptureRequest: request thread not running");
             notifyError(request->frame_number, NULL, CAMERA3_MSG_ERROR_REQUEST);
-            return e;
+            return INVALID_OPERATION;
         }
-        needsFinalUnlock[i] = bpState.needsFinalUnlock;
-        releaseFd[i]        = bpState.releaseFd;
+
+        if (request->settings == NULL && mLastRequestSettings.isEmpty()) {
+            ALOGE("First request does not have metadata");
+            notifyError(request->frame_number, NULL, CAMERA3_MSG_ERROR_REQUEST);
+            return BAD_VALUE;
+        }
+
+        if (request->settings) {
+            ctx->request.settings = request->settings;
+        } else {
+            ctx->request.settings = mLastRequestSettings;
+        }
     }
 
-    if (mAf)
-        mAf->onFrameData(rgbaBuffer, res.width, res.height);
-
-    /* Unlocking all buffers in separate loop allows to copy data from already processed buffer to not yet processed one */
-    for(size_t i = 0; i < request->num_output_buffers; ++i) {
-        const camera3_stream_buffer &srcBuf = request->output_buffers[i];
-
-        if (needsFinalUnlock[i])
-            GraphicBufferMapper::get().unlock(*srcBuf.buffer);
-        buffers.push_back(srcBuf);
-        buffers.editTop().acquire_fence = -1;
-        buffers.editTop().release_fence = releaseFd[i];
-        buffers.editTop().status = CAMERA3_BUFFER_STATUS_OK;
+    /* Deep-copy output buffer descriptors. Acquire-fence ownership
+     * transfers to the HAL via UniqueFd. */
+    ctx->request.outputBuffers.resize(request->num_output_buffers);
+    for (uint32_t i = 0; i < request->num_output_buffers; ++i) {
+        const camera3_stream_buffer &src = request->output_buffers[i];
+        CaptureRequest::Buffer &dst = ctx->request.outputBuffers[i];
+        dst.stream = src.stream;
+        dst.buffer = src.buffer;
+        if (src.acquire_fence >= 0) {
+            dst.acquireFence.reset(src.acquire_fence);
+        }
     }
 
-    int64_t t2 = systemTime();
-    BENCHMARK_SECTION("Unlock") {
-        mDev->unlock(frame);
+    PipelineContext *raw = ctx.get();
+    mTracker->add(std::move(ctx));
+
+    if (!mRequestQueue->push(raw)) {
+        /* Soft cap at REQUEST_QUEUE_CAPACITY (256) — this means the
+         * framework has more requests outstanding than its own
+         * stream.max_buffers contract allows. Reclaim and log-fatal. */
+        std::unique_ptr<PipelineContext> reclaim = mTracker->removeBySequence(raw->sequence);
+        (void)reclaim;
+        LOG_ALWAYS_FATAL("RequestQueue overflow (framework exceeded stream.max_buffers)");
     }
-    ALOGD("PERF: dqbuf=%lldms convert=%lldms total=%lldms",
-          (long long)(t1-t0)/1000000, (long long)(t2-t1)/1000000,
-          (long long)(t2-t0)/1000000);
-
-    ResultMetadataBuilder::FrameState fs;
-    fs.timestampNs       = timestamp;
-    fs.frameNumber       = request->frame_number;
-    fs.appliedExposureUs = appliedExposureUs;
-    fs.appliedGain       = appliedGain;
-    fs.af.afMode       = ANDROID_CONTROL_AF_MODE_OFF;
-    fs.af.afState      = ANDROID_CONTROL_AF_STATE_INACTIVE;
-    fs.af.focusDiopter = 0.0f;
-    if (mAf)
-        fs.af = mAf->report();
-    ResultMetadataBuilder::build(cm, fs, mSensorCfg);
-
-    auto result = cm.getAndLock();
-    processCaptureResult(request->frame_number, result, buffers);
-    cm.unlock(result);
-
-    // Cache the settings for next time
-    mLastRequestSettings.acquire(cm);
-
-    /* Print stats */
-    char bmOut[1024];
-    BENCHMARK_STRING(bmOut, sizeof(bmOut), 6);
-    ALOGV("    time (avg):  %s", bmOut);
 
     return NO_ERROR;
+}
+
+void Camera::rebuildPipeline() {
+    /* mMutex held by caller. */
+
+    if (mRequestThread) {
+        mRequestThread->stop();
+        mRequestThread.reset();
+    }
+
+    if (!mTracker) {
+        mTracker.reset(new InFlightTracker());
+    }
+    if (!mRequestQueue) {
+        mRequestQueue.reset(new EventQueue<PipelineContext*>(REQUEST_QUEUE_CAPACITY));
+    }
+
+    mRequestPipeline.reset(new Pipeline());
+
+    {
+        ApplySettingsStage::Deps d;
+        d.exposure  = &mExposure;
+        d.af        = &mAf;
+        d.sensorCfg = &mSensorCfg;
+        mRequestPipeline->appendStage(
+            std::unique_ptr<PipelineStage>(new ApplySettingsStage(d)));
+    }
+
+    mRequestPipeline->appendStage(
+        std::unique_ptr<PipelineStage>(new ShutterNotifyStage(&mCallbackOps)));
+
+    {
+        CaptureStage::Deps d;
+        d.dev = mDev;
+        d.isp = mIsp;
+        d.af  = &mAf;
+        mRequestPipeline->appendStage(
+            std::unique_ptr<PipelineStage>(new CaptureStage(d)));
+    }
+
+    {
+        DemosaicBlitStage::Deps d;
+        d.bufferProcessor = mBufferProcessor;
+        d.dev             = mDev;
+        d.af              = &mAf;
+        d.jpegBufferSize  = &mJpegBufferSize;
+        mRequestPipeline->appendStage(
+            std::unique_ptr<PipelineStage>(new DemosaicBlitStage(d)));
+    }
+
+    {
+        ResultDispatchStage::Deps d;
+        d.callbackOps         = &mCallbackOps;
+        d.dev                 = mDev;
+        d.af                  = &mAf;
+        d.sensorCfg           = &mSensorCfg;
+        d.lastRequestSettings = &mLastRequestSettings;
+        mRequestPipeline->appendStage(
+            std::unique_ptr<PipelineStage>(new ResultDispatchStage(d)));
+    }
+
+    mRequestThread.reset(new RequestThread(mRequestQueue.get(),
+                                           mRequestPipeline.get(),
+                                           mTracker.get()));
+    if (!mRequestThread->start("CameraRequest")) {
+        ALOGE("RequestThread failed to start");
+        mRequestThread.reset();
+    }
 }
 
 inline void Camera::notifyShutter(uint32_t frameNumber, uint64_t timestamp) {

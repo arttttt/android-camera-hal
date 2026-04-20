@@ -56,6 +56,8 @@ LOCAL_C_INCLUDES += \
 LOCAL_C_INCLUDES += \
     $(LOCAL_PATH)/base \
     $(LOCAL_PATH)/hal \
+    $(LOCAL_PATH)/hal/pipeline \
+    $(LOCAL_PATH)/hal/pipeline/stages \
     $(LOCAL_PATH)/v4l2 \
     $(LOCAL_PATH)/isp \
     $(LOCAL_PATH)/isp/vulkan \
@@ -74,7 +76,15 @@ LOCAL_SRC_FILES += \
     hal/3a/ExposureControl.cpp \
     hal/jpeg/JpegEncoder.cpp \
     hal/pipeline/BufferProcessor.cpp \
+    hal/pipeline/InFlightTracker.cpp \
+    hal/pipeline/Pipeline.cpp \
+    hal/pipeline/RequestThread.cpp \
     hal/pipeline/StreamConfig.cpp \
+    hal/pipeline/stages/ApplySettingsStage.cpp \
+    hal/pipeline/stages/CaptureStage.cpp \
+    hal/pipeline/stages/DemosaicBlitStage.cpp \
+    hal/pipeline/stages/ResultDispatchStage.cpp \
+    hal/pipeline/stages/ShutterNotifyStage.cpp \
     v4l2/V4l2Device.cpp \
     isp/IspPipeline.cpp \
     isp/IspParams.cpp \

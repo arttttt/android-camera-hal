@@ -1,6 +1,8 @@
 #ifndef CAMERA_H
 #define CAMERA_H
 
+#include <memory>
+
 #include <utils/Errors.h>
 #include <hardware/camera_common.h>
 #include "V4l2Device.h"
@@ -19,6 +21,12 @@
 #include "DbgUtils.h"
 
 namespace android {
+
+struct PipelineContext;
+class Pipeline;
+class InFlightTracker;
+class RequestThread;
+template <typename T> class EventQueue;
 
 class Camera: public camera3_device {
 public:
@@ -70,6 +78,16 @@ private:
     JpegEncoder *mJpeg;
     BufferProcessor *mBufferProcessor;
     Mutex mMutex;
+
+    std::unique_ptr<InFlightTracker>              mTracker;
+    std::unique_ptr<EventQueue<PipelineContext*>> mRequestQueue;
+    std::unique_ptr<Pipeline>                     mRequestPipeline;
+    std::unique_ptr<RequestThread>                mRequestThread;
+
+    /* Must be called under mMutex. Tears down and rebuilds
+     * mRequestPipeline + mRequestThread against the current stage
+     * dependencies (mIsp / mAf / mBufferProcessor). */
+    void rebuildPipeline();
 
     /* STATIC WRAPPERS */
 
