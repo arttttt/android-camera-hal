@@ -953,6 +953,14 @@ const uint8_t *VulkanIspPipeline::processToYuv420(const uint8_t *src,
 void VulkanIspPipeline::prewarm(unsigned width, unsigned height, uint32_t pixFmt) {
     if (!mReady) return;
 
+    /* A previous session may have left work in flight on mFence
+     * (mPrevPending=true, mFence signalled). Submitting new work
+     * to a still-signalled fence is undefined by the Vulkan spec
+     * and, more to the point, the reset immediately below would
+     * then leave mFence unsignalled while mPrevPending stays true —
+     * the very next waitForPreviousFrame() would block forever. */
+    drainPendingFence();
+
     bool is16 = (pixFmt == V4L2_PIX_FMT_SRGGB10 || pixFmt == V4L2_PIX_FMT_SGRBG10 ||
                  pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SBGGR10);
     if (!ensureBuffers(width, height, is16))
