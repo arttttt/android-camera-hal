@@ -6,11 +6,13 @@
 #include <linux/videodev2.h>
 
 #include <hardware/gralloc.h>
+#include <system/graphics.h>
 #include <ui/Rect.h>
 #include <ui/GraphicBuffer.h>
 #include <ui/GraphicBufferMapper.h>
 #include <ui/Fence.h>
 #include <utils/Log.h>
+#include <libyuv.h>
 
 #include "IspPipeline.h"
 #include "jpeg/JpegEncoder.h"
@@ -104,6 +106,76 @@ status_t BufferProcessor::lockSwWrite(const camera3_stream_buffer &srcBuf,
     return NO_ERROR;
 }
 
+status_t BufferProcessor::processYuvOutput(const camera3_stream_buffer &srcBuf,
+                                            const FrameContext &ctx,
+                                            uint32_t frameNumber) {
+    unsigned w = srcBuf.stream->width;
+    unsigned h = srcBuf.stream->height;
+
+    const uint8_t *nv12 = NULL;
+    BENCHMARK_SECTION("Raw->NV12") {
+        nv12 = mDeps.isp->processToYuv420(ctx.frameBuf, w, h,
+                                           ctx.pixFmt, ctx.frameSlotIdx);
+    }
+    if (!nv12) {
+        ALOGE("buffer %p  frame %-4u  processToYuv420 failed",
+              srcBuf.buffer, frameNumber);
+        return NO_INIT;
+    }
+    const uint8_t *srcY  = nv12;
+    const uint8_t *srcUv = nv12 + (size_t)w * h;
+
+    android_ycbcr dst = {};
+    const Rect rect((int)w, (int)h);
+    status_t e = GraphicBufferMapper::get().lockYCbCr(*srcBuf.buffer,
+        GRALLOC_USAGE_SW_WRITE_OFTEN, rect, &dst);
+    if (e != NO_ERROR) {
+        ALOGE("buffer %p  frame %-4u  lockYCbCr failed", srcBuf.buffer, frameNumber);
+        return NO_INIT;
+    }
+
+    uint8_t *dstY  = (uint8_t *)dst.y;
+    uint8_t *dstCb = (uint8_t *)dst.cb;
+    uint8_t *dstCr = (uint8_t *)dst.cr;
+
+    BENCHMARK_SECTION("NV12->gralloc") {
+        if (dst.chroma_step == 2 && dstCb + 1 == dstCr) {
+            /* NV12 target — both planes are identical layout to the
+             * source, just stride-aware memcpy each. */
+            libyuv::CopyPlane(srcY,  (int)w, dstY,  (int)dst.ystride,
+                              (int)w, (int)h);
+            libyuv::CopyPlane(srcUv, (int)w, dstCb, (int)dst.cstride,
+                              (int)w, (int)h / 2);
+        } else if (dst.chroma_step == 1) {
+            /* I420 / YV12 target — NV12ToI420 copies Y and deinterleaves
+             * UV into the two planar halves. layout.cb/layout.cr already
+             * point at the physically correct plane for whichever of
+             * I420 or YV12 the framework chose; libyuv writes to the
+             * pointers we pass. */
+            libyuv::NV12ToI420(srcY, (int)w, srcUv, (int)w,
+                               dstY,  (int)dst.ystride,
+                               dstCb, (int)dst.cstride,
+                               dstCr, (int)dst.cstride,
+                               (int)w, (int)h);
+        } else {
+            /* NV21 target (chroma_step == 2, cr precedes cb). The
+             * Android-7 libyuv we link has no direct NV12→NV21 and
+             * scalar UV-pair swap would blow the frame budget. Fail
+             * NO_INIT; the "proper fix" (malloc-free NEON swap or GPU
+             * shader targeting NV21 directly) is tracked in
+             * docs/open-questions.md. */
+            ALOGE("buffer %p  frame %-4u  YUV layout not supported "
+                  "(chroma_step=%d, cb=%p, cr=%p)",
+                  srcBuf.buffer, frameNumber,
+                  dst.chroma_step, dstCb, dstCr);
+            GraphicBufferMapper::get().unlock(*srcBuf.buffer);
+            return NO_INIT;
+        }
+    }
+
+    return NO_ERROR;
+}
+
 void BufferProcessor::processBlobOutput(uint8_t *buf, const FrameContext &ctx,
                                          const CameraMetadata &cm) {
     BENCHMARK_SECTION("YUV->JPEG") {
@@ -141,6 +213,8 @@ status_t BufferProcessor::processOne(const camera3_stream_buffer &srcBuf,
                 return NO_INIT;
             }
             return NO_ERROR;
+        case HAL_PIXEL_FORMAT_YCbCr_420_888:
+            return processYuvOutput(srcBuf, ctx, frameNumber);
         case HAL_PIXEL_FORMAT_BLOB: {
             uint8_t *buf = NULL;
             e = lockSwWrite(srcBuf, frameNumber, &buf);

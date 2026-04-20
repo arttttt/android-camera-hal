@@ -87,6 +87,15 @@ private:
                                const FrameContext &ctx,
                                const CameraMetadata &cm);
 
+    /* YUV_420_888 output — GPU NV12 via IspPipeline::processToYuv420 +
+     * layout repack through libyuv. Locks + unlocks the gralloc buffer
+     * internally (like the BLOB path); state->needsFinalUnlock stays
+     * true so the outer loop's unlock is a no-op on already-unlocked
+     * buffers. */
+    status_t processYuvOutput(const camera3_stream_buffer &srcBuf,
+                              const FrameContext &ctx,
+                              uint32_t frameNumber);
+
     Deps mDeps;
 };
 
