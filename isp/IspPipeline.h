@@ -29,6 +29,21 @@ public:
         return NULL;
     }
 
+    /* Synchronous demosaic + RGB→YUV conversion into an internal
+     * CPU-readable NV12 buffer (Y plane at offset 0, interleaved UV
+     * plane at offset width*height). Returned pointer is valid until
+     * the next process*() call on this pipeline. Returns NULL on
+     * failure. Width must be divisible by 4 and height by 2; caller
+     * repacks NV12 into any other 420 layout (YV12 / NV21 / I420) the
+     * framework requests. */
+    virtual const uint8_t *processToYuv420(const uint8_t *src,
+                                             unsigned width, unsigned height,
+                                             uint32_t pixFmt,
+                                             int srcInputSlot) {
+        (void)src; (void)width; (void)height; (void)pixFmt; (void)srcInputSlot;
+        return NULL;
+    }
+
     /* Run a dummy dispatch at the target stream dimensions so the backend's
      * shader / GPU state is warm before the first real frame. Default no-op. */
     virtual void prewarm(unsigned width, unsigned height, uint32_t pixFmt) {

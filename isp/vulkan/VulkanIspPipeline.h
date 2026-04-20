@@ -6,6 +6,7 @@
 #include "runtime/VulkanDeviceState.h"
 #include "io/VulkanInputRing.h"
 #include "io/VulkanGrallocCache.h"
+#include "encode/VulkanYuvEncoder.h"
 
 #define VK_USE_PLATFORM_ANDROID_KHR
 #include <vulkan/vulkan.h>
@@ -26,6 +27,11 @@ public:
                                  unsigned width, unsigned height,
                                  uint32_t pixFmt,
                                  int srcInputSlot) override;
+
+    const uint8_t *processToYuv420(const uint8_t *src,
+                                     unsigned width, unsigned height,
+                                     uint32_t pixFmt,
+                                     int srcInputSlot) override;
 
     void prewarm(unsigned width, unsigned height, uint32_t pixFmt) override;
 
@@ -80,6 +86,11 @@ private:
      * Submits to mQueue signalling `fence` (VK_NULL_HANDLE = no fence). */
     void recordAndSubmit(unsigned width, unsigned height, VkFence fence,
                           bool copyToOutBuf);
+
+    /* Record mCmdBuf with demosaic → scratch → yuv-encode compute chain
+     * and submit. The yuv encoder writes its own mapped NV12 buffer; the
+     * caller reads it via mYuvEncoder.mappedBuffer() after fence wait. */
+    void recordDemosaicAndYuvEncode(unsigned width, unsigned height, VkFence fence);
 
     /* Zero-copy gralloc path: record compute → memory barrier → render
      * pass blit of mScratchImg into the entry's framebuffer, no final
@@ -139,6 +150,7 @@ private:
     void updateAwb(const uint8_t *raw, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
 
     VulkanGrallocCache mGrallocCache;
+    VulkanYuvEncoder   mYuvEncoder;   /* lazy — buffers allocated on first YUV request */
 };
 
 }; /* namespace android */

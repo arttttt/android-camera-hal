@@ -23,6 +23,7 @@ namespace android {
 VulkanIspPipeline::VulkanIspPipeline()
     : mInputRing(mDeviceState)
     , mGrallocCache(mDeviceState)
+    , mYuvEncoder(mDeviceState)
     , mReady(false), mBufWidth(0), mBufHeight(0)
     , mShader(VK_NULL_HANDLE), mVertShader(VK_NULL_HANDLE), mFragShader(VK_NULL_HANDLE)
     , mDescLayout(VK_NULL_HANDLE)
@@ -256,6 +257,50 @@ void VulkanIspPipeline::submitWithReleaseFence(VulkanGrallocCache::Entry *entry,
     }
 }
 
+void VulkanIspPipeline::recordDemosaicAndYuvEncode(unsigned width, unsigned height,
+                                                     VkFence fence) {
+    VkCommandBufferBeginInfo bi = {};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    mDeviceState.pfn()->ResetCommandBuffer(mCmdBuf, 0);
+    mDeviceState.pfn()->BeginCommandBuffer(mCmdBuf, &bi);
+
+    /* Demosaic: Bayer → mScratchImg. */
+    mDeviceState.pfn()->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
+    mDeviceState.pfn()->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                mPipeLayout, 0, 1, &mDescSet, 0, NULL);
+    mDeviceState.pfn()->CmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
+
+    /* Scratch WRITE → READ — the next compute dispatch samples it. */
+    VkImageMemoryBarrier imb = {};
+    imb.sType                       = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    imb.oldLayout                   = VK_IMAGE_LAYOUT_GENERAL;
+    imb.newLayout                   = VK_IMAGE_LAYOUT_GENERAL;
+    imb.srcAccessMask               = VK_ACCESS_SHADER_WRITE_BIT;
+    imb.dstAccessMask               = VK_ACCESS_SHADER_READ_BIT;
+    imb.srcQueueFamilyIndex         = VK_QUEUE_FAMILY_IGNORED;
+    imb.dstQueueFamilyIndex         = VK_QUEUE_FAMILY_IGNORED;
+    imb.image                       = mScratchImg;
+    imb.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    imb.subresourceRange.levelCount = 1;
+    imb.subresourceRange.layerCount = 1;
+    mDeviceState.pfn()->CmdPipelineBarrier(mCmdBuf,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 0, NULL, 0, NULL, 1, &imb);
+
+    /* YUV encode: scratch → NV12 in the encoder's output buffer. */
+    mYuvEncoder.recordDispatch(mCmdBuf, width, height);
+
+    mDeviceState.pfn()->EndCommandBuffer(mCmdBuf);
+
+    VkSubmitInfo si = {};
+    si.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers    = &mCmdBuf;
+    mDeviceState.pfn()->QueueSubmit(mDeviceState.queue(), 1, &si, fence);
+}
+
 void VulkanIspPipeline::recordAndSubmit(unsigned width, unsigned height, VkFence fence,
                                          bool copyToOutBuf) {
     VkCommandBufferBeginInfo beginInfo = {};
@@ -321,7 +366,8 @@ bool VulkanIspPipeline::init() {
         !createComputePipeline() ||
         !createGraphicsPipeline() ||
         !allocateDescriptorSet() ||
-        !createCommandObjects()) {
+        !createCommandObjects() ||
+        !mYuvEncoder.init()) {
         destroy();
         return false;
     }
@@ -861,6 +907,48 @@ const uint8_t *VulkanIspPipeline::processToCpu(const uint8_t *src,
     return (const uint8_t *)mOutMap;
 }
 
+const uint8_t *VulkanIspPipeline::processToYuv420(const uint8_t *src,
+                                                    unsigned width, unsigned height,
+                                                    uint32_t pixFmt,
+                                                    int srcInputSlot) {
+    (void)src;
+    if (!mReady) return NULL;
+    if (srcInputSlot < 0 || srcInputSlot >= mInputRing.slotCount())
+        return NULL;
+    if ((width & 3) || (height & 1)) {
+        ALOGE("processToYuv420: %ux%u not a multiple of 4x2", width, height);
+        return NULL;
+    }
+
+    bool is16 = (pixFmt == V4L2_PIX_FMT_SRGGB10 || pixFmt == V4L2_PIX_FMT_SGRBG10 ||
+                 pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SBGGR10);
+    if (!ensureBuffers(width, height, is16))
+        return NULL;
+
+    /* Lazy alloc — the yuv output buffer is only paid for when a YUV
+     * stream was actually configured. ensureBuffers is a no-op on
+     * steady state; bindScratchInput rewrites descriptors only when
+     * the scratch view handle changed. */
+    if (!mYuvEncoder.ensureBuffers(width, height))
+        return NULL;
+    mYuvEncoder.bindScratchInput(mScratchView, mScratchSampler);
+
+    drainPendingFence();
+    mInputRing.invalidateFromGpu(srcInputSlot);
+
+    IspParams params;
+    fillParams(&params, width, height, is16, pixFmt);
+    uploadParams(params);
+    rebindInputDescriptor(srcInputSlot);
+
+    recordDemosaicAndYuvEncode(width, height, mFence);
+    mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1, &mFence, VK_TRUE, UINT64_MAX);
+    mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence);
+
+    mYuvEncoder.invalidateForCpu();
+    return mYuvEncoder.mappedBuffer();
+}
+
 void VulkanIspPipeline::prewarm(unsigned width, unsigned height, uint32_t pixFmt) {
     if (!mReady) return;
 
@@ -954,6 +1042,7 @@ void VulkanIspPipeline::destroy() {
         }
 
         mGrallocCache.clear();
+        mYuvEncoder.destroy();
         mInputRing.destroy();
 
         if (mScratchView) {
