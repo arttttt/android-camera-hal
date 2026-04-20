@@ -91,3 +91,45 @@ what every Android-side YUV consumer defaults to. If / when we start
 supporting manual colour spaces (required for serious video
 pipelines, HDR, etc.) the coefficients move into a push constant and
 we fill in the relevant static / per-frame metadata. Not scheduled.
+
+## CCM / WB — deferred CCT-driven selection
+
+**Current state (Tier 2):** `Camera::configureStreams` picks the
+nearest-CCT CCM from `SensorTuning::ccmSets()` with a hardcoded
+target of 5000 K (daylight). The `wbGain` field in each Set is
+ignored — our `VulkanIspPipeline::updateAwb` runs a live gray-world
+estimator instead and applies the result directly to the demosaic
+shader's `wbR/wbG/wbB` parameters.
+
+This is visibly wrong in non-daylight scenes: under tungsten (~2800 K)
+we apply a daylight CCM to pixels that are already warm, skin goes
+orange-yellow. Under cool white fluorescent (~4100 K) everything
+drifts slightly green.
+
+**Question: when does proper CCT-driven selection land?**
+
+A complete implementation has three pieces, all blocked on the Tier 3
+AWB module:
+
+1. **Per-frame CCT estimate.** The existing gray-world loop estimates
+   a chromaticity but we throw it away rather than classify it into a
+   CCT. A second pass converting gray-world RGB gains to an illuminant
+   temperature — via the `awb.v4.UtoCCT` / `CCTtoU` tables in the
+   tuning's `reserved` section — gives us an integer CCT per frame.
+
+2. **Interpolated CCM selection.** Swap `ccmForCctQ10(5000, …)` for
+   `ccmForCctQ10(estimatedCcm, …)` plus linear interpolation between
+   the two ccmSets bracketing the estimate. Prevents visible "snaps"
+   when the scene CCT crosses a tuning-set boundary.
+
+3. **`wbGain` as AWB prior.** Each ccmSet carries three-channel
+   white-balance gains tuned for that CCT. The AWB output should lean
+   on these instead of (or in addition to) the live gray-world estimate
+   — the stock tuning represents a lot of testing over sample scenes
+   that the runtime estimator can't recreate.
+
+`mwbCCT.{cloudy,shade,incandescent,fluorescent}` are for the *manual*
+WB presets (`ANDROID_CONTROL_AWB_MODE = INCANDESCENT / FLUORESCENT / …`),
+a separate but related consumer — those four points clamp the CCT
+target when the user selects a preset. Same plumbing as (2), different
+driver.

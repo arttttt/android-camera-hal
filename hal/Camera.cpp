@@ -209,9 +209,18 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
     const char *integrator = (mFacing == CAMERA_FACING_BACK) ? "Primax" : "Sunny";
     mTuning.load(sensorName, integrator);
 
-    /* CCM comes from tuning. Static target CCT = 5000 K (closest daylight
-     * point we have) until AWB estimates CCT dynamically. Stored on
-     * Camera so the lifetime matches IspPipeline's pointer capture. */
+    /* CCM is CCT-dependent: the stock tuning carries 3-4 matrices at
+     * different colour temperatures (2400/2800/4000/5000 K), because
+     * the correct sensor-to-sRGB transform shifts with the illuminant.
+     * Pinning 5000 K is a daylight-ish compromise — in tungsten scenes
+     * the picture will drift warm, under fluorescent it will drift
+     * green. Proper fix is the Tier 3 AWB module:
+     *   1) per-frame scene-CCT estimate from gray-world / white-patch stats,
+     *   2) interpolation between the two bracketing ccmSets to avoid
+     *      visible snaps when the scene transitions,
+     *   3) per-Set `wbGain` applied *before* the CCM (not consumed yet —
+     *      our current shader uses a live gray-world WB instead).
+     * See docs/open-questions.md for the full scope of this TODO. */
     mTuning.ccmForCctQ10(5000, mCcmQ10);
     mIsp->setCcm(mCcmQ10);
 
