@@ -39,7 +39,7 @@ public:
     Resolution resolution()       const override;
     Resolution sensorResolution() const override;
 
-    bool isRunning() const;
+    bool isRunning() const override;
 
 private:
     friend class V4l2CaptureThread;
