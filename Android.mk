@@ -25,7 +25,8 @@ LOCAL_CFLAGS += -DV4L2DEVICE_OPEN_ONCE
 
 
 LOCAL_STATIC_LIBRARIES := \
-    libyuv_static
+    libyuv_static \
+    libjsoncpp
 
 LOCAL_SHARED_LIBRARIES := \
     liblog \
@@ -41,6 +42,7 @@ LOCAL_SHARED_LIBRARIES := \
 LOCAL_C_INCLUDES += \
     external/jpeg \
     external/libyuv/files/include \
+    external/jsoncpp/include \
     frameworks/native/include/media/hardware \
     $(call include-path-for, camera)
 
@@ -74,6 +76,7 @@ LOCAL_SRC_FILES += \
     isp/IspPipeline.cpp \
     isp/IspParams.cpp \
     isp/sensor/IspCalibration.cpp \
+    isp/sensor/SensorTuning.cpp \
     isp/vulkan/VulkanIspPipeline.cpp \
     isp/vulkan/runtime/VulkanDeviceState.cpp \
     isp/vulkan/runtime/loader/VulkanLoader.cpp \
