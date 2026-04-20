@@ -2,7 +2,6 @@
 
 #include <pthread.h>
 #include <string.h>
-#include <system_error>
 
 #include <utils/Log.h>
 
@@ -37,15 +36,11 @@ bool ThreadBase::start(const char* name) {
     stopFlag.store(false, std::memory_order_release);
     running.store(true, std::memory_order_release);
 
-    try {
-        worker = std::thread(&ThreadBase::run, this,
-                             std::string(name ? name : "worker"));
-    } catch (const std::system_error& e) {
-        ALOGE("ThreadBase(%s): std::thread failed: %s",
-              name ? name : "?", e.what());
-        running.store(false, std::memory_order_release);
-        return false;
-    }
+    /* std::thread aborts via std::terminate() on construction failure
+     * under -fno-exceptions. That's acceptable here — failing to spawn
+     * a camera worker is unrecoverable. */
+    worker = std::thread(&ThreadBase::run, this,
+                         std::string(name ? name : "worker"));
     return true;
 }
 
