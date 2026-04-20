@@ -53,10 +53,11 @@ public:
     SensorTuning();
     ~SensorTuning();
 
-    /* Locate and parse JSON for `{sensor}_{integrator}` (case-insensitive
-     * lookup into an internal table mapping pair → filename). Returns
-     * true iff fully parsed; false otherwise and `isLoaded()` stays
-     * false. Safe to call multiple times — replaces any previous state. */
+    /* Parse JSON at `/vendor/etc/camera/tuning/<lower(sensor)>_<lower(integrator)>.json`.
+     * Returns true iff fully parsed; false otherwise, with `isLoaded()`
+     * staying false. Safe to call multiple times — replaces any previous
+     * state. Adding a new module to the HAL is just dropping a JSON into
+     * the vendor dir; no code change. */
     bool load(const char *sensor, const char *integrator);
 
     bool        isLoaded()      const { return mLoaded; }
@@ -70,8 +71,6 @@ public:
     const AwbRefs&              awbRefs()       const { return mAwbRefs; }
 
 private:
-    static const char *filenameFor(const char *sensor, const char *integrator);
-
     bool mLoaded;
     bool mHasAf;
     ModuleInfo   mModule;

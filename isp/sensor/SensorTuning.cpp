@@ -1,9 +1,9 @@
 #define LOG_TAG "Cam-SensorTuning"
 #include <utils/Log.h>
 
+#include <ctype.h>
 #include <fstream>
 #include <string.h>
-#include <strings.h>
 
 #include <json/json.h>
 
@@ -15,23 +15,17 @@ namespace {
 
 constexpr const char *kTuningDir = "/vendor/etc/camera/tuning/";
 
-/* Fixed (sensor, integrator) → filename lookup. Swap the version in the
- * filename to try an alternative tuning branch (e.g. lfi_v3.09 for IMX179).
- * Adding a new module here is the entire device-porting surface for
- * tuning purposes. */
-struct FilenameEntry {
-    const char *sensor;
-    const char *integrator;
-    const char *filename;
-};
-
-const FilenameEntry kFilenames[] = {
-    { "IMX179", "Primax", "imx179_primax_v2.27.json" },
-    { "OV5693", "Sunny",  "ov5693_sunny_v2.13.json"  },
-};
-
-bool ieq(const char *a, const char *b) {
-    return a && b && strcasecmp(a, b) == 0;
+/* Build the filename by convention: `<lower(sensor)>_<lower(integrator)>.json`.
+ * Adding a new module to the HAL means dropping a JSON into the vendor dir —
+ * no code change. To try a different tuning branch (e.g. lfi_v3.09 for
+ * IMX179), overwrite the file; provenance lives inside the JSON's
+ * `sensor.nvidia_version`. */
+std::string filenameFor(const char *sensor, const char *integrator) {
+    std::string s = sensor ? sensor : "";
+    std::string i = integrator ? integrator : "";
+    for (auto &c : s) c = (char)tolower((unsigned char)c);
+    for (auto &c : i) c = (char)tolower((unsigned char)c);
+    return s + "_" + i + ".json";
 }
 
 bool readJson(const std::string &path, Json::Value *out) {
@@ -61,25 +55,12 @@ SensorTuning::SensorTuning()
 
 SensorTuning::~SensorTuning() = default;
 
-const char *SensorTuning::filenameFor(const char *sensor, const char *integrator) {
-    for (const auto &e : kFilenames) {
-        if (ieq(e.sensor, sensor) && ieq(e.integrator, integrator))
-            return e.filename;
-    }
-    return nullptr;
-}
-
 bool SensorTuning::load(const char *sensor, const char *integrator) {
     mLoaded = false;
     mHasAf = false;
     mCcmSets.clear();
 
-    const char *fn = filenameFor(sensor, integrator);
-    if (!fn) {
-        ALOGW("no tuning file registered for %s/%s", sensor, integrator);
-        return false;
-    }
-
+    std::string fn = filenameFor(sensor, integrator);
     Json::Value root;
     if (!readJson(std::string(kTuningDir) + fn, &root))
         return false;
@@ -163,7 +144,7 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
     }
 
     ALOGD("tuning loaded: %s (%s/%s) — %zu CCM sets, AF=%d, BL=(%d,%d,%d,%d)",
-          fn, sensor, integrator, mCcmSets.size(), mHasAf,
+          fn.c_str(), sensor, integrator, mCcmSets.size(), mHasAf,
           mOpticalBlack.r, mOpticalBlack.gr, mOpticalBlack.gb, mOpticalBlack.b);
 
     mLoaded = true;
