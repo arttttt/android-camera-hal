@@ -33,6 +33,13 @@ bool ThreadBase::start(const char* name) {
         return false;
     }
 
+    /* Drain any residue from a prior stop(). stopEvent is an accumulating
+     * counter — notify() from the earlier stop leaves it at >= 1, so
+     * without draining the fresh threadLoop's first poll() would return
+     * immediately on stopFd and the new worker would exit before doing
+     * any work. */
+    stopEvent.drain();
+
     stopFlag.store(false, std::memory_order_release);
     running.store(true, std::memory_order_release);
 
