@@ -173,9 +173,19 @@ void SensorTuning::ccmForCctQ10(int cctK, int16_t out[9]) const {
             best = &mCcmSets[i];
         }
     }
+    /* Transpose on write: NVIDIA's .isp stores each ccMatrix row as the
+     * INPUT-channel → {R_out, G_out, B_out} contribution vector
+     * (column-major from our shader's POV). Our demosaic shader, like
+     * most camera ISPs, treats ccm rows as OUTPUT-channel coefficients
+     * (`rr = ccm[0]*R + ccm[1]*G + ccm[2]*B`). Passing the matrix
+     * verbatim produces a neutral-grey-goes-to-magenta failure because
+     * the green row's cross-terms balloon. The old hand-coded Q10
+     * matrix in the now-deleted IspCalibration had this transpose baked
+     * in silently (comments documented the OUTPUT convention); keep the
+     * same semantics here. */
     for (int r = 0; r < 3; r++) {
         for (int c = 0; c < 3; c++) {
-            float v = best->ccMatrix[r][c] * 1024.0f;
+            float v = best->ccMatrix[c][r] * 1024.0f;
             if (v > 32767.0f) v = 32767.0f;
             if (v < -32768.0f) v = -32768.0f;
             out[r * 3 + c] = (int16_t)(v > 0 ? v + 0.5f : v - 0.5f);

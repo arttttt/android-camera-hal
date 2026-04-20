@@ -7,6 +7,16 @@ that occasionally span multiple lines without a closing brace. Parser
 is intentionally lenient — if an assignment's rhs doesn't close its
 `{`, we treat the next statement-starting line as an implicit `}`.
 
+Matrix layout note — `colorCorrection.Set[i].ccMatrix` (and the
+top-level `colorCorrection.srgbMatrix`) is stored by NVIDIA as three
+rows, where each row i is the contribution of INPUT channel i to
+{R_out, G_out, B_out}. Our demosaic shader expects the opposite
+convention (row i = OUTPUT-channel i's coefficients over input).
+We preserve NVIDIA's layout verbatim in the JSON — the transpose is
+applied by SensorTuning::ccmForCctQ10 at consumer time. Feeding the
+matrix to the shader unchanged produces a neutral-grey-goes-to-magenta
+failure mode (green channel cross-terms balloon).
+
 Output:
     { "schema_version": 1,
       "sensor": { parsed-from-header-comments },
