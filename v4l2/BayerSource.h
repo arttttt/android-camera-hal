@@ -23,6 +23,10 @@ public:
      * threads. Safe to call when not running. */
     virtual void stop() = 0;
 
+    /* True iff start() has succeeded and stop() has not yet been
+     * called. Lets the owner gate start() on idempotency. */
+    virtual bool isRunning() const = 0;
+
     /* Block until the next Bayer frame is available or the source
      * stops. Returns null on stop. The caller owns the frame for the
      * duration of its use and must hand it back via releaseFrame()
