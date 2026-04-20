@@ -83,6 +83,7 @@ void writeScalerConfigs(CameraMetadata &cm, V4l2Device *dev) {
 
     static const int32_t scalerAvailableFormats[] = {
         HAL_PIXEL_FORMAT_RGBA_8888,
+        HAL_PIXEL_FORMAT_YCbCr_420_888,
         HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED,
         /* Non-preview one, must be last - see following code */
         HAL_PIXEL_FORMAT_BLOB

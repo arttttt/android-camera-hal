@@ -38,8 +38,15 @@ status_t StreamConfig::normalize(camera3_stream_configuration_t *streamList,
             inStream = newStream;
         }
 
-        if (newStream->format == HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED)
-            newStream->format = HAL_PIXEL_FORMAT_RGBA_8888;
+        /* IMPLEMENTATION_DEFINED is a framework-side alias — we pick the
+         * concrete format based on stream intent. Video-encoder consumers
+         * need planar YUV; everything else gets RGBA. */
+        if (newStream->format == HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED) {
+            if (newStream->usage & GRALLOC_USAGE_HW_VIDEO_ENCODER)
+                newStream->format = HAL_PIXEL_FORMAT_YCbCr_420_888;
+            else
+                newStream->format = HAL_PIXEL_FORMAT_RGBA_8888;
+        }
 
         if (newStream->usage & GRALLOC_USAGE_HW_CAMERA_ZSL) {
             ALOGE("ZSL not supported. Add camera.disable_zsl_mode=1 to build.prop");
