@@ -183,21 +183,10 @@ Each is a short edit inside that module.
 - **Sensor calibration keys**: `BLACK_LEVEL_PATTERN`, `WHITE_LEVEL`,
   `COLOR_FILTER_ARRANGEMENT`, `COLOR_TRANSFORM_{1,2}`,
   `FORWARD_MATRIX_{1,2}`, `CALIBRATION_TRANSFORM_{1,2}`,
-  `REFERENCE_ILLUMINANT{1,2}`, `NOISE_PROFILE`. Per-sensor values
-  from `SensorConfig` / `IspCalibration` (or the JSON tuning file once
-  Tier 2 lands). Unlocks DNG output.
-
-## Tier 2 — structural wins (M)
-
-### JSON tuning file per sensor (M)
-
-Load on HAL start, keyed by sensor model. Replaces all hardcoded
-constants: VCM range, focal length, sensor area, default exposure / gain,
-AF sweep parameters, sensor-specific ISP tuning. Makes adding a second
-sensor a data-only change.
-
-Borrowed directly from RPi — see
-[open-source-references.md](open-source-references.md).
+  `REFERENCE_ILLUMINANT{1,2}`, `NOISE_PROFILE`. Per-sensor values from
+  `SensorTuning` (now live) — a short edit in `CameraStaticMetadata`
+  to emit them from `module.*` + `active.colorCorrection.*`. Unlocks
+  DNG output.
 
 ## Tier 3 — pipeline refactor (L)
 
