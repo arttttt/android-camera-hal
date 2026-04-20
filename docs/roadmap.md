@@ -208,7 +208,7 @@ chosen so `git bisect` cleanly attributes FPS and correctness shifts):
    `Signal<T>`, `UniqueFd`. Infra only, no consumers.
 2. **PR 2** — `RequestQueue` + `RequestThread` wrapping the current
    synchronous path. `processCaptureRequest` returns in < 1 ms.
-3. **PR 3** — `IBayerSource` / `V4l2Source` / `CaptureThread`;
+3. **PR 3** — `BayerSource` / `V4l2Source` / `CaptureThread`;
    drain-to-latest migrates out of `V4l2Device`.
 4. **PR 4** — `DelayedControls` port (~280 LOC) with
    `SensorTuning.controlDelay`; truthful result metadata.
@@ -217,10 +217,10 @@ chosen so `git bisect` cleanly attributes FPS and correctness shifts):
    win lands here** (preview 20 → ~28–30).
 6. **PR 6** — `ResultThread` split. Framework callbacks off
    `PipelineThread`; FIFO by single-thread construction.
-7. **PR 7** — `IIpa` interface + GPU statistics compute shader;
+7. **PR 7** — `Ipa` interface + GPU statistics compute shader;
    AE / AWB / AF driven by real stats, not gralloc-locked preview.
 8. **PR 8** — Produce-once refactor
-   (`IIsp::beginFrame` / `blitTo*` / `endFrame`) + `IPostProcessor` /
+   (`IspPipeline::beginFrame` / `blitTo*` / `endFrame`) + `PostProcessor` /
    `JpegWorker`. **Multi-stream FPS win** (preview+video 13 → ~28).
 
 Deferred but slot-reserved from PR 2: `Request::inputBuffer` for

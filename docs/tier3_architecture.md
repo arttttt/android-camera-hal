@@ -190,13 +190,13 @@ we have in mind (ZSL bayer source, null IPA vs real IPA, JPEG vs
 future encoders, V4L2 subdev capture vs single-node).
 
 ```
-IBayerSource
+BayerSource
   virtual int start() = 0;
   virtual int stop() = 0;
   virtual int configure(resolution, pixelFormat, bufferCount) = 0;
   Signal<BayerFrame> bayerReady;
 
-IIsp
+IspPipeline
   virtual int beginFrame(BayerFrame) = 0;       // demosaic -> scratch
   virtual int blitToGralloc(OutputBuffer) = 0;  // sample scratch
   virtual int blitToYuv(OutputBuffer) = 0;
@@ -204,11 +204,11 @@ IIsp
   virtual int endFrame(SyncFd releaseFence) = 0; // submit + export fence
   virtual StatsBuffer statsFor(uint32_t sequence) = 0;
 
-IIpa
+Ipa
   virtual ControlUpdate processStats(uint32_t sequence,
                                      const StatsBuffer&) = 0;
 
-IPostProcessor
+PostProcessor
   virtual int process(const ScratchView&, OutputBuffer,
                       Signal<void>& done) = 0;
 ```
@@ -216,13 +216,85 @@ IPostProcessor
 `Signal<T>` is our own minimal event type (~80 LOC): slot list +
 thread-local delivery mode. Not libcamera-port; just the idea.
 
-`V4l2Source` implements `IBayerSource`. `VulkanIspPipeline`
-implements `IIsp`. `StubIpa` / `BasicIpa` implement `IIpa`.
-`JpegEncoder` wraps `IPostProcessor`.
+`V4l2Source` implements `BayerSource`. `VulkanIspPipeline`
+implements `IspPipeline`. `StubIpa` / `BasicIpa` implement `Ipa`.
+`JpegEncoder` wraps `PostProcessor`.
 
 Naming follows the no-Hungarian rule. Members are `bayerReady`, not
 `mBayerReady`; constants are `constexpr size_t requestQueueCapacity = 4`
-or `REQUEST_QUEUE_CAPACITY`, not `kRequestQueueCapacity`.
+or `REQUEST_QUEUE_CAPACITY`, not `kRequestQueueCapacity`. Abstract
+class names carry no `I` prefix (`BayerSource`, not `IBayerSource`) —
+that prefix encodes role, which is exactly what the no-Hungarian rule
+forbids.
+
+## Pipeline composition
+
+The async event-driven pipeline is expressed as four primitives:
+
+- **`PipelineContext`** — per-frame state object, the baton. Holds the
+  `CaptureRequest` (deep copy of framework input), the V4L2 bayer slot,
+  GPU fence fds, per-output release fences, accumulated result
+  metadata, status, and timestamps. Created once when a request is
+  accepted; travels through stages; destroyed after result delivery.
+
+- **`PipelineStage`** — abstract: `process(PipelineContext&) → Status`.
+  Narrow interface, one concrete class per unit of work (apply
+  settings, notify shutter, dequeue bayer, demosaic+blit, dispatch
+  result, etc.). Stages own their own helper state (e.g. an
+  `ApplySettingsStage` holds the `ExposureControl` + `AutoFocusController`
+  instances), not the context's — they only read/write context fields.
+
+- **`Pipeline`** — ordered `vector<PipelineStage*>` executed on one
+  thread against a `PipelineContext`. Each thread owns its own
+  `Pipeline`. The thread's event loop drives the pipeline:
+  ```
+  while (!stopRequested()) {
+      poll(inputQueueFd, stopFd, ...);
+      auto context = inputQueue.pop();
+      pipeline.run(*context);   // iterate stages in order
+      downstreamQueue.push(std::move(context));
+  }
+  ```
+
+- **`InFlightTracker`** — registry of `PipelineContext*`s currently in
+  flight. Owned by `Camera`, shared across threads. Operations:
+  `add`, `removeBySequence`, `drainAll` (for `flush`/`close`),
+  `count` (for metrics / debug).
+
+### Migration path
+
+```
+PR 2  RequestThread.pipeline = [
+          ValidateStage, ApplySettingsStage, ShutterNotifyStage,
+          CaptureStage, DemosaicBlitStage, ResultDispatchStage
+      ]
+
+PR 3  CaptureStage moves to CaptureThread.pipeline
+PR 5  DemosaicBlitStage moves to PipelineThread.pipeline
+PR 6  ResultDispatchStage moves to ResultThread.pipeline
+PR 7  (new) StatsProcessStage lands on PipelineThread.pipeline
+PR 8  DemosaicBlitStage splits into DemosaicStage + per-stream BlitStage
+```
+
+Each thread-split PR is a **stage transfer**, not a rewrite: the stage
+class implementation is unchanged, only its owning pipeline changes.
+Cross-thread hand-off becomes a matter of `queue.push(std::move(ctx))`
+at the end of the outgoing pipeline and `queue.pop(ctx)` at the start
+of the incoming one.
+
+### What this is NOT
+
+- Not a DAG engine. Stages are linear; fan-out to multiple outputs
+  (produce-once / sample-many) lives inside a single stage that
+  iterates `context.request.outputBuffers`, not in the pipeline
+  topology.
+- Not a stage scheduler. Threads are not abstract workers; each thread
+  has a fixed shape (orchestrator / poll-based V4L2 / Vulkan submitter /
+  callback dispatcher). Stages are what happens inside each thread's
+  dispatch.
+- Not a message passing framework. Inter-thread communication is
+  direct: one `EventQueue<std::unique_ptr<PipelineContext>>` per
+  consumer thread.
 
 ## DelayedControls
 
@@ -283,7 +355,7 @@ Stats path:
 No "3A thread". The IPA runs on whichever thread already has the
 stats buffer mapped; cross-thread hop would waste latency.
 We can always move it to its own thread later if AF becomes heavy
-— the `IIpa` interface doesn't change.
+— the `Ipa` interface doesn't change.
 
 Sequence coupling between stats and controls is explicit: every
 `ControlUpdate` is tagged `effectSequence = inputSequence + delay`.
@@ -433,7 +505,7 @@ regressions / gains are cleanly attributable via `git bisect`.
 
 ### PR 3 — CaptureThread split
 
-- `IBayerSource` interface; `V4l2Source` implementation owns
+- `BayerSource` interface; `V4l2Source` implementation owns
   `CaptureThread`.
 - `poll()` on V4L2 fd; `Signal<BayerFrame> bayerReady`.
 - Drain-to-latest logic migrates out of `V4l2Device::readLock` into
@@ -473,9 +545,9 @@ regressions / gains are cleanly attributable via `git bisect`.
 - Measurable: FPS unchanged; `notify` SHUTTER latency bounded by
   result-queue depth, not by GPU / JPEG work.
 
-### PR 7 — IIpa + GPU statistics
+### PR 7 — Ipa + GPU statistics
 
-- `IIpa` interface; `StubIpa` wraps today's per-frame 3A.
+- `Ipa` interface; `StubIpa` wraps today's per-frame 3A.
 - New compute shader emits histogram + patch-mean grid into a
   host-mapped `VkBuffer`.
 - Stats flow: `PipelineThread` calls `ipa->processStats(seq, stats)`
@@ -488,13 +560,13 @@ regressions / gains are cleanly attributable via `git bisect`.
 
 ### PR 8 — Produce-once + JpegWorker
 
-- `IIsp` grows `beginFrame(bayer)` / `blitToGralloc` /
+- `IspPipeline` grows `beginFrame(bayer)` / `blitToGralloc` /
   `blitToYuv` / `blitToJpegCpu` / `endFrame`.
 - `VulkanIspPipeline` demosaics once per frame into
   `scratchImage`; per-output ops only blit / encode / copy.
 - `BufferProcessor` loop deduplicates — N-stream requests no longer
   mean N demosaics.
-- `IPostProcessor` interface + `JpegEncoder` implementation;
+- `PostProcessor` interface + `JpegEncoder` implementation;
   `JpegWorker` spawned for JPEG work off `PipelineThread`.
 - Measurable: **preview + video multi-stream 13 → 28 fps**; JPEG
   encode doesn't stall preview.
