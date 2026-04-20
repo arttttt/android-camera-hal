@@ -209,6 +209,13 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
     const char *integrator = (mFacing == CAMERA_FACING_BACK) ? "Primax" : "Sunny";
     mTuning.load(sensorName, integrator);
 
+    /* Optical-black bias is the sensor-native analog floor (non-zero
+     * signal at mechanical shutter / darkest scene). Subtracting it
+     * gives us true blacks; rescaling preserves the highlight range.
+     * Constant per channel in stock tuning so one scalar is enough. */
+    if (mTuning.isLoaded())
+        mIsp->setBlackLevel(mTuning.opticalBlack().r);
+
     /* CCM is CCT-dependent: the stock tuning carries 3-4 matrices at
      * different colour temperatures (2400/2800/4000/5000 K), because
      * the correct sensor-to-sRGB transform shifts with the illuminant.

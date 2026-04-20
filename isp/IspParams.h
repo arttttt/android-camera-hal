@@ -19,6 +19,12 @@ struct IspParams {
     uint32_t wbB;
     uint32_t doIsp;
     int32_t  ccm[9];
+    /* Optical-black bias in the sensor's native range (10-bit for
+     * SRGGB10 / SGRBG10 / SGBRG10 / SBGGR10, 8-bit for the SBGGR8
+     * family). Subtracted and rescaled in the demosaic shader before
+     * any colour processing. 0 disables the correction. */
+    uint32_t blackLevel;
+    uint32_t _pad0;   /* std430 alignment */
 
     void reset();
 

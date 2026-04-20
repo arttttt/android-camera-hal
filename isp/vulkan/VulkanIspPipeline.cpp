@@ -55,6 +55,7 @@ void VulkanIspPipeline::fillParams(IspParams *p, unsigned w, unsigned h,
     p->wbG        = mWbG;
     p->wbB        = mWbB;
     p->bayerPhase = IspParams::bayerPhaseFromFourcc(pixFmt);
+    p->blackLevel = mBlackLevel;
     if (mCcm) {
         for (int i = 0; i < 9; i++)
             p->ccm[i] = mCcm[i];

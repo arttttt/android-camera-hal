@@ -90,6 +90,11 @@ public:
     /* CCM matrix (Q10: 1024 = 1.0x), 3x3 row-major */
     void setCcm(const int16_t *ccm) { mCcm = ccm; }
 
+    /* Optical-black bias, in the sensor's native range (10-bit or 8-bit
+     * depending on pixel format). Applied per pixel before demosaic so
+     * shadows hit true 0 and full 255 dynamic range is preserved. */
+    void setBlackLevel(uint32_t v) { mBlackLevel = v; }
+
     /* Enable/disable ISP processing (false = demosaic only) */
     void setEnabled(bool en) { mEnabled = en; }
 
@@ -119,6 +124,7 @@ public:
 protected:
     unsigned mWbR = 256, mWbG = 256, mWbB = 256;
     const int16_t *mCcm = nullptr;
+    uint32_t mBlackLevel = 0;
     bool mEnabled = true;
     bool mAwbLocked = false;
 };
