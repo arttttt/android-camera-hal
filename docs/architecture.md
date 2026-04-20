@@ -212,3 +212,29 @@ Runtime knobs via setprop (`hal/Camera.cpp` parses `persist.camera.*`):
   exposure/gain under whatever the sensor kernel driver defaults to;
   kept as a fallback while porting but no longer exercised on the
   production path.
+
+## Per-module tuning files
+
+`/vendor/etc/camera/tuning/<lower(sensor)>_<lower(integrator)>.json`
+— converted from the stock NVIDIA `.isp` overrides via
+`tools/isp_to_json.py`. The JSON splits keys into two sections:
+
+- `active` — paths with a live HAL consumer today:
+  `af.*` (VCM), `colorCorrection.Set[]` (multi-CCT CCM),
+  `opticalBlack.*` (black-level subtract), `mwbCCT.*` (deferred),
+  plus a `module` block with per-module datasheet values that are
+  not in the `.isp` (physical size, focal length, min focus
+  distance).
+- `reserved` — preserved 1:1 from the stock tuning: noise reduction
+  v2/v6, lens shading, tone curves, sharpness filters, full AE VFR,
+  flicker detection, AWB LUTs. Consumed as the corresponding shader
+  stages ship — no schema migration required for that promotion.
+
+`SensorTuning` (in `isp/sensor/`) loads at Camera construction time,
+`!isLoaded()` falls back to compile-time defaults so the HAL stays
+alive even with the tuning dir missing.
+
+The `.isp → .json` converter is not part of the build; it's run once
+per stock blob drop and the output committed under `tuning/`. See
+`docs/open-questions.md` for CCM / wbGain consumption paths blocked
+on Tier 3 AWB.

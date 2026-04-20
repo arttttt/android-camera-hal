@@ -92,6 +92,34 @@ supporting manual colour spaces (required for serious video
 pipelines, HDR, etc.) the coefficients move into a push constant and
 we fill in the relevant static / per-frame metadata. Not scheduled.
 
+## HAL binary still in `/system/lib/hw/`, not `/vendor/lib/hw/`
+
+All other Tegra HALs on Mi Pad 1 (`gralloc.tegra.so`,
+`hwcomposer.tegra.so`, `vulkan.tegra.so`) live under
+`/vendor/lib/hw/`. Our `camera.tegra.so` is the odd one out —
+`Android.mk`'s `BUILD_SHARED_LIBRARY` emits to `/system/lib/hw/` by
+default, and we haven't flipped it.
+
+**Why it matters:** every tuning JSON the HAL reads already lives
+under `/vendor/etc/camera/tuning/` (Tier 2). The .so should follow
+for consistency and so a future real-vendor-partition Treble port
+is a single build flag rather than a surgery across install paths.
+
+**What to change:**
+- Add `LOCAL_PROPRIETARY_MODULE := true` (or set `LOCAL_VENDOR_MODULE`
+  per current AOSP naming) to the shared-library section in
+  `Android.mk`.
+- The init / cameraserver already looks in `/vendor/lib/hw/`
+  alongside `/system/lib/hw/`, so no manifest edit.
+- Deploy path in `reference_build_workflow.md` updates from
+  `/system/lib/hw/camera.tegra.so` to `/vendor/lib/hw/camera.tegra.so`.
+
+**Why not now:** verified that everything works in `/system/lib/hw/`
+on the current ROM. Moving the install path mid-feature-work is a
+context-switch tax; bundling it with the eventual "true Treble
+port" (split vendor partition, vendor HIDL HAL) makes more sense.
+
+
 ## CCM / WB — deferred CCT-driven selection
 
 **Current state (Tier 2):** `Camera::configureStreams` picks the

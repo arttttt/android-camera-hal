@@ -118,6 +118,59 @@ demosaic, no libyuv, no packed-YUV support.
   metadata + BT.709 / full-range support is not scheduled — see
   open-questions.
 
+### Tier 2 — JSON tuning files per module (M)
+
+Stock NVIDIA `.isp` overrides from the Mi Pad 1 vendor blob converted
+into HAL-owned JSON under `/vendor/etc/camera/tuning/` (Treble path).
+Every hardcoded sensor constant that the HAL has a live consumer for
+now reads from the JSON; remaining keys are preserved verbatim in a
+`reserved` section so future ISP stages (NR, LSC, tone curves,
+sharpness, full AE VFR, AWB CCT LUT) land without another conversion.
+
+- `tools/isp_to_json.py` — one-shot converter. Parses NVIDIA's
+  `namespace.path[i].sub = value;` syntax (including multi-line
+  tuples with missing `};` and split LHS / `=value;` lines).
+  Splits output into `active` (paths consumed by current HAL) and
+  `reserved` (everything else). Hybrid containers (`Chroma.Enable`
+  + `Chroma[0].Gain`) survive via dict-with-stringified-numeric-keys,
+  normalised back to JSON arrays where pure 0..N-1.
+- `isp/sensor/SensorTuning.{h,cpp}` — runtime loader (jsoncpp static).
+  Filename derived by convention: `<lower(sensor)>_<lower(integrator)>.json`.
+  On file missing / malformed / schema mismatch: `!isLoaded()`,
+  consumers fall back to compile-time defaults.
+- `tuning/imx179_primax.json` + `tuning/ov5693_sunny.json` (~150 KB
+  each, faithful 1:1 conversion). Installed via `BUILD_PREBUILT`.
+
+Consumers wired:
+- `AutoFocusController` — VCM infinity / macro / offsets / settle-time
+  from `active.af.*`. Calibrated infinity position becomes
+  `af.inf + af.inf_offset` (NVIDIA convention).
+- `IspCalibration` deleted — CCM now picked from
+  `active.colorCorrection.Set[]` via `SensorTuning::ccmForCctQ10()`,
+  nearest-CCT match at a pinned 5000 K (closest daylight point
+  available on both profiles; D65 isn't there). CCT-driven + `wbGain`
+  selection deferred to Tier 3 AWB — flagged in
+  [open-questions.md](open-questions.md).
+- `DemosaicCompute` shader — optical-black subtract + dynamic-range
+  rescaling using `active.opticalBlack.manualBias*`. Visible
+  improvement in shadow purity (no more warm bias floor).
+- `CameraStaticMetadata` — `ANDROID_SENSOR_INFO_PHYSICAL_SIZE`,
+  `ANDROID_LENS_INFO_AVAILABLE_FOCAL_LENGTHS`, and
+  `ANDROID_LENS_INFO_MINIMUM_FOCUS_DISTANCE` from `module.*` (not
+  from the `.isp` — these are per-module datasheet facts merged in
+  at conversion time via `tuning/_module_*.json`).
+
+Not yet consumed (still in JSON, not in HAL):
+- `active.mwbCCT.*` — manual-AWB preset reference points; blocked
+  on `ANDROID_CONTROL_AWB_MODE` handling past AUTO/OFF.
+- `active.colorCorrection.srgbMatrix` — D50 sRGB transform; would
+  apply after the illuminant-specific CCM in a correctly implemented
+  two-stage colour pipeline. Tier 3.
+- `active.colorCorrection.Set[].wbGain` — per-CCT WB priors, see
+  open-questions CCM section.
+- Everything under `reserved.*` (NR, LSC, tone curves, sharpness,
+  flicker, full AE / AWB LUTs).
+
 ## Tier 1.2 — remaining Camera3 compliance (S)
 
 Absorbed into the `CameraStaticMetadata` home but not yet implemented.
