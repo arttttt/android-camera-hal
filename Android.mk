@@ -54,6 +54,7 @@ LOCAL_C_INCLUDES += \
 
 # Module-internal include dirs
 LOCAL_C_INCLUDES += \
+    $(LOCAL_PATH)/base \
     $(LOCAL_PATH)/hal \
     $(LOCAL_PATH)/v4l2 \
     $(LOCAL_PATH)/isp \
@@ -62,6 +63,8 @@ LOCAL_C_INCLUDES += \
     $(LOCAL_PATH)/util
 
 LOCAL_SRC_FILES += \
+    base/EventFd.cpp \
+    base/ThreadBase.cpp \
     hal/HalModule.cpp \
     hal/Camera.cpp \
     hal/metadata/CameraStaticMetadata.cpp \
