@@ -34,8 +34,17 @@ public:
     virtual const V4l2Device::VBuffer* acquireNextFrame() = 0;
 
     /* Hand a previously-acquired frame back to the source. Safe to
-     * call from any thread. */
+     * call from any thread. Released buffers are not returned to the
+     * underlying V4L2 device until flushPendingReleases() is called —
+     * this avoids handing a slot back to the sensor while the GPU is
+     * still reading from it. */
     virtual void releaseFrame(const V4l2Device::VBuffer*) = 0;
+
+    /* Return all previously-released buffers to the V4L2 device.
+     * The caller must guarantee the GPU (or any other consumer)
+     * has finished reading from them — typically by calling
+     * IspPipeline::waitForPreviousFrame() first. */
+    virtual void flushPendingReleases() = 0;
 
     /* The source's output resolution (what it's currently capturing
      * at). For a V4L2 source, tracks V4l2Device::resolution(). */

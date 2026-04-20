@@ -28,20 +28,13 @@ void V4l2CaptureThread::threadLoop() {
     pfds[1].events = POLLIN;
 
     while (!stopRequested()) {
-        /* Return any buffers the consumer has handed back. Done on
-         * this thread so V4l2Device's pending-QBUF list has a single
-         * writer. */
-        {
-            std::vector<const V4l2Device::VBuffer*> pending;
-            {
-                std::lock_guard<std::mutex> lock(owner->mutex);
-                pending.swap(owner->toRelease);
-            }
-            for (const V4l2Device::VBuffer *buf : pending) {
-                if (buf) dev->unlock(buf);
-            }
-        }
-
+        /* Consumer-released buffers stay in owner->toRelease until the
+         * request thread's CaptureStage flushes them via
+         * BayerSource::flushPendingReleases() — at which point the
+         * GPU has drained and it's safe to requeue. We never touch
+         * V4l2Device::unlock here; all QBUF-back-to-sensor calls on
+         * this thread come from the drain-to-latest loop below, whose
+         * buffers have never been handed to the GPU. */
         pfds[0].revents = 0;
         pfds[1].revents = 0;
         int n = ::poll(pfds, 2, -1);
@@ -101,8 +94,11 @@ void V4l2CaptureThread::threadLoop() {
         owner->frameReady.notify_one();
     }
 
-    /* Exit path: release any held state so V4L2 slots are returned to
-     * the driver before setStreaming(false). */
+    /* Exit path: requeue any held slots directly (no deferral) so
+     * setStreaming(false) sees a clean ring. Everything in toRelease
+     * and latest was already safe to return — consumer handed it
+     * back, and drain-to-latest dropped candidates have never been
+     * consumed. */
     std::vector<const V4l2Device::VBuffer*> residue;
     {
         std::lock_guard<std::mutex> lock(owner->mutex);
@@ -113,7 +109,7 @@ void V4l2CaptureThread::threadLoop() {
         }
     }
     for (const V4l2Device::VBuffer *buf : residue) {
-        if (buf) dev->unlock(buf);
+        if (buf) dev->queueBufferExt(buf->index);
     }
     owner->frameReady.notify_all();
 }

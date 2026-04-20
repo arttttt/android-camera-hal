@@ -35,6 +35,7 @@ public:
 
     const V4l2Device::VBuffer* acquireNextFrame() override;
     void releaseFrame(const V4l2Device::VBuffer*) override;
+    void flushPendingReleases() override;
 
     Resolution resolution()       const override;
     Resolution sensorResolution() const override;

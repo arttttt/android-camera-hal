@@ -21,6 +21,13 @@ void CaptureStage::process(PipelineContext &ctx) {
      * a later change. */
     deps.isp->waitForPreviousFrame();
 
+    /* GPU has now drained. Return any consumer-released buffers back
+     * to the sensor before we block on the next frame — otherwise
+     * the V4L2 ring slowly empties (consumer releases accumulate in
+     * toRelease and never reach QBUF), the sensor runs out of slots,
+     * and poll() hangs. */
+    deps.bayerSource->flushPendingReleases();
+
     const V4l2Device::VBuffer *frame = deps.bayerSource->acquireNextFrame();
     ctx.tBayerDq = systemTime();
 

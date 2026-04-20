@@ -1,5 +1,6 @@
 #include "V4l2Source.h"
 
+#include <errno.h>
 #include <utility>
 
 #include <utils/Log.h>
@@ -65,6 +66,23 @@ void V4l2Source::releaseFrame(const V4l2Device::VBuffer *f) {
     if (!f) return;
     std::lock_guard<std::mutex> lock(mutex);
     toRelease.push_back(f);
+}
+
+void V4l2Source::flushPendingReleases() {
+    std::vector<const V4l2Device::VBuffer*> pending;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        pending.swap(toRelease);
+    }
+    /* Direct QBUF (bypassing V4l2Device::unlock's DMABUF-deferred path):
+     * the caller guarantees the GPU has drained, so the kernel can
+     * reuse the slot immediately. */
+    for (const V4l2Device::VBuffer *buf : pending) {
+        if (buf && !dev->queueBufferExt(buf->index)) {
+            ALOGE("flushPendingReleases: QBUF slot %d failed, errno=%d",
+                  buf->index, errno);
+        }
+    }
 }
 
 Resolution V4l2Source::resolution() const {
