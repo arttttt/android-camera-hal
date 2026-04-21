@@ -45,6 +45,12 @@ public:
     Report report() const;
     bool   isSweeping() const { return mSweepActive; }
 
+    /* Reset the state-machine to the initial post-construction
+     * state. Used at camera close so a stale sweep doesn't leak
+     * into the next session. Calibration (VCM positions, settle
+     * frames) and the last focus position stay. */
+    void reset();
+
 private:
     void startSweep(uint8_t afMode);
     void cancelSweep();

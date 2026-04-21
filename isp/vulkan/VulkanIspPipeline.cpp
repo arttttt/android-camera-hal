@@ -1125,6 +1125,18 @@ void VulkanIspPipeline::destroy() {
     mPrevPending = false;
 }
 
+void VulkanIspPipeline::onSessionClose() {
+    /* Release cached VkImage bindings into framework gralloc buffers —
+     * the framework invalidates them at session close and will allocate
+     * fresh buffers for the next session, so the cache entries would
+     * otherwise point at dead handles. Core resources (device, scratch
+     * image, input ring, shaders, descriptor pool) survive. */
+    if (mDeviceState.isReady() && mDeviceState.pfn()->DeviceWaitIdle) {
+        mDeviceState.pfn()->DeviceWaitIdle(mDeviceState.device());
+    }
+    mGrallocCache.clear();
+}
+
 void VulkanIspPipeline::waitForPreviousFrame() {
     if (!mReady || !mPrevPending) return;
     mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1, &mFence, VK_TRUE, UINT64_MAX);

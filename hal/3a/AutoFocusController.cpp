@@ -232,6 +232,20 @@ void AutoFocusController::onFrameData(const uint8_t *rgba,
     mSettleFrames = mVcmSettleFrames;
 }
 
+void AutoFocusController::reset() {
+    if (mSweepActive) mIsp->setAwbLock(false);
+    mSweepActive    = false;
+    mAfMode         = ANDROID_CONTROL_AF_MODE_OFF;
+    mSweepPos       = 0;
+    mSweepStep      = 0;
+    mSweepEnd       = 0;
+    mSweepBestPos   = mVcmInfinity;
+    mSweepBestScore = 0;
+    mSettleFrames   = 0;
+    /* mFocusPosition kept — it reflects the physical VCM state,
+     * not session state. */
+}
+
 AutoFocusController::Report AutoFocusController::report() const {
     Report r;
     r.afMode = mAfMode;

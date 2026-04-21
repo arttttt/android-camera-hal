@@ -47,6 +47,7 @@ public:
     size_t inputBufferSize()  const override { return mInputRing.slotSize(); }
     int    exportInputBufferFd(int idx) override { return mInputRing.exportFd(idx); }
     void   waitForPreviousFrame() override;
+    void   onSessionClose() override;
 
 private:
     /* init() sub-steps. Each returns false on Vulkan failure; init() calls

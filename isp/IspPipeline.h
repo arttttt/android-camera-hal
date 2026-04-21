@@ -121,6 +121,15 @@ public:
      * doesn't overwrite a slot the shader is still reading. */
     virtual void waitForPreviousFrame() {}
 
+    /* Called by Camera::closeDevice after workers have been stopped
+     * and GPU drained. The backend should release any per-session
+     * references it is holding — notably cached bindings into
+     * framework-owned gralloc buffers, which become invalid the
+     * moment the session ends. Core Vulkan resources (device,
+     * scratch image, input ring, shaders) stay since the pipeline
+     * instance survives close → reopen. */
+    virtual void onSessionClose() {}
+
 protected:
     unsigned mWbR = 256, mWbG = 256, mWbB = 256;
     const int16_t *mCcm = nullptr;

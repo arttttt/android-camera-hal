@@ -190,6 +190,13 @@ int Camera::closeDevice() {
         }
     }
 
+    /* Drop per-session state so the next open starts from a clean
+     * slate. Infrastructure (ISP core, 3A, BufferProcessor, pipeline,
+     * worker threads) survives and will be reused. */
+    mLastRequestSettings.clear();
+    if (mAf)  mAf->reset();
+    if (mIsp) mIsp->onSessionClose();
+
     mDev->disconnect();
     return NO_ERROR;
 }
