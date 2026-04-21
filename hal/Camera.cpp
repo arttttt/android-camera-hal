@@ -68,6 +68,15 @@ constexpr size_t REQUEST_QUEUE_CAPACITY = 256;
 
 /* Matches VulkanIspPipeline's per-slot resource ring. */
 constexpr size_t PIPELINE_MAX_IN_FLIGHT = 4;
+
+/* Handoff buffer between RequestThread and PipelineThread. Decoupled
+ * from PIPELINE_MAX_IN_FLIGHT on purpose: the queue size adds directly
+ * to the number of Bayer slots reserved out of V4L2 at once (each ctx
+ * in the queue still owns its acquireNextFrame'd VBuffer). A cap of 1
+ * keeps the bayer-slot footprint to PIPELINE_MAX_IN_FLIGHT + 1, which
+ * leaves the sensor real runway inside V4L2DEVICE_BUF_COUNT — larger
+ * caps only buy one-sided bursts at the cost of sensor starvation. */
+constexpr size_t PIPELINE_QUEUE_CAPACITY = 1;
 } /* namespace */
 
 namespace android {
@@ -490,7 +499,7 @@ void Camera::buildInfrastructure() {
     mBayerSource.reset(new V4l2Source(mDev));
     mTracker.reset(new InFlightTracker());
     mRequestQueue.reset(new EventQueue<PipelineContext*>(REQUEST_QUEUE_CAPACITY));
-    mPipelineQueue.reset(new EventQueue<PipelineContext*>(PIPELINE_MAX_IN_FLIGHT));
+    mPipelineQueue.reset(new EventQueue<PipelineContext*>(PIPELINE_QUEUE_CAPACITY));
     mRequestPipeline.reset(new Pipeline());
 
     /* RequestThread pipeline — runs Apply / Shutter / Capture on the
