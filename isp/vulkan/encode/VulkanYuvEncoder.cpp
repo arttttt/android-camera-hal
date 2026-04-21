@@ -14,6 +14,8 @@ struct RgbaToNv12PushConstants {
     int32_t w;
     int32_t h;
     int32_t uvBase;
+    int32_t stride;   /* w / 4, precomputed to save an integer divide
+                       * per invocation */
 };
 
 VulkanYuvEncoder::VulkanYuvEncoder(VulkanDeviceState &dev)
@@ -218,6 +220,7 @@ void VulkanYuvEncoder::recordDispatch(VkCommandBuffer cb,
     pc.w      = (int32_t)width;
     pc.h      = (int32_t)height;
     pc.uvBase = (int32_t)(width * height / 4);
+    pc.stride = (int32_t)(width / 4);
     mDev.pfn()->CmdPushConstants(cb, mPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                                  0, sizeof(pc), &pc);
 

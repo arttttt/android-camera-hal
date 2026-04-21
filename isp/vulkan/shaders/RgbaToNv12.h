@@ -31,6 +31,7 @@ static const char kRgbaToNv12ComputeGlsl[] =
     "    int w;       /* Y plane width in pixels */\n"
     "    int h;       /* Y plane height in pixels */\n"
     "    int uvBase;  /* start of UV plane in uint units = w*h/4 */\n"
+    "    int stride;  /* Y-row stride in uint units = w/4          */\n"
     "} pc;\n"
     "float rgb2y (vec3 rgb) { return dot(rgb, vec3( 0.257,  0.504,  0.098)) * 255.0 + 16.0; }\n"
     "float rgb2cb(vec3 rgb) { return dot(rgb, vec3(-0.148, -0.291,  0.439)) * 255.0 + 128.0; }\n"
@@ -55,15 +56,14 @@ static const char kRgbaToNv12ComputeGlsl[] =
     "    uint y1 = toByte(rgb2y(p10))        | (toByte(rgb2y(p11)) << 8)\n"
     "            | (toByte(rgb2y(p12)) << 16)| (toByte(rgb2y(p13)) << 24);\n"
     "\n"
-    "    int stride = pc.w / 4;\n"
-    "    outBuf.data[(2*y + 0) * stride + x] = y0;\n"
-    "    outBuf.data[(2*y + 1) * stride + x] = y1;\n"
+    "    outBuf.data[(2*y + 0) * pc.stride + x] = y0;\n"
+    "    outBuf.data[(2*y + 1) * pc.stride + x] = y1;\n"
     "\n"
     "    vec3 avgL = (p00 + p01 + p10 + p11) * 0.25;\n"
     "    vec3 avgR = (p02 + p03 + p12 + p13) * 0.25;\n"
     "    uint uv = toByte(rgb2cb(avgL))        | (toByte(rgb2cr(avgL)) << 8)\n"
     "            | (toByte(rgb2cb(avgR)) << 16)| (toByte(rgb2cr(avgR)) << 24);\n"
-    "    outBuf.data[pc.uvBase + y * stride + x] = uv;\n"
+    "    outBuf.data[pc.uvBase + y * pc.stride + x] = uv;\n"
     "}\n";
 
 }; /* namespace android */
