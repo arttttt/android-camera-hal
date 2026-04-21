@@ -195,7 +195,7 @@ void VulkanIspPipeline::recordGrallocBlit(int slot, VulkanGrallocCache::Entry *e
     mDeviceState.pfn()->CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
     mDeviceState.pfn()->CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
                                                mPipeLayout, 0, 1, &mDescSet[slot], 0, NULL);
-    mDeviceState.pfn()->CmdDispatch(cb, (srcW + 7) / 8, (srcH + 7) / 8, 1);
+    mDeviceState.pfn()->CmdDispatch(cb, (srcW + 15) / 16, (srcH + 15) / 16, 1);
     if (mTimeQuery) {
         mDeviceState.pfn()->CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                                mTimeQuery, tsBase + 1);
@@ -321,7 +321,7 @@ void VulkanIspPipeline::recordDemosaicAndYuvEncode(int slot,
     mDeviceState.pfn()->CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
     mDeviceState.pfn()->CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 mPipeLayout, 0, 1, &mDescSet[slot], 0, NULL);
-    mDeviceState.pfn()->CmdDispatch(cb, (width + 7) / 8, (height + 7) / 8, 1);
+    mDeviceState.pfn()->CmdDispatch(cb, (width + 15) / 16, (height + 15) / 16, 1);
 
     /* Scratch WRITE → READ — the next compute dispatch samples it. */
     VkImageMemoryBarrier imb = {};
@@ -365,7 +365,7 @@ void VulkanIspPipeline::recordAndSubmit(int slot, unsigned width, unsigned heigh
     mDeviceState.pfn()->CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
     mDeviceState.pfn()->CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 mPipeLayout, 0, 1, &mDescSet[slot], 0, NULL);
-    mDeviceState.pfn()->CmdDispatch(cb, (width + 7) / 8, (height + 7) / 8, 1);
+    mDeviceState.pfn()->CmdDispatch(cb, (width + 15) / 16, (height + 15) / 16, 1);
 
     if (copyToOutBuf) {
         VkImageMemoryBarrier imb = {};
