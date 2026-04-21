@@ -32,6 +32,7 @@
 #include <cassert>
 
 #include "V4l2Device.h"
+#include "V4l2Controls.h"
 
 namespace android {
 
@@ -670,6 +671,31 @@ bool V4l2Device::setControl(uint32_t id, int32_t value) {
         return false;
     }
     ALOGD("setControl(0x%x, %d) OK", id, value);
+    return true;
+}
+
+bool V4l2Device::setControls(const V4l2Controls &controls) {
+    if (controls.count <= 0) return true;
+    if (mFd < 0) return false;
+
+    struct v4l2_ext_control entries[V4l2Controls::MAX_ENTRIES];
+    memset(entries, 0, sizeof(entries));
+    for (int i = 0; i < controls.count; ++i) {
+        entries[i].id    = controls.ids[i];
+        entries[i].value = controls.values[i];
+    }
+
+    struct v4l2_ext_controls batch;
+    memset(&batch, 0, sizeof(batch));
+    batch.ctrl_class = V4L2_CTRL_CLASS_USER;
+    batch.count      = controls.count;
+    batch.controls   = entries;
+
+    if (ioctl(mFd, VIDIOC_S_EXT_CTRLS, &batch) < 0) {
+        ALOGE("setControls(count=%d) FAILED at %u: %s (%d)",
+              controls.count, batch.error_idx, strerror(errno), errno);
+        return false;
+    }
     return true;
 }
 

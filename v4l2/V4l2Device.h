@@ -80,6 +80,13 @@ public:
     void setDmaBufFds(const int *fds, int count);
 
     bool setControl(uint32_t id, int32_t value);
+
+    /* Batched write via VIDIOC_S_EXT_CTRLS. Preferred over looping
+     * setControl() when multiple controls land together (exposure +
+     * gain), because it is one ioctl and — on drivers that honour it —
+     * atomic. No-op (returns true) when controls.count == 0. */
+    bool setControls(const struct V4l2Controls &controls);
+
     bool queryControl(uint32_t id, int32_t *min, int32_t *max, int32_t *def);
 
     /* Focuser subdev control */
