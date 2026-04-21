@@ -75,7 +75,6 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
     DEV(DestroyFence);
     DEV(WaitForFences);
     DEV(ResetFences);
-    DEV(GetFenceStatus);
 
     DEV(CreateShaderModule);
     DEV(DestroyShaderModule);
