@@ -182,7 +182,8 @@ void VulkanIspPipeline::recordGrallocBlit(int slot, VulkanGrallocCache::Entry *e
                                                mPipeLayout, 0, 1, &mDescSet[slot], 0, NULL);
     mDeviceState.pfn()->CmdDispatch(cb, (srcW + 7) / 8, (srcH + 7) / 8, 1);
 
-    /* scratch SHADER_WRITE → SHADER_READ for the fragment pass. */
+    /* scratch SHADER_WRITE → SHADER_READ, visible to both the stats
+     * compute pass and the fragment blit that follows. */
     VkImageMemoryBarrier scratchB = {};
     scratchB.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     scratchB.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -197,8 +198,13 @@ void VulkanIspPipeline::recordGrallocBlit(int slot, VulkanGrallocCache::Entry *e
     scratchB.subresourceRange.layerCount = 1;
     mDeviceState.pfn()->CmdPipelineBarrier(cb,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
         0, 0, NULL, 0, NULL, 1, &scratchB);
+
+    /* Stats reducer: reads scratch, writes its own host-mapped buffer,
+     * emits its own TRANSFER/COMPUTE → HOST_READ barrier internally so
+     * the CPU can pick up stats after the submit's fence signals. */
+    mStatsEncoder.recordDispatch(cb, srcW, srcH);
 
     /* Fragment pass: full-screen triangle samples scratch, driver's ROP
      * rasterizes into gralloc's blocklinear layout correctly. Render
