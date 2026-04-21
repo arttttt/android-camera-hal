@@ -633,30 +633,19 @@ void Camera::startWorkers() {
      * forever. */
     if (mPipelineThread && !mPipelineThread->isRunning()) {
         if (!mPipelineThread->start("CamPipeline")) {
-            ALOGE("PipelineThread start failed");
+            ALOGE("PipelineThread start failed, unwinding BayerSource");
+            if (mBayerSource) mBayerSource->stop();
             return;
         }
     }
     if (mRequestThread && !mRequestThread->isRunning()) {
         if (!mRequestThread->start("CamRequest")) {
-            ALOGE("RequestThread start failed");
+            ALOGE("RequestThread start failed, unwinding PipelineThread + BayerSource");
+            if (mPipelineThread) mPipelineThread->stop();
+            if (mBayerSource)    mBayerSource->stop();
             return;
         }
     }
-
-    /* Shader / pipeline warmup lives in configureStreams' inline
-     * mIsp->prewarm() call — a fragment-free compute submit that
-     * vkWaitForFences'es in-place. Pushing an extra
-     * discardOnDispatch context from here used to do a second warmup
-     * through the real pipeline, but on the NVIDIA K1 driver a
-     * compute-only submit's sync_fd won't signal until a subsequent
-     * submit (probably a graphics one) flushes the pushbuffer — at
-     * PIPELINE_MAX_IN_FLIGHT=1 that next submit never comes, the
-     * fence deadlocks PipelineThread, and preview never starts.
-     * Removing the synth push: the first real framework frame warms
-     * the fragment-blit path on its own, and keeping the synth
-     * around without the "same code as real frames" promise it was
-     * meant to uphold is dead weight. */
 }
 
 inline void Camera::notifyShutter(uint32_t frameNumber, uint64_t timestamp) {
