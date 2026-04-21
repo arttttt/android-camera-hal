@@ -91,6 +91,7 @@ LOCAL_SRC_FILES += \
     v4l2/V4l2Source.cpp \
     isp/IspPipeline.cpp \
     isp/IspParams.cpp \
+    isp/sensor/DelayedControls.cpp \
     isp/sensor/SensorTuning.cpp \
     isp/vulkan/VulkanIspPipeline.cpp \
     isp/vulkan/runtime/VulkanDeviceState.cpp \
