@@ -40,6 +40,7 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mGrallocCache(mDeviceState)
     , mYuvEncoder(mDeviceState)
     , mStatsEncoder(mDeviceState)
+    , mTimeQuery(VK_NULL_HANDLE)
 {
     for (size_t s = 0; s < SLOT_COUNT; s++) {
         mDescSet[s]     = VK_NULL_HANDLE;
@@ -175,12 +176,27 @@ void VulkanIspPipeline::recordGrallocBlit(int slot, VulkanGrallocCache::Entry *e
     mDeviceState.pfn()->ResetCommandBuffer(cb, 0);
     mDeviceState.pfn()->BeginCommandBuffer(cb, &bi);
 
+    /* Timestamp pool: reset this slot's four queries and write the
+     * top-of-pipe anchor. Pairs t0/t1/t2/t3 mark demosaic-in,
+     * demosaic-out, stats-out, blit-out. Processed in processToGralloc
+     * after WaitForFences. */
+    const uint32_t tsBase = (uint32_t)slot * TIMESTAMPS_PER_SLOT;
+    if (mTimeQuery) {
+        mDeviceState.pfn()->CmdResetQueryPool(cb, mTimeQuery, tsBase, TIMESTAMPS_PER_SLOT);
+        mDeviceState.pfn()->CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                               mTimeQuery, tsBase + 0);
+    }
+
     /* Compute: Bayer → mScratchImg (via binding=1 storage image, set once
      * in ensureBuffers). Dispatch sized to the scratch/capture extent. */
     mDeviceState.pfn()->CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
     mDeviceState.pfn()->CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
                                                mPipeLayout, 0, 1, &mDescSet[slot], 0, NULL);
     mDeviceState.pfn()->CmdDispatch(cb, (srcW + 7) / 8, (srcH + 7) / 8, 1);
+    if (mTimeQuery) {
+        mDeviceState.pfn()->CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                               mTimeQuery, tsBase + 1);
+    }
 
     /* scratch SHADER_WRITE → SHADER_READ, visible to both the stats
      * compute pass and the fragment blit that follows. */
@@ -204,6 +220,10 @@ void VulkanIspPipeline::recordGrallocBlit(int slot, VulkanGrallocCache::Entry *e
     /* Stats reducer: reads scratch, writes its own host-mapped buffer,
      * emits its own COMPUTE → HOST_READ barrier internally. */
     mStatsEncoder.recordDispatch(cb, srcW, srcH);
+    if (mTimeQuery) {
+        mDeviceState.pfn()->CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                               mTimeQuery, tsBase + 2);
+    }
 
     /* Fragment pass: full-screen triangle samples scratch, driver's ROP
      * rasterizes into gralloc's blocklinear layout correctly. Render
@@ -252,6 +272,10 @@ void VulkanIspPipeline::recordGrallocBlit(int slot, VulkanGrallocCache::Entry *e
 
     mDeviceState.pfn()->CmdDraw(cb, 3, 1, 0, 0);
     mDeviceState.pfn()->CmdEndRenderPass(cb);
+    if (mTimeQuery) {
+        mDeviceState.pfn()->CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                               mTimeQuery, tsBase + 3);
+    }
 
     mDeviceState.pfn()->EndCommandBuffer(cb);
     entry->layoutReady = true;
@@ -712,6 +736,26 @@ bool VulkanIspPipeline::createCommandObjects() {
             return false;
         }
     }
+
+    /* GPU timestamp pool — TIMESTAMPS_PER_SLOT queries per slot, so
+     * every in-flight submit owns its own offset and results stay
+     * independent even if the ring is wrapped before the CPU has
+     * read the previous slot. Skipped when the driver reports
+     * timestampValidBits == 0 on the compute queue (timestamps
+     * would always read as zero). */
+    if (mDeviceState.timestampValidBits() > 0) {
+        VkQueryPoolCreateInfo qpci = {};
+        qpci.sType      = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+        qpci.queryType  = VK_QUERY_TYPE_TIMESTAMP;
+        qpci.queryCount = SLOT_COUNT * TIMESTAMPS_PER_SLOT;
+        if (mDeviceState.pfn()->CreateQueryPool(mDeviceState.device(), &qpci, NULL,
+                                                 &mTimeQuery) != VK_SUCCESS) {
+            ALOGW("CreateQueryPool failed — GPU timing disabled");
+            mTimeQuery = VK_NULL_HANDLE;
+        }
+    } else {
+        ALOGW("Queue reports timestampValidBits=0 — GPU timing disabled");
+    }
     return true;
 }
 
@@ -1100,6 +1144,37 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
                                        &mFence[slot], VK_TRUE, UINT64_MAX);
     mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[slot]);
 
+    /* GPU-side phase timing. Reading raw ticks right after the fence
+     * avoids the CPU-side submit/poll jitter that dominates PERF post. */
+    if (mTimeQuery) {
+        uint64_t ts[TIMESTAMPS_PER_SLOT] = {};
+        const uint32_t tsBase = (uint32_t)slot * TIMESTAMPS_PER_SLOT;
+        VkResult qr = mDeviceState.pfn()->GetQueryPoolResults(
+                mDeviceState.device(), mTimeQuery,
+                tsBase, TIMESTAMPS_PER_SLOT,
+                sizeof(ts), ts, sizeof(uint64_t),
+                VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+        if (qr == VK_SUCCESS) {
+            const float period = mDeviceState.timestampPeriodNs();
+            /* Timestamps are raw ticks; the low timestampValidBits bits
+             * are meaningful — mask the rest to reject garbage in the
+             * high bits before subtracting. */
+            const uint32_t validBits = mDeviceState.timestampValidBits();
+            const uint64_t mask = (validBits >= 64)
+                                  ? UINT64_MAX
+                                  : ((uint64_t)1 << validBits) - 1u;
+            auto deltaUs = [&](uint64_t a, uint64_t b) {
+                uint64_t d = (b & mask) - (a & mask);
+                return (uint64_t)((double)d * period) / 1000u;
+            };
+            ALOGD("PERF-GPU: demosaic=%lluus stats=%lluus blit=%lluus total=%lluus",
+                  (unsigned long long)deltaUs(ts[0], ts[1]),
+                  (unsigned long long)deltaUs(ts[1], ts[2]),
+                  (unsigned long long)deltaUs(ts[2], ts[3]),
+                  (unsigned long long)deltaUs(ts[0], ts[3]));
+        }
+    }
+
     updateAwb((const uint8_t *)mInputRing.mapped(srcInputSlot),
               srcW, srcH, is16, pixFmt);
 
@@ -1127,6 +1202,11 @@ void VulkanIspPipeline::destroy() {
         mStatsEncoder.destroy();
         mYuvEncoder.destroy();
         mInputRing.destroy();
+
+        if (mTimeQuery) {
+            mDeviceState.pfn()->DestroyQueryPool(mDeviceState.device(), mTimeQuery, NULL);
+            mTimeQuery = VK_NULL_HANDLE;
+        }
 
         if (mScratchView) {
             mDeviceState.pfn()->DestroyImageView(mDeviceState.device(), mScratchView, NULL);

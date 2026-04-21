@@ -121,6 +121,7 @@ struct VulkanPfn {
     PFN_vkEnumeratePhysicalDevices                  EnumeratePhysicalDevices;
     PFN_vkGetPhysicalDeviceMemoryProperties         GetPhysicalDeviceMemoryProperties;
     PFN_vkGetPhysicalDeviceQueueFamilyProperties    GetPhysicalDeviceQueueFamilyProperties;
+    PFN_vkGetPhysicalDeviceProperties               GetPhysicalDeviceProperties;
     PFN_vkEnumerateDeviceExtensionProperties        EnumerateDeviceExtensionProperties;
     PFN_vkCreateDevice                              CreateDevice;
     PFN_vkGetDeviceProcAddr                         GetDeviceProcAddr;
@@ -195,6 +196,12 @@ struct VulkanPfn {
     PFN_vkCmdCopyImage                              CmdCopyImage;
     PFN_vkCmdCopyBufferToImage                      CmdCopyBufferToImage;
     PFN_vkCmdFillBuffer                             CmdFillBuffer;
+
+    PFN_vkCreateQueryPool                           CreateQueryPool;
+    PFN_vkDestroyQueryPool                          DestroyQueryPool;
+    PFN_vkCmdResetQueryPool                         CmdResetQueryPool;
+    PFN_vkCmdWriteTimestamp                         CmdWriteTimestamp;
+    PFN_vkGetQueryPoolResults                       GetQueryPoolResults;
 
     PFN_vkCmdBeginRenderPass                        CmdBeginRenderPass;
     PFN_vkCmdEndRenderPass                          CmdEndRenderPass;

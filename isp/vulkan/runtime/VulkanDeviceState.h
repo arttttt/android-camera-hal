@@ -37,6 +37,14 @@ public:
      * zero-copy output depends on it. */
     bool nativeBufferAvailable() const { return mNativeBufferAvail; }
 
+    /* GPU timestamp diagnostics — nanoseconds per tick (from
+     * VkPhysicalDeviceLimits), and the number of valid bits the
+     * compute queue reports. Both are zero when timestamps are
+     * unsupported on this queue; callers should skip
+     * vkCmdWriteTimestamp in that case. */
+    float    timestampPeriodNs()  const { return mTimestampPeriod; }
+    uint32_t timestampValidBits() const { return mTimestampValidBits; }
+
     /* Find a memory type index matching the filter bitmask and property
      * flags, or UINT32_MAX when no match exists. */
     uint32_t findMemoryType(uint32_t filter, VkMemoryPropertyFlags props) const;
@@ -60,6 +68,8 @@ private:
     VkQueue          mQueue;
     uint32_t         mQueueFamily;
     bool             mNativeBufferAvail;
+    float            mTimestampPeriod;
+    uint32_t         mTimestampValidBits;
 };
 
 }; /* namespace android */

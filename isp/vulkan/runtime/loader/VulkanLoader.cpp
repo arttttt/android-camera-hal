@@ -30,6 +30,7 @@ void VulkanLoader::loadInstancePfns(VkInstance instance, VulkanPfn *pfn) const {
     INST(EnumeratePhysicalDevices);
     INST(GetPhysicalDeviceMemoryProperties);
     INST(GetPhysicalDeviceQueueFamilyProperties);
+    INST(GetPhysicalDeviceProperties);
     INST(EnumerateDeviceExtensionProperties);
     INST(CreateDevice);
     INST(GetDeviceProcAddr);
@@ -112,6 +113,12 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
     DEV(CmdCopyImage);
     DEV(CmdCopyBufferToImage);
     DEV(CmdFillBuffer);
+
+    DEV(CreateQueryPool);
+    DEV(DestroyQueryPool);
+    DEV(CmdResetQueryPool);
+    DEV(CmdWriteTimestamp);
+    DEV(GetQueryPoolResults);
 
     DEV(CmdBeginRenderPass);
     DEV(CmdEndRenderPass);
