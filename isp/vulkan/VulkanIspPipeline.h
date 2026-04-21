@@ -35,9 +35,6 @@ public:
 
     void prewarm(unsigned width, unsigned height, uint32_t pixFmt) override;
 
-    bool submitDemosaicOnly(int srcInputSlot, unsigned width, unsigned height,
-                             uint32_t pixFmt, int *submitFence) override;
-
     bool processToGralloc(const uint8_t *src, void *nativeBuffer,
                            unsigned srcW, unsigned srcH,
                            unsigned dstW, unsigned dstH,

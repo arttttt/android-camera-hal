@@ -55,14 +55,6 @@ struct PipelineContext {
      * buffers when this is set. */
     int errorCode;
 
-    /* True for synthetic contexts — the pipeline runs but no framework
-     * callback is emitted and no output buffers are touched. Used to
-     * exercise the hot path once per session for driver / shader
-     * warm-up without asking the framework's indulgence. ShutterNotify
-     * and ResultDispatch honour this; every other stage is unaware
-     * (the "99% normal, 1% special" prewarm). */
-    bool discardOnDispatch;
-
     /* Submit-level sync_fds from vkGetFenceFdKHR, one per GPU submit
      * issued for this context. The thread that drives DemosaicBlit
      * hands these to the PipelineThread poll set; completion signals
@@ -75,8 +67,7 @@ struct PipelineContext {
           cropX(0), cropY(0), cropW(0), cropH(0),
           appliedExposureUs(0), appliedGain(0),
           tAccepted(0), tShutter(0), tBayerDq(0), tResultSent(0),
-          errorCode(0),
-          discardOnDispatch(false) {}
+          errorCode(0) {}
 
     PipelineContext(PipelineContext&&) = default;
     PipelineContext& operator=(PipelineContext&&) = default;

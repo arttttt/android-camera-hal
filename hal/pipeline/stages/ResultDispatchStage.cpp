@@ -25,24 +25,14 @@ ResultDispatchStage::ResultDispatchStage(const Deps &d) : deps(d) {}
 void ResultDispatchStage::process(PipelineContext &ctx) {
     const camera3_callback_ops_t *ops = *deps.callbackOps;
 
-    /* Close any submit sync_fds the stage chain populated — on today's
-     * synchronous path the work is already drained (CaptureStage runs
-     * waitForPreviousFrame at the top of the next frame), and the
-     * upcoming PipelineThread will poll them before calling this stage.
-     * Either way these fds have no further consumer here. */
+    /* Defensive close of any lingering submit sync_fds. PipelineThread's
+     * reap path drains them before handing the ctx over, so in normal
+     * operation this vector is empty; on stop-drain timeouts it may
+     * hold unsignalled fds that ::close() simply releases. */
     for (int fd : ctx.pendingFenceFds) {
         if (fd >= 0) ::close(fd);
     }
     ctx.pendingFenceFds.clear();
-
-    /* Synthetic prewarm context: exercise the pipeline but drop the
-     * result on the floor — no framework callback, no result metadata
-     * build. Still release the Bayer slot so the V4L2 ring doesn't
-     * leak. */
-    if (ctx.discardOnDispatch) {
-        if (ctx.bayerFrame) deps.bayerSource->releaseFrame(ctx.bayerFrame);
-        return;
-    }
 
     if (ctx.errorCode) {
         if (ops) {
