@@ -96,12 +96,18 @@ void PipelineThread::threadLoop() {
         }
         if (pfds[1].revents & POLLIN) break;
 
-        if (pfds[0].revents & POLLIN) deps.queue->drain();
-
-        /* Accept new submits up to the in-flight cap. */
+        /* Accept new submits up to the in-flight cap. Drain the queue
+         * eventfd only after tryPop confirms "queue empty" — draining
+         * up front when the cap is about to block pop means the
+         * eventfd counter goes to zero while the queue still has
+         * items, and the next poll waits forever even though work is
+         * already queued. */
         while (inFlight.size() < deps.maxInFlight) {
             PipelineContext *ctx = nullptr;
-            if (!deps.queue->tryPop(ctx)) break;
+            if (!deps.queue->tryPop(ctx)) {
+                deps.queue->drain();
+                break;
+            }
             if (!ctx) continue;
 
             /* DemosaicBlitStage is not alwaysRun — a context that
