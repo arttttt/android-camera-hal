@@ -178,6 +178,11 @@ private:
     void fillParams(IspParams *p, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
     void updateAwb(const uint8_t *raw, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
 
+    /* Precomputed sRGB-encode LUT (linear [0..255] → encoded [0..255]),
+     * copied into every IspParams upload. Filled once in init(). */
+    uint32_t mGammaLut[256];
+    void buildGammaLut();
+
     VulkanGrallocCache mGrallocCache;
     VulkanYuvEncoder   mYuvEncoder;   /* lazy — buffers allocated on first YUV request */
     VulkanStatsEncoder mStatsEncoder; /* always on — buffer sized once at init() */

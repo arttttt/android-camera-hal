@@ -31,6 +31,13 @@ struct IspParams {
      * lock-step with blackLevel and is16bit. */
     float denomRecip255;
 
+    /* 256-entry sRGB encode LUT: uint8 values stored one-per-uint.
+     * Replaces the per-channel pow(x, 1/2.4) in the shader when
+     * doIsp is set — 3 pow() calls per pixel (Kepler SFU, ~8-12
+     * cycles each) become 3 shared-memory reads per pixel. Filled
+     * once by the host in fillParams from a cached table. */
+    uint32_t gammaLut[256];
+
     void reset();
 
     /* V4L2 Bayer fourcc → 0..3 matching SRGGB / SGRBG / SGBRG / SBGGR. */

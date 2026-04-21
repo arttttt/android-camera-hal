@@ -57,6 +57,19 @@ VulkanIspPipeline::~VulkanIspPipeline() { destroy(); }
 
 /* --- helpers (no VK calls) --- */
 
+void VulkanIspPipeline::buildGammaLut() {
+    for (int i = 0; i < 256; ++i) {
+        float lin = (float)i / 255.0f;
+        float enc = (lin <= 0.0031308f)
+                    ? lin * 12.92f
+                    : 1.055f * powf(lin, 1.0f / 2.4f) - 0.055f;
+        int v = (int)(enc * 255.0f + 0.5f);
+        if (v < 0) v = 0;
+        if (v > 255) v = 255;
+        mGammaLut[i] = (uint32_t)v;
+    }
+}
+
 void VulkanIspPipeline::fillParams(IspParams *p, unsigned w, unsigned h,
                                     bool is16, uint32_t pixFmt) {
     p->reset();
@@ -76,6 +89,7 @@ void VulkanIspPipeline::fillParams(IspParams *p, unsigned w, unsigned h,
         for (int i = 0; i < 9; i++)
             p->ccm[i] = mCcm[i];
     }
+    memcpy(p->gammaLut, mGammaLut, sizeof(mGammaLut));
 }
 
 void VulkanIspPipeline::updateAwb(const uint8_t *raw, unsigned w, unsigned h,
@@ -426,6 +440,8 @@ bool VulkanIspPipeline::init() {
         destroy();
         return false;
     }
+
+    buildGammaLut();
 
     mReady = true;
     ALOGD("Vulkan ISP initialized");
