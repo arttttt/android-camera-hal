@@ -69,6 +69,9 @@ void VulkanIspPipeline::fillParams(IspParams *p, unsigned w, unsigned h,
     p->wbB        = mWbB;
     p->bayerPhase = IspParams::bayerPhaseFromFourcc(pixFmt);
     p->blackLevel = mBlackLevel;
+    const uint32_t maxRaw = is16 ? 1023u : 255u;
+    const uint32_t denom  = (mBlackLevel < maxRaw) ? (maxRaw - mBlackLevel) : 1u;
+    p->denomRecip255 = 255.0f / (float)denom;
     if (mCcm) {
         for (int i = 0; i < 9; i++)
             p->ccm[i] = mCcm[i];

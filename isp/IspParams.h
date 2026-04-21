@@ -24,7 +24,12 @@ struct IspParams {
      * family). Subtracted and rescaled in the demosaic shader before
      * any colour processing. 0 disables the correction. */
     uint32_t blackLevel;
-    uint32_t _pad0;   /* std430 alignment */
+
+    /* Precomputed 255 / (maxRaw - blackLevel) so the shader does one
+     * multiply per raw sample instead of the emulated integer divide
+     * Kepler pays for. Populated by the host in fillParams — keep in
+     * lock-step with blackLevel and is16bit. */
+    float denomRecip255;
 
     void reset();
 
