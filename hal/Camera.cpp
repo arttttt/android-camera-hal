@@ -67,15 +67,12 @@ namespace {
 constexpr size_t REQUEST_QUEUE_CAPACITY = 256;
 
 /* Depth of concurrent GPU submits PipelineThread will keep outstanding.
- * Bounded from above by VulkanIspPipeline::SLOT_COUNT (the per-slot
- * ring). On single-stream preview at 1080p the CPU side of a submit
- * is a couple of ms while the GPU takes ~50 ms — any depth > 1 just
- * piles head-of-line queueing on top of the GPU bottleneck and the
- * framework sees ResultDispatch callbacks clumped in bursts instead
- * of arriving at sensor cadence. Pin at 1 until PR 7 / 8 add real
- * CPU work (IPA stats, JPEG encode) that actually has something to
- * hide behind the GPU. */
-constexpr size_t PIPELINE_MAX_IN_FLIGHT = 1;
+ * Bounded above by VulkanIspPipeline::SLOT_COUNT (the per-slot ring)
+ * and below by the sensor's ability to deliver fresh Bayer. Higher
+ * values overlap RequestThread's Apply/Shutter/Capture + the
+ * framework's process_capture_request preparation with PipelineThread's
+ * GPU work + ResultDispatch. */
+constexpr size_t PIPELINE_MAX_IN_FLIGHT = 4;
 
 /* Handoff buffer between RequestThread and PipelineThread. Decoupled
  * from PIPELINE_MAX_IN_FLIGHT on purpose: the queue size adds directly
