@@ -261,6 +261,8 @@ void VulkanIspPipeline::recordGrallocBlit(int slot, VulkanGrallocCache::Entry *e
     struct BlitPushConstants {
         int32_t cropX, cropY, cropW, cropH;
         int32_t srcW,  srcH,  outW,  outH;
+        float   uvOffsetX, uvOffsetY;   /* cropX/srcW, cropY/srcH */
+        float   uvStepX,   uvStepY;     /* cropW/(outW*srcW), cropH/(outH*srcH) */
     };
     BlitPushConstants pc = {};
     pc.cropX = crop.x;
@@ -271,6 +273,10 @@ void VulkanIspPipeline::recordGrallocBlit(int slot, VulkanGrallocCache::Entry *e
     pc.srcH  = (int32_t)srcH;
     pc.outW  = (int32_t)dstW;
     pc.outH  = (int32_t)dstH;
+    pc.uvOffsetX = (float)crop.x / (float)srcW;
+    pc.uvOffsetY = (float)crop.y / (float)srcH;
+    pc.uvStepX   = (float)crop.w / ((float)dstW * (float)srcW);
+    pc.uvStepY   = (float)crop.h / ((float)dstH * (float)srcH);
     mDeviceState.pfn()->CmdPushConstants(cb, mPipeLayout,
                                           VK_SHADER_STAGE_FRAGMENT_BIT,
                                           0, sizeof(pc), &pc);
@@ -508,12 +514,13 @@ bool VulkanIspPipeline::createDescriptorLayouts() {
     }
 
     /* Push-constant range for the blit shader: crop rect + scratch +
-     * output extents (see shaders/Blit.h BlitPC block). 32 bytes, fits
-     * well under the 128-byte Vulkan 1.0 guarantee. */
+     * output extents + precomputed scale/offset vec2s (see shaders/
+     * Blit.h BlitPC block). 48 bytes, fits well under the 128-byte
+     * Vulkan 1.0 guarantee. */
     VkPushConstantRange blitPc = {};
     blitPc.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     blitPc.offset     = 0;
-    blitPc.size       = 8 * sizeof(int32_t);
+    blitPc.size       = 8 * sizeof(int32_t) + 4 * sizeof(float);
 
     VkPipelineLayoutCreateInfo plci = {};
     plci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
