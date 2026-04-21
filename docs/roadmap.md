@@ -227,6 +227,27 @@ Deferred but slot-reserved from PR 2: `Request::inputBuffer` for
 ZSL / reprocess; ZSL ring buffer and reprocess wiring happen in
 Tier 4 with no queue-type churn.
 
+### Housekeeping — drop `V4L2DEVICE_OPEN_ONCE` entirely (S)
+
+After PR 8 lands, remove the remaining `V4L2DEVICE_OPEN_ONCE`
+fast-paths from `v4l2/V4l2Device.cpp` (ctor auto-`connect()`,
+`disconnect()` guarded `cleanup()`) and from `Android.mk` /
+`README` / `docs/architecture.md`. The flag dates from an earlier
+attempt to avoid sensor reinit cost across close/reopen; the
+STREAMOFF half was already dropped when the stale-frame-across-
+sessions bug surfaced (mainline now does real STREAMOFF and
+re-queues every slot in `setStreaming(true)`). The fd-lifetime
+half kept an fd across `closeDevice`, which in turn forced the
+Camera ctor's implicit-connect assumption for early
+`staticCharacteristics()` queries. Clean-up plan:
+
+- V4l2Device ctor: no auto-`connect()`.
+- `disconnect()`: always `cleanup()`; fd closes at end of session.
+- Camera ctor: call `mDev->connect()` explicitly so pre-open
+  enumeration still works.
+- Verify reopen path re-negotiates pixel format on fresh fd.
+- Drop the `-DV4L2DEVICE_OPEN_ONCE` define and all its docs.
+
 ## Tier 4 — aspirational (L, or rewrite)
 
 ### Move sensor / ISP access to media-controller + v4l2-subdev
