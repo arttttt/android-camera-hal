@@ -67,6 +67,8 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
         }
         ctx.outputNeedsFinalUnlock[i] = state.needsFinalUnlock;
         ctx.outputReleaseFences[i]    = state.releaseFd;
+        if (state.submitSyncFd >= 0)
+            ctx.pendingFenceFds.push_back(state.submitSyncFd);
     }
 
     if (deps.af) deps.af->onFrameData(rgbaBuffer, res.width, res.height);

@@ -61,6 +61,7 @@ bool BufferProcessor::tryZeroCopy(const camera3_stream_buffer &srcBuf,
         streamW, const_cast<native_handle_t *>(*srcBuf.buffer),
         false);
     int zcReleaseFd = -1;
+    int zcSubmitFd  = -1;
     bool zcOk = false;
     BENCHMARK_SECTION("Raw->RGBA") {
         CropRect crop = { ctx.cropX, ctx.cropY, ctx.cropW, ctx.cropH };
@@ -68,13 +69,14 @@ bool BufferProcessor::tryZeroCopy(const camera3_stream_buffer &srcBuf,
                                             ctx.resW, ctx.resH,
                                             streamW, streamH,
                                             ctx.pixFmt,
-                                            -1, &zcReleaseFd, /*submitFence=*/NULL,
+                                            -1, &zcReleaseFd, &zcSubmitFd,
                                             ctx.frameSlotIdx, crop);
     }
     if (!zcOk)
         return false;
 
-    state->releaseFd = zcReleaseFd;
+    state->releaseFd     = zcReleaseFd;
+    state->submitSyncFd  = zcSubmitFd;
     if (mDeps.af && mDeps.af->isSweeping() && !*sharedRgba) {
         /* AF sharpness metric needs CPU-readable pixels. Lock the
          * first eligible output per frame so subsequent outputs skip
@@ -197,6 +199,7 @@ status_t BufferProcessor::processOne(const camera3_stream_buffer &srcBuf,
                                       uint8_t **sharedRgba) {
     state->needsFinalUnlock = true;
     state->releaseFd        = -1;
+    state->submitSyncFd     = -1;
 
     status_t e = waitAcquireFence(srcBuf, frameNumber);
     if (e != NO_ERROR)

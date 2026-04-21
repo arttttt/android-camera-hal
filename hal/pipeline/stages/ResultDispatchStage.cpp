@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <unistd.h>
 
 #include <utils/Errors.h>
 #include <utils/Log.h>
@@ -23,6 +24,16 @@ ResultDispatchStage::ResultDispatchStage(const Deps &d) : deps(d) {}
 
 void ResultDispatchStage::process(PipelineContext &ctx) {
     const camera3_callback_ops_t *ops = *deps.callbackOps;
+
+    /* Close any submit sync_fds the stage chain populated — on today's
+     * synchronous path the work is already drained (CaptureStage runs
+     * waitForPreviousFrame at the top of the next frame), and the
+     * upcoming PipelineThread will poll them before calling this stage.
+     * Either way these fds have no further consumer here. */
+    for (int fd : ctx.pendingFenceFds) {
+        if (fd >= 0) ::close(fd);
+    }
+    ctx.pendingFenceFds.clear();
 
     if (ctx.errorCode) {
         if (ops) {

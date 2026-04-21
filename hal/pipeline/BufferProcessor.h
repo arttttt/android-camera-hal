@@ -44,6 +44,11 @@ public:
     struct OutputState {
         bool needsFinalUnlock;
         int  releaseFd;
+        /* sync_fd from the GPU submit that produced this output (-1
+         * if none). Caller owns and must close. Used by PipelineThread
+         * to poll submit completion; ResultDispatchStage closes any
+         * remaining fds if the work was already drained synchronously. */
+        int  submitSyncFd;
     };
 
     explicit BufferProcessor(const Deps &deps);
