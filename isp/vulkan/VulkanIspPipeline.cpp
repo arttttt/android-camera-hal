@@ -1230,6 +1230,20 @@ void VulkanIspPipeline::onSessionClose() {
         mDeviceState.pfn()->DeviceWaitIdle(mDeviceState.device());
     }
     mGrallocCache.clear();
+
+    /* Drop any per-slot sync_fds from the session that just closed —
+     * DeviceWaitIdle above guarantees the corresponding submits are
+     * complete, so the fds carry nothing useful, and acquireSlot on
+     * the next session would otherwise poll on fds from the previous
+     * session before reusing the slot. mNextSlot resets so the ring
+     * starts from slot 0 like a fresh init. */
+    for (size_t s = 0; s < SLOT_COUNT; s++) {
+        if (mSlotSyncFd[s] >= 0) {
+            ::close(mSlotSyncFd[s]);
+            mSlotSyncFd[s] = -1;
+        }
+    }
+    mNextSlot = 0;
 }
 
 void VulkanIspPipeline::waitForPreviousFrame() {
