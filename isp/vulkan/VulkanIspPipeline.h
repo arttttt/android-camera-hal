@@ -6,6 +6,7 @@
 #include "runtime/VulkanDeviceState.h"
 #include "io/VulkanInputRing.h"
 #include "io/VulkanGrallocCache.h"
+#include "encode/VulkanStatsEncoder.h"
 #include "encode/VulkanYuvEncoder.h"
 
 #define VK_USE_PLATFORM_ANDROID_KHR
@@ -179,6 +180,7 @@ private:
 
     VulkanGrallocCache mGrallocCache;
     VulkanYuvEncoder   mYuvEncoder;   /* lazy — buffers allocated on first YUV request */
+    VulkanStatsEncoder mStatsEncoder; /* always on — buffer sized once at init() */
 };
 
 }; /* namespace android */

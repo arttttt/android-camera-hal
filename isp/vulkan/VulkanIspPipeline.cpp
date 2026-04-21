@@ -39,6 +39,7 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mNextSlot(0)
     , mGrallocCache(mDeviceState)
     , mYuvEncoder(mDeviceState)
+    , mStatsEncoder(mDeviceState)
 {
     for (size_t s = 0; s < SLOT_COUNT; s++) {
         mDescSet[s]     = VK_NULL_HANDLE;
@@ -387,7 +388,9 @@ bool VulkanIspPipeline::init() {
         !createGraphicsPipeline() ||
         !allocateDescriptorSet() ||
         !createCommandObjects() ||
-        !mYuvEncoder.init()) {
+        !mYuvEncoder.init() ||
+        !mStatsEncoder.init() ||
+        !mStatsEncoder.ensureBuffers()) {
         destroy();
         return false;
     }
@@ -734,6 +737,7 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
     if (!createOutBuffer(outSize))             return false;
     if (!createScratchImage(width, height))    return false;
     writeStaticDescriptors();
+    mStatsEncoder.bindScratchInput(mScratchView, mScratchSampler);
 
     mOutSize   = outSize;
     mBufWidth  = width;
@@ -1115,6 +1119,7 @@ void VulkanIspPipeline::destroy() {
         }
 
         mGrallocCache.clear();
+        mStatsEncoder.destroy();
         mYuvEncoder.destroy();
         mInputRing.destroy();
 
