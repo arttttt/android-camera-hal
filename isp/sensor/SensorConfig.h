@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#include "DelayedControls.h"
+
 namespace android {
 
 /*
@@ -23,6 +25,13 @@ struct SensorConfig {
 
     /* Defaults */
     int32_t exposureDefault;    /* initial exposure in µs */
+
+    /* Number of frames between writing a sensor control and the
+     * resulting frame being exposed. Silicon property — not tunable
+     * per integrator. Default 2/2 follows the libcamera convention
+     * for rolling-shutter CMOS; verify empirically once a real 3A
+     * loop drives it. Consumed by DelayedControls. */
+    int32_t controlDelay[DelayedControls::COUNT];
 
     /* --- Helpers --- */
 
@@ -75,6 +84,7 @@ struct SensorConfig {
             .gainDefault     = 8,
             .gainMax         = 255,
             .exposureDefault = 30000,
+            .controlDelay    = { 2, 2 },
         };
     }
 
@@ -88,6 +98,7 @@ struct SensorConfig {
             .gainDefault     = 2048,
             .gainMax         = 65535,
             .exposureDefault = 30000,
+            .controlDelay    = { 2, 2 },
         };
     }
 };
