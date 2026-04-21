@@ -16,18 +16,10 @@ namespace android {
 CaptureStage::CaptureStage(const Deps &d) : deps(d) {}
 
 void CaptureStage::process(PipelineContext &ctx) {
-    /* Drain the previous frame's GPU work before V4L2 can reuse the
-     * input slot. Synchronous here; a fence-fd poll-set takes over in
-     * a later change. */
-    deps.isp->waitForPreviousFrame();
-
-    /* GPU has now drained. Return any consumer-released buffers back
-     * to the sensor before we block on the next frame — otherwise
-     * the V4L2 ring slowly empties (consumer releases accumulate in
-     * toRelease and never reach QBUF), the sensor runs out of slots,
-     * and poll() hangs. */
-    deps.bayerSource->flushPendingReleases();
-
+    /* GPU drain + flushPendingReleases both moved to PipelineThread's
+     * post-fence path. RequestThread's sole job here is to source the
+     * freshest Bayer and forward the context downstream; the GPU is
+     * somebody else's problem. */
     const V4l2Device::VBuffer *frame = deps.bayerSource->acquireNextFrame();
     ctx.tBayerDq = systemTime();
 

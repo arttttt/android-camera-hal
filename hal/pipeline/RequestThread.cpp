@@ -12,11 +12,13 @@
 
 namespace android {
 
-RequestThread::RequestThread(EventQueue<PipelineContext*> *q,
+RequestThread::RequestThread(EventQueue<PipelineContext*> *in,
                              Pipeline *p,
+                             EventQueue<PipelineContext*> *out,
                              InFlightTracker *t)
-    : queue(q),
+    : inQueue(in),
       pipeline(p),
+      outQueue(out),
       tracker(t) {}
 
 RequestThread::~RequestThread() {
@@ -25,7 +27,7 @@ RequestThread::~RequestThread() {
 
 void RequestThread::threadLoop() {
     struct pollfd pfds[2];
-    pfds[0].fd = queue->fd();
+    pfds[0].fd = inQueue->fd();
     pfds[0].events = POLLIN;
     pfds[1].fd = stopFd();
     pfds[1].events = POLLIN;
@@ -41,16 +43,18 @@ void RequestThread::threadLoop() {
         }
         if (pfds[1].revents & POLLIN) break;
 
-        queue->drain();
+        inQueue->drain();
 
         PipelineContext *ctx = nullptr;
-        while (queue->tryPop(ctx)) {
+        while (inQueue->tryPop(ctx)) {
             if (!ctx) continue;
             pipeline->run(*ctx);
-            /* Remove from tracker → destroys context at scope end. */
-            std::unique_ptr<PipelineContext> owned =
-                tracker->removeBySequence(ctx->sequence);
-            (void)owned;
+            /* Hand off to PipelineThread. Blocking push applies
+             * backpressure when the downstream has hit maxInFlight; on
+             * stop, requestStop() on the downstream queue wakes us and
+             * we leave ctx in the tracker for closeDevice's drainAll
+             * to error-complete. */
+            if (!outQueue->pushBlocking(ctx)) break;
             if (stopRequested()) break;
         }
     }

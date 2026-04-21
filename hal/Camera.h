@@ -24,8 +24,10 @@ namespace android {
 
 struct PipelineContext;
 class Pipeline;
+class PipelineStage;
 class InFlightTracker;
 class RequestThread;
+class PipelineThread;
 class BayerSource;
 template <typename T> class EventQueue;
 
@@ -83,8 +85,12 @@ private:
     std::unique_ptr<BayerSource>                  mBayerSource;
     std::unique_ptr<InFlightTracker>              mTracker;
     std::unique_ptr<EventQueue<PipelineContext*>> mRequestQueue;
+    std::unique_ptr<EventQueue<PipelineContext*>> mPipelineQueue;
     std::unique_ptr<Pipeline>                     mRequestPipeline;
+    std::unique_ptr<PipelineStage>                mDemosaicBlitStage;
+    std::unique_ptr<PipelineStage>                mResultDispatchStage;
     std::unique_ptr<RequestThread>                mRequestThread;
+    std::unique_ptr<PipelineThread>               mPipelineThread;
     bool                                          mInfrastructureBuilt;
 
     /* Build the long-lived per-camera infrastructure (ISP, 3A,

@@ -53,6 +53,7 @@
 #include "pipeline/Pipeline.h"
 #include "pipeline/InFlightTracker.h"
 #include "pipeline/RequestThread.h"
+#include "pipeline/PipelineThread.h"
 #include "pipeline/stages/ApplySettingsStage.h"
 #include "pipeline/stages/ShutterNotifyStage.h"
 #include "pipeline/stages/CaptureStage.h"
@@ -64,6 +65,9 @@ extern camera_module_t HAL_MODULE_INFO_SYM;
 namespace {
 /* Soft cap; see docs/tier3_architecture.md. */
 constexpr size_t REQUEST_QUEUE_CAPACITY = 256;
+
+/* Matches VulkanIspPipeline's per-slot resource ring. */
+constexpr size_t PIPELINE_MAX_IN_FLIGHT = 4;
 } /* namespace */
 
 namespace android {
@@ -172,20 +176,26 @@ int Camera::closeDevice() {
 
     /* Stop workers before taking mMutex — a worker may still be
      * finishing its last iteration (which doesn't need the lock but
-     * may call framework callbacks). */
+     * may call framework callbacks). PipelineThread drains its own
+     * in-flight contexts on stop; anything still in the tracker is
+     * stuck upstream (RequestThread bailed out of pushBlocking) and
+     * reaped here. */
     stopWorkers();
 
     Mutex::Autolock lock(mMutex);
 
-    /* Error-complete any requests that got enqueued but never
-     * processed. Run the pipeline in error mode so
-     * ResultDispatchStage (alwaysRun) emits notify(ERROR_REQUEST). */
-    if (mTracker && mRequestPipeline) {
+    /* Error-complete any requests that got enqueued but never pushed
+     * downstream — RequestThread ran Apply/Shutter/Capture but got
+     * unblocked out of pushBlocking during stopWorkers. ResultDispatch
+     * alone is enough for cleanup: DemosaicBlit is skipped on error,
+     * and the dispatch stage emits notify(ERROR_REQUEST) + releases
+     * any Bayer slot the stage chain already took. */
+    if (mTracker && mResultDispatchStage) {
         auto pending = mTracker->drainAll();
         for (auto &ctx : pending) {
             if (ctx) {
                 ctx->errorCode = CAMERA3_MSG_ERROR_REQUEST;
-                mRequestPipeline->run(*ctx);
+                mResultDispatchStage->process(*ctx);
             }
         }
     }
@@ -480,8 +490,13 @@ void Camera::buildInfrastructure() {
     mBayerSource.reset(new V4l2Source(mDev));
     mTracker.reset(new InFlightTracker());
     mRequestQueue.reset(new EventQueue<PipelineContext*>(REQUEST_QUEUE_CAPACITY));
+    mPipelineQueue.reset(new EventQueue<PipelineContext*>(PIPELINE_MAX_IN_FLIGHT));
     mRequestPipeline.reset(new Pipeline());
 
+    /* RequestThread pipeline — runs Apply / Shutter / Capture on the
+     * binder-adjacent thread. DemosaicBlit and ResultDispatch live on
+     * PipelineThread behind the fence-fd poll set, so they are owned
+     * standalone rather than appended here. */
     {
         ApplySettingsStage::Deps d;
         d.exposure  = mExposure;
@@ -510,8 +525,7 @@ void Camera::buildInfrastructure() {
         d.isp             = mIsp;
         d.af              = mAf;
         d.jpegBufferSize  = &mJpegBufferSize;
-        mRequestPipeline->appendStage(
-            std::unique_ptr<PipelineStage>(new DemosaicBlitStage(d)));
+        mDemosaicBlitStage.reset(new DemosaicBlitStage(d));
     }
 
     {
@@ -520,21 +534,35 @@ void Camera::buildInfrastructure() {
         d.bayerSource = mBayerSource.get();
         d.af          = mAf;
         d.sensorCfg   = &mSensorCfg;
-        mRequestPipeline->appendStage(
-            std::unique_ptr<PipelineStage>(new ResultDispatchStage(d)));
+        mResultDispatchStage.reset(new ResultDispatchStage(d));
     }
 
     mRequestThread.reset(new RequestThread(mRequestQueue.get(),
                                            mRequestPipeline.get(),
+                                           mPipelineQueue.get(),
                                            mTracker.get()));
+    {
+        PipelineThread::Deps d;
+        d.queue          = mPipelineQueue.get();
+        d.demosaicBlit   = mDemosaicBlitStage.get();
+        d.resultDispatch = mResultDispatchStage.get();
+        d.bayerSource    = mBayerSource.get();
+        d.tracker        = mTracker.get();
+        d.maxInFlight    = PIPELINE_MAX_IN_FLIGHT;
+        mPipelineThread.reset(new PipelineThread(d));
+    }
 
     mInfrastructureBuilt = true;
 }
 
 void Camera::destroyInfrastructure() {
+    mPipelineThread.reset();
     mRequestThread.reset();
+    mResultDispatchStage.reset();
+    mDemosaicBlitStage.reset();
     mRequestPipeline.reset();
     mTracker.reset();
+    mPipelineQueue.reset();
     mRequestQueue.reset();
     mBayerSource.reset();
 
@@ -548,36 +576,80 @@ void Camera::destroyInfrastructure() {
 }
 
 void Camera::stopWorkers() {
-    /* BayerSource first: the request thread may be parked inside
-     * CaptureStage waiting on acquireNextFrame's cv. Releasing the
-     * cv (stopping=true + notify_all) lets pipeline.run() unwind to
-     * ResultDispatchStage (which emits notify(ERROR_REQUEST) on the
-     * error path) so the request thread returns to its poll loop;
-     * the subsequent mRequestThread->stop() then signals stopFd and
-     * joins. The reverse order deadlocks: stop() on the request
-     * thread joins a worker that cannot make progress, and the
-     * bayer-source stop never runs. */
-    if (mBayerSource)   mBayerSource->stop();
-    if (mRequestThread) mRequestThread->stop();
-
-    /* Drain the last submitted GPU work. With no workers running it's
-     * safe to do this from the caller's thread; leaving mIsp with
-     * mPrevPending=true + a signalled fence would trip the next
-     * session's waitForPreviousFrame() (fence reset, but flag still
-     * set → infinite wait on an unsignalled fence). */
-    if (mIsp) mIsp->waitForPreviousFrame();
+    /* Ordering:
+     * 1. Bayer: parked CaptureStage waits on acquireNextFrame cv —
+     *    stop() notifies it with stopping=true so the stage unwinds.
+     * 2. pipelineQueue.requestStop: RequestThread may be blocked
+     *    inside pushBlocking; flipping the queue's stopping flag wakes
+     *    it with a false return so it can exit.
+     * 3. RequestThread join: stopFd signal + stopFlag for the inner
+     *    loop, then join. The ctx it was holding (if any) stays in
+     *    the tracker for closeDevice's drainAll.
+     * 4. PipelineThread join: stopFd wakes the poll; threadLoop's
+     *    tail drains all remaining in-flight contexts — blocking
+     *    WaitForFences with a per-fence timeout — and runs
+     *    ResultDispatch on each so framework buffers return cleanly.
+     *
+     * GPU drain now lives inside PipelineThread's stop path — no more
+     * waitForPreviousFrame at this layer. */
+    if (mBayerSource)    mBayerSource->stop();
+    if (mPipelineQueue)  mPipelineQueue->requestStop();
+    if (mRequestThread)  mRequestThread->stop();
+    if (mPipelineThread) mPipelineThread->stop();
 }
 
 void Camera::startWorkers() {
+    /* Clear the stopping flag that stopWorkers flipped on the pipeline
+     * queue; otherwise pushBlocking in the new session would fail
+     * instantly. */
+    if (mPipelineQueue) mPipelineQueue->clearStop();
+
     if (mBayerSource && !mBayerSource->isRunning()) {
         if (!mBayerSource->start()) {
             ALOGE("BayerSource start failed");
             return;
         }
     }
+    /* PipelineThread before RequestThread: the downstream consumer
+     * must be live before RequestThread starts pushing to pipelineQueue.
+     * Swapping the order would have RequestThread block on pushBlocking
+     * forever. */
+    if (mPipelineThread && !mPipelineThread->isRunning()) {
+        if (!mPipelineThread->start("CamPipeline")) {
+            ALOGE("PipelineThread start failed");
+            return;
+        }
+    }
     if (mRequestThread && !mRequestThread->isRunning()) {
-        if (!mRequestThread->start("CameraRequest")) {
+        if (!mRequestThread->start("CamRequest")) {
             ALOGE("RequestThread start failed");
+            return;
+        }
+    }
+
+    /* Synthetic prewarm context — flows through Apply/Shutter/Capture
+     * on RequestThread and a bare demosaic submit on PipelineThread,
+     * ResultDispatch skips the framework callback via discardOnDispatch.
+     * Fires off a real GPU submit so the first framework frame lands
+     * on a warm driver (shader compile, descriptor pool, fence export
+     * paths all primed). Sequence = UINT32_MAX avoids collision with
+     * any plausible framework frameNumber. */
+    if (mTracker && mRequestQueue) {
+        std::unique_ptr<PipelineContext> warmup(new PipelineContext());
+        warmup->sequence                = UINT32_MAX;
+        warmup->request.frameNumber     = UINT32_MAX;
+        warmup->discardOnDispatch       = true;
+        warmup->tAccepted               = systemTime();
+        PipelineContext *raw = warmup.get();
+        mTracker->add(std::move(warmup));
+        if (!mRequestQueue->push(raw)) {
+            /* Shouldn't happen — queue is 256-deep and we're at
+             * session start with nothing in flight. Reap the tracker
+             * entry so nothing leaks if the cap was somehow hit. */
+            std::unique_ptr<PipelineContext> reclaim =
+                mTracker->removeBySequence(raw->sequence);
+            (void)reclaim;
+            ALOGW("prewarm push failed");
         }
     }
 }
