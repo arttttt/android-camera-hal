@@ -22,8 +22,6 @@ namespace android {
 
 VulkanIspPipeline::VulkanIspPipeline()
     : mInputRing(mDeviceState)
-    , mGrallocCache(mDeviceState)
-    , mYuvEncoder(mDeviceState)
     , mReady(false), mBufWidth(0), mBufHeight(0)
     , mShader(VK_NULL_HANDLE), mVertShader(VK_NULL_HANDLE), mFragShader(VK_NULL_HANDLE)
     , mDescLayout(VK_NULL_HANDLE)
@@ -38,6 +36,8 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mOutMap(NULL)
     , mScratchImg(VK_NULL_HANDLE), mScratchMem(VK_NULL_HANDLE), mScratchView(VK_NULL_HANDLE)
     , mNextSlot(0)
+    , mGrallocCache(mDeviceState)
+    , mYuvEncoder(mDeviceState)
 {
     for (size_t s = 0; s < SLOT_COUNT; s++) {
         mDescSet[s]     = VK_NULL_HANDLE;
