@@ -507,6 +507,7 @@ void Camera::buildInfrastructure() {
         DemosaicBlitStage::Deps d;
         d.bufferProcessor = mBufferProcessor;
         d.bayerSource     = mBayerSource.get();
+        d.isp             = mIsp;
         d.af              = mAf;
         d.jpegBufferSize  = &mJpegBufferSize;
         mRequestPipeline->appendStage(

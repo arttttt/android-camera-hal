@@ -12,6 +12,11 @@ ShutterNotifyStage::ShutterNotifyStage(const camera3_callback_ops_t *const *ops)
 void ShutterNotifyStage::process(PipelineContext &ctx) {
     ctx.tShutter = systemTime();
 
+    /* Synthetic contexts — used for prewarm — flow through the full
+     * pipeline to exercise the real hot path but must not land on the
+     * framework's callback. */
+    if (ctx.discardOnDispatch) return;
+
     const camera3_callback_ops_t *ops = *callbackOps;
     if (!ops) return;
 

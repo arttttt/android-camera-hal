@@ -11,6 +11,7 @@
 #include "PipelineContext.h"
 #include "BufferProcessor.h"
 #include "BayerSource.h"
+#include "IspPipeline.h"
 #include "3a/AutoFocusController.h"
 
 #define LOG_TAG "Cam-DemosaicBlitStage"
@@ -21,6 +22,19 @@ DemosaicBlitStage::DemosaicBlitStage(const Deps &d) : deps(d) {}
 
 void DemosaicBlitStage::process(PipelineContext &ctx) {
     Resolution res = deps.bayerSource->resolution();
+
+    /* Synthetic prewarm context — no gralloc outputs exist. Kick off a
+     * demosaic-only submit so the pipeline still exercises the real GPU
+     * path (shader compile, descriptor update, fence export) and the
+     * PipelineThread has a sync_fd to poll on. */
+    if (ctx.discardOnDispatch) {
+        int syncFd = -1;
+        deps.isp->submitDemosaicOnly(
+            (ctx.bayerFrame->buf == nullptr) ? ctx.bayerFrame->index : -1,
+            res.width, res.height, ctx.bayerFrame->pixFmt, &syncFd);
+        if (syncFd >= 0) ctx.pendingFenceFds.push_back(syncFd);
+        return;
+    }
 
     BufferProcessor::FrameContext fctx;
     fctx.frameBuf       = ctx.bayerFrame->buf;

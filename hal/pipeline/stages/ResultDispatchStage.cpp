@@ -35,6 +35,15 @@ void ResultDispatchStage::process(PipelineContext &ctx) {
     }
     ctx.pendingFenceFds.clear();
 
+    /* Synthetic prewarm context: exercise the pipeline but drop the
+     * result on the floor — no framework callback, no result metadata
+     * build. Still release the Bayer slot so the V4L2 ring doesn't
+     * leak. */
+    if (ctx.discardOnDispatch) {
+        if (ctx.bayerFrame) deps.bayerSource->releaseFrame(ctx.bayerFrame);
+        return;
+    }
+
     if (ctx.errorCode) {
         if (ops) {
             camera3_notify_msg_t msg;
