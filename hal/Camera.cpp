@@ -81,10 +81,15 @@ constexpr size_t PIPELINE_MAX_IN_FLIGHT = 1;
 /* Handoff buffer between RequestThread and PipelineThread. Decoupled
  * from PIPELINE_MAX_IN_FLIGHT on purpose: the queue size adds directly
  * to the number of Bayer slots reserved out of V4L2 at once (each ctx
- * in the queue still owns its acquireNextFrame'd VBuffer). A cap of 1
- * keeps the bayer-slot footprint to PIPELINE_MAX_IN_FLIGHT + 1, which
- * leaves the sensor real runway inside V4L2DEVICE_BUF_COUNT — larger
- * caps only buy one-sided bursts at the cost of sensor starvation. */
+ * in the queue still owns its acquireNextFrame'd VBuffer).
+ *
+ * Worst-case V4L2 slot hold per session =
+ *   PIPELINE_MAX_IN_FLIGHT    (ctxs PipelineThread has taken on)
+ * + PIPELINE_QUEUE_CAPACITY   (ctxs sitting in the handoff queue)
+ * + 1                         (V4l2Source::latest, pre-consumer handoff)
+ * — so 1 + 1 + 1 = 3 slots worst-case, leaving V4L2DEVICE_BUF_COUNT-3
+ * for the sensor. Larger queue caps only buy one-sided bursts at the
+ * cost of sensor starvation. */
 constexpr size_t PIPELINE_QUEUE_CAPACITY = 1;
 } /* namespace */
 
