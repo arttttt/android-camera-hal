@@ -158,6 +158,7 @@ struct VulkanPfn {
     PFN_vkDestroyFence                              DestroyFence;
     PFN_vkWaitForFences                             WaitForFences;
     PFN_vkResetFences                               ResetFences;
+    PFN_vkGetFenceStatus                            GetFenceStatus;
 
     PFN_vkCreateShaderModule                        CreateShaderModule;
     PFN_vkDestroyShaderModule                       DestroyShaderModule;

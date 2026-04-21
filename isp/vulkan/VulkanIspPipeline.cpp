@@ -130,8 +130,24 @@ int VulkanIspPipeline::acquireSlot() {
     int slot = (int)mNextSlot;
     mNextSlot = (mNextSlot + 1) % SLOT_COUNT;
     if (mSlotSyncFd[slot] >= 0) {
+        /* Diagnostic: measure whether the fd was already readable when
+         * we checked (driver had flushed in time) vs how long we
+         * actually had to block on it. A long blocking wait with a
+         * subsequent signal implies the fence-fd is pollable but slow;
+         * a long wait that never returns is the "fence-fd never
+         * signalled" failure mode. */
+        int prePollReadable = 0;
+        {
+            struct pollfd pfd = { mSlotSyncFd[slot], POLLIN, 0 };
+            int rc = ::poll(&pfd, 1, 0);
+            prePollReadable = (rc > 0 && (pfd.revents & POLLIN)) ? 1 : 0;
+        }
+        int64_t t0 = nowMs();
         struct pollfd pfd = { mSlotSyncFd[slot], POLLIN, 0 };
         ::poll(&pfd, 1, -1);
+        int64_t waitMs = nowMs() - t0;
+        ALOGD("VK acquireSlot: slot=%d syncFd=%d preReadable=%d waitMs=%lld",
+              slot, mSlotSyncFd[slot], prePollReadable, (long long)waitMs);
         ::close(mSlotSyncFd[slot]);
         mSlotSyncFd[slot] = -1;
     }
@@ -259,7 +275,21 @@ void VulkanIspPipeline::submitWithReleaseFence(int slot, VulkanGrallocCache::Ent
     si.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers    = &mCmdBuf[slot];
-    mDeviceState.pfn()->QueueSubmit(mDeviceState.queue(), 1, &si, mFence[slot]);
+    VkResult sr = mDeviceState.pfn()->QueueSubmit(
+        mDeviceState.queue(), 1, &si, mFence[slot]);
+
+    /* Diagnostic: fence status immediately after submit. VK_NOT_READY
+     * means the submit is still in flight (normal); VK_SUCCESS means
+     * the driver completed the submit synchronously before returning,
+     * which on Tegra K1 would explain vkGetFenceFdKHR returning -1 per
+     * the spec's "already signalled" clause. */
+    VkResult fsPre = VK_NOT_READY;
+    if (mDeviceState.pfn()->GetFenceStatus) {
+        fsPre = mDeviceState.pfn()->GetFenceStatus(
+            mDeviceState.device(), mFence[slot]);
+    }
+    ALOGD("VK submit: slot=%d submitResult=%d fenceStatus=%d",
+          slot, (int)sr, (int)fsPre);
 
     /* sync_fence fd for the framework's release wait — signals once the
      * submit above plus any driver-internal release barrier completes. */
@@ -267,6 +297,7 @@ void VulkanIspPipeline::submitWithReleaseFence(int slot, VulkanGrallocCache::Ent
         int fd = -1;
         VkResult qr = mDeviceState.pfn()->QueueSignalReleaseImageANDROID(
             mDeviceState.queue(), 0, NULL, entry->image, &fd);
+        ALOGD("VK QSRIA: slot=%d result=%d releaseFd=%d", slot, (int)qr, fd);
         if (qr == VK_SUCCESS) {
             *releaseFence = fd;
         } else {
@@ -1130,6 +1161,24 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
     gfi.handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT_KHR;
     VkResult gfr = mDeviceState.pfn()->GetFenceFdKHR(
         mDeviceState.device(), &gfi, &exported);
+    /* Diagnostic: Vulkan spec allows `-1` when the fence was already
+     * signalled at query time; log unconditionally so we can tell
+     * "driver returned real fd" from "driver said already done" from
+     * "driver errored". If fd >= 0, poll once with timeout=0 to see
+     * whether it is immediately POLLIN-readable — if it is, the
+     * driver is returning an "already resolved" sync_file instead
+     * of the -1 alias for the same state; if it is NOT readable,
+     * this is the fd PipelineThread will block on and whether it
+     * eventually signals is the whole question. */
+    int immediatelyReadable = -1;
+    if (gfr == VK_SUCCESS && exported >= 0) {
+        struct pollfd probe = { exported, POLLIN, 0 };
+        int rc = ::poll(&probe, 1, 0);
+        immediatelyReadable = (rc > 0 && (probe.revents & POLLIN)) ? 1 : 0;
+    }
+    ALOGD("VK GetFenceFdKHR: slot=%d result=%d exported=%d immediatelyReadable=%d",
+          slot, (int)gfr, exported, immediatelyReadable);
+
     if (gfr == VK_SUCCESS && exported >= 0) {
         if (submitFence) {
             *submitFence = exported;
@@ -1138,9 +1187,11 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
             mSlotSyncFd[slot] = exported;
         }
     } else {
-        ALOGW("vkGetFenceFdKHR failed: %d (slot %d)", (int)gfr, slot);
-        /* Without a sync_fd we can't track slot reuse; fall back to
-         * blocking wait on the fence to keep the slot coherent. */
+        /* gfr == VK_SUCCESS with exported == -1 is the spec-sanctioned
+         * "fence was already signalled" return; not an error. Either
+         * way we have no fd to give PipelineThread — synthesise
+         * completion by blocking-waiting the fence inline so the slot
+         * is coherent, and leave mSlotSyncFd[slot] at -1. */
         mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1,
                                            &mFence[slot], VK_TRUE, UINT64_MAX);
         mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[slot]);
