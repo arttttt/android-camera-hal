@@ -177,6 +177,15 @@ private:
     int mSlotSyncFd[SLOT_COUNT];
     size_t mNextSlot;
 
+    /* Four timestamps per slot capture GPU-side timing for the async
+     * gralloc path: [0] top-of-pipe, [1] after demosaic compute,
+     * [2] after the shader barrier (before blit), [3] after the blit
+     * render pass. Read lazily in acquireSlot after the previous
+     * submit's sync_fd has been drained. VK_NULL_HANDLE when the
+     * driver doesn't advertise timestamp support. */
+    VkQueryPool mQueryPool;
+    bool        mSlotHasTimestamps[SLOT_COUNT];
+
     void fillParams(IspParams *p, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
     void updateAwb(const uint8_t *raw, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
 

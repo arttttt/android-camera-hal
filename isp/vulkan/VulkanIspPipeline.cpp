@@ -37,17 +37,19 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mOutMap(NULL)
     , mScratchImg(VK_NULL_HANDLE), mScratchMem(VK_NULL_HANDLE), mScratchView(VK_NULL_HANDLE)
     , mNextSlot(0)
+    , mQueryPool(VK_NULL_HANDLE)
     , mGrallocCache(mDeviceState)
     , mYuvEncoder(mDeviceState)
 {
     for (size_t s = 0; s < SLOT_COUNT; s++) {
-        mDescSet[s]     = VK_NULL_HANDLE;
-        mCmdBuf[s]      = VK_NULL_HANDLE;
-        mParamBuf[s]    = VK_NULL_HANDLE;
-        mParamMem[s]    = VK_NULL_HANDLE;
-        mParamMap[s]    = NULL;
-        mFence[s]       = VK_NULL_HANDLE;
-        mSlotSyncFd[s]  = -1;
+        mDescSet[s]            = VK_NULL_HANDLE;
+        mCmdBuf[s]             = VK_NULL_HANDLE;
+        mParamBuf[s]           = VK_NULL_HANDLE;
+        mParamMem[s]           = VK_NULL_HANDLE;
+        mParamMap[s]           = NULL;
+        mFence[s]              = VK_NULL_HANDLE;
+        mSlotSyncFd[s]         = -1;
+        mSlotHasTimestamps[s]  = false;
     }
 }
 
@@ -135,6 +137,29 @@ int VulkanIspPipeline::acquireSlot() {
         ::close(mSlotSyncFd[slot]);
         mSlotSyncFd[slot] = -1;
     }
+
+    /* Drain the slot's last-submit timestamps now that its GPU work is
+     * guaranteed complete (fence was just drained). Cheap read — no
+     * WAIT_BIT, no blocking — the results are already on host. */
+    if (mQueryPool != VK_NULL_HANDLE && mSlotHasTimestamps[slot]) {
+        uint64_t ts[4] = {0, 0, 0, 0};
+        VkResult qr = mDeviceState.pfn()->GetQueryPoolResults(
+            mDeviceState.device(), mQueryPool,
+            (uint32_t)slot * 4, 4,
+            sizeof(ts), ts, sizeof(uint64_t),
+            VK_QUERY_RESULT_64_BIT);
+        if (qr == VK_SUCCESS) {
+            float p = mDeviceState.timestampPeriodNs();
+            double demosaic = (double)(ts[1] - ts[0]) * p / 1.0e6;
+            double barrier  = (double)(ts[2] - ts[1]) * p / 1.0e6;
+            double blit     = (double)(ts[3] - ts[2]) * p / 1.0e6;
+            double total    = (double)(ts[3] - ts[0]) * p / 1.0e6;
+            ALOGD("VK gpu: slot=%d demosaic=%.2fms barrier=%.2fms "
+                  "blit=%.2fms total=%.2fms",
+                  slot, demosaic, barrier, blit, total);
+        }
+        mSlotHasTimestamps[slot] = false;
+    }
     return slot;
 }
 
@@ -174,12 +199,26 @@ void VulkanIspPipeline::recordGrallocBlit(int slot, VulkanGrallocCache::Entry *e
     mDeviceState.pfn()->ResetCommandBuffer(cb, 0);
     mDeviceState.pfn()->BeginCommandBuffer(cb, &bi);
 
+    /* Timestamp queries — 4 per slot. Must reset the slot's range
+     * before new writes (timestamps are single-use in VK 1.0). */
+    const uint32_t qBase = (uint32_t)slot * 4;
+    if (mQueryPool != VK_NULL_HANDLE) {
+        mDeviceState.pfn()->CmdResetQueryPool(cb, mQueryPool, qBase, 4);
+        mDeviceState.pfn()->CmdWriteTimestamp(cb,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, mQueryPool, qBase + 0);
+    }
+
     /* Compute: Bayer → mScratchImg (via binding=1 storage image, set once
      * in ensureBuffers). Dispatch sized to the scratch/capture extent. */
     mDeviceState.pfn()->CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
     mDeviceState.pfn()->CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
                                                mPipeLayout, 0, 1, &mDescSet[slot], 0, NULL);
     mDeviceState.pfn()->CmdDispatch(cb, (srcW + 7) / 8, (srcH + 7) / 8, 1);
+
+    if (mQueryPool != VK_NULL_HANDLE) {
+        mDeviceState.pfn()->CmdWriteTimestamp(cb,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, mQueryPool, qBase + 1);
+    }
 
     /* scratch SHADER_WRITE → SHADER_READ for the fragment pass. */
     VkImageMemoryBarrier scratchB = {};
@@ -198,6 +237,11 @@ void VulkanIspPipeline::recordGrallocBlit(int slot, VulkanGrallocCache::Entry *e
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
         0, 0, NULL, 0, NULL, 1, &scratchB);
+
+    if (mQueryPool != VK_NULL_HANDLE) {
+        mDeviceState.pfn()->CmdWriteTimestamp(cb,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, mQueryPool, qBase + 2);
+    }
 
     /* Fragment pass: full-screen triangle samples scratch, driver's ROP
      * rasterizes into gralloc's blocklinear layout correctly. Render
@@ -246,6 +290,11 @@ void VulkanIspPipeline::recordGrallocBlit(int slot, VulkanGrallocCache::Entry *e
 
     mDeviceState.pfn()->CmdDraw(cb, 3, 1, 0, 0);
     mDeviceState.pfn()->CmdEndRenderPass(cb);
+
+    if (mQueryPool != VK_NULL_HANDLE) {
+        mDeviceState.pfn()->CmdWriteTimestamp(cb,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, mQueryPool, qBase + 3);
+    }
 
     mDeviceState.pfn()->EndCommandBuffer(cb);
     entry->layoutReady = true;
@@ -704,6 +753,22 @@ bool VulkanIspPipeline::createCommandObjects() {
             return false;
         }
     }
+
+    /* Timestamp query pool — 4 timestamps per slot. Skipped if the
+     * driver doesn't advertise timestamps; processToGralloc then
+     * becomes a plain submit with no profiling lines in the log. */
+    if (mDeviceState.timestampsSupported() &&
+        mDeviceState.pfn()->CreateQueryPool) {
+        VkQueryPoolCreateInfo qpci = {};
+        qpci.sType      = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+        qpci.queryType  = VK_QUERY_TYPE_TIMESTAMP;
+        qpci.queryCount = SLOT_COUNT * 4;
+        if (mDeviceState.pfn()->CreateQueryPool(
+                mDeviceState.device(), &qpci, NULL, &mQueryPool) != VK_SUCCESS) {
+            ALOGW("vkCreateQueryPool failed; GPU profiling disabled");
+            mQueryPool = VK_NULL_HANDLE;
+        }
+    }
     return true;
 }
 
@@ -1117,6 +1182,7 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
     int64_t t1 = nowMs();
     recordGrallocBlit(slot, entry, srcW, srcH, dstW, dstH, crop);
     submitWithReleaseFence(slot, entry, releaseFence);
+    if (mQueryPool != VK_NULL_HANDLE) mSlotHasTimestamps[slot] = true;
 
     /* Export the submit's fence as a sync_fd — the caller may forward
      * it to PipelineThread's poll set for async completion, and we
@@ -1204,6 +1270,10 @@ void VulkanIspPipeline::destroy() {
                 mFence[s] = VK_NULL_HANDLE;
             }
         }
+        if (mQueryPool) {
+            mDeviceState.pfn()->DestroyQueryPool(mDeviceState.device(), mQueryPool, NULL);
+            mQueryPool = VK_NULL_HANDLE;
+        }
         if (mCmdPool) {
             mDeviceState.pfn()->DestroyCommandPool(mDeviceState.device(), mCmdPool, NULL);
             mCmdPool = VK_NULL_HANDLE;
@@ -1261,6 +1331,7 @@ void VulkanIspPipeline::destroy() {
             ::close(mSlotSyncFd[s]);
             mSlotSyncFd[s] = -1;
         }
+        mSlotHasTimestamps[s] = false;
     }
     mNextSlot = 0;
 }

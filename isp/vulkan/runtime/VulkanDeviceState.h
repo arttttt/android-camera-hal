@@ -32,6 +32,12 @@ public:
     uint32_t         queueFamily() const { return mQueueFamily; }
     VulkanPfn       *pfn()         const { return mPfn; }
 
+    /* vkCmdWriteTimestamp delta → nanoseconds conversion factor. Zero
+     * when the device doesn't support timestamps on the graphics /
+     * compute queue (checked at init via timestampComputeAndGraphics). */
+    float            timestampPeriodNs()     const { return mTimestampPeriodNs; }
+    bool             timestampsSupported()   const { return mTimestampsSupported; }
+
     /* VK_ANDROID_native_buffer is filtered out of the app-side libvulkan
      * on Android 7, but the HAL-variant loader exposes it. Gralloc
      * zero-copy output depends on it. */
@@ -60,6 +66,8 @@ private:
     VkQueue          mQueue;
     uint32_t         mQueueFamily;
     bool             mNativeBufferAvail;
+    float            mTimestampPeriodNs;
+    bool             mTimestampsSupported;
 };
 
 }; /* namespace android */

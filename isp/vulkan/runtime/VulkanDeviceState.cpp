@@ -21,7 +21,9 @@ VulkanDeviceState::VulkanDeviceState()
     , mDevice(VK_NULL_HANDLE)
     , mQueue(VK_NULL_HANDLE)
     , mQueueFamily(0)
-    , mNativeBufferAvail(false) {}
+    , mNativeBufferAvail(false)
+    , mTimestampPeriodNs(0.0f)
+    , mTimestampsSupported(false) {}
 
 VulkanDeviceState::~VulkanDeviceState() { destroy(); }
 
@@ -164,6 +166,24 @@ bool VulkanDeviceState::init() {
         ALOGE("No compute queue");
         destroy();
         return false;
+    }
+
+    /* Timestamp capability — needed by VulkanIspPipeline's query-pool
+     * profiling. timestampValidBits==0 on a queue family means the
+     * queue's timestamps are meaningless. limits.timestampPeriod is
+     * the ns-per-tick conversion factor. limits.timestampComputeAndGraphics
+     * is a fast-path flag for "every compute/graphics queue family
+     * supports them", which covers us on K1. */
+    if (mPfn->GetPhysicalDeviceProperties) {
+        VkPhysicalDeviceProperties pdp;
+        mPfn->GetPhysicalDeviceProperties(mPhysDev, &pdp);
+        mTimestampPeriodNs = pdp.limits.timestampPeriod;
+        bool queueHasTimestamps = qfProps[mQueueFamily].timestampValidBits > 0;
+        mTimestampsSupported = (pdp.limits.timestampComputeAndGraphics == VK_TRUE)
+                                || queueHasTimestamps;
+        ALOGD("Timestamps: supported=%d period=%.2fns (validBits on qf%u=%u)",
+              mTimestampsSupported, mTimestampPeriodNs,
+              mQueueFamily, qfProps[mQueueFamily].timestampValidBits);
     }
 
     float qPriority = 1.0f;
