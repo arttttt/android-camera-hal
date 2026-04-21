@@ -74,6 +74,38 @@ typedef VkResult (VKAPI_PTR *PFN_vkGetMemoryFdKHR)(
     VkDevice device, const VkMemoryGetFdInfoKHR *pGetFdInfo, int *pFd);
 #endif
 
+/* VK_KHR_external_fence + VK_KHR_external_fence_fd — also absent in android-24.
+ * SYNC_FD_BIT lets a submit's VkFence be exported as an Android sync_fd, which
+ * can then sit in a poll() set just like eventfd / V4L2 fd. */
+#ifndef VK_KHR_EXTERNAL_FENCE_FD_FALLBACK
+#define VK_KHR_EXTERNAL_FENCE_FD_FALLBACK
+typedef enum VkExternalFenceHandleTypeFlagBitsKHR {
+    VK_EXTERNAL_FENCE_HANDLE_TYPE_OPAQUE_FD_BIT_KHR        = 0x00000001,
+    VK_EXTERNAL_FENCE_HANDLE_TYPE_OPAQUE_WIN32_BIT_KHR     = 0x00000002,
+    VK_EXTERNAL_FENCE_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT_KHR = 0x00000004,
+    VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT_KHR          = 0x00000008,
+} VkExternalFenceHandleTypeFlagBitsKHR;
+
+#define VK_STRUCTURE_TYPE_EXPORT_FENCE_CREATE_INFO_KHR ((VkStructureType)1000113000)
+#define VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR        ((VkStructureType)1000115001)
+
+typedef struct VkExportFenceCreateInfoKHR {
+    VkStructureType sType;
+    const void     *pNext;
+    uint32_t        handleTypes;
+} VkExportFenceCreateInfoKHR;
+
+typedef struct VkFenceGetFdInfoKHR {
+    VkStructureType                      sType;
+    const void                          *pNext;
+    VkFence                              fence;
+    VkExternalFenceHandleTypeFlagBitsKHR handleType;
+} VkFenceGetFdInfoKHR;
+
+typedef VkResult (VKAPI_PTR *PFN_vkGetFenceFdKHR)(
+    VkDevice device, const VkFenceGetFdInfoKHR *pGetFdInfo, int *pFd);
+#endif
+
 namespace android {
 
 /* Dispatch table of Vulkan function pointers populated by VulkanLoader.
@@ -176,6 +208,9 @@ struct VulkanPfn {
     /* VK_KHR_external_memory_fd — import / export VkDeviceMemory as dma-buf fd */
     PFN_vkGetMemoryFdPropertiesKHR                  GetMemoryFdPropertiesKHR;
     PFN_vkGetMemoryFdKHR                            GetMemoryFdKHR;
+
+    /* VK_KHR_external_fence_fd — export VkFence completion as Android sync_fd */
+    PFN_vkGetFenceFdKHR                             GetFenceFdKHR;
 };
 
 }; /* namespace android */

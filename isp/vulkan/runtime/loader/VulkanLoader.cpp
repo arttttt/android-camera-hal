@@ -126,6 +126,9 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
     DEV(GetMemoryFdPropertiesKHR);
     DEV(GetMemoryFdKHR);
 
+    /* VK_KHR_external_fence_fd */
+    DEV(GetFenceFdKHR);
+
     #undef DEV
 }
 
