@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <unistd.h>
 
 #include <utils/Errors.h>
 #include <utils/Log.h>
@@ -60,6 +61,17 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
                   i, ctx.request.frameNumber, (int)e);
             for (size_t j = 0; j <= i; ++j) {
                 GraphicBufferMapper::get().unlock(*ctx.request.outputBuffers[j].buffer);
+            }
+            /* Earlier outputs in this request already got QSRIA
+             * release-fences we won't be returning to the framework
+             * (ResultDispatch's error branch emits notify(ERROR_REQUEST)
+             * and skips the per-output plumbing). Close them here so
+             * they don't leak as orphan sync_fds. */
+            for (size_t j = 0; j < i; ++j) {
+                if (ctx.outputReleaseFences[j] >= 0) {
+                    ::close(ctx.outputReleaseFences[j]);
+                    ctx.outputReleaseFences[j] = -1;
+                }
             }
             ctx.outputNeedsFinalUnlock.assign(n, false);
             ctx.errorCode = (int)e;
