@@ -1074,35 +1074,22 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
     recordGrallocBlit(slot, entry, srcW, srcH, dstW, dstH, crop);
     submitWithReleaseFence(slot, entry, releaseFence);
 
-    /* Export the submit's fence as a sync_fd — the caller may forward
-     * it to PipelineThread's poll set for async completion, and we
-     * store a dup locally so acquireSlot can wait on the slot's prior
-     * submit before reusing its cmd buffer. vkGetFenceFdKHR with
-     * SYNC_FD implicitly resets the fence. */
-    int exported = -1;
-    VkFenceGetFdInfoKHR gfi = {};
-    gfi.sType      = VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR;
-    gfi.fence      = mFence[slot];
-    gfi.handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT_KHR;
-    VkResult gfr = mDeviceState.pfn()->GetFenceFdKHR(
-        mDeviceState.device(), &gfi, &exported);
-    if (gfr == VK_SUCCESS && exported >= 0) {
-        if (submitFence) {
-            *submitFence = exported;
-            mSlotSyncFd[slot] = ::dup(exported);
-        } else {
-            mSlotSyncFd[slot] = exported;
-        }
-    } else {
-        /* gfr == VK_SUCCESS with exported == -1 is the spec-sanctioned
-         * "fence was already signalled" return; not an error. Either
-         * way we have no fd to give PipelineThread — synthesise
-         * completion by blocking-waiting the fence inline so the slot
-         * is coherent, and leave mSlotSyncFd[slot] at -1. */
-        mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1,
-                                           &mFence[slot], VK_TRUE, UINT64_MAX);
-        mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[slot]);
-    }
+    /* Block until the GPU finishes this submit, then reset the slot's
+     * fence so the next round-robin touch sees a clean state.
+     *
+     * Previously this path exported the fence as an Android sync_fd
+     * via vkGetFenceFdKHR(SYNC_FD) and handed the fd to PipelineThread
+     * to poll asynchronously. That flow added ~15 ms of per-frame
+     * overhead (dup/close, poll syscalls, cross-thread wake) for no
+     * benefit on single-stream preview — the CPU side of a submit is
+     * ~2 ms and the GPU side is ~60 ms, so there is nothing to
+     * overlap and PipelineThread still has to block on each fence
+     * one at a time anyway. Waiting inline keeps the thread split
+     * (RequestThread pacing continues on its own) but drops the
+     * pointless async plumbing. */
+    mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1,
+                                       &mFence[slot], VK_TRUE, UINT64_MAX);
+    mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[slot]);
 
     updateAwb((const uint8_t *)mInputRing.mapped(srcInputSlot),
               srcW, srcH, is16, pixFmt);
