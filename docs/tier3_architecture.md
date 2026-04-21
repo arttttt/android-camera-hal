@@ -270,10 +270,10 @@ PR 2  RequestThread.pipeline = [
       ]
 
 PR 3  CaptureStage moves to CaptureThread.pipeline
-PR 5  DemosaicBlitStage moves to PipelineThread.pipeline
-PR 6  ResultDispatchStage moves to ResultThread.pipeline
-PR 7  (new) StatsProcessStage lands on PipelineThread.pipeline
-PR 8  DemosaicBlitStage splits into DemosaicStage + per-stream BlitStage
+PR 4  DemosaicBlitStage moves to PipelineThread.pipeline
+PR 5  ResultDispatchStage moves to ResultThread.pipeline
+PR 6  (new) StatsProcessStage lands on PipelineThread.pipeline
+PR 7  DemosaicBlitStage splits into DemosaicStage + per-stream BlitStage
 ```
 
 Each thread-split PR is a **stage transfer**, not a rewrite: the stage
@@ -298,40 +298,67 @@ of the incoming one.
 
 ## DelayedControls
 
-Port of libcamera's `DelayedControls` (~280 LOC). Ring buffer of 16
-slots, indexed by sequence number. Each control has a per-control
-delay (in frames) sourced from `SensorTuning` JSON:
-
-```json
-"sensor": {
-  "controlDelay": {
-    "exposure": 2,
-    "gain": 2,
-    "vblank": 2,
-    "vcm": 1
-  }
-}
-```
-
-API:
+Port of libcamera's `DelayedControls`. Ring buffer of 16 slots indexed
+by `request.frameNumber`. Each control id carries a per-control delay
+in frames — "the values requested N frames ago now take effect on
+today's kernel frame". API:
 
 ```cpp
 class DelayedControls {
 public:
-    void push(uint32_t sequence, const ControlList& controls);
-    ControlList applyControls(uint32_t sequence);
+    enum ControlId { EXPOSURE, GAIN, COUNT };
+    struct Batch  { bool has[COUNT]; int32_t val[COUNT]; };
+    struct Config { int delay[COUNT]; int32_t defaultValue[COUNT]; };
+
+    explicit DelayedControls(const Config&);
+    void  reset();
+    void  push(uint32_t seq, const Batch&);
+    Batch applyControls(uint32_t seq) const;
 };
 ```
 
-`RequestThread::prepareRequest` calls `push(seq, controls)`.
-`CaptureThread::onSof(seq)` (or, if Tegra has no SOE exposed, right
-before `VIDIOC_QBUF(seq)`) calls `applyControls(seq)` and writes the
-batch via `V4L2Device::setControls`. `priorityWrite` flag for VBLANK
-preserves ordering required by the driver to accept EXPOSURE.
+`controlDelay` lives in `SensorConfig` (silicon property — not
+per-integrator, not runtime-tunable), **not** in the tuning JSON. IMX179
+and OV5693 both default to 2 frames as a libcamera-convention starting
+point; verify empirically when a real 3A loop drives it.
 
-`DelayedControls::applyControls(seq)` returns the controls pushed at
-`seq - delay[ctrl]` for each control id — i.e. "the values requested
-two frames ago now take effect".
+### Scheduling
+
+This is **not shipping as its own PR.** It is folded into the 3A PR
+alongside the `Ipa` interface and stats shader. Reasons:
+
+- On a Tegra / UVC-like driver there is no SOF hook, so the write
+  itself stays on RequestThread (in `ApplySettingsStage`). A standalone
+  DelayedControls is bookkeeping only — it does not move writes closer
+  to the sensor's latch edge the way libcamera's SOF-indexed flow does.
+- Without a real 3A loop there is no consumer writing new exposure /
+  gain per frame, and therefore no race for `DelayedControls` to
+  mediate. Truthful `ANDROID_SENSOR_EXPOSURE_TIME` in result metadata
+  is the only standalone user-visible effect, and no known Android 7
+  client checks it frame-accurately.
+- Drain-to-latest (PR 3) introduces a known semantic gap: the ring is
+  indexed in request-sequence time, kernel frames advance in
+  kernel-frame time, and the two diverge whenever capture drops stale
+  frames. Without a SOF-indexed counter (not available here) the gap
+  is unfixable. Shipping an asymmetric abstraction now and papering
+  over it later is worse than deferring.
+
+When it lands, the write path is:
+
+```
+ApplySettingsStage (RequestThread):
+    batch = exposure->compute(request.settings)
+    delayedControls.push(seq, batch)
+    v4l2.setControls(batch)                       // VIDIOC_S_EXT_CTRLS
+    ctx.applied* = delayedControls.applyControls(seq)
+
+Ipa::processStats (from PipelineThread, PR 6):
+    update = ipa->computeAeAwb(statsBuf)
+    delayedControls.push(seq + delay, update)     // future effect
+
+closeDevice:
+    delayedControls.reset()                       // session boundary
+```
 
 ## IPA (3A)
 
@@ -482,13 +509,16 @@ No silent death.
 
 ## Implementation sequencing
 
-Eight PRs, each shippable and testable independently. Each one
-isolates a single concern so that review stays focused and FPS
-regressions / gains are cleanly attributable via `git bisect`.
+Originally eight PRs. The `DelayedControls` PR folded into the 3A PR
+once it became clear the former has no real consumer without the
+latter (see the DelayedControls section above for the full rationale),
+leaving seven concrete landings. Each one isolates a single concern so
+that review stays focused and FPS regressions / gains are cleanly
+attributable via `git bisect`.
 
 **Status:** PR 1-3 shipped — see roadmap.md for the landing summary
 and memory note `project_tier3_progress.md` for the lifecycle /
-streaming invariants that future PRs must preserve. PR 4-8 pending.
+streaming invariants that future PRs must preserve.
 
 ### PR 1 — Threading primitives (infra only) — SHIPPED
 
@@ -517,19 +547,7 @@ streaming invariants that future PRs must preserve. PR 4-8 pending.
 - `RequestThread` pushes `bayerRequest`, awaits `bayerReady`.
 - Measurable: DQBUF off RequestThread; FPS unchanged.
 
-### PR 4 — DelayedControls
-
-- Port of libcamera `DelayedControls` (~280 LOC), standalone.
-- `SensorTuning` gains `controlDelay` field (`exposure`, `gain`,
-  `vblank`, `vcm`).
-- `RequestThread::prepareRequest` → `push(seq, controls)`;
-  `CaptureThread::onBeforeQBuf(seq)` → `applyControls(seq)` writes
-  batched `V4L2_CID_*`.
-- Priority-write flag for `VBLANK` before `EXPOSURE`.
-- Measurable: FPS unchanged; result metadata reports the controls
-  that actually applied, not the latest requested.
-
-### PR 5 — PipelineThread + fence-fd
+### PR 4 — PipelineThread + fence-fd
 
 - `PipelineThread` owns Vulkan record / submit.
 - `vkGetFenceFdKHR` after each submit; fence fds registered in
@@ -540,7 +558,7 @@ streaming invariants that future PRs must preserve. PR 4-8 pending.
 - Measurable: **1080p preview 20 → 28–30 fps**. This is the PR the
   FPS bisect should point at.
 
-### PR 6 — ResultThread
+### PR 5 — ResultThread
 
 - `ResultThread` drains `CompletionQueue` FIFO.
 - Framework callbacks (`process_capture_result`, `notify`) move off
@@ -549,20 +567,31 @@ streaming invariants that future PRs must preserve. PR 4-8 pending.
 - Measurable: FPS unchanged; `notify` SHUTTER latency bounded by
   result-queue depth, not by GPU / JPEG work.
 
-### PR 7 — Ipa + GPU statistics
+### PR 6 — Ipa + GPU statistics + DelayedControls
 
 - `Ipa` interface; `StubIpa` wraps today's per-frame 3A.
+- `DelayedControls` class (`isp/sensor/DelayedControls.{h,cpp}`);
+  `controlDelay` lives in `SensorConfig` (silicon property, not JSON).
 - New compute shader emits histogram + patch-mean grid into a
   host-mapped `VkBuffer`.
 - Stats flow: `PipelineThread` calls `ipa->processStats(seq, stats)`
   on fence signal; `ControlUpdate` → `DelayedControls::push` with
   `effectSequence = seq + delay`.
+- `ApplySettingsStage` switches from direct `dev->setControl(...)` to
+  `delayedControls.push + v4l2.setControls(batch)` via
+  `VIDIOC_S_EXT_CTRLS`. Result metadata reads from
+  `applyControls(seq)` — honest under steady state; lags during drain
+  rather than misreports (write cadence is request-sequence-indexed,
+  not SOF-indexed, since Tegra / UVC-like drivers don't expose SOF).
 - AE / AWB / AF start using GPU stats instead of locking gralloc for
   `SW_READ`.
+- `closeDevice` gains `delayedControls->reset()` alongside the other
+  session-boundary cleanups.
 - Measurable: `ANDROID_CONTROL_{AE,AWB,AF}_STATE` transitions driven
-  by real stats; AF sweep no longer blocks on gralloc lock.
+  by real stats; AF sweep no longer blocks on gralloc lock; exposure /
+  gain in result metadata reflect the physically-applied frame.
 
-### PR 8 — Produce-once + JpegWorker
+### PR 7 — Produce-once + JpegWorker
 
 - `IspPipeline` grows `beginFrame(bayer)` / `blitToGralloc` /
   `blitToYuv` / `blitToJpegCpu` / `endFrame`.
@@ -582,15 +611,15 @@ regression.
 
 ## Performance expectations
 
-| 1080p scenario | Today | After PR 2 | After PR 5 | After PR 8 |
+| 1080p scenario | Today | After PR 2 | After PR 4 | After PR 7 |
 |----------------|-------|------------|------------|------------|
 | `processCaptureRequest` latency | ~50 ms | < 1 ms | < 1 ms | < 1 ms |
 | FPS — preview only | ~20 | ~20 | ~28–30 | ~28–30 |
 | FPS — preview + video | ~13 | ~13 | ~22 | ~28–30 |
 
 Estimates based on current PERF log breakdown (~50 ms total,
-~30 ms GPU drain). PR 5 assumes GPU depth = 2 (sensor + GPU overlap).
-PR 8 assumes multi-stream demosaic deduplication.
+~30 ms GPU drain). PR 4 assumes GPU depth = 2 (sensor + GPU overlap).
+PR 7 assumes multi-stream demosaic deduplication.
 
 ## See also
 

@@ -201,8 +201,9 @@ Expected: single-stream ~20 fps → ~28–30 fps on 1080p; multi-stream
 preview+video ~13 fps → ~28 fps. Foundation for ZSL, reprocess, real
 3A, and Tier 3.5 produce-once without further rewrite.
 
-Eight PRs. PR 1-3 shipped (no FPS change yet — as expected; the boost
-is tied to PR 5); PR 4-8 still ahead.
+Original plan was eight PRs. PR 1-3 shipped (no FPS change yet — as
+expected; the boost is tied to the fence-poll PR); PR 4 is folded into
+the 3A PR for reasons below, leaving four more PRs ahead.
 
 **Done**
 
@@ -231,18 +232,27 @@ is tied to PR 5); PR 4-8 still ahead.
 
 **Pending**
 
-4. **PR 4** — `DelayedControls` port (~280 LOC) with
-   `SensorTuning.controlDelay`; truthful result metadata.
-5. **PR 5** — `PipelineThread` + Vulkan `external_fence_fd` in
-   `poll()`. `waitForPreviousFrame` deleted; GPU depth > 1. **FPS
-   win lands here** (preview 20 → ~28–30).
-6. **PR 6** — `ResultThread` split. Framework callbacks off
-   `PipelineThread`; FIFO by single-thread construction.
-7. **PR 7** — `Ipa` interface + GPU statistics compute shader;
+4. **`PipelineThread` + Vulkan `external_fence_fd` in `poll()`.**
+   `waitForPreviousFrame` deleted; GPU depth > 1. **FPS win lands
+   here** (preview 20 → ~28–30).
+5. **`ResultThread` split.** Framework callbacks off `PipelineThread`;
+   FIFO by single-thread construction.
+6. **`Ipa` interface + GPU statistics compute shader + `DelayedControls`.**
    AE / AWB / AF driven by real stats, not gralloc-locked preview.
-8. **PR 8** — Produce-once refactor
-   (`IspPipeline::beginFrame` / `blitTo*` / `endFrame`) + `PostProcessor` /
-   `JpegWorker`. **Multi-stream FPS win** (preview+video 13 → ~28).
+   `DelayedControls` lands here rather than earlier because it's
+   bookkeeping infrastructure whose only real consumer is a 3A loop
+   that writes new exposure/gain per frame — shipping it before an
+   actual consumer would be a YAGNI abstraction, and on a Tegra /
+   UVC-like driver with no SOF hook it can't improve write timing on
+   its own (only result-metadata honesty, which no current Android 7
+   client actually checks). See the architecture doc's DelayedControls
+   section for the shape; `controlDelay` lives in `SensorConfig` as a
+   silicon property (2 frames for both IMX179 and OV5693 as a
+   libcamera-convention default — verify empirically when the loop is
+   real).
+7. **Produce-once refactor** (`IspPipeline::beginFrame` / `blitTo*` /
+   `endFrame`) + `PostProcessor` / `JpegWorker`. **Multi-stream FPS
+   win** (preview+video 13 → ~28).
 
 Deferred but slot-reserved from PR 2: `Request::inputBuffer` for
 ZSL / reprocess; ZSL ring buffer and reprocess wiring happen in
