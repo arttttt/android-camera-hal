@@ -120,7 +120,6 @@ struct VulkanPfn {
     PFN_vkDestroyInstance                           DestroyInstance;
     PFN_vkEnumeratePhysicalDevices                  EnumeratePhysicalDevices;
     PFN_vkGetPhysicalDeviceMemoryProperties         GetPhysicalDeviceMemoryProperties;
-    PFN_vkGetPhysicalDeviceProperties               GetPhysicalDeviceProperties;
     PFN_vkGetPhysicalDeviceQueueFamilyProperties    GetPhysicalDeviceQueueFamilyProperties;
     PFN_vkEnumerateDeviceExtensionProperties        EnumerateDeviceExtensionProperties;
     PFN_vkCreateDevice                              CreateDevice;
@@ -160,10 +159,6 @@ struct VulkanPfn {
     PFN_vkWaitForFences                             WaitForFences;
     PFN_vkResetFences                               ResetFences;
 
-    PFN_vkCreateQueryPool                           CreateQueryPool;
-    PFN_vkDestroyQueryPool                          DestroyQueryPool;
-    PFN_vkGetQueryPoolResults                       GetQueryPoolResults;
-
     PFN_vkCreateShaderModule                        CreateShaderModule;
     PFN_vkDestroyShaderModule                       DestroyShaderModule;
     PFN_vkCreateDescriptorSetLayout                 CreateDescriptorSetLayout;
@@ -199,8 +194,6 @@ struct VulkanPfn {
     PFN_vkCmdCopyImageToBuffer                      CmdCopyImageToBuffer;
     PFN_vkCmdCopyImage                              CmdCopyImage;
     PFN_vkCmdCopyBufferToImage                      CmdCopyBufferToImage;
-    PFN_vkCmdWriteTimestamp                         CmdWriteTimestamp;
-    PFN_vkCmdResetQueryPool                         CmdResetQueryPool;
 
     PFN_vkCmdBeginRenderPass                        CmdBeginRenderPass;
     PFN_vkCmdEndRenderPass                          CmdEndRenderPass;

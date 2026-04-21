@@ -29,7 +29,6 @@ void VulkanLoader::loadInstancePfns(VkInstance instance, VulkanPfn *pfn) const {
     INST(DestroyInstance);
     INST(EnumeratePhysicalDevices);
     INST(GetPhysicalDeviceMemoryProperties);
-    INST(GetPhysicalDeviceProperties);
     INST(GetPhysicalDeviceQueueFamilyProperties);
     INST(EnumerateDeviceExtensionProperties);
     INST(CreateDevice);
@@ -77,10 +76,6 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
     DEV(WaitForFences);
     DEV(ResetFences);
 
-    DEV(CreateQueryPool);
-    DEV(DestroyQueryPool);
-    DEV(GetQueryPoolResults);
-
     DEV(CreateShaderModule);
     DEV(DestroyShaderModule);
     DEV(CreateDescriptorSetLayout);
@@ -116,8 +111,6 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
     DEV(CmdCopyImageToBuffer);
     DEV(CmdCopyImage);
     DEV(CmdCopyBufferToImage);
-    DEV(CmdWriteTimestamp);
-    DEV(CmdResetQueryPool);
 
     DEV(CmdBeginRenderPass);
     DEV(CmdEndRenderPass);
