@@ -57,8 +57,15 @@ public:
      * acquireFence: caller-owned fd that signals when buffer is ready for GPU writes.
      *               Implementation consumes (closes) it on success, leaves open on failure.
      *               Pass -1 if no fence.
-     * releaseFence: [out] non-null. Set to sync_fence fd that signals when GPU is done.
-     *               Caller owns and must close. -1 means no fence (invalid / fell back).
+     * releaseFence: [out] non-null. Set to sync_fence fd that signals when GPU is done
+     *               writing the gralloc image. Handed to the framework via
+     *               camera3_stream_buffer::release_fence. Caller owns and must close.
+     *               -1 means no fence (invalid / fell back).
+     * submitFence:  [out, may be NULL] if non-null, set to a sync_fence fd that signals
+     *               when the submit's command buffer completes. Intended for the
+     *               upcoming PipelineThread poll set so it can run the next stage
+     *               without vkWaitForFences. Caller owns and must close. Pass NULL
+     *               to skip (the backend then drops the fd internally).
      * srcInputSlot: if >=0, the Bayer data is already in the backend's input
      *               ring slot `srcInputSlot` (DMABUF capture path); `src` is
      *               ignored. If -1, the backend memcpy's `src` into its own
@@ -72,13 +79,15 @@ public:
                                    unsigned srcW, unsigned srcH,
                                    unsigned dstW, unsigned dstH,
                                    uint32_t pixFmt,
-                                   int acquireFence, int *releaseFence,
+                                   int acquireFence,
+                                   int *releaseFence, int *submitFence,
                                    int srcInputSlot,
                                    const CropRect &crop) {
         (void)src; (void)nativeBuffer;
         (void)srcW; (void)srcH; (void)dstW; (void)dstH;
         (void)pixFmt; (void)acquireFence; (void)srcInputSlot; (void)crop;
         *releaseFence = -1;
+        if (submitFence) *submitFence = -1;
         return false;
     }
 

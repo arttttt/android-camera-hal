@@ -39,7 +39,8 @@ public:
                            unsigned srcW, unsigned srcH,
                            unsigned dstW, unsigned dstH,
                            uint32_t pixFmt,
-                           int acquireFence, int *releaseFence,
+                           int acquireFence,
+                           int *releaseFence, int *submitFence,
                            int srcInputSlot,
                            const CropRect &crop) override;
 
@@ -162,10 +163,15 @@ private:
     VkImageView    mScratchView;
 
     VkFence mFence[SLOT_COUNT];
-    /* True while the slot's submit is still in flight on the GPU —
-     * the slot cannot be reused until its fence is waited on and
-     * reset. Set after submit, cleared by acquireSlot / drain paths. */
-    bool mPrevPending[SLOT_COUNT];
+    /* sync_fd exported from the slot's fence via vkGetFenceFdKHR; -1
+     * when the slot has no pending async submit. vkGetFenceFdKHR with
+     * SYNC_FD implicitly resets the fence, so the reused fence goes
+     * back to unsignalled state ready for the next submit — our
+     * "slot still in flight?" signal is the poll-readability of this
+     * fd, not the fence. Only the async gralloc path populates it;
+     * sync paths (processToCpu / Yuv / prewarm) drain in-line via
+     * WaitForFences and leave the slot's sync_fd at -1. */
+    int mSlotSyncFd[SLOT_COUNT];
     size_t mNextSlot;
 
     void fillParams(IspParams *p, unsigned w, unsigned h, bool is16, uint32_t pixFmt);

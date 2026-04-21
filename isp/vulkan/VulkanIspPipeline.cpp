@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <linux/videodev2.h>
 #include <math.h>
+#include <poll.h>
 #include <time.h>
 
 static inline int64_t nowMs() {
@@ -46,7 +47,7 @@ VulkanIspPipeline::VulkanIspPipeline()
         mParamMem[s]    = VK_NULL_HANDLE;
         mParamMap[s]    = NULL;
         mFence[s]       = VK_NULL_HANDLE;
-        mPrevPending[s] = false;
+        mSlotSyncFd[s]  = -1;
     }
 }
 
@@ -128,11 +129,11 @@ void VulkanIspPipeline::updateAwb(const uint8_t *raw, unsigned w, unsigned h,
 int VulkanIspPipeline::acquireSlot() {
     int slot = (int)mNextSlot;
     mNextSlot = (mNextSlot + 1) % SLOT_COUNT;
-    if (mPrevPending[slot]) {
-        mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1,
-                                           &mFence[slot], VK_TRUE, UINT64_MAX);
-        mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[slot]);
-        mPrevPending[slot] = false;
+    if (mSlotSyncFd[slot] >= 0) {
+        struct pollfd pfd = { mSlotSyncFd[slot], POLLIN, 0 };
+        ::poll(&pfd, 1, -1);
+        ::close(mSlotSyncFd[slot]);
+        mSlotSyncFd[slot] = -1;
     }
     return slot;
 }
@@ -1035,12 +1036,14 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
                                           unsigned srcW, unsigned srcH,
                                           unsigned dstW, unsigned dstH,
                                           uint32_t pixFmt,
-                                          int acquireFence, int *releaseFence,
+                                          int acquireFence,
+                                          int *releaseFence, int *submitFence,
                                           int srcInputSlot,
                                           const CropRect &crop) {
     (void)src;
     (void)acquireFence;
     *releaseFence = -1;
+    if (submitFence) *submitFence = -1;
 
     if (!mReady || !nativeBuffer || !mDeviceState.nativeBufferAvailable())
         return false;
@@ -1072,7 +1075,35 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
     int64_t t1 = nowMs();
     recordGrallocBlit(slot, entry, srcW, srcH, dstW, dstH, crop);
     submitWithReleaseFence(slot, entry, releaseFence);
-    mPrevPending[slot] = true;
+
+    /* Export the submit's fence as a sync_fd — the caller may forward
+     * it to PipelineThread's poll set for async completion, and we
+     * store a dup locally so acquireSlot can wait on the slot's prior
+     * submit before reusing its cmd buffer. vkGetFenceFdKHR with
+     * SYNC_FD implicitly resets the fence. */
+    int exported = -1;
+    VkFenceGetFdInfoKHR gfi = {};
+    gfi.sType      = VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR;
+    gfi.fence      = mFence[slot];
+    gfi.handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT_KHR;
+    VkResult gfr = mDeviceState.pfn()->GetFenceFdKHR(
+        mDeviceState.device(), &gfi, &exported);
+    if (gfr == VK_SUCCESS && exported >= 0) {
+        if (submitFence) {
+            *submitFence = exported;
+            mSlotSyncFd[slot] = ::dup(exported);
+        } else {
+            mSlotSyncFd[slot] = exported;
+        }
+    } else {
+        ALOGW("vkGetFenceFdKHR failed: %d (slot %d)", (int)gfr, slot);
+        /* Without a sync_fd we can't track slot reuse; fall back to
+         * blocking wait on the fence to keep the slot coherent. */
+        mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1,
+                                           &mFence[slot], VK_TRUE, UINT64_MAX);
+        mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[slot]);
+    }
+
     int64_t t2 = nowMs();
 
     updateAwb((const uint8_t *)mInputRing.mapped(srcInputSlot),
@@ -1184,7 +1215,10 @@ void VulkanIspPipeline::destroy() {
     mBufWidth = 0;
     mBufHeight = 0;
     for (size_t s = 0; s < SLOT_COUNT; s++) {
-        mPrevPending[s] = false;
+        if (mSlotSyncFd[s] >= 0) {
+            ::close(mSlotSyncFd[s]);
+            mSlotSyncFd[s] = -1;
+        }
     }
     mNextSlot = 0;
 }
@@ -1204,11 +1238,11 @@ void VulkanIspPipeline::onSessionClose() {
 void VulkanIspPipeline::waitForPreviousFrame() {
     if (!mReady) return;
     for (size_t s = 0; s < SLOT_COUNT; s++) {
-        if (!mPrevPending[s]) continue;
-        mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1,
-                                           &mFence[s], VK_TRUE, UINT64_MAX);
-        mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[s]);
-        mPrevPending[s] = false;
+        if (mSlotSyncFd[s] < 0) continue;
+        struct pollfd pfd = { mSlotSyncFd[s], POLLIN, 0 };
+        ::poll(&pfd, 1, -1);
+        ::close(mSlotSyncFd[s]);
+        mSlotSyncFd[s] = -1;
     }
 }
 

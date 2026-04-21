@@ -68,8 +68,8 @@ bool BufferProcessor::tryZeroCopy(const camera3_stream_buffer &srcBuf,
                                             ctx.resW, ctx.resH,
                                             streamW, streamH,
                                             ctx.pixFmt,
-                                            -1, &zcReleaseFd, ctx.frameSlotIdx,
-                                            crop);
+                                            -1, &zcReleaseFd, /*submitFence=*/NULL,
+                                            ctx.frameSlotIdx, crop);
     }
     if (!zcOk)
         return false;
