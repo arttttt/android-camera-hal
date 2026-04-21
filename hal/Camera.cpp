@@ -69,12 +69,13 @@ constexpr size_t REQUEST_QUEUE_CAPACITY = 256;
 /* Depth of concurrent GPU submits PipelineThread will keep outstanding.
  * Bounded from above by VulkanIspPipeline::SLOT_COUNT (the per-slot
  * ring). On single-stream preview at 1080p the CPU side of a submit
- * is a few ms while GPU is ~50ms — so any depth > 1 just adds
- * head-of-line queueing without overlap to pay for it; a higher cap
- * starts to earn its keep once PR 7/8 put real work on CPU (IPA
- * stats, JPEG encode) that can cover the GPU time. Probing cap=2 for
- * now; will revisit after the async stages land. */
-constexpr size_t PIPELINE_MAX_IN_FLIGHT = 2;
+ * is a couple of ms while the GPU takes ~50 ms — any depth > 1 just
+ * piles head-of-line queueing on top of the GPU bottleneck and the
+ * framework sees ResultDispatch callbacks clumped in bursts instead
+ * of arriving at sensor cadence. Pin at 1 until PR 7 / 8 add real
+ * CPU work (IPA stats, JPEG encode) that actually has something to
+ * hide behind the GPU. */
+constexpr size_t PIPELINE_MAX_IN_FLIGHT = 1;
 
 /* Handoff buffer between RequestThread and PipelineThread. Decoupled
  * from PIPELINE_MAX_IN_FLIGHT on purpose: the queue size adds directly
@@ -643,31 +644,19 @@ void Camera::startWorkers() {
         }
     }
 
-    /* Synthetic prewarm context — flows through Apply/Shutter/Capture
-     * on RequestThread and a bare demosaic submit on PipelineThread,
-     * ResultDispatch skips the framework callback via discardOnDispatch.
-     * Fires off a real GPU submit so the first framework frame lands
-     * on a warm driver (shader compile, descriptor pool, fence export
-     * paths all primed). Sequence = UINT32_MAX avoids collision with
-     * any plausible framework frameNumber. */
-    if (mTracker && mRequestQueue) {
-        std::unique_ptr<PipelineContext> warmup(new PipelineContext());
-        warmup->sequence                = UINT32_MAX;
-        warmup->request.frameNumber     = UINT32_MAX;
-        warmup->discardOnDispatch       = true;
-        warmup->tAccepted               = systemTime();
-        PipelineContext *raw = warmup.get();
-        mTracker->add(std::move(warmup));
-        if (!mRequestQueue->push(raw)) {
-            /* Shouldn't happen — queue is 256-deep and we're at
-             * session start with nothing in flight. Reap the tracker
-             * entry so nothing leaks if the cap was somehow hit. */
-            std::unique_ptr<PipelineContext> reclaim =
-                mTracker->removeBySequence(raw->sequence);
-            (void)reclaim;
-            ALOGW("prewarm push failed");
-        }
-    }
+    /* Shader / pipeline warmup lives in configureStreams' inline
+     * mIsp->prewarm() call — a fragment-free compute submit that
+     * vkWaitForFences'es in-place. Pushing an extra
+     * discardOnDispatch context from here used to do a second warmup
+     * through the real pipeline, but on the NVIDIA K1 driver a
+     * compute-only submit's sync_fd won't signal until a subsequent
+     * submit (probably a graphics one) flushes the pushbuffer — at
+     * PIPELINE_MAX_IN_FLIGHT=1 that next submit never comes, the
+     * fence deadlocks PipelineThread, and preview never starts.
+     * Removing the synth push: the first real framework frame warms
+     * the fragment-blit path on its own, and keeping the synth
+     * around without the "same code as real frames" promise it was
+     * meant to uphold is dead weight. */
 }
 
 inline void Camera::notifyShutter(uint32_t frameNumber, uint64_t timestamp) {
