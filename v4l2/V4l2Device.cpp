@@ -442,6 +442,18 @@ bool V4l2Device::setStreaming(bool enable) {
         return !enable;
 
     if(enable) {
+        /* Queue every slot before STREAMON — the kernel drops queued
+         * buffers on STREAMOFF (and they were never queued at alloc
+         * time either). Without this, STREAMON starts a sensor that
+         * has no buffers to write into, and every subsequent DQBUF
+         * blocks forever. */
+        for (int i = 0; i < V4L2DEVICE_BUF_COUNT; i++) {
+            if (!queueBuffer(i)) {
+                ALOGE("Pre-STREAMON QBUF slot %d failed: %s (%d)",
+                      i, strerror(errno), errno);
+                return false;
+            }
+        }
         if(!iocStreamOn()) {
             ALOGE("Could not start streaming: %s (%d)", strerror(errno), errno);
             return false;
@@ -833,11 +845,11 @@ bool V4l2Device::setResolutionAndAllocateBuffers(unsigned width, unsigned height
             mBuf[i].index = i;
         }
 
-        if(!queueBuffer(i)) {
-            ALOGE("Could not queue buffer: %s (%d)", strerror(errno), errno);
-            do mBuf[i].unmap(); while(i--);
-            return false;
-        }
+        /* No QBUF here — STREAMOFF between sessions puts every slot
+         * back into USERSPACE state, so queueing them at alloc time
+         * would conflict with the re-queue that setStreaming(true)
+         * performs. Single place that does QBUF-before-STREAMON is
+         * setStreaming(). */
     }
 
     return true;
