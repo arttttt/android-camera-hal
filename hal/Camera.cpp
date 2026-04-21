@@ -66,8 +66,15 @@ namespace {
 /* Soft cap; see docs/tier3_architecture.md. */
 constexpr size_t REQUEST_QUEUE_CAPACITY = 256;
 
-/* Matches VulkanIspPipeline's per-slot resource ring. */
-constexpr size_t PIPELINE_MAX_IN_FLIGHT = 4;
+/* Depth of concurrent GPU submits PipelineThread will keep outstanding.
+ * Bounded from above by VulkanIspPipeline::SLOT_COUNT (the per-slot
+ * ring). On single-stream preview at 1080p the CPU side of a submit
+ * is a few ms while GPU is ~50ms — so any depth > 1 just adds
+ * head-of-line queueing without overlap to pay for it; a higher cap
+ * starts to earn its keep once PR 7/8 put real work on CPU (IPA
+ * stats, JPEG encode) that can cover the GPU time. Probing cap=2 for
+ * now; will revisit after the async stages land. */
+constexpr size_t PIPELINE_MAX_IN_FLIGHT = 2;
 
 /* Handoff buffer between RequestThread and PipelineThread. Decoupled
  * from PIPELINE_MAX_IN_FLIGHT on purpose: the queue size adds directly
