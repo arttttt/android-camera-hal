@@ -12,6 +12,7 @@
 #include <ui/GraphicBufferMapper.h>
 #include <ui/Fence.h>
 #include <utils/Log.h>
+#include <utils/Timers.h>
 #include <libyuv.h>
 
 #include "IspPipeline.h"
@@ -35,8 +36,20 @@ BufferProcessor::BufferProcessor(const Deps &deps)
 
 status_t BufferProcessor::waitAcquireFence(const camera3_stream_buffer &srcBuf,
                                             uint32_t frameNumber) {
+    /* Acquire fence signals when the gralloc buffer is safe for the
+     * HAL to write. On a backed-up compositor this is the main way the
+     * framework back-pressures us — measuring it surfaces the case
+     * where "GPU isn't the bottleneck, the display is". Only log when
+     * the wait is meaningful (>5 ms) to keep the steady-state log
+     * readable. */
+    int64_t t0 = systemTime();
     sp<Fence> acquireFence = new Fence(srcBuf.acquire_fence);
     status_t e = acquireFence->wait(kAcquireFenceTimeoutMs);
+    int64_t waitMs = (systemTime() - t0) / 1000000;
+    if (waitMs > 5) {
+        ALOGD("acquire_fence wait %lldms  frame %u  buffer %p",
+              (long long)waitMs, frameNumber, srcBuf.buffer);
+    }
     if (e == TIMED_OUT) {
         ALOGE("buffer %p  frame %-4u  Wait on acquire fence timed out",
               srcBuf.buffer, frameNumber);
