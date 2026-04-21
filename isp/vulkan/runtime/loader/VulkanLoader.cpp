@@ -111,6 +111,7 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
     DEV(CmdCopyImageToBuffer);
     DEV(CmdCopyImage);
     DEV(CmdCopyBufferToImage);
+    DEV(CmdFillBuffer);
 
     DEV(CmdBeginRenderPass);
     DEV(CmdEndRenderPass);

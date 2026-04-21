@@ -194,6 +194,7 @@ struct VulkanPfn {
     PFN_vkCmdCopyImageToBuffer                      CmdCopyImageToBuffer;
     PFN_vkCmdCopyImage                              CmdCopyImage;
     PFN_vkCmdCopyBufferToImage                      CmdCopyBufferToImage;
+    PFN_vkCmdFillBuffer                             CmdFillBuffer;
 
     PFN_vkCmdBeginRenderPass                        CmdBeginRenderPass;
     PFN_vkCmdEndRenderPass                          CmdEndRenderPass;
