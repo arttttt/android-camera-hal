@@ -78,6 +78,7 @@ LOCAL_SRC_FILES += \
     hal/pipeline/BufferProcessor.cpp \
     hal/pipeline/InFlightTracker.cpp \
     hal/pipeline/Pipeline.cpp \
+    hal/pipeline/PipelineThread.cpp \
     hal/pipeline/RequestThread.cpp \
     hal/pipeline/StreamConfig.cpp \
     hal/pipeline/stages/ApplySettingsStage.cpp \
