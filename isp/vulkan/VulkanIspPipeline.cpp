@@ -29,16 +29,26 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mDescLayout(VK_NULL_HANDLE)
     , mPipeLayout(VK_NULL_HANDLE), mPipeline(VK_NULL_HANDLE)
     , mBlitPipeline(VK_NULL_HANDLE), mRenderPass(VK_NULL_HANDLE)
-    , mDescPool(VK_NULL_HANDLE), mDescSet(VK_NULL_HANDLE)
+    , mDescPool(VK_NULL_HANDLE)
     , mScratchSampler(VK_NULL_HANDLE)
-    , mCmdPool(VK_NULL_HANDLE), mCmdBuf(VK_NULL_HANDLE)
-    , mOutBuf(VK_NULL_HANDLE), mParamBuf(VK_NULL_HANDLE)
-    , mOutMem(VK_NULL_HANDLE), mParamMem(VK_NULL_HANDLE)
+    , mCmdPool(VK_NULL_HANDLE)
+    , mOutBuf(VK_NULL_HANDLE)
+    , mOutMem(VK_NULL_HANDLE)
     , mOutSize(0)
-    , mOutMap(NULL), mParamMap(NULL)
+    , mOutMap(NULL)
     , mScratchImg(VK_NULL_HANDLE), mScratchMem(VK_NULL_HANDLE), mScratchView(VK_NULL_HANDLE)
-    , mFence(VK_NULL_HANDLE), mPrevPending(false)
-{}
+    , mNextSlot(0)
+{
+    for (size_t s = 0; s < SLOT_COUNT; s++) {
+        mDescSet[s]     = VK_NULL_HANDLE;
+        mCmdBuf[s]      = VK_NULL_HANDLE;
+        mParamBuf[s]    = VK_NULL_HANDLE;
+        mParamMem[s]    = VK_NULL_HANDLE;
+        mParamMap[s]    = NULL;
+        mFence[s]       = VK_NULL_HANDLE;
+        mPrevPending[s] = false;
+    }
+}
 
 VulkanIspPipeline::~VulkanIspPipeline() { destroy(); }
 
@@ -115,31 +125,36 @@ void VulkanIspPipeline::updateAwb(const uint8_t *raw, unsigned w, unsigned h,
 
 /* --- frame helpers shared between the process* paths --- */
 
-void VulkanIspPipeline::drainPendingFence() {
-    if (!mPrevPending) return;
-    mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1, &mFence, VK_TRUE, UINT64_MAX);
-    mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence);
-    mPrevPending = false;
+int VulkanIspPipeline::acquireSlot() {
+    int slot = (int)mNextSlot;
+    mNextSlot = (mNextSlot + 1) % SLOT_COUNT;
+    if (mPrevPending[slot]) {
+        mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1,
+                                           &mFence[slot], VK_TRUE, UINT64_MAX);
+        mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[slot]);
+        mPrevPending[slot] = false;
+    }
+    return slot;
 }
 
-void VulkanIspPipeline::uploadParams(const IspParams &p) {
-    memcpy(mParamMap, &p, sizeof(IspParams));
+void VulkanIspPipeline::uploadParams(int slot, const IspParams &p) {
+    memcpy(mParamMap[slot], &p, sizeof(IspParams));
 
     VkMappedMemoryRange range = {};
     range.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    range.memory = mParamMem;
+    range.memory = mParamMem[slot];
     range.size   = VK_WHOLE_SIZE;
     mDeviceState.pfn()->FlushMappedMemoryRanges(mDeviceState.device(), 1, &range);
 }
 
-void VulkanIspPipeline::rebindInputDescriptor(int slot) {
+void VulkanIspPipeline::rebindInputDescriptor(int slot, int inputSlot) {
     VkDescriptorBufferInfo inInfo = {};
-    inInfo.buffer = mInputRing.buffer(slot);
+    inInfo.buffer = mInputRing.buffer(inputSlot);
     inInfo.range  = mInputRing.slotSize();
 
     VkWriteDescriptorSet inWrite = {};
     inWrite.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    inWrite.dstSet          = mDescSet;
+    inWrite.dstSet          = mDescSet[slot];
     inWrite.dstBinding      = 0;
     inWrite.descriptorCount = 1;
     inWrite.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -147,22 +162,23 @@ void VulkanIspPipeline::rebindInputDescriptor(int slot) {
     mDeviceState.pfn()->UpdateDescriptorSets(mDeviceState.device(), 1, &inWrite, 0, NULL);
 }
 
-void VulkanIspPipeline::recordGrallocBlit(VulkanGrallocCache::Entry *entry,
+void VulkanIspPipeline::recordGrallocBlit(int slot, VulkanGrallocCache::Entry *entry,
                                            unsigned srcW, unsigned srcH,
                                            unsigned dstW, unsigned dstH,
                                            const CropRect &crop) {
+    VkCommandBuffer cb = mCmdBuf[slot];
     VkCommandBufferBeginInfo bi = {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    mDeviceState.pfn()->ResetCommandBuffer(mCmdBuf, 0);
-    mDeviceState.pfn()->BeginCommandBuffer(mCmdBuf, &bi);
+    mDeviceState.pfn()->ResetCommandBuffer(cb, 0);
+    mDeviceState.pfn()->BeginCommandBuffer(cb, &bi);
 
     /* Compute: Bayer → mScratchImg (via binding=1 storage image, set once
      * in ensureBuffers). Dispatch sized to the scratch/capture extent. */
-    mDeviceState.pfn()->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
-    mDeviceState.pfn()->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                               mPipeLayout, 0, 1, &mDescSet, 0, NULL);
-    mDeviceState.pfn()->CmdDispatch(mCmdBuf, (srcW + 7) / 8, (srcH + 7) / 8, 1);
+    mDeviceState.pfn()->CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
+    mDeviceState.pfn()->CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                               mPipeLayout, 0, 1, &mDescSet[slot], 0, NULL);
+    mDeviceState.pfn()->CmdDispatch(cb, (srcW + 7) / 8, (srcH + 7) / 8, 1);
 
     /* scratch SHADER_WRITE → SHADER_READ for the fragment pass. */
     VkImageMemoryBarrier scratchB = {};
@@ -177,7 +193,7 @@ void VulkanIspPipeline::recordGrallocBlit(VulkanGrallocCache::Entry *entry,
     scratchB.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     scratchB.subresourceRange.levelCount = 1;
     scratchB.subresourceRange.layerCount = 1;
-    mDeviceState.pfn()->CmdPipelineBarrier(mCmdBuf,
+    mDeviceState.pfn()->CmdPipelineBarrier(cb,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
         0, 0, NULL, 0, NULL, 1, &scratchB);
@@ -192,10 +208,10 @@ void VulkanIspPipeline::recordGrallocBlit(VulkanGrallocCache::Entry *entry,
     rpbi.renderArea.extent.width  = dstW;
     rpbi.renderArea.extent.height = dstH;
 
-    mDeviceState.pfn()->CmdBeginRenderPass(mCmdBuf, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-    mDeviceState.pfn()->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, mBlitPipeline);
-    mDeviceState.pfn()->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                               mPipeLayout, 0, 1, &mDescSet, 0, NULL);
+    mDeviceState.pfn()->CmdBeginRenderPass(cb, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+    mDeviceState.pfn()->CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, mBlitPipeline);
+    mDeviceState.pfn()->CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                               mPipeLayout, 0, 1, &mDescSet[slot], 0, NULL);
 
     /* Mirrors the push_constant block declared in shaders/Blit.h. */
     struct BlitPushConstants {
@@ -211,7 +227,7 @@ void VulkanIspPipeline::recordGrallocBlit(VulkanGrallocCache::Entry *entry,
     pc.srcH  = (int32_t)srcH;
     pc.outW  = (int32_t)dstW;
     pc.outH  = (int32_t)dstH;
-    mDeviceState.pfn()->CmdPushConstants(mCmdBuf, mPipeLayout,
+    mDeviceState.pfn()->CmdPushConstants(cb, mPipeLayout,
                                           VK_SHADER_STAGE_FRAGMENT_BIT,
                                           0, sizeof(pc), &pc);
 
@@ -220,29 +236,29 @@ void VulkanIspPipeline::recordGrallocBlit(VulkanGrallocCache::Entry *entry,
     vp.height   = (float)dstH;
     vp.minDepth = 0.0f;
     vp.maxDepth = 1.0f;
-    mDeviceState.pfn()->CmdSetViewport(mCmdBuf, 0, 1, &vp);
+    mDeviceState.pfn()->CmdSetViewport(cb, 0, 1, &vp);
 
     VkRect2D sc = {};
     sc.extent.width  = dstW;
     sc.extent.height = dstH;
-    mDeviceState.pfn()->CmdSetScissor(mCmdBuf, 0, 1, &sc);
+    mDeviceState.pfn()->CmdSetScissor(cb, 0, 1, &sc);
 
-    mDeviceState.pfn()->CmdDraw(mCmdBuf, 3, 1, 0, 0);
-    mDeviceState.pfn()->CmdEndRenderPass(mCmdBuf);
+    mDeviceState.pfn()->CmdDraw(cb, 3, 1, 0, 0);
+    mDeviceState.pfn()->CmdEndRenderPass(cb);
 
-    mDeviceState.pfn()->EndCommandBuffer(mCmdBuf);
+    mDeviceState.pfn()->EndCommandBuffer(cb);
     entry->layoutReady = true;
 }
 
-void VulkanIspPipeline::submitWithReleaseFence(VulkanGrallocCache::Entry *entry,
+void VulkanIspPipeline::submitWithReleaseFence(int slot, VulkanGrallocCache::Entry *entry,
                                                 int *releaseFence) {
     *releaseFence = -1;
 
     VkSubmitInfo si = {};
     si.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
-    si.pCommandBuffers    = &mCmdBuf;
-    mDeviceState.pfn()->QueueSubmit(mDeviceState.queue(), 1, &si, mFence);
+    si.pCommandBuffers    = &mCmdBuf[slot];
+    mDeviceState.pfn()->QueueSubmit(mDeviceState.queue(), 1, &si, mFence[slot]);
 
     /* sync_fence fd for the framework's release wait — signals once the
      * submit above plus any driver-internal release barrier completes. */
@@ -258,19 +274,20 @@ void VulkanIspPipeline::submitWithReleaseFence(VulkanGrallocCache::Entry *entry,
     }
 }
 
-void VulkanIspPipeline::recordDemosaicAndYuvEncode(unsigned width, unsigned height,
-                                                     VkFence fence) {
+void VulkanIspPipeline::recordDemosaicAndYuvEncode(int slot,
+                                                     unsigned width, unsigned height) {
+    VkCommandBuffer cb = mCmdBuf[slot];
     VkCommandBufferBeginInfo bi = {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    mDeviceState.pfn()->ResetCommandBuffer(mCmdBuf, 0);
-    mDeviceState.pfn()->BeginCommandBuffer(mCmdBuf, &bi);
+    mDeviceState.pfn()->ResetCommandBuffer(cb, 0);
+    mDeviceState.pfn()->BeginCommandBuffer(cb, &bi);
 
     /* Demosaic: Bayer → mScratchImg. */
-    mDeviceState.pfn()->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
-    mDeviceState.pfn()->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                mPipeLayout, 0, 1, &mDescSet, 0, NULL);
-    mDeviceState.pfn()->CmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
+    mDeviceState.pfn()->CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
+    mDeviceState.pfn()->CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                mPipeLayout, 0, 1, &mDescSet[slot], 0, NULL);
+    mDeviceState.pfn()->CmdDispatch(cb, (width + 7) / 8, (height + 7) / 8, 1);
 
     /* Scratch WRITE → READ — the next compute dispatch samples it. */
     VkImageMemoryBarrier imb = {};
@@ -285,35 +302,36 @@ void VulkanIspPipeline::recordDemosaicAndYuvEncode(unsigned width, unsigned heig
     imb.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     imb.subresourceRange.levelCount = 1;
     imb.subresourceRange.layerCount = 1;
-    mDeviceState.pfn()->CmdPipelineBarrier(mCmdBuf,
+    mDeviceState.pfn()->CmdPipelineBarrier(cb,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         0, 0, NULL, 0, NULL, 1, &imb);
 
     /* YUV encode: scratch → NV12 in the encoder's output buffer. */
-    mYuvEncoder.recordDispatch(mCmdBuf, width, height);
+    mYuvEncoder.recordDispatch(cb, width, height);
 
-    mDeviceState.pfn()->EndCommandBuffer(mCmdBuf);
+    mDeviceState.pfn()->EndCommandBuffer(cb);
 
     VkSubmitInfo si = {};
     si.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
-    si.pCommandBuffers    = &mCmdBuf;
-    mDeviceState.pfn()->QueueSubmit(mDeviceState.queue(), 1, &si, fence);
+    si.pCommandBuffers    = &cb;
+    mDeviceState.pfn()->QueueSubmit(mDeviceState.queue(), 1, &si, mFence[slot]);
 }
 
-void VulkanIspPipeline::recordAndSubmit(unsigned width, unsigned height, VkFence fence,
+void VulkanIspPipeline::recordAndSubmit(int slot, unsigned width, unsigned height,
                                          bool copyToOutBuf) {
+    VkCommandBuffer cb = mCmdBuf[slot];
     VkCommandBufferBeginInfo beginInfo = {};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-    mDeviceState.pfn()->ResetCommandBuffer(mCmdBuf, 0);
-    mDeviceState.pfn()->BeginCommandBuffer(mCmdBuf, &beginInfo);
-    mDeviceState.pfn()->CmdBindPipeline(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
-    mDeviceState.pfn()->CmdBindDescriptorSets(mCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                mPipeLayout, 0, 1, &mDescSet, 0, NULL);
-    mDeviceState.pfn()->CmdDispatch(mCmdBuf, (width + 7) / 8, (height + 7) / 8, 1);
+    mDeviceState.pfn()->ResetCommandBuffer(cb, 0);
+    mDeviceState.pfn()->BeginCommandBuffer(cb, &beginInfo);
+    mDeviceState.pfn()->CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
+    mDeviceState.pfn()->CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                mPipeLayout, 0, 1, &mDescSet[slot], 0, NULL);
+    mDeviceState.pfn()->CmdDispatch(cb, (width + 7) / 8, (height + 7) / 8, 1);
 
     if (copyToOutBuf) {
         VkImageMemoryBarrier imb = {};
@@ -329,7 +347,7 @@ void VulkanIspPipeline::recordAndSubmit(unsigned width, unsigned height, VkFence
         imb.subresourceRange.levelCount = 1;
         imb.subresourceRange.layerCount = 1;
 
-        mDeviceState.pfn()->CmdPipelineBarrier(mCmdBuf,
+        mDeviceState.pfn()->CmdPipelineBarrier(cb,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             VK_PIPELINE_STAGE_TRANSFER_BIT,
             0, 0, NULL, 0, NULL, 1, &imb);
@@ -340,17 +358,17 @@ void VulkanIspPipeline::recordAndSubmit(unsigned width, unsigned height, VkFence
         region.imageExtent.width = width;
         region.imageExtent.height = height;
         region.imageExtent.depth = 1;
-        mDeviceState.pfn()->CmdCopyImageToBuffer(mCmdBuf, mScratchImg, VK_IMAGE_LAYOUT_GENERAL,
+        mDeviceState.pfn()->CmdCopyImageToBuffer(cb, mScratchImg, VK_IMAGE_LAYOUT_GENERAL,
                                     mOutBuf, 1, &region);
     }
 
-    mDeviceState.pfn()->EndCommandBuffer(mCmdBuf);
+    mDeviceState.pfn()->EndCommandBuffer(cb);
 
     VkSubmitInfo si = {};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
-    si.pCommandBuffers = &mCmdBuf;
-    mDeviceState.pfn()->QueueSubmit(mDeviceState.queue(), 1, &si, fence);
+    si.pCommandBuffers = &cb;
+    mDeviceState.pfn()->QueueSubmit(mDeviceState.queue(), 1, &si, mFence[slot]);
 }
 
 /* --- init / destroy --- */
@@ -603,19 +621,20 @@ bool VulkanIspPipeline::createGraphicsPipeline() {
 }
 
 bool VulkanIspPipeline::allocateDescriptorSet() {
-    /* 2 storage buffers (input, params) + 1 storage image (scratch
-     * write) + 1 combined image sampler (scratch read). */
+    /* Per-slot sets, each binding: 2 storage buffers (input, params) +
+     * 1 storage image (scratch write) + 1 combined image sampler
+     * (scratch read). Pool is sized for the whole ring. */
     VkDescriptorPoolSize poolSizes[3] = {};
     poolSizes[0].type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[0].descriptorCount = 2;
+    poolSizes[0].descriptorCount = 2 * SLOT_COUNT;
     poolSizes[1].type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSizes[1].descriptorCount = 1;
+    poolSizes[1].descriptorCount = 1 * SLOT_COUNT;
     poolSizes[2].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[2].descriptorCount = 1;
+    poolSizes[2].descriptorCount = 1 * SLOT_COUNT;
 
     VkDescriptorPoolCreateInfo dpci = {};
     dpci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dpci.maxSets       = 1;
+    dpci.maxSets       = SLOT_COUNT;
     dpci.poolSizeCount = 3;
     dpci.pPoolSizes    = poolSizes;
     if (mDeviceState.pfn()->CreateDescriptorPool(
@@ -624,13 +643,16 @@ bool VulkanIspPipeline::allocateDescriptorSet() {
         return false;
     }
 
+    VkDescriptorSetLayout layouts[SLOT_COUNT];
+    for (size_t s = 0; s < SLOT_COUNT; s++) layouts[s] = mDescLayout;
+
     VkDescriptorSetAllocateInfo dsai = {};
     dsai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     dsai.descriptorPool     = mDescPool;
-    dsai.descriptorSetCount = 1;
-    dsai.pSetLayouts        = &mDescLayout;
+    dsai.descriptorSetCount = SLOT_COUNT;
+    dsai.pSetLayouts        = layouts;
     if (mDeviceState.pfn()->AllocateDescriptorSets(
-            mDeviceState.device(), &dsai, &mDescSet) != VK_SUCCESS) {
+            mDeviceState.device(), &dsai, mDescSet) != VK_SUCCESS) {
         ALOGE("vkAllocateDescriptorSets failed");
         return false;
     }
@@ -648,21 +670,39 @@ bool VulkanIspPipeline::createCommandObjects() {
     cbai.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     cbai.commandPool        = mCmdPool;
     cbai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cbai.commandBufferCount = 1;
-    mDeviceState.pfn()->AllocateCommandBuffers(mDeviceState.device(), &cbai, &mCmdBuf);
+    cbai.commandBufferCount = SLOT_COUNT;
+    mDeviceState.pfn()->AllocateCommandBuffers(mDeviceState.device(), &cbai, mCmdBuf);
 
-    /* Persistently-mapped parameter buffer — one IspParams per frame. */
-    if (!mDeviceState.createBuffer(&mParamBuf, &mParamMem, sizeof(IspParams),
-                                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
-        ALOGE("Failed to create params buffer");
-        return false;
+    /* Per-slot persistently-mapped parameter buffers — the compute
+     * dispatches of two in-flight submits must see independent
+     * IspParams content. */
+    for (size_t s = 0; s < SLOT_COUNT; s++) {
+        if (!mDeviceState.createBuffer(&mParamBuf[s], &mParamMem[s], sizeof(IspParams),
+                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
+            ALOGE("Failed to create param buffer slot %zu", s);
+            return false;
+        }
+        mDeviceState.pfn()->MapMemory(mDeviceState.device(), mParamMem[s], 0,
+                                       sizeof(IspParams), 0, &mParamMap[s]);
     }
-    mDeviceState.pfn()->MapMemory(mDeviceState.device(), mParamMem, 0,
-                                   sizeof(IspParams), 0, &mParamMap);
+
+    /* Fences created with SYNC_FD_BIT in pNext so PipelineThread can
+     * later export each submit's completion as a sync_fd for poll(). */
+    VkExportFenceCreateInfoKHR efci = {};
+    efci.sType       = VK_STRUCTURE_TYPE_EXPORT_FENCE_CREATE_INFO_KHR;
+    efci.handleTypes = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT_KHR;
 
     VkFenceCreateInfo fci = {};
     fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    mDeviceState.pfn()->CreateFence(mDeviceState.device(), &fci, NULL, &mFence);
+    fci.pNext = &efci;
+
+    for (size_t s = 0; s < SLOT_COUNT; s++) {
+        if (mDeviceState.pfn()->CreateFence(
+                mDeviceState.device(), &fci, NULL, &mFence[s]) != VK_SUCCESS) {
+            ALOGE("vkCreateFence failed for slot %zu", s);
+            return false;
+        }
+    }
     return true;
 }
 
@@ -675,6 +715,10 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
     bool recreate = (mInputRing.slotSize() < inSize || mOutSize < outSize ||
                      mBufWidth != width || mBufHeight != height);
     if (!recreate) return true;
+
+    /* Drain any in-flight slots before tearing down scratch resources
+     * they reference (descriptor sets bind mScratchImg for all slots). */
+    waitForPreviousFrame();
 
     /* Cached gralloc wrappers and output-sized Vulkan objects are all
      * sized for the previous resolution — drop them first. */
@@ -782,12 +826,16 @@ bool VulkanIspPipeline::createScratchImage(unsigned width, unsigned height) {
     }
 
     /* One-time UNDEFINED → GENERAL transition so the compute shader can
-     * imageStore into the scratch image on the first dispatch. */
+     * imageStore into the scratch image on the first dispatch. This
+     * runs on slot 0 in isolation (no other slot is active during
+     * resource allocation), synchronously — it's an init path, not
+     * hot. */
+    VkCommandBuffer cb = mCmdBuf[0];
     VkCommandBufferBeginInfo bi = {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    mDeviceState.pfn()->ResetCommandBuffer(mCmdBuf, 0);
-    mDeviceState.pfn()->BeginCommandBuffer(mCmdBuf, &bi);
+    mDeviceState.pfn()->ResetCommandBuffer(cb, 0);
+    mDeviceState.pfn()->BeginCommandBuffer(cb, &bi);
 
     VkImageMemoryBarrier imb = {};
     imb.sType                           = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -801,75 +849,77 @@ bool VulkanIspPipeline::createScratchImage(unsigned width, unsigned height) {
     imb.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
     imb.subresourceRange.levelCount     = 1;
     imb.subresourceRange.layerCount     = 1;
-    mDeviceState.pfn()->CmdPipelineBarrier(mCmdBuf,
+    mDeviceState.pfn()->CmdPipelineBarrier(cb,
         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         0, 0, NULL, 0, NULL, 1, &imb);
-    mDeviceState.pfn()->EndCommandBuffer(mCmdBuf);
+    mDeviceState.pfn()->EndCommandBuffer(cb);
 
     VkSubmitInfo si = {};
     si.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
-    si.pCommandBuffers    = &mCmdBuf;
-    mDeviceState.pfn()->QueueSubmit(mDeviceState.queue(), 1, &si, mFence);
-    mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1, &mFence, VK_TRUE, UINT64_MAX);
-    mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence);
+    si.pCommandBuffers    = &cb;
+    mDeviceState.pfn()->QueueSubmit(mDeviceState.queue(), 1, &si, mFence[0]);
+    mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1, &mFence[0], VK_TRUE, UINT64_MAX);
+    mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[0]);
     return true;
 }
 
 void VulkanIspPipeline::writeStaticDescriptors() {
-    /* Initial bind: input slot 0 (rebound per-frame via
+    /* For every slot: bind input ring slot 0 (rebound per-frame via
      * rebindInputDescriptor), scratch image for compute write
      * (binding 1) and for fragment sampled read (binding 3) — same
      * VkImage+view, different descriptor type. Param buffer (binding 2)
-     * content is rewritten per-frame via uploadParams. */
-    VkDescriptorBufferInfo inInfo = {};
-    inInfo.buffer = mInputRing.buffer(0);
-    inInfo.range  = mInputRing.slotSize();
-
+     * is per-slot (see mParamBuf[]). */
     VkDescriptorImageInfo storageInfo = {};
     storageInfo.imageView   = mScratchView;
     storageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-    VkDescriptorBufferInfo paramInfo = {};
-    paramInfo.buffer = mParamBuf;
-    paramInfo.range  = sizeof(IspParams);
 
     VkDescriptorImageInfo sampledInfo = {};
     sampledInfo.sampler     = mScratchSampler;
     sampledInfo.imageView   = mScratchView;
     sampledInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-    VkWriteDescriptorSet writes[4] = {};
-    writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet          = mDescSet;
-    writes[0].dstBinding      = 0;
-    writes[0].descriptorCount = 1;
-    writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[0].pBufferInfo     = &inInfo;
+    for (size_t s = 0; s < SLOT_COUNT; s++) {
+        VkDescriptorBufferInfo inInfo = {};
+        inInfo.buffer = mInputRing.buffer(0);
+        inInfo.range  = mInputRing.slotSize();
 
-    writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet          = mDescSet;
-    writes[1].dstBinding      = 1;
-    writes[1].descriptorCount = 1;
-    writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    writes[1].pImageInfo      = &storageInfo;
+        VkDescriptorBufferInfo paramInfo = {};
+        paramInfo.buffer = mParamBuf[s];
+        paramInfo.range  = sizeof(IspParams);
 
-    writes[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[2].dstSet          = mDescSet;
-    writes[2].dstBinding      = 2;
-    writes[2].descriptorCount = 1;
-    writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[2].pBufferInfo     = &paramInfo;
+        VkWriteDescriptorSet writes[4] = {};
+        writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet          = mDescSet[s];
+        writes[0].dstBinding      = 0;
+        writes[0].descriptorCount = 1;
+        writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[0].pBufferInfo     = &inInfo;
 
-    writes[3].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[3].dstSet          = mDescSet;
-    writes[3].dstBinding      = 3;
-    writes[3].descriptorCount = 1;
-    writes[3].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[3].pImageInfo      = &sampledInfo;
+        writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet          = mDescSet[s];
+        writes[1].dstBinding      = 1;
+        writes[1].descriptorCount = 1;
+        writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[1].pImageInfo      = &storageInfo;
 
-    mDeviceState.pfn()->UpdateDescriptorSets(mDeviceState.device(), 4, writes, 0, NULL);
+        writes[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[2].dstSet          = mDescSet[s];
+        writes[2].dstBinding      = 2;
+        writes[2].descriptorCount = 1;
+        writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[2].pBufferInfo     = &paramInfo;
+
+        writes[3].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[3].dstSet          = mDescSet[s];
+        writes[3].dstBinding      = 3;
+        writes[3].descriptorCount = 1;
+        writes[3].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[3].pImageInfo      = &sampledInfo;
+
+        mDeviceState.pfn()->UpdateDescriptorSets(mDeviceState.device(), 4, writes, 0, NULL);
+    }
 }
 
 /* --- main processing paths --- */
@@ -888,17 +938,18 @@ const uint8_t *VulkanIspPipeline::processToCpu(const uint8_t *src,
     if (!ensureBuffers(width, height, is16))
         return NULL;
 
-    drainPendingFence();
+    int slot = acquireSlot();
     mInputRing.invalidateFromGpu(srcInputSlot);
 
     IspParams params;
     fillParams(&params, width, height, is16, pixFmt);
-    uploadParams(params);
-    rebindInputDescriptor(srcInputSlot);
+    uploadParams(slot, params);
+    rebindInputDescriptor(slot, srcInputSlot);
 
-    recordAndSubmit(width, height, mFence, true);
-    mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1, &mFence, VK_TRUE, UINT64_MAX);
-    mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence);
+    recordAndSubmit(slot, width, height, true);
+    mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1,
+                                       &mFence[slot], VK_TRUE, UINT64_MAX);
+    mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[slot]);
 
     VkMappedMemoryRange outRange = {};
     outRange.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
@@ -934,17 +985,18 @@ const uint8_t *VulkanIspPipeline::processToYuv420(const uint8_t *src,
         return NULL;
     mYuvEncoder.bindScratchInput(mScratchView, mScratchSampler);
 
-    drainPendingFence();
+    int slot = acquireSlot();
     mInputRing.invalidateFromGpu(srcInputSlot);
 
     IspParams params;
     fillParams(&params, width, height, is16, pixFmt);
-    uploadParams(params);
-    rebindInputDescriptor(srcInputSlot);
+    uploadParams(slot, params);
+    rebindInputDescriptor(slot, srcInputSlot);
 
-    recordDemosaicAndYuvEncode(width, height, mFence);
-    mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1, &mFence, VK_TRUE, UINT64_MAX);
-    mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence);
+    recordDemosaicAndYuvEncode(slot, width, height);
+    mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1,
+                                       &mFence[slot], VK_TRUE, UINT64_MAX);
+    mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[slot]);
 
     mYuvEncoder.invalidateForCpu();
     return mYuvEncoder.mappedBuffer();
@@ -958,6 +1010,8 @@ void VulkanIspPipeline::prewarm(unsigned width, unsigned height, uint32_t pixFmt
     if (!ensureBuffers(width, height, is16))
         return;
 
+    int slot = acquireSlot();
+
     IspParams params;
     params.reset();
     params.width   = width;
@@ -966,12 +1020,13 @@ void VulkanIspPipeline::prewarm(unsigned width, unsigned height, uint32_t pixFmt
     params.wbR     = 256;
     params.wbG     = 256;
     params.wbB     = 256;
-    uploadParams(params);
+    uploadParams(slot, params);
 
     int64_t start = nowMs();
-    recordAndSubmit(width, height, mFence, false);
-    mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1, &mFence, VK_TRUE, UINT64_MAX);
-    mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence);
+    recordAndSubmit(slot, width, height, false);
+    mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1,
+                                       &mFence[slot], VK_TRUE, UINT64_MAX);
+    mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[slot]);
     ALOGD("Vulkan ISP prewarm %ux%u is16=%d: %lldms",
           width, height, is16 ? 1 : 0, nowMs() - start);
 }
@@ -1003,7 +1058,7 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
         return false;
 
     int64_t t0 = nowMs();
-    drainPendingFence();
+    int slot = acquireSlot();
 
     /* V4L2 wrote directly into the input slot via DMABUF — invalidate any
      * stale CPU cache lines so updateAwb() below sees the device-side writes. */
@@ -1011,19 +1066,19 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
 
     IspParams params;
     fillParams(&params, srcW, srcH, is16, pixFmt);
-    uploadParams(params);
-    rebindInputDescriptor(srcInputSlot);
+    uploadParams(slot, params);
+    rebindInputDescriptor(slot, srcInputSlot);
 
     int64_t t1 = nowMs();
-    recordGrallocBlit(entry, srcW, srcH, dstW, dstH, crop);
-    submitWithReleaseFence(entry, releaseFence);
-    mPrevPending = true;
+    recordGrallocBlit(slot, entry, srcW, srcH, dstW, dstH, crop);
+    submitWithReleaseFence(slot, entry, releaseFence);
+    mPrevPending[slot] = true;
     int64_t t2 = nowMs();
 
     updateAwb((const uint8_t *)mInputRing.mapped(srcInputSlot),
               srcW, srcH, is16, pixFmt);
 
-    ALOGD("VK gralloc: upload=%lld submit=%lldms", t1 - t0, t2 - t1);
+    ALOGD("VK gralloc: slot=%d upload=%lld submit=%lldms", slot, t1 - t0, t2 - t1);
     return true;
 }
 
@@ -1037,9 +1092,11 @@ void VulkanIspPipeline::destroy() {
             mDeviceState.pfn()->UnmapMemory(mDeviceState.device(), mOutMem);
             mOutMap = NULL;
         }
-        if (mParamMap) {
-            mDeviceState.pfn()->UnmapMemory(mDeviceState.device(), mParamMem);
-            mParamMap = NULL;
+        for (size_t s = 0; s < SLOT_COUNT; s++) {
+            if (mParamMap[s]) {
+                mDeviceState.pfn()->UnmapMemory(mDeviceState.device(), mParamMem[s]);
+                mParamMap[s] = NULL;
+            }
         }
 
         mGrallocCache.clear();
@@ -1059,16 +1116,20 @@ void VulkanIspPipeline::destroy() {
             mScratchMem = VK_NULL_HANDLE;
         }
 
-        mDeviceState.destroyBuffer(mOutBuf,   mOutMem);
-        mDeviceState.destroyBuffer(mParamBuf, mParamMem);
+        mDeviceState.destroyBuffer(mOutBuf, mOutMem);
         mOutBuf = VK_NULL_HANDLE;
         mOutMem = VK_NULL_HANDLE;
-        mParamBuf = VK_NULL_HANDLE;
-        mParamMem = VK_NULL_HANDLE;
+        for (size_t s = 0; s < SLOT_COUNT; s++) {
+            mDeviceState.destroyBuffer(mParamBuf[s], mParamMem[s]);
+            mParamBuf[s] = VK_NULL_HANDLE;
+            mParamMem[s] = VK_NULL_HANDLE;
+        }
 
-        if (mFence) {
-            mDeviceState.pfn()->DestroyFence(mDeviceState.device(), mFence, NULL);
-            mFence = VK_NULL_HANDLE;
+        for (size_t s = 0; s < SLOT_COUNT; s++) {
+            if (mFence[s]) {
+                mDeviceState.pfn()->DestroyFence(mDeviceState.device(), mFence[s], NULL);
+                mFence[s] = VK_NULL_HANDLE;
+            }
         }
         if (mCmdPool) {
             mDeviceState.pfn()->DestroyCommandPool(mDeviceState.device(), mCmdPool, NULL);
@@ -1122,7 +1183,10 @@ void VulkanIspPipeline::destroy() {
     mOutSize = 0;
     mBufWidth = 0;
     mBufHeight = 0;
-    mPrevPending = false;
+    for (size_t s = 0; s < SLOT_COUNT; s++) {
+        mPrevPending[s] = false;
+    }
+    mNextSlot = 0;
 }
 
 void VulkanIspPipeline::onSessionClose() {
@@ -1138,10 +1202,14 @@ void VulkanIspPipeline::onSessionClose() {
 }
 
 void VulkanIspPipeline::waitForPreviousFrame() {
-    if (!mReady || !mPrevPending) return;
-    mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1, &mFence, VK_TRUE, UINT64_MAX);
-    mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence);
-    mPrevPending = false;
+    if (!mReady) return;
+    for (size_t s = 0; s < SLOT_COUNT; s++) {
+        if (!mPrevPending[s]) continue;
+        mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1,
+                                           &mFence[s], VK_TRUE, UINT64_MAX);
+        mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[s]);
+        mPrevPending[s] = false;
+    }
 }
 
 }; /* namespace android */

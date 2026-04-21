@@ -68,30 +68,34 @@ private:
     bool createScratchImage(unsigned width, unsigned height);
     void writeStaticDescriptors();
 
-    /* Wait + reset mFence when mPrevPending is set; no-op otherwise.
-     * Used to sync with the async processToGralloc submit before the
-     * next frame starts touching mCmdBuf / mDescSet / mParamMap. */
-    void drainPendingFence();
+    /* Round-robin slot pick. If the chosen slot is still in flight on
+     * the GPU, block on WaitForFences and reset before returning.
+     * In steady state (processToGralloc spacing ≥ 1 frame) the slot's
+     * fence has already signalled so the wait is a no-op — the ring
+     * turns into a pure overlap-enabler. */
+    int acquireSlot();
 
-    /* Write `p` into mParamMap and flush the memory range so the GPU
-     * sees the new parameters on the next dispatch. */
-    void uploadParams(const IspParams &p);
+    /* Write `p` into the slot's param buffer and flush the memory range
+     * so the GPU sees the new parameters on the next dispatch. */
+    void uploadParams(int slot, const IspParams &p);
 
-    /* Rebind descriptor binding=0 to the input ring slot — cheap (one
-     * vkUpdateDescriptorSets call) compared to re-allocating the set. */
-    void rebindInputDescriptor(int slot);
+    /* Rebind slot's descriptor binding=0 to the input ring slot — cheap
+     * (one vkUpdateDescriptorSets call) compared to re-allocating the
+     * set. */
+    void rebindInputDescriptor(int slot, int inputSlot);
 
-    /* Record mCmdBuf with pipeline+descriptor bind and a single compute
-     * dispatch sized for (width, height); optionally append an image→buffer
-     * copy of mScratchImg into mOutBuf so CPU can read the result via mOutMap.
-     * Submits to mQueue signalling `fence` (VK_NULL_HANDLE = no fence). */
-    void recordAndSubmit(unsigned width, unsigned height, VkFence fence,
+    /* Record the slot's cmd buffer with pipeline+descriptor bind and a
+     * single compute dispatch sized for (width, height); optionally
+     * append an image→buffer copy of mScratchImg into mOutBuf so CPU
+     * can read the result via mOutMap. Submits on mFence[slot]. */
+    void recordAndSubmit(int slot, unsigned width, unsigned height,
                           bool copyToOutBuf);
 
-    /* Record mCmdBuf with demosaic → scratch → yuv-encode compute chain
-     * and submit. The yuv encoder writes its own mapped NV12 buffer; the
-     * caller reads it via mYuvEncoder.mappedBuffer() after fence wait. */
-    void recordDemosaicAndYuvEncode(unsigned width, unsigned height, VkFence fence);
+    /* Record the slot's cmd buffer with demosaic → scratch → yuv-encode
+     * compute chain and submit on mFence[slot]. The yuv encoder writes
+     * its own mapped NV12 buffer; caller reads it via
+     * mYuvEncoder.mappedBuffer() after fence wait. */
+    void recordDemosaicAndYuvEncode(int slot, unsigned width, unsigned height);
 
     /* Zero-copy gralloc path: record compute → memory barrier → render
      * pass blit of mScratchImg into the entry's framebuffer, no final
@@ -101,16 +105,25 @@ private:
      * dstW/H:  framebuffer / gralloc output size.
      * crop:    sub-region of the scratch to sample, in source coords.
      *          Identity blit passes {0, 0, srcW, srcH} with dst == src. */
-    void recordGrallocBlit(VulkanGrallocCache::Entry *entry,
+    void recordGrallocBlit(int slot, VulkanGrallocCache::Entry *entry,
                             unsigned srcW, unsigned srcH,
                             unsigned dstW, unsigned dstH,
                             const CropRect &crop);
 
-    /* Submit mCmdBuf on mFence and ask the driver for a sync_fence fd
-     * that signals once the blit completes — the framework waits on it
-     * before compositing. Writes -1 to *releaseFence on failure. */
-    void submitWithReleaseFence(VulkanGrallocCache::Entry *entry,
+    /* Submit slot's cmd buffer on mFence[slot] and ask the driver for
+     * a sync_fence fd that signals once the blit completes — the
+     * framework waits on it before compositing. Writes -1 to
+     * *releaseFence on failure. */
+    void submitWithReleaseFence(int slot, VulkanGrallocCache::Entry *entry,
                                  int *releaseFence);
+
+    /* Per-submit GPU resources are held in a round-robin ring so the
+     * CPU side of frame N+1 (cmd-buffer record + descriptor update +
+     * vkQueueSubmit) can overlap with the GPU side of frame N. The
+     * single-queue Tegra K1 serialises execution between submits
+     * anyway, so one scratch image shared across slots is safe — the
+     * ring buys CPU↔GPU overlap, not parallel GPU execution. */
+    static constexpr size_t SLOT_COUNT = 4;
 
     VulkanDeviceState mDeviceState;
     VulkanInputRing   mInputRing;
@@ -127,25 +140,33 @@ private:
     VkPipeline mBlitPipeline;      /* graphics: scratch → gralloc via ROP */
     VkRenderPass mRenderPass;      /* 1 color attachment, RGBA8, DONT_CARE→STORE */
     VkDescriptorPool mDescPool;
-    VkDescriptorSet mDescSet;
+    VkDescriptorSet mDescSet[SLOT_COUNT];
     VkSampler mScratchSampler;   /* linear/clamp-to-edge, bound at binding=3 */
     VkCommandPool mCmdPool;
-    VkCommandBuffer mCmdBuf;
+    VkCommandBuffer mCmdBuf[SLOT_COUNT];
 
-    VkBuffer mOutBuf, mParamBuf;
-    VkDeviceMemory mOutMem, mParamMem;
-    size_t mOutSize;
-    void *mOutMap, *mParamMap;
+    VkBuffer       mOutBuf;
+    VkDeviceMemory mOutMem;
+    size_t         mOutSize;
+    void          *mOutMap;
+
+    /* One param buffer per slot — the compute shader dispatches of two
+     * in-flight submits must see independent IspParams content. */
+    VkBuffer       mParamBuf[SLOT_COUNT];
+    VkDeviceMemory mParamMem[SLOT_COUNT];
+    void          *mParamMap[SLOT_COUNT];
 
     /* Shader output image for CPU-readback paths; copied to mOutBuf after dispatch. */
     VkImage        mScratchImg;
     VkDeviceMemory mScratchMem;
     VkImageView    mScratchView;
 
-    VkFence mFence;
-    /* Set by the async processToGralloc path to indicate mFence / mCmdBuf
-     * are still in use by GPU. Drained at the start of the next call. */
-    bool mPrevPending;
+    VkFence mFence[SLOT_COUNT];
+    /* True while the slot's submit is still in flight on the GPU —
+     * the slot cannot be reused until its fence is waited on and
+     * reset. Set after submit, cleared by acquireSlot / drain paths. */
+    bool mPrevPending[SLOT_COUNT];
+    size_t mNextSlot;
 
     void fillParams(IspParams *p, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
     void updateAwb(const uint8_t *raw, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
