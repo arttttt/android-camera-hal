@@ -66,8 +66,16 @@ namespace {
 /* Soft cap; see docs/tier3_architecture.md. */
 constexpr size_t REQUEST_QUEUE_CAPACITY = 256;
 
-/* Matches VulkanIspPipeline's per-slot resource ring. */
-constexpr size_t PIPELINE_MAX_IN_FLIGHT = 4;
+/* At most two requests overlap on PipelineThread — one executing on
+ * the GPU, one with its cmd buffer being recorded / submitted. The
+ * choice is bounded not by Vulkan (SLOT_COUNT=4) but by V4L2's ring
+ * depth: with V4L2DEVICE_BUF_COUNT=4, every in-flight request keeps
+ * one slot out of the sensor's reach. Holding 4 would starve the
+ * sensor (every fresh exposure sees zero free slots and the kernel
+ * drops it), which manifests as jerky preview and clumpy dispatches.
+ * Two gives the sensor two slots of runway at all times — still
+ * overlaps submit N+1 recording with submit N's GPU execution. */
+constexpr size_t PIPELINE_MAX_IN_FLIGHT = 2;
 } /* namespace */
 
 namespace android {
