@@ -50,6 +50,23 @@ public:
         (void)width; (void)height; (void)pixFmt;
     }
 
+    /* Async demosaic-only submit — no gralloc output, no CPU readback.
+     * Used by the synthetic warmup context that runs the RequestThread →
+     * PipelineThread flow once at session start to exercise shader
+     * compile, descriptor pool, submit path, and fence export before
+     * any framework frame lands. The caller hands the returned
+     * submitFence to PipelineThread's poll set just like a real
+     * processToGralloc submit; downstream stages honour
+     * PipelineContext::discardOnDispatch to skip framework callbacks.
+     * Returns false on backend failure or when the backend has no
+     * warmup path. */
+    virtual bool submitDemosaicOnly(int srcInputSlot, unsigned width, unsigned height,
+                                     uint32_t pixFmt, int *submitFence) {
+        (void)srcInputSlot; (void)width; (void)height; (void)pixFmt;
+        *submitFence = -1;
+        return false;
+    }
+
     /* Process Bayer and blit result directly to gralloc buffer (no CPU readback).
      * nativeBuffer: ANativeWindowBuffer* cast to void*.
      * srcW, srcH:   capture (Bayer) resolution — also the ISP scratch size.

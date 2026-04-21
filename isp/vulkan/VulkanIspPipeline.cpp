@@ -1003,6 +1003,48 @@ const uint8_t *VulkanIspPipeline::processToYuv420(const uint8_t *src,
     return mYuvEncoder.mappedBuffer();
 }
 
+bool VulkanIspPipeline::submitDemosaicOnly(int srcInputSlot,
+                                             unsigned width, unsigned height,
+                                             uint32_t pixFmt, int *submitFence) {
+    *submitFence = -1;
+    if (!mReady) return false;
+    if (srcInputSlot < 0 || srcInputSlot >= mInputRing.slotCount())
+        return false;
+
+    bool is16 = (pixFmt == V4L2_PIX_FMT_SRGGB10 || pixFmt == V4L2_PIX_FMT_SGRBG10 ||
+                 pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SBGGR10);
+    if (!ensureBuffers(width, height, is16))
+        return false;
+
+    int slot = acquireSlot();
+    mInputRing.invalidateFromGpu(srcInputSlot);
+
+    IspParams params;
+    fillParams(&params, width, height, is16, pixFmt);
+    uploadParams(slot, params);
+    rebindInputDescriptor(slot, srcInputSlot);
+
+    recordAndSubmit(slot, width, height, /*copyToOutBuf=*/false);
+
+    int exported = -1;
+    VkFenceGetFdInfoKHR gfi = {};
+    gfi.sType      = VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR;
+    gfi.fence      = mFence[slot];
+    gfi.handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT_KHR;
+    VkResult gfr = mDeviceState.pfn()->GetFenceFdKHR(
+        mDeviceState.device(), &gfi, &exported);
+    if (gfr == VK_SUCCESS && exported >= 0) {
+        *submitFence = exported;
+        mSlotSyncFd[slot] = ::dup(exported);
+    } else {
+        ALOGW("submitDemosaicOnly: vkGetFenceFdKHR failed %d", (int)gfr);
+        mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1,
+                                           &mFence[slot], VK_TRUE, UINT64_MAX);
+        mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[slot]);
+    }
+    return true;
+}
+
 void VulkanIspPipeline::prewarm(unsigned width, unsigned height, uint32_t pixFmt) {
     if (!mReady) return;
 
