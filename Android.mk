@@ -56,6 +56,7 @@ LOCAL_C_INCLUDES += \
 LOCAL_C_INCLUDES += \
     $(LOCAL_PATH)/base \
     $(LOCAL_PATH)/hal \
+    $(LOCAL_PATH)/hal/ipa \
     $(LOCAL_PATH)/hal/pipeline \
     $(LOCAL_PATH)/hal/pipeline/stages \
     $(LOCAL_PATH)/v4l2 \
@@ -74,6 +75,7 @@ LOCAL_SRC_FILES += \
     hal/metadata/ResultMetadataBuilder.cpp \
     hal/3a/AutoFocusController.cpp \
     hal/3a/ExposureControl.cpp \
+    hal/ipa/StubIpa.cpp \
     hal/jpeg/JpegEncoder.cpp \
     hal/pipeline/BufferProcessor.cpp \
     hal/pipeline/InFlightTracker.cpp \
