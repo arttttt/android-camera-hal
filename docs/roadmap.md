@@ -201,15 +201,36 @@ Expected: single-stream ~20 fps → ~28–30 fps on 1080p; multi-stream
 preview+video ~13 fps → ~28 fps. Foundation for ZSL, reprocess, real
 3A, and Tier 3.5 produce-once without further rewrite.
 
-Landed in eight PRs (each shippable + testable on its own; split
-chosen so `git bisect` cleanly attributes FPS and correctness shifts):
+Eight PRs. PR 1-3 shipped (no FPS change yet — as expected; the boost
+is tied to PR 5); PR 4-8 still ahead.
+
+**Done**
 
 1. **PR 1** — Threading primitives: `ThreadBase`, `EventQueue<T>`,
-   `Signal<T>`, `UniqueFd`. Infra only, no consumers.
-2. **PR 2** — `RequestQueue` + `RequestThread` wrapping the current
-   synchronous path. `processCaptureRequest` returns in < 1 ms.
-3. **PR 3** — `BayerSource` / `V4l2Source` / `CaptureThread`;
-   drain-to-latest migrates out of `V4l2Device`.
+   `Signal<T>`, `UniqueFd`, `EventFd`. `ThreadBase::start` drains
+   the stop eventfd so restart-after-stop actually runs.
+2. **PR 2** — `RequestQueue` + `RequestThread` + `Pipeline` +
+   `PipelineStage` + `PipelineContext` + `InFlightTracker` + the
+   five concrete stages (ApplySettings, ShutterNotify, Capture,
+   DemosaicBlit, ResultDispatch). `processCaptureRequest` returns
+   in < 1 ms; the cache (`mLastRequestSettings`) is updated
+   synchronously on the binder thread to avoid a racy BAD_VALUE
+   against follow-up requests with settings=NULL.
+3. **PR 3** — `BayerSource` / `V4l2Source` / `V4l2CaptureThread`;
+   drain-to-latest migrated out of `V4l2Device::readLock` into the
+   capture thread. Lifecycle rework landed at the same time:
+   infrastructure (ISP / 3A / BufferProcessor / BayerSource /
+   pipeline / worker thread) is built once in `openDevice` and
+   survives `close → reopen`; `stopWorkers()` is the single
+   quiesce primitive (stops threads, drains GPU) and `closeDevice`
+   additionally clears per-session state (`mLastRequestSettings`,
+   AF state, `VulkanGrallocCache`). `V4l2Device::setStreaming(true)`
+   re-queues every slot before STREAMON; the kernel returns all
+   buffers to USERSPACE on STREAMOFF so the next session's STREAMON
+   needs a fresh QBUF of every slot.
+
+**Pending**
+
 4. **PR 4** — `DelayedControls` port (~280 LOC) with
    `SensorTuning.controlDelay`; truthful result metadata.
 5. **PR 5** — `PipelineThread` + Vulkan `external_fence_fd` in

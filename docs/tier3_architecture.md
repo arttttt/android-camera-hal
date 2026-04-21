@@ -486,7 +486,11 @@ Eight PRs, each shippable and testable independently. Each one
 isolates a single concern so that review stays focused and FPS
 regressions / gains are cleanly attributable via `git bisect`.
 
-### PR 1 — Threading primitives (infra only)
+**Status:** PR 1-3 shipped — see roadmap.md for the landing summary
+and memory note `project_tier3_progress.md` for the lifecycle /
+streaming invariants that future PRs must preserve. PR 4-8 pending.
+
+### PR 1 — Threading primitives (infra only) — SHIPPED
 
 - `base/ThreadBase`, `base/EventQueue<T>`, `base/Signal<T>`,
   `base/UniqueFd` (eventfd wrapper).
@@ -494,7 +498,7 @@ regressions / gains are cleanly attributable via `git bisect`.
 - No consumers yet.
 - Measurable: compiles; unit tests pass.
 
-### PR 2 — RequestQueue + RequestThread
+### PR 2 — RequestQueue + RequestThread — SHIPPED
 
 - `RequestQueue` concrete specialisation.
 - `RequestThread` wraps the current synchronous flow (still calls
@@ -503,7 +507,7 @@ regressions / gains are cleanly attributable via `git bisect`.
 - Measurable: `processCaptureRequest` returns in < 1 ms; downstream
   timing unchanged.
 
-### PR 3 — CaptureThread split
+### PR 3 — CaptureThread split — SHIPPED
 
 - `BayerSource` interface; `V4l2Source` implementation owns
   `CaptureThread`.
