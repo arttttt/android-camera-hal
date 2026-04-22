@@ -59,6 +59,8 @@
 #include "pipeline/stages/CaptureStage.h"
 #include "pipeline/stages/DemosaicBlitStage.h"
 #include "pipeline/stages/ResultDispatchStage.h"
+#include "pipeline/stages/StatsProcessStage.h"
+#include "ipa/StubIpa.h"
 
 extern camera_module_t HAL_MODULE_INFO_SYM;
 
@@ -219,8 +221,10 @@ int Camera::closeDevice() {
      * slate. Infrastructure (ISP core, 3A, BufferProcessor, pipeline,
      * worker threads) survives and will be reused. */
     mLastRequestSettings.clear();
-    if (mAf)  mAf->reset();
-    if (mIsp) mIsp->onSessionClose();
+    if (mAf)              mAf->reset();
+    if (mIsp)             mIsp->onSessionClose();
+    if (mIpa)             mIpa->reset();
+    if (mDelayedControls) mDelayedControls->reset();
 
     mDev->disconnect();
     return NO_ERROR;
@@ -561,6 +565,31 @@ void Camera::buildInfrastructure() {
         mResultDispatchStage.reset(new ResultDispatchStage(d));
     }
 
+    /* 3A plumbing: StubIpa is a no-op — it returns empty batches so
+     * DelayedControls stays at its defaults. BasicIpa, with real AE /
+     * AWB / AF math over IpaStats, lands as a drop-in replacement in
+     * the 3A PR. DelayedControls is seeded from the sensor's silicon
+     * control-delay config so the push effect-sequence matches when
+     * ApplySettingsStage actually latches the value. */
+    mIpa.reset(new StubIpa());
+    {
+        DelayedControls::Config cfg;
+        for (int i = 0; i < DelayedControls::COUNT; ++i) {
+            cfg.delay[i]        = mSensorCfg.controlDelay[i];
+            cfg.defaultValue[i] = 0;
+        }
+        mDelayedControls.reset(new DelayedControls(cfg));
+    }
+
+    {
+        StatsProcessStage::Deps d;
+        d.isp             = mIsp;
+        d.ipa             = mIpa.get();
+        d.delayedControls = mDelayedControls.get();
+        d.sensorCfg       = &mSensorCfg;
+        mStatsProcessStage.reset(new StatsProcessStage(d));
+    }
+
     mRequestThread.reset(new RequestThread(mRequestQueue.get(),
                                            mRequestPipeline.get(),
                                            mPipelineQueue.get(),
@@ -569,7 +598,7 @@ void Camera::buildInfrastructure() {
         PipelineThread::Deps d;
         d.queue          = mPipelineQueue.get();
         d.demosaicBlit   = mDemosaicBlitStage.get();
-        d.statsProcess   = nullptr;      /* wired in the stats consumer PR */
+        d.statsProcess   = mStatsProcessStage.get();
         d.resultDispatch = mResultDispatchStage.get();
         d.bayerSource    = mBayerSource.get();
         d.tracker        = mTracker.get();
@@ -584,8 +613,11 @@ void Camera::destroyInfrastructure() {
     mPipelineThread.reset();
     mRequestThread.reset();
     mResultDispatchStage.reset();
+    mStatsProcessStage.reset();
     mDemosaicBlitStage.reset();
     mRequestPipeline.reset();
+    mDelayedControls.reset();
+    mIpa.reset();
     mTracker.reset();
     mPipelineQueue.reset();
     mRequestQueue.reset();
