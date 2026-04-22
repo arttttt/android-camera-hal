@@ -75,6 +75,7 @@ LOCAL_SRC_FILES += \
     hal/metadata/ResultMetadataBuilder.cpp \
     hal/3a/AutoFocusController.cpp \
     hal/3a/ExposureControl.cpp \
+    hal/ipa/BasicIpa.cpp \
     hal/ipa/NeonStatsEncoder.cpp \
     hal/ipa/StatsWorker.cpp \
     hal/ipa/StubIpa.cpp \
