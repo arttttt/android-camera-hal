@@ -109,6 +109,7 @@ public:
 
     /* Lock AWB — freeze gains during AF sweep */
     void setAwbLock(bool lock) { mAwbLocked = lock; }
+    bool awbLocked() const     { return mAwbLocked; }
 
     /* Number of exportable Bayer input buffers the backend has pre-allocated.
      * 0 means the backend does not support DMABUF input — callers must

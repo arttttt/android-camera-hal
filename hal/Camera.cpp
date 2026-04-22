@@ -540,7 +540,7 @@ void Camera::buildInfrastructure() {
      * silicon control-delay config so push / apply sequences align.
      * Built here before the request pipeline so ApplySettingsStage
      * can receive the DelayedControls pointer at construction. */
-    mIpa.reset(new BasicIpa(mSensorCfg));
+    mIpa.reset(new BasicIpa(mSensorCfg, mIsp));
     {
         DelayedControls::Config cfg;
         for (int i = 0; i < DelayedControls::COUNT; ++i) {

@@ -7,6 +7,7 @@
 
 namespace android {
 
+class  IspPipeline;
 struct SensorConfig;
 
 /* Real 3A over the raw-Bayer IpaStats that NeonStatsEncoder produces.
@@ -14,7 +15,11 @@ struct SensorConfig;
  *   AE  — mean-luma metric from the green-channel histogram drives
  *         an exposure/gain split via SensorConfig's range, with a
  *         simple EMA for damping so the preview doesn't pump.
- *   AWB — follow-on commit (gray-world over rgbMean).
+ *   AWB — gray-world over rgbMean[16][16][3], with patch-level
+ *         clipping of saturated / near-black tiles. Emits Q8 gains
+ *         directly into IspPipeline::setWbGains so the demosaic
+ *         shader picks them up on the next dispatch (zero silicon
+ *         delay — WB lives in the shader, not the sensor).
  *   AF  — AutoFocusController stays the owner; this class supplies
  *         the sharpness grid when that integration lands.
  *
@@ -27,7 +32,7 @@ struct SensorConfig;
  * (< 1 ms on Tegra K1 CPU). */
 class BasicIpa : public Ipa {
 public:
-    explicit BasicIpa(const SensorConfig &sensorCfg);
+    BasicIpa(const SensorConfig &sensorCfg, IspPipeline *isp);
 
     DelayedControls::Batch processStats(uint32_t inputSequence,
                                         const IpaStats &stats,
@@ -36,6 +41,7 @@ public:
 
 private:
     const SensorConfig &sensorCfg;
+    IspPipeline        *isp;
 
     /* AE state. Tracks the last-published decision (not the sensor's
      * actual state). Stays in sync with reality while AE is running
@@ -43,6 +49,12 @@ private:
      * processStats re-converges from wherever the scene is now. */
     int32_t lastExposureUs;
     int32_t lastGain;
+
+    /* AWB state. R / B gain multipliers relative to G (which is
+     * pinned at unity). Floats so the EMA damps cleanly between
+     * frames; converted to Q8 only at the setWbGains boundary. */
+    float   lastWbR;
+    float   lastWbB;
 };
 
 } /* namespace android */

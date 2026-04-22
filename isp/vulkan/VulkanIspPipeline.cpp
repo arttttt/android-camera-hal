@@ -91,57 +91,6 @@ void VulkanIspPipeline::fillParams(IspParams *p, unsigned w, unsigned h,
     memcpy(p->gammaLut, mGammaLut, sizeof(mGammaLut));
 }
 
-void VulkanIspPipeline::updateAwb(const uint8_t *raw, unsigned w, unsigned h,
-                                    bool is16, uint32_t pixFmt) {
-    if (!mEnabled || !raw || mAwbLocked) return;
-
-    uint64_t sR = 0, sG = 0, sB = 0, nR = 0, nG = 0, nB = 0;
-    unsigned rX = (pixFmt == V4L2_PIX_FMT_SGRBG10 || pixFmt == V4L2_PIX_FMT_SGRBG8 ||
-                   pixFmt == V4L2_PIX_FMT_SBGGR10 || pixFmt == V4L2_PIX_FMT_SBGGR8) ? 1 : 0;
-    unsigned rY = (pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SGBRG8 ||
-                   pixFmt == V4L2_PIX_FMT_SBGGR10 || pixFmt == V4L2_PIX_FMT_SBGGR8) ? 1 : 0;
-
-    for (unsigned y = 0; y < h; y += 8) {
-        for (unsigned x = 0; x < w; x += 8) {
-            unsigned val = is16 ? ((const uint16_t *)raw)[y * w + x] >> 2
-                                : raw[y * w + x];
-            unsigned px = x & 1;
-            unsigned py = y & 1;
-            if (py == rY && px == rX) {
-                sR += val;
-                nR++;
-            } else if (py != rY && px != rX) {
-                sB += val;
-                nB++;
-            } else {
-                sG += val;
-                nG++;
-            }
-        }
-    }
-
-    if (nR && nG && nB) {
-        uint64_t avgR = sR / nR;
-        uint64_t avgG = sG / nG;
-        uint64_t avgB = sB / nB;
-        uint64_t avg = (avgR + avgG + avgB) / 3;
-        unsigned r = avgR ? (unsigned)((avg * 256ULL) / avgR) : 256;
-        unsigned g = avgG ? (unsigned)((avg * 256ULL) / avgG) : 256;
-        unsigned b = avgB ? (unsigned)((avg * 256ULL) / avgB) : 256;
-        if (r < 128) r = 128;
-        if (r > 1024) r = 1024;
-        if (g < 128) g = 128;
-        if (g > 1024) g = 1024;
-        if (b < 128) b = 128;
-        if (b > 1024) b = 1024;
-        const float alpha = 0.15f;
-        mWbR = (unsigned)(alpha * r + (1.0f - alpha) * mWbR);
-        mWbG = (unsigned)(alpha * g + (1.0f - alpha) * mWbG);
-        mWbB = (unsigned)(alpha * b + (1.0f - alpha) * mWbB);
-    }
-}
-
-
 /* --- frame helpers shared between the process* paths --- */
 
 int VulkanIspPipeline::acquireSlot() {
@@ -1129,10 +1078,6 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
 
     int slot = acquireSlot();
 
-    /* V4L2 wrote directly into the input slot via DMABUF — invalidate any
-     * stale CPU cache lines so updateAwb() below sees the device-side writes. */
-    mInputRing.invalidateFromGpu(srcInputSlot);
-
     IspParams params;
     fillParams(&params, srcW, srcH, is16, pixFmt);
     uploadParams(slot, params);
@@ -1187,9 +1132,6 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
                   (unsigned long long)deltaUs(ts[0], ts[2]));
         }
     }
-
-    updateAwb((const uint8_t *)mInputRing.mapped(srcInputSlot),
-              srcW, srcH, is16, pixFmt);
 
     return true;
 }

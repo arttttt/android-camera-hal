@@ -178,7 +178,6 @@ private:
     size_t mNextSlot;
 
     void fillParams(IspParams *p, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
-    void updateAwb(const uint8_t *raw, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
 
     /* Precomputed sRGB-encode LUT (linear [0..255] → encoded [0..255]),
      * copied into every IspParams upload. Filled once in init(). */
