@@ -54,6 +54,9 @@ public:
     void            invalidateStats() override { mStatsEncoder.invalidateForCpu(); }
     const IpaStats *mappedStats()    const override { return mStatsEncoder.mappedStats(); }
 
+    const void *bayerHost(int slot)   const override { return mInputRing.mapped(slot); }
+    void        invalidateBayer(int slot) override   { mInputRing.invalidateFromGpu(slot); }
+
 private:
     /* init() sub-steps. Each returns false on Vulkan failure; init() calls
      * destroy() on any false return so a partial state is never left behind. */

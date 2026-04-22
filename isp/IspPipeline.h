@@ -156,6 +156,23 @@ public:
      * that don't produce stats. */
     virtual const IpaStats *mappedStats() const { return nullptr; }
 
+    /* Read-only host pointer to the raw Bayer content of input ring
+     * slot `slot`. The pointer is valid for the lifetime of the
+     * backend, but the content is only defined while V4L2 holds the
+     * slot dequeued (i.e. between BayerSource::acquireNextFrame and
+     * the matching releaseFrame) and after invalidateBayer(slot) has
+     * been called. Intended for CPU stats / analysis on the raw
+     * capture. Returns NULL on backends without a CPU-mapped input
+     * ring. */
+    virtual const void *bayerHost(int slot) const { (void)slot; return nullptr; }
+
+    /* Invalidate the CPU cache range backing bayerHost(slot) so a
+     * host read after the V4L2 write (and any subsequent GPU read)
+     * sees coherent data. No-op on backends that serve bayerHost
+     * from HOST_COHERENT memory, and on those that don't expose one
+     * at all. */
+    virtual void invalidateBayer(int slot) { (void)slot; }
+
 protected:
     unsigned mWbR = 256, mWbG = 256, mWbB = 256;
     const int16_t *mCcm = nullptr;
