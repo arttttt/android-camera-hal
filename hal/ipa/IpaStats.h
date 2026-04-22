@@ -5,13 +5,14 @@
 
 namespace android {
 
-/* Layout of the host-mapped stats buffer written by the GPU stats
- * compute pass and consumed by the Ipa implementation. Must match
- * the shader binding 1:1 — see isp/vulkan/io/VulkanStatsEncoder.
+/* Layout of the statistics buffer NeonStatsEncoder produces on the
+ * StatsWorker thread and StatsProcessStage forwards to the IPA.
  *
- * Designed for ~4.5 KB total, one pass over scratchImage, privatized
- * histogram and tree-reduced per-patch sums. Captured once per frame
- * immediately after demosaic, before the per-output blits. */
+ * ~4.5 KB total, filled from a single pass (or a `phaseCount`
+ * progressive sequence of partial passes) over the raw Bayer slot —
+ * pre-WB / pre-CCM space, matching the libcamera IPU3 / rkisp1
+ * convention. Consumers must account for the raw domain when
+ * interpreting rgbMean. */
 struct IpaStats {
     static const int HIST_BINS   = 128;
     static const int PATCH_X     = 16;

@@ -189,12 +189,12 @@ private:
     VulkanYuvEncoder   mYuvEncoder;   /* lazy — buffers allocated on first YUV request */
 
     /* Per-frame GPU-side timestamps for recordGrallocBlit phases.
-     * 4 queries per slot: 0 = top of pipe, 1 = after demosaic,
-     * 2 = after stats, 3 = after blit. Read in processToGralloc
-     * right after WaitForFences, logged as PERF-GPU. Null when the
-     * driver reports timestampValidBits == 0. */
+     * 3 queries per slot: 0 = top of pipe, 1 = after demosaic,
+     * 2 = after blit. Read in processToGralloc right after
+     * WaitForFences, logged as PERF-GPU. Null when the driver
+     * reports timestampValidBits == 0. */
     VkQueryPool        mTimeQuery;
-    static constexpr size_t TIMESTAMPS_PER_SLOT = 4;
+    static constexpr size_t TIMESTAMPS_PER_SLOT = 3;
 };
 
 }; /* namespace android */

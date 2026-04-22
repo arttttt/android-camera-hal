@@ -233,17 +233,6 @@ void VulkanIspPipeline::recordGrallocBlit(int slot, VulkanGrallocCache::Entry *e
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
         0, 0, NULL, 0, NULL, 1, &scratchB);
 
-    /* Stats reducer is no longer dispatched — StatsProcessStage now
-     * reduces the raw Bayer slot on the CPU via NeonStatsEncoder, so
-     * the GPU slot here is idle between the demosaic barrier above
-     * and the blit pass below. Encoder allocation stays in place
-     * until the full removal commit so this change is a one-line
-     * rollback if the CPU path needs to be reverted. */
-    if (mTimeQuery) {
-        mDeviceState.pfn()->CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                               mTimeQuery, tsBase + 2);
-    }
-
     /* Fragment pass: full-screen triangle samples scratch, driver's ROP
      * rasterizes into gralloc's blocklinear layout correctly. Render
      * area / viewport use the destination extent. */
@@ -1192,11 +1181,10 @@ bool VulkanIspPipeline::processToGralloc(const uint8_t *src, void *nativeBuffer,
                 uint64_t d = (b & mask) - (a & mask);
                 return (uint64_t)((double)d * period) / 1000u;
             };
-            ALOGD("PERF-GPU: demosaic=%lluus stats=%lluus blit=%lluus total=%lluus",
+            ALOGD("PERF-GPU: demosaic=%lluus blit=%lluus total=%lluus",
                   (unsigned long long)deltaUs(ts[0], ts[1]),
                   (unsigned long long)deltaUs(ts[1], ts[2]),
-                  (unsigned long long)deltaUs(ts[2], ts[3]),
-                  (unsigned long long)deltaUs(ts[0], ts[3]));
+                  (unsigned long long)deltaUs(ts[0], ts[2]));
         }
     }
 
