@@ -193,17 +193,17 @@ Each is a short edit inside that module.
 Full architecture is specified in
 [**tier3_architecture.md**](tier3_architecture.md). Summary below.
 
-Six threads per camera; all cross-thread comms via bounded queues +
-eventfd + sync_fd. Every GPU wait is a fence fd registered in `poll()`;
-`vkWaitForFences` only on `flush()` / `close()` / hang-recovery.
+Seven threads per camera (binder + RequestThread + CaptureThread +
+PipelineThread + StatsWorker + on-demand PostprocWorker; ResultThread
+is rolled into PipelineThread for single-stream preview). All
+cross-thread comms via bounded queues + eventfd + sync_fd. Every GPU
+wait is a fence fd registered in `poll()`; `vkWaitForFences` only on
+`flush()` / `close()` / hang-recovery.
 
-Expected: single-stream ~20 fps → ~28–30 fps on 1080p; multi-stream
-preview+video ~13 fps → ~28 fps. Foundation for ZSL, reprocess, real
-3A, and Tier 3.5 produce-once without further rewrite.
-
-Original plan was eight PRs. PR 1-3 shipped (no FPS change yet — as
-expected; the boost is tied to the fence-poll PR); PR 4 is folded into
-the 3A PR for reasons below, leaving four more PRs ahead.
+Expected from the original plan: single-stream ~20 fps → ~28–30 fps
+on 1080p; multi-stream preview+video ~13 fps → ~28 fps. Foundation
+for ZSL, reprocess, real 3A, and Tier 3.5 produce-once without
+further rewrite.
 
 **Done**
 
@@ -229,30 +229,63 @@ the 3A PR for reasons below, leaving four more PRs ahead.
    re-queues every slot before STREAMON; the kernel returns all
    buffers to USERSPACE on STREAMOFF so the next session's STREAMON
    needs a fresh QBUF of every slot.
+4. **PR 4** — `PipelineThread` + Vulkan `external_fence_fd` in
+   `poll()`. `waitForPreviousFrame` dropped from the hot path; GPU
+   submits ring of depth 4 hand their sync_fds into a fence-fd poll
+   set, so the `wait` segment of the PERF log collapses from ~55 ms
+   to near zero. Alongside the thread split: async result dispatch,
+   `errorCompletePendingRequests` on session boundaries to drain
+   orphaned ctxs that `stopWorkers` parks upstream of PipelineThread.
+   Demosaic shader perf pass (first-review fixes: float-recip
+   `readPixel`, cooperative shared Bayer tile, 16×16 WG, sRGB LUT,
+   Blit uv precompute, NV12 stride) landed on the same tier and
+   dropped the per-frame demosaic cost from 47 ms to ~3.4 ms at 1080p.
+5. **PR 5 — rolled into PR 4.** The planned `ResultThread` split was
+   unnecessary: single-stream preview already ran framework callbacks
+   off the binder thread via `PipelineThread`, and a dedicated
+   `ResultThread` would only have helped with multi-stream JPEG /
+   video interleaving — which waits on the PR 7 JpegWorker split
+   anyway.
+6. **PR 6 — Ipa + DelayedControls + stats plumbing.** `Ipa` interface
+   and `StubIpa` (empty-batch wrapper) live under `hal/ipa/`;
+   `DelayedControls` seeded from `SensorConfig::controlDelay` (2
+   frames for both IMX179 and OV5693 as a libcamera-convention
+   default — verify empirically when a real loop drives it);
+   `StatsProcessStage` sits between fence reap and result dispatch
+   on `PipelineThread` and wires the producer path. `closeDevice`
+   resets `Ipa` and `DelayedControls` alongside existing session
+   cleanups. `BasicIpa` (real AE / AWB / AF) is a follow-up PR; what
+   this one lands is the shape.
+7. **NEON stats experiment (post-PR-6).** Original design had the
+   statistics producer as a GPU compute shader (histogram + patch
+   means + Tenengrad into a host-mapped `VkBuffer`); that shipped
+   transiently but cost GPU time on the hot path and forced a
+   temporal-subsample throttle (stats only every other frame) to
+   fit the frame budget. Replaced by a dedicated `StatsWorker`
+   thread running a NEON-vectorised kernel over the raw Bayer slot
+   (`NeonStatsEncoder`): CPU compute overlaps the Vulkan submit
+   instead of serialising with it, GPU stays demosaic + blit only.
+   One IpaStats cycle spans `phaseCount` submits (default 2),
+   spreading the ~8 ms NEON pass over two sensor periods so peak
+   CPU per frame stays below ~4 ms; `phaseCount = 1` falls back to
+   one-shot compute via a single constant flip. Raw-Bayer semantics
+   for rgbMean / lumaHist match the libcamera IPU3 / rkisp1
+   convention — the eventual `BasicIpa` must account for the
+   pre-WB / pre-CCM domain. Binary shrank ~8 KB when the Vulkan
+   stats encoder + shader + base-class virtuals were removed.
 
 **Pending**
 
-4. **`PipelineThread` + Vulkan `external_fence_fd` in `poll()`.**
-   `waitForPreviousFrame` deleted; GPU depth > 1. **FPS win lands
-   here** (preview 20 → ~28–30).
-5. **`ResultThread` split.** Framework callbacks off `PipelineThread`;
-   FIFO by single-thread construction.
-6. **`Ipa` interface + GPU statistics compute shader + `DelayedControls`.**
-   AE / AWB / AF driven by real stats, not gralloc-locked preview.
-   `DelayedControls` lands here rather than earlier because it's
-   bookkeeping infrastructure whose only real consumer is a 3A loop
-   that writes new exposure/gain per frame — shipping it before an
-   actual consumer would be a YAGNI abstraction, and on a Tegra /
-   UVC-like driver with no SOF hook it can't improve write timing on
-   its own (only result-metadata honesty, which no current Android 7
-   client actually checks). See the architecture doc's DelayedControls
-   section for the shape; `controlDelay` lives in `SensorConfig` as a
-   silicon property (2 frames for both IMX179 and OV5693 as a
-   libcamera-convention default — verify empirically when the loop is
-   real).
-7. **Produce-once refactor** (`IspPipeline::beginFrame` / `blitTo*` /
+8. **Produce-once refactor** (`IspPipeline::beginFrame` / `blitTo*` /
    `endFrame`) + `PostProcessor` / `JpegWorker`. **Multi-stream FPS
-   win** (preview+video 13 → ~28).
+   win** (preview+video 13 → ~28). This is the PR 7 slot.
+9. **`BasicIpa`** — real AE / AWB / AF math over the raw-Bayer
+   `IpaStats` StatsWorker emits. Replaces `StubIpa` at
+   `buildInfrastructure` time; `ApplySettingsStage` also switches
+   from direct `dev->setControl(...)` to
+   `delayedControls.push + v4l2.setControls(batch)` via
+   `VIDIOC_S_EXT_CTRLS`. No new threading; the math runs under
+   `StatsProcessStage` on `PipelineThread` as today.
 
 Deferred but slot-reserved from PR 2: `Request::inputBuffer` for
 ZSL / reprocess; ZSL ring buffer and reprocess wiring happen in
@@ -304,9 +337,13 @@ imminent plan.
 ## Suggested sequencing
 
 1. **Tier 1.2** — short compliance PRs inside `CameraStaticMetadata`.
-2. **Tier 2** — drain-to-latest (quick latency win), `YUV_420_888`
-   output, JSON tuning (cleanup that makes Tier 3 easier).
-3. **Tier 3** — branch: request-queue refactor → DelayedControls →
-   IPA module split.
-4. **Tier 3.5** — produce-once / sample-many ISP, after Tier 3 lands.
-5. **Tier 4** — discretionary.
+2. **Tier 2** — done (drain-to-latest, `YUV_420_888` output, JSON
+   tuning).
+3. **Tier 3 PR 1-7** — done (threading primitives, RequestThread,
+   CaptureThread, PipelineThread + fence-fd, IPA/DelayedControls
+   plumbing, NEON stats worker).
+4. **Tier 3 produce-once** — `IspPipeline::beginFrame` + `blitTo*` +
+   `endFrame`, PostProcessor + JpegWorker. Multi-stream FPS win.
+5. **Tier 3 BasicIpa** — real 3A math over raw-Bayer stats.
+6. **Housekeeping** — drop `V4L2DEVICE_OPEN_ONCE` fast paths.
+7. **Tier 4** — discretionary.
