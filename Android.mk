@@ -76,6 +76,7 @@ LOCAL_SRC_FILES += \
     hal/3a/AutoFocusController.cpp \
     hal/3a/ExposureControl.cpp \
     hal/ipa/NeonStatsEncoder.cpp \
+    hal/ipa/StatsWorker.cpp \
     hal/ipa/StubIpa.cpp \
     hal/jpeg/JpegEncoder.cpp \
     hal/pipeline/BufferProcessor.cpp \
@@ -89,6 +90,7 @@ LOCAL_SRC_FILES += \
     hal/pipeline/stages/DemosaicBlitStage.cpp \
     hal/pipeline/stages/ResultDispatchStage.cpp \
     hal/pipeline/stages/ShutterNotifyStage.cpp \
+    hal/pipeline/stages/StatsDispatchStage.cpp \
     hal/pipeline/stages/StatsProcessStage.cpp \
     v4l2/V4l2CaptureThread.cpp \
     v4l2/V4l2Device.cpp \
