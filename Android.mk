@@ -88,6 +88,7 @@ LOCAL_SRC_FILES += \
     hal/pipeline/stages/DemosaicBlitStage.cpp \
     hal/pipeline/stages/ResultDispatchStage.cpp \
     hal/pipeline/stages/ShutterNotifyStage.cpp \
+    hal/pipeline/stages/StatsProcessStage.cpp \
     v4l2/V4l2CaptureThread.cpp \
     v4l2/V4l2Device.cpp \
     v4l2/V4l2Source.cpp \
