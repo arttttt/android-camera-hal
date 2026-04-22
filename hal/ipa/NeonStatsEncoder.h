@@ -41,7 +41,12 @@ public:
     struct Partial {
         uint64_t sumCh   [IpaStats::PATCH_Y][IpaStats::PATCH_X][3];
         uint32_t cntCh   [IpaStats::PATCH_Y][IpaStats::PATCH_X][3];
-        float    sharpSum[IpaStats::PATCH_Y][IpaStats::PATCH_X];
+        /* Tenengrad sum of squared Sobel gradients per patch. Kept as
+         * uint64_t so the inner NEON kernel can accumulate in s32 and
+         * fold into u64 per patch cell without a float conversion on
+         * the hot path — see the vmlal_s16 accumulator in computeRange.
+         * finalize() casts down to the IpaStats float field. */
+        uint64_t sharpSum[IpaStats::PATCH_Y][IpaStats::PATCH_X];
         uint32_t lumaHist[IpaStats::HIST_BINS];
     };
 

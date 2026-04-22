@@ -36,20 +36,12 @@ inline uint32_t hsum_u32x4(uint32x4_t v) {
     return vget_lane_u32(p, 0);
 }
 
-inline float hsum_f32x4(float32x4_t v) {
-    float32x2_t lo = vget_low_f32(v);
-    float32x2_t hi = vget_high_f32(v);
-    float32x2_t p  = vpadd_f32(lo, hi);
-    p              = vpadd_f32(p, p);
-    return vget_lane_f32(p, 0);
-}
-
 inline void scalarSobelStep(const uint16_t *p16,
                              const uint8_t  *p8,
                              bool            wide,
                              unsigned        width, unsigned height,
                              unsigned        xG, unsigned y,
-                             float          *sharpAccum) {
+                             uint64_t       *sharpAccum) {
     const unsigned yN = (y >= 2u)         ? y - 2u : y;
     const unsigned yS = (y + 2u < height) ? y + 2u : y;
     const unsigned xW = (xG >= 2u)            ? xG - 2u : xG;
@@ -79,7 +71,10 @@ inline void scalarSobelStep(const uint16_t *p16,
                      - (int32_t)(tl  + 2u * ll + bl);
     const int32_t gy = (int32_t)(bl  + 2u * bc + br)
                      - (int32_t)(tl  + 2u * tc + tr_);
-    *sharpAccum += (float)gx * (float)gx + (float)gy * (float)gy;
+    /* |gx|, |gy| ≤ 4·1023 = 4092 on 10-bit Bayer, so gx² + gy² fits
+     * comfortably inside int32 (max ≈ 33.5M). Widen to u64 only on
+     * the final accumulate. */
+    *sharpAccum += (uint64_t)(gx * gx + gy * gy);
 }
 
 } /* namespace */
@@ -154,9 +149,13 @@ void NeonStatsEncoder::computeRange(const void *bayer,
                     const uint16_t *rowS = p16 +
                         (size_t)((y + 2u < height) ? y + 2u : y) * width;
 
-                    uint32x4_t  accEven   = vdupq_n_u32(0);
-                    uint32x4_t  accOdd    = vdupq_n_u32(0);
-                    float32x4_t sharpAccV = vdupq_n_f32(0.0f);
+                    uint32x4_t accEven   = vdupq_n_u32(0);
+                    uint32x4_t accOdd    = vdupq_n_u32(0);
+                    /* Sharpness accumulator in int32 lanes. One patch
+                     * cell's worst case at 1080p is ~7 chunks × 4 × 16M
+                     * per lane ≈ 450M, well inside s32. Folded into
+                     * partial->sharpSum (u64) at the end of each cell. */
+                    int32x4_t  sharpAccV = vdupq_n_s32(0);
 
                     for (; x < simdEnd; x += 16u) {
                         uint16x8x2_t p = vld2q_u16(row16 + x);
@@ -182,45 +181,33 @@ void NeonStatsEncoder::computeRange(const void *bayer,
                             const uint16x8_t bc = vld2q_u16(rowS + x     ).val[lane];
                             const uint16x8_t br = vld2q_u16(rowS + x + 2u).val[lane];
 
-                            const int32x4_t tl_lo = vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(tl)));
-                            const int32x4_t tl_hi = vreinterpretq_s32_u32(vmovl_u16(vget_high_u16(tl)));
-                            const int32x4_t tc_lo = vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(tc)));
-                            const int32x4_t tc_hi = vreinterpretq_s32_u32(vmovl_u16(vget_high_u16(tc)));
-                            const int32x4_t tr_lo = vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(tr)));
-                            const int32x4_t tr_hi = vreinterpretq_s32_u32(vmovl_u16(vget_high_u16(tr)));
-                            const int32x4_t ll_lo = vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(ll)));
-                            const int32x4_t ll_hi = vreinterpretq_s32_u32(vmovl_u16(vget_high_u16(ll)));
-                            const int32x4_t rr_lo = vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(rr)));
-                            const int32x4_t rr_hi = vreinterpretq_s32_u32(vmovl_u16(vget_high_u16(rr)));
-                            const int32x4_t bl_lo = vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(bl)));
-                            const int32x4_t bl_hi = vreinterpretq_s32_u32(vmovl_u16(vget_high_u16(bl)));
-                            const int32x4_t bc_lo = vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(bc)));
-                            const int32x4_t bc_hi = vreinterpretq_s32_u32(vmovl_u16(vget_high_u16(bc)));
-                            const int32x4_t br_lo = vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(br)));
-                            const int32x4_t br_hi = vreinterpretq_s32_u32(vmovl_u16(vget_high_u16(br)));
+                            /* Sobel stays in s16 throughout: max sum is
+                             * tr + 2·rr + br = 4·1023 = 4092, well inside
+                             * s16. vmull_s16 then widens each squared
+                             * result to s32; vmlal_s16 does the fused
+                             * square-and-accumulate. Avoids the 16
+                             * vmovl_u16 widens and 4 vcvtq_f32_s32s the
+                             * s32+float version cost. */
+                            const int16x8_t tl_s = vreinterpretq_s16_u16(tl);
+                            const int16x8_t tc_s = vreinterpretq_s16_u16(tc);
+                            const int16x8_t tr_s = vreinterpretq_s16_u16(tr);
+                            const int16x8_t ll_s = vreinterpretq_s16_u16(ll);
+                            const int16x8_t rr_s = vreinterpretq_s16_u16(rr);
+                            const int16x8_t bl_s = vreinterpretq_s16_u16(bl);
+                            const int16x8_t bc_s = vreinterpretq_s16_u16(bc);
+                            const int16x8_t br_s = vreinterpretq_s16_u16(br);
 
-                            const int32x4_t gx_lo = vsubq_s32(
-                                vaddq_s32(vaddq_s32(tr_lo, br_lo), vshlq_n_s32(rr_lo, 1)),
-                                vaddq_s32(vaddq_s32(tl_lo, bl_lo), vshlq_n_s32(ll_lo, 1)));
-                            const int32x4_t gx_hi = vsubq_s32(
-                                vaddq_s32(vaddq_s32(tr_hi, br_hi), vshlq_n_s32(rr_hi, 1)),
-                                vaddq_s32(vaddq_s32(tl_hi, bl_hi), vshlq_n_s32(ll_hi, 1)));
-                            const int32x4_t gy_lo = vsubq_s32(
-                                vaddq_s32(vaddq_s32(bl_lo, br_lo), vshlq_n_s32(bc_lo, 1)),
-                                vaddq_s32(vaddq_s32(tl_lo, tr_lo), vshlq_n_s32(tc_lo, 1)));
-                            const int32x4_t gy_hi = vsubq_s32(
-                                vaddq_s32(vaddq_s32(bl_hi, br_hi), vshlq_n_s32(bc_hi, 1)),
-                                vaddq_s32(vaddq_s32(tl_hi, tr_hi), vshlq_n_s32(tc_hi, 1)));
+                            const int16x8_t gx = vsubq_s16(
+                                vaddq_s16(vaddq_s16(tr_s, br_s), vshlq_n_s16(rr_s, 1)),
+                                vaddq_s16(vaddq_s16(tl_s, bl_s), vshlq_n_s16(ll_s, 1)));
+                            const int16x8_t gy = vsubq_s16(
+                                vaddq_s16(vaddq_s16(bl_s, br_s), vshlq_n_s16(bc_s, 1)),
+                                vaddq_s16(vaddq_s16(tl_s, tr_s), vshlq_n_s16(tc_s, 1)));
 
-                            const float32x4_t gx_lo_f = vcvtq_f32_s32(gx_lo);
-                            const float32x4_t gx_hi_f = vcvtq_f32_s32(gx_hi);
-                            const float32x4_t gy_lo_f = vcvtq_f32_s32(gy_lo);
-                            const float32x4_t gy_hi_f = vcvtq_f32_s32(gy_hi);
-
-                            sharpAccV = vmlaq_f32(sharpAccV, gx_lo_f, gx_lo_f);
-                            sharpAccV = vmlaq_f32(sharpAccV, gx_hi_f, gx_hi_f);
-                            sharpAccV = vmlaq_f32(sharpAccV, gy_lo_f, gy_lo_f);
-                            sharpAccV = vmlaq_f32(sharpAccV, gy_hi_f, gy_hi_f);
+                            sharpAccV = vmlal_s16(sharpAccV, vget_low_s16(gx),  vget_low_s16(gx));
+                            sharpAccV = vmlal_s16(sharpAccV, vget_high_s16(gx), vget_high_s16(gx));
+                            sharpAccV = vmlal_s16(sharpAccV, vget_low_s16(gy),  vget_low_s16(gy));
+                            sharpAccV = vmlal_s16(sharpAccV, vget_high_s16(gy), vget_high_s16(gy));
                         } else {
                             const unsigned xBase = gIsEven ? x : x + 1u;
                             for (int i = 0; i < 8; ++i) {
@@ -236,7 +223,8 @@ void NeonStatsEncoder::computeRange(const void *bayer,
                     partial->sumCh[py][px][chanOdd]  += hsum_u32x4(accOdd);
                     partial->cntCh[py][px][chanEven] += chunks * 8u;
                     partial->cntCh[py][px][chanOdd]  += chunks * 8u;
-                    partial->sharpSum[py][px]        += hsum_f32x4(sharpAccV);
+                    partial->sharpSum[py][px]        +=
+                        (uint64_t)hsum_u32x4(vreinterpretq_u32_s32(sharpAccV));
                 }
 
                 for (; x < x1; ++x) {
@@ -277,7 +265,13 @@ void NeonStatsEncoder::finalize(const Partial &partial,
                 out->rgbMean[py][px][c] =
                     (float)partial.sumCh[py][px][c] / (float)n * invMax;
             }
-            out->sharpness[py][px] = partial.sharpSum[py][px];
+            /* Cast u64 → float for the published IpaStats. Per-patch
+             * sum peaks around 1.3e11 on extreme high-frequency scenes,
+             * well inside float exponent range; relative precision is
+             * ~5 decimal digits at that magnitude — fine for AF peak
+             * detection, which only compares patches against each
+             * other. */
+            out->sharpness[py][px] = (float)partial.sharpSum[py][px];
         }
     }
 }
