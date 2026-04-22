@@ -32,6 +32,7 @@ public:
     struct Deps {
         EventQueue<PipelineContext*> *queue;
         PipelineStage                *demosaicBlit;
+        PipelineStage                *statsProcess;    /* may be null */
         PipelineStage                *resultDispatch;
         BayerSource                  *bayerSource;
         InFlightTracker              *tracker;

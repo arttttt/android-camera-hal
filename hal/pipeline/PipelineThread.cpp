@@ -58,6 +58,14 @@ void PipelineThread::drainFences(PipelineContext *ctx, int timeoutMs) {
 }
 
 void PipelineThread::completeCtx(PipelineContext *ctx) {
+    /* Stats consumer runs between fence reap and result dispatch —
+     * the submit's fence has signalled (so the GPU-written stats
+     * buffer is coherent) and the frame has not yet been returned to
+     * the framework. Null when the infrastructure build opted out of
+     * stats (e.g. CPU/GLES fallback backend). */
+    if (deps.statsProcess && !ctx->errorCode)
+        deps.statsProcess->process(*ctx);
+
     deps.resultDispatch->process(*ctx);
     /* Post-dispatch Bayer releases got pended into the BayerSource's
      * deferred list; flush now that fences have signalled so V4L2's

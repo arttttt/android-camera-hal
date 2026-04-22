@@ -569,6 +569,7 @@ void Camera::buildInfrastructure() {
         PipelineThread::Deps d;
         d.queue          = mPipelineQueue.get();
         d.demosaicBlit   = mDemosaicBlitStage.get();
+        d.statsProcess   = nullptr;      /* wired in the stats consumer PR */
         d.resultDispatch = mResultDispatchStage.get();
         d.bayerSource    = mBayerSource.get();
         d.tracker        = mTracker.get();
