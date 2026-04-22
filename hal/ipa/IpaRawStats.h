@@ -22,24 +22,21 @@ namespace android {
  *                   (Q24.8). Max per-pixel contribution is ≈32 (Sobel
  *                   coefficients on luma ∈ [0,1]); 8040 × 32 × 256 =
  *                   65 M — fits uint32.
- *   - pixelCount  : integer per-patch pixel total the shader
- *                   accumulated into. Needed on CPU to normalise the
- *                   sums into means — patches on the image border
- *                   get fewer pixels than the interior ones, and
- *                   precomputing from imgW/imgH is brittle under
- *                   the WG-to-patch "centre-of-WG wins" mapping.
+ *
+ * Per-patch pixel count is derivable on the host from imgW/imgH +
+ * the WG-to-patch "centre-of-WG wins" mapping, so it is not stored
+ * in the raw buffer.
  *
  * Layout matches the std430 SSBO the demosaic shader binds at
- * binding = 4. Size 4608 + 1024 = 5632 B. */
+ * binding = 4. Size 512 + 3072 + 1024 = 4608 B. */
 struct IpaRawStats {
     static const int HIST_BINS = 128;
     static const int PATCH_X   = 16;
     static const int PATCH_Y   = 16;
 
-    uint32_t lumaHist  [HIST_BINS];
-    uint32_t rgbSum    [PATCH_Y][PATCH_X][3];
-    uint32_t sharpSum  [PATCH_Y][PATCH_X];
-    uint32_t pixelCount[PATCH_Y][PATCH_X];
+    uint32_t lumaHist [HIST_BINS];
+    uint32_t rgbSum   [PATCH_Y][PATCH_X][3];
+    uint32_t sharpSum [PATCH_Y][PATCH_X];
 };
 
 } /* namespace android */
