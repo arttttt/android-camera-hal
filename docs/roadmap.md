@@ -270,22 +270,44 @@ further rewrite.
    CPU per frame stays below ~4 ms; `phaseCount = 1` falls back to
    one-shot compute via a single constant flip. Raw-Bayer semantics
    for rgbMean / lumaHist match the libcamera IPU3 / rkisp1
-   convention — the eventual `BasicIpa` must account for the
-   pre-WB / pre-CCM domain. Binary shrank ~8 KB when the Vulkan
-   stats encoder + shader + base-class virtuals were removed.
+   convention — `BasicIpa`'s AE loop (next entry) consumes these
+   directly in the pre-WB / pre-CCM domain. Binary shrank ~8 KB
+   when the Vulkan stats encoder + shader + base-class virtuals
+   were removed.
+8. **BasicIpa AE + ApplySettings AE-mode branch (post-PR-6.5).**
+   `BasicIpa` now owns the AE loop: P-controller with EMA damping
+   over the green-channel mean-luma histogram, setpoint 0.35
+   (pre-gamma proxy for 18 % mid grey), ratio clamp ∈ [0.5, 2.0].
+   The (exposure, gain) split goes through
+   `SensorConfig::splitExposureGain` which prefers exposure up to
+   `kMaxExposureUs = 200 ms` before pushing into analog gain.
+   `ApplySettingsStage` branches on `ANDROID_CONTROL_AE_MODE`:
+   `OFF` → manual (parse request, write V4L2, publish into
+   `DelayedControls` for result-metadata consistency); non-`OFF`
+   → auto (read `DelayedControls::pendingWrite(frameNumber)` —
+   the new read API — and push through `applyBatch` as one
+   `VIDIOC_S_EXT_CTRLS`, falling back to the manual path if the
+   ring is cold). `DelayedControls` is now the single source of
+   truth for applied exposure / gain across both modes, guarded
+   by a mutex (producers on PipelineThread + binder, consumers on
+   RequestThread + result builder). `StatsProcessStage` skips its
+   `DelayedControls::push` when AE is OFF so framework authority
+   is never fought by the IPA. Dark-scene policy is FPS-priority:
+   AE clamps at `kMaxExposureUs` inside the default
+   `frame_length` rather than extending integration at the cost
+   of frame rate. AWB / AF are still `StubIpa`-equivalent
+   (next item).
 
 **Pending**
 
-8. **Produce-once refactor** (`IspPipeline::beginFrame` / `blitTo*` /
+9. **Produce-once refactor** (`IspPipeline::beginFrame` / `blitTo*` /
    `endFrame`) + `PostProcessor` / `JpegWorker`. **Multi-stream FPS
    win** (preview+video 13 → ~28). This is the PR 7 slot.
-9. **`BasicIpa`** — real AE / AWB / AF math over the raw-Bayer
-   `IpaStats` StatsWorker emits. Replaces `StubIpa` at
-   `buildInfrastructure` time; `ApplySettingsStage` also switches
-   from direct `dev->setControl(...)` to
-   `delayedControls.push + v4l2.setControls(batch)` via
-   `VIDIOC_S_EXT_CTRLS`. No new threading; the math runs under
-   `StatsProcessStage` on `PipelineThread` as today.
+10. **BasicIpa AWB + AF** — gray-world AWB over
+    `rgbMean[16][16][3]`, and AF integration feeding
+    `sharpness[16][16]` to `AutoFocusController` instead of the
+    current gralloc `SW_READ_OFTEN` lock. No new threading; both
+    extend `BasicIpa::processStats`.
 
 Deferred but slot-reserved from PR 2: `Request::inputBuffer` for
 ZSL / reprocess; ZSL ring buffer and reprocess wiring happen in
@@ -339,11 +361,13 @@ imminent plan.
 1. **Tier 1.2** — short compliance PRs inside `CameraStaticMetadata`.
 2. **Tier 2** — done (drain-to-latest, `YUV_420_888` output, JSON
    tuning).
-3. **Tier 3 PR 1-7** — done (threading primitives, RequestThread,
+3. **Tier 3 PR 1-8** — done (threading primitives, RequestThread,
    CaptureThread, PipelineThread + fence-fd, IPA/DelayedControls
-   plumbing, NEON stats worker).
+   plumbing, NEON stats worker, BasicIpa AE + ApplySettings
+   AE-mode branch).
 4. **Tier 3 produce-once** — `IspPipeline::beginFrame` + `blitTo*` +
    `endFrame`, PostProcessor + JpegWorker. Multi-stream FPS win.
-5. **Tier 3 BasicIpa** — real 3A math over raw-Bayer stats.
+5. **Tier 3 BasicIpa AWB + AF** — gray-world AWB, sharpness-grid
+   AF (removes the last `SW_READ_OFTEN` lock).
 6. **Housekeeping** — drop `V4L2DEVICE_OPEN_ONCE` fast paths.
 7. **Tier 4** — discretionary.
