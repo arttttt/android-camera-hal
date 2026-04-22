@@ -41,6 +41,7 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mYuvEncoder(mDeviceState)
     , mStatsEncoder(mDeviceState)
     , mTimeQuery(VK_NULL_HANDLE)
+    , mStatsFrameCounter(0)
 {
     for (size_t s = 0; s < SLOT_COUNT; s++) {
         mDescSet[s]     = VK_NULL_HANDLE;
@@ -234,9 +235,16 @@ void VulkanIspPipeline::recordGrallocBlit(int slot, VulkanGrallocCache::Entry *e
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
         0, 0, NULL, 0, NULL, 1, &scratchB);
 
-    /* Stats reducer: reads scratch, writes its own host-mapped buffer,
-     * emits its own COMPUTE → HOST_READ barrier internally. */
-    mStatsEncoder.recordDispatch(cb, srcW, srcH);
+    /* Stats reducer runs every Nth frame (temporal subsample). On
+     * skipped frames the buffer keeps its previous content — fine
+     * for the async 3A consumer, which already lags by a frame.
+     * The post-stats HOST_READ barrier the encoder emits is also
+     * skipped, which is safe: the CPU only reads the stats buffer
+     * after a fence that guards the whole submit, so stale memory
+     * from the previous dispatch is already visible. */
+    const bool runStats = (mStatsFrameCounter++ % STATS_INTERVAL) == 0u;
+    if (runStats)
+        mStatsEncoder.recordDispatch(cb, srcW, srcH);
     if (mTimeQuery) {
         mDeviceState.pfn()->CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                                mTimeQuery, tsBase + 2);
