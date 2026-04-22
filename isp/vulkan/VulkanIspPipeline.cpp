@@ -262,16 +262,12 @@ void VulkanIspPipeline::recordGrallocBlit(int slot, VulkanGrallocCache::Entry *e
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
         0, 0, NULL, 0, NULL, 1, &scratchB);
 
-    /* Stats reducer runs every Nth frame (temporal subsample). On
-     * skipped frames the buffer keeps its previous content — fine
-     * for the async 3A consumer, which already lags by a frame.
-     * The post-stats HOST_READ barrier the encoder emits is also
-     * skipped, which is safe: the CPU only reads the stats buffer
-     * after a fence that guards the whole submit, so stale memory
-     * from the previous dispatch is already visible. */
-    const bool runStats = (mStatsFrameCounter++ % STATS_INTERVAL) == 0u;
-    if (runStats)
-        mStatsEncoder.recordDispatch(cb, srcW, srcH);
+    /* Standalone stats compute is retired — the demosaic shader now
+     * writes histogram + RGB sums + sharpness + pixel count into
+     * mRawStatsBuf via per-WG atomics. Temporal subsample counter
+     * stays wired in case we need to restore the old path for
+     * bisection; for now the encoder object is left allocated but
+     * no longer dispatched. Cleanup follow-up removes it entirely. */
     if (mTimeQuery) {
         mDeviceState.pfn()->CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                                mTimeQuery, tsBase + 2);
