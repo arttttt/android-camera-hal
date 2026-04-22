@@ -288,7 +288,7 @@ void VulkanIspPipeline::recordGrallocBlit(int slot, VulkanGrallocCache::Entry *e
     mDeviceState.pfn()->CmdEndRenderPass(cb);
     if (mTimeQuery) {
         mDeviceState.pfn()->CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                                               mTimeQuery, tsBase + 3);
+                                               mTimeQuery, tsBase + 2);
     }
 
     mDeviceState.pfn()->EndCommandBuffer(cb);
