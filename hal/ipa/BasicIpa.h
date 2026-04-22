@@ -35,6 +35,13 @@ public:
 
 private:
     const SensorConfig &sensorCfg;
+
+    /* AE state. Tracks the last-published decision (not the sensor's
+     * actual state). Stays in sync with reality while AE is running
+     * in auto mode; after a manual-mode excursion the next
+     * processStats re-converges from wherever the scene is now. */
+    int32_t lastExposureUs;
+    int32_t lastGain;
 };
 
 } /* namespace android */
