@@ -106,6 +106,14 @@ private:
     void stopWorkers();
     void startWorkers();
 
+    /* Pull every PipelineContext still parked in mTracker (orphaned
+     * upstream of PipelineThread's own in-flight drain during a
+     * stopWorkers), tag each as CAMERA3_MSG_ERROR_REQUEST, and route
+     * through ResultDispatchStage so the framework gets its notify()
+     * + buffer release. Must run after stopWorkers, before the next
+     * configureStreams or closeDevice teardown step. */
+    void errorCompletePendingRequests();
+
     /* STATIC WRAPPERS */
 
     static int sClose(hw_device_t *device);

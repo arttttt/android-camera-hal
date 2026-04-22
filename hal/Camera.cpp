@@ -213,15 +213,7 @@ int Camera::closeDevice() {
      * alone is enough for cleanup: DemosaicBlit is skipped on error,
      * and the dispatch stage emits notify(ERROR_REQUEST) + releases
      * any Bayer slot the stage chain already took. */
-    if (mTracker && mResultDispatchStage) {
-        auto pending = mTracker->drainAll();
-        for (auto &ctx : pending) {
-            if (ctx) {
-                ctx->errorCode = CAMERA3_MSG_ERROR_REQUEST;
-                mResultDispatchStage->process(*ctx);
-            }
-        }
-    }
+    errorCompletePendingRequests();
 
     /* Drop per-session state so the next open starts from a clean
      * slate. Infrastructure (ISP core, 3A, BufferProcessor, pipeline,
@@ -298,6 +290,16 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
      * set, (3) restarts the workers. */
 
     stopWorkers();
+
+    /* Error-complete any requests still parked upstream of
+     * PipelineThread's inFlight drain: ctxs in mRequestQueue,
+     * ctxs mid-stage in RequestThread (it was unblocked out of
+     * pushBlocking by the queue's requestStop), ctxs in
+     * mPipelineQueue. Without this the framework's output buffers
+     * stay dequeued on the HAL side across the reconfigure and
+     * the next processCaptureRequest sequence times out with
+     * "wait for output buffer return timed out after 3000ms". */
+    errorCompletePendingRequests();
 
     ALOGD("V4L2 target resolution: %ux%u, soft_isp=%d",
           width, height, mSoftIspEnabled);
@@ -595,6 +597,16 @@ void Camera::destroyInfrastructure() {
     if (mIsp) { mIsp->destroy(); delete mIsp; mIsp = NULL; }
 
     mInfrastructureBuilt = false;
+}
+
+void Camera::errorCompletePendingRequests() {
+    if (!mTracker || !mResultDispatchStage) return;
+    auto pending = mTracker->drainAll();
+    for (auto &ctx : pending) {
+        if (!ctx) continue;
+        ctx->errorCode = CAMERA3_MSG_ERROR_REQUEST;
+        mResultDispatchStage->process(*ctx);
+    }
 }
 
 void Camera::stopWorkers() {
