@@ -529,6 +529,25 @@ void Camera::buildInfrastructure() {
     mRequestQueue.reset(new EventQueue<PipelineContext*>(REQUEST_QUEUE_CAPACITY));
     mPipelineQueue.reset(new EventQueue<PipelineContext*>(PIPELINE_QUEUE_CAPACITY));
     mRequestPipeline.reset(new Pipeline());
+    mStatsWorker.reset(new StatsWorker());
+
+    /* 3A plumbing: StubIpa is a no-op — it returns empty batches so
+     * DelayedControls stays at its defaults. BasicIpa, with real AE /
+     * AWB / AF math over IpaStats, lands as a drop-in replacement in
+     * the 3A PR. DelayedControls is seeded from the sensor's silicon
+     * control-delay config so the push effect-sequence matches when
+     * ApplySettingsStage actually latches the value. Built here
+     * before the request pipeline so ApplySettingsStage can receive
+     * the DelayedControls pointer at construction. */
+    mIpa.reset(new StubIpa());
+    {
+        DelayedControls::Config cfg;
+        for (int i = 0; i < DelayedControls::COUNT; ++i) {
+            cfg.delay[i]        = mSensorCfg.controlDelay[i];
+            cfg.defaultValue[i] = 0;
+        }
+        mDelayedControls.reset(new DelayedControls(cfg));
+    }
 
     /* RequestThread pipeline — runs Apply / Shutter / Capture on the
      * binder-adjacent thread. DemosaicBlit and ResultDispatch live on
@@ -536,9 +555,10 @@ void Camera::buildInfrastructure() {
      * standalone rather than appended here. */
     {
         ApplySettingsStage::Deps d;
-        d.exposure  = mExposure;
-        d.af        = mAf;
-        d.sensorCfg = &mSensorCfg;
+        d.exposure        = mExposure;
+        d.af              = mAf;
+        d.sensorCfg       = &mSensorCfg;
+        d.delayedControls = mDelayedControls.get();
         mRequestPipeline->appendStage(
             std::unique_ptr<PipelineStage>(new ApplySettingsStage(d)));
     }
@@ -555,7 +575,6 @@ void Camera::buildInfrastructure() {
             std::unique_ptr<PipelineStage>(new CaptureStage(d)));
     }
 
-    mStatsWorker.reset(new StatsWorker());
     {
         StatsDispatchStage::Deps d;
         d.isp         = mIsp;
@@ -581,22 +600,6 @@ void Camera::buildInfrastructure() {
         d.af          = mAf;
         d.sensorCfg   = &mSensorCfg;
         mResultDispatchStage.reset(new ResultDispatchStage(d));
-    }
-
-    /* 3A plumbing: StubIpa is a no-op — it returns empty batches so
-     * DelayedControls stays at its defaults. BasicIpa, with real AE /
-     * AWB / AF math over IpaStats, lands as a drop-in replacement in
-     * the 3A PR. DelayedControls is seeded from the sensor's silicon
-     * control-delay config so the push effect-sequence matches when
-     * ApplySettingsStage actually latches the value. */
-    mIpa.reset(new StubIpa());
-    {
-        DelayedControls::Config cfg;
-        for (int i = 0; i < DelayedControls::COUNT; ++i) {
-            cfg.delay[i]        = mSensorCfg.controlDelay[i];
-            cfg.defaultValue[i] = 0;
-        }
-        mDelayedControls.reset(new DelayedControls(cfg));
     }
 
     {

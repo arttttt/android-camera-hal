@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 
+#include <system/camera_metadata.h>
+
 #include "PipelineContext.h"
 #include "ipa/Ipa.h"
 #include "ipa/IpaStats.h"
@@ -16,6 +18,18 @@ StatsProcessStage::StatsProcessStage(const Deps &d) : deps(d) {}
 void StatsProcessStage::process(PipelineContext &ctx) {
     if (!deps.ipa || !deps.delayedControls || !deps.sensorCfg
         || !deps.statsWorker) return;
+
+    /* Manual AE (AE_MODE_OFF) hands full authority to the framework;
+     * ApplySettingsStage pushes the request's exposure / gain directly
+     * and the IPA's decision would only clobber it. Skip the push in
+     * that mode — the IPA's compute has still run, but its effect
+     * lives only in its internal state (useful for a clean switch
+     * back to auto). */
+    if (ctx.request.settings.exists(ANDROID_CONTROL_AE_MODE)) {
+        const uint8_t aeMode =
+            *ctx.request.settings.find(ANDROID_CONTROL_AE_MODE).data.u8;
+        if (aeMode == ANDROID_CONTROL_AE_MODE_OFF) return;
+    }
 
     IpaStats stats;
     uint32_t statsSeq = 0;

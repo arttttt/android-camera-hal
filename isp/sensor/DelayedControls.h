@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#include <mutex>
+
 namespace android {
 
 /* Port of libcamera's DelayedControls. Each control id carries a
@@ -61,8 +63,17 @@ public:
     /* Reports the value that was written for slot (seq - delay[id]).
      * Returns Config.defaultValue[id] if no matching write exists (the
      * cell was never touched, or the tagged sequence doesn't match
-     * because the ring has wrapped past it). */
+     * because the ring has wrapped past it). Used for result metadata
+     * where the caller wants to know what was PHYSICALLY IN EFFECT on
+     * frame `seq`. */
     Batch applyControls(uint32_t seq) const;
+
+    /* Reports the controls queued to be WRITTEN to the sensor at frame
+     * `seq` — slot `seq % RING_SIZE` directly, tag-checked against
+     * `seq`. has[id] == false when no push for this slot has landed.
+     * ApplySettingsStage uses this on the write path in auto mode to
+     * pull the IPA's pushed batch for the frame being dispatched. */
+    Batch pendingWrite(uint32_t seq) const;
 
 private:
     static const int RING_SIZE = 16;
@@ -75,6 +86,12 @@ private:
 
     Config config;
     Cell   ring[RING_SIZE][COUNT];
+
+    /* Producers (ApplySettingsStage on RequestThread, StatsProcessStage
+     * on PipelineThread) and consumers (ApplySettingsStage,
+     * ResultMetadataBuilder) run on different threads; the ring is
+     * small enough that a single lock is fine. */
+    mutable std::mutex mutex;
 };
 
 } /* namespace android */

@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <camera/CameraMetadata.h>
 
+#include "sensor/DelayedControls.h"
+
 namespace android {
 
 class V4l2Device;
@@ -28,8 +30,15 @@ public:
     void applyDefaults();
 
     /* Parse per-frame exposure/gain from request metadata, push to
-     * V4L2. Updates the value returned by report(). */
+     * V4L2. Used on the manual AE path (AE_MODE_OFF). Updates the
+     * value returned by report(). */
     void onSettings(const CameraMetadata &cm);
+
+    /* Write an IPA-decided batch straight to V4L2 via one batched
+     * VIDIOC_S_EXT_CTRLS call and update report(). Used on the auto
+     * AE path (AE_MODE != OFF) when ApplySettingsStage has pulled
+     * the batch from DelayedControls::pendingWrite. */
+    void applyBatch(const DelayedControls::Batch &batch);
 
     Report report() const;
 

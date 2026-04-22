@@ -8,6 +8,7 @@
 #include <utils/Log.h>
 #include <system/camera_metadata.h>
 
+#include "V4l2Controls.h"
 #include "V4l2Device.h"
 #include "sensor/SensorConfig.h"
 
@@ -86,8 +87,28 @@ void ExposureControl::onSettings(const CameraMetadata &cm) {
     if (gain > mCfg.gainMax) gain = mCfg.gainMax;
     mDev->setControl(V4L2_CID_GAIN, gain);
 
-    mAppliedExposureUs = actualExposure * mCfg.lineTimeUs;
+    /* V4L2_CID_EXPOSURE is fed microseconds directly (splitExposureGain
+     * outputs outExposureUs in µs); the report just echoes the value
+     * that went to the driver. Earlier revisions multiplied by
+     * lineTimeUs which was a bug — applyDefaults stored the raw µs
+     * value, so this path now matches. */
+    mAppliedExposureUs = actualExposure;
     mAppliedGain       = gain;
+}
+
+void ExposureControl::applyBatch(const DelayedControls::Batch &batch) {
+    V4l2Controls ctrls;
+    if (batch.has[DelayedControls::EXPOSURE]) {
+        ctrls.add(V4L2_CID_EXPOSURE, batch.val[DelayedControls::EXPOSURE]);
+        mAppliedExposureUs = batch.val[DelayedControls::EXPOSURE];
+    }
+    if (batch.has[DelayedControls::GAIN]) {
+        ctrls.add(V4L2_CID_GAIN, batch.val[DelayedControls::GAIN]);
+        mAppliedGain = batch.val[DelayedControls::GAIN];
+    }
+    if (ctrls.count > 0) {
+        mDev->setControls(ctrls);
+    }
 }
 
 ExposureControl::Report ExposureControl::report() const {
