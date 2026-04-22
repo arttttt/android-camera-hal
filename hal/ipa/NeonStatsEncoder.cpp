@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <arm_neon.h>
 #include <linux/videodev2.h>
 
 #include "IpaStats.h"
@@ -25,6 +26,53 @@ const uint8_t phaseChannel[4][4] = {
 bool is10Bit(uint32_t pixFmt) {
     return pixFmt == V4L2_PIX_FMT_SRGGB10 || pixFmt == V4L2_PIX_FMT_SGRBG10 ||
            pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SBGGR10;
+}
+
+/* ARMv7-NEON does not have vaddvq_*, so fold manually. */
+inline uint32_t hsum_u32x4(uint32x4_t v) {
+    uint32x2_t lo = vget_low_u32(v);
+    uint32x2_t hi = vget_high_u32(v);
+    uint32x2_t p  = vpadd_u32(lo, hi);
+    p             = vpadd_u32(p, p);
+    return vget_lane_u32(p, 0);
+}
+
+inline void scalarSobelStep(const uint16_t *p16,
+                             const uint8_t  *p8,
+                             bool            wide,
+                             unsigned        width, unsigned height,
+                             unsigned        xG, unsigned y,
+                             float          *sharpAccum) {
+    const unsigned yN = (y >= 2u)         ? y - 2u : y;
+    const unsigned yS = (y + 2u < height) ? y + 2u : y;
+    const unsigned xW = (xG >= 2u)            ? xG - 2u : xG;
+    const unsigned xE = (xG + 2u < width)     ? xG + 2u : xG;
+
+    uint32_t tl, tc, tr_, ll, rr, bl, bc, br;
+    if (wide) {
+        tl  = p16[(size_t)yN * width + xW];
+        tc  = p16[(size_t)yN * width + xG];
+        tr_ = p16[(size_t)yN * width + xE];
+        ll  = p16[(size_t)y  * width + xW];
+        rr  = p16[(size_t)y  * width + xE];
+        bl  = p16[(size_t)yS * width + xW];
+        bc  = p16[(size_t)yS * width + xG];
+        br  = p16[(size_t)yS * width + xE];
+    } else {
+        tl  = p8[(size_t)yN * width + xW];
+        tc  = p8[(size_t)yN * width + xG];
+        tr_ = p8[(size_t)yN * width + xE];
+        ll  = p8[(size_t)y  * width + xW];
+        rr  = p8[(size_t)y  * width + xE];
+        bl  = p8[(size_t)yS * width + xW];
+        bc  = p8[(size_t)yS * width + xG];
+        br  = p8[(size_t)yS * width + xE];
+    }
+    const int32_t gx = (int32_t)(tr_ + 2u * rr + br)
+                     - (int32_t)(tl  + 2u * ll + bl);
+    const int32_t gy = (int32_t)(bl  + 2u * bc + br)
+                     - (int32_t)(tl  + 2u * tc + tr_);
+    *sharpAccum += (float)gx * (float)gx + (float)gy * (float)gy;
 }
 
 } /* namespace */
@@ -80,13 +128,70 @@ void NeonStatsEncoder::compute(const void *bayer,
         const unsigned y1 = by[py + 1];
         for (unsigned y = y0; y < y1; ++y) {
             const uint32_t yParity = y & 1u;
+            const uint8_t  chanEven = cfa[yParity * 2u];
+            const uint8_t  chanOdd  = cfa[yParity * 2u + 1u];
+            const bool     gIsEven  = (chanEven == 1u);
+
             const uint16_t *row16 = p16 + (size_t)y * width;
             const uint8_t  *row8  = p8  + (size_t)y * width;
 
             for (int px = 0; px < IpaStats::PATCH_X; ++px) {
                 const unsigned x0 = bx[px];
                 const unsigned x1 = bx[px + 1];
-                for (unsigned x = x0; x < x1; ++x) {
+
+                unsigned x = x0;
+
+                if (wide) {
+                    /* NEON: 16 Bayer pixels per iteration. vld2q_u16
+                     * deinterleaves by column parity, so p.val[0] carries
+                     * the eight pixels at even columns of the chunk and
+                     * p.val[1] carries the eight at odd columns. The row
+                     * parity has already fixed which of those vectors
+                     * holds G; the other holds R or B depending on the
+                     * 2×2 phase. Pairwise accumulate widens u16→u32 in
+                     * register so per-patch sums never overflow. */
+                    const unsigned chunks  = (x1 - x0) / 16u;
+                    const unsigned simdEnd = x0 + chunks * 16u;
+
+                    uint32x4_t accEven = vdupq_n_u32(0);
+                    uint32x4_t accOdd  = vdupq_n_u32(0);
+
+                    for (; x < simdEnd; x += 16u) {
+                        uint16x8x2_t p = vld2q_u16(row16 + x);
+                        accEven = vpadalq_u16(accEven, p.val[0]);
+                        accOdd  = vpadalq_u16(accOdd,  p.val[1]);
+
+                        /* Histogram and Sobel walk the eight G values
+                         * out of whichever lane held them. Extracting
+                         * to a tiny stack buffer avoids the immediate-
+                         * index requirement of vgetq_lane_u16 while
+                         * staying in L1. */
+                        uint16_t gbuf[8];
+                        vst1q_u16(gbuf, gIsEven ? p.val[0] : p.val[1]);
+                        const unsigned xBase = gIsEven ? x : x + 1u;
+                        for (int i = 0; i < 8; ++i) {
+                            const uint32_t v   = gbuf[i];
+                            uint32_t       bin = v >> histShift;
+                            if (bin > 127u) bin = 127u;
+                            out->lumaHist[bin] += 1u;
+
+                            const unsigned xG = xBase + 2u * (unsigned)i;
+                            scalarSobelStep(p16, p8, /*wide=*/true,
+                                            width, height, xG, y,
+                                            &sharpSum[py][px]);
+                        }
+                    }
+
+                    sumCh[py][px][chanEven] += hsum_u32x4(accEven);
+                    sumCh[py][px][chanOdd]  += hsum_u32x4(accOdd);
+                    cntCh[py][px][chanEven] += chunks * 8u;
+                    cntCh[py][px][chanOdd]  += chunks * 8u;
+                }
+
+                /* Scalar tail for the pixels past the NEON block, and
+                 * the whole 8-bit fallback path (production negotiates
+                 * 10-bit, so 8-bit performance is not a concern). */
+                for (; x < x1; ++x) {
                     const unsigned chan = cfa[yParity * 2u + (x & 1u)];
                     const uint32_t v    = wide ? row16[x] : row8[x];
 
@@ -97,43 +202,9 @@ void NeonStatsEncoder::compute(const void *bayer,
                         uint32_t bin = v >> histShift;
                         if (bin > 127u) bin = 127u;
                         out->lumaHist[bin] += 1u;
-
-                        /* Tenengrad on the green sub-lattice. Stepping
-                         * ±2 keeps all nine taps on the same parity, so
-                         * every sample is a green pixel. Clamp at
-                         * edges — the two-pixel ring is negligible for
-                         * an AF peak metric. */
-                        const unsigned yN = (y >= 2u)            ? y - 2u : y;
-                        const unsigned yS = (y + 2u < height)    ? y + 2u : y;
-                        const unsigned xW = (x >= 2u)            ? x - 2u : x;
-                        const unsigned xE = (x + 2u < width)     ? x + 2u : x;
-
-                        uint32_t tl, tc, tr_, ll, rr, bl, bc, br;
-                        if (wide) {
-                            tl  = p16[(size_t)yN * width + xW];
-                            tc  = p16[(size_t)yN * width + x ];
-                            tr_ = p16[(size_t)yN * width + xE];
-                            ll  = p16[(size_t)y  * width + xW];
-                            rr  = p16[(size_t)y  * width + xE];
-                            bl  = p16[(size_t)yS * width + xW];
-                            bc  = p16[(size_t)yS * width + x ];
-                            br  = p16[(size_t)yS * width + xE];
-                        } else {
-                            tl  = p8[(size_t)yN * width + xW];
-                            tc  = p8[(size_t)yN * width + x ];
-                            tr_ = p8[(size_t)yN * width + xE];
-                            ll  = p8[(size_t)y  * width + xW];
-                            rr  = p8[(size_t)y  * width + xE];
-                            bl  = p8[(size_t)yS * width + xW];
-                            bc  = p8[(size_t)yS * width + x ];
-                            br  = p8[(size_t)yS * width + xE];
-                        }
-                        const int32_t gx = (int32_t)(tr_ + 2u * rr + br)
-                                         - (int32_t)(tl  + 2u * ll + bl);
-                        const int32_t gy = (int32_t)(bl  + 2u * bc + br)
-                                         - (int32_t)(tl  + 2u * tc + tr_);
-                        sharpSum[py][px] += (float)gx * (float)gx
-                                          + (float)gy * (float)gy;
+                        scalarSobelStep(p16, p8, wide,
+                                        width, height, x, y,
+                                        &sharpSum[py][px]);
                     }
                 }
             }
