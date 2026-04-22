@@ -14,7 +14,7 @@
 #include "sensor/SensorTuning.h"
 #include "sensor/DelayedControls.h"
 #include "ipa/Ipa.h"
-#include "ipa/NeonStatsEncoder.h"
+#include "ipa/StatsWorker.h"
 #include "IspPipeline.h"
 #include "3a/AutoFocusController.h"
 #include "3a/ExposureControl.h"
@@ -97,7 +97,7 @@ private:
     std::unique_ptr<PipelineThread>               mPipelineThread;
     std::unique_ptr<Ipa>                          mIpa;
     std::unique_ptr<DelayedControls>              mDelayedControls;
-    std::unique_ptr<NeonStatsEncoder>             mNeonStats;
+    std::unique_ptr<StatsWorker>                  mStatsWorker;
     bool                                          mInfrastructureBuilt;
 
     /* Build the long-lived per-camera infrastructure (ISP, 3A,

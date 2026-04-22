@@ -59,6 +59,7 @@
 #include "pipeline/stages/CaptureStage.h"
 #include "pipeline/stages/DemosaicBlitStage.h"
 #include "pipeline/stages/ResultDispatchStage.h"
+#include "pipeline/stages/StatsDispatchStage.h"
 #include "pipeline/stages/StatsProcessStage.h"
 #include "ipa/StubIpa.h"
 
@@ -225,6 +226,7 @@ int Camera::closeDevice() {
     if (mIsp)             mIsp->onSessionClose();
     if (mIpa)             mIpa->reset();
     if (mDelayedControls) mDelayedControls->reset();
+    if (mStatsWorker)     mStatsWorker->reset();
 
     mDev->disconnect();
     return NO_ERROR;
@@ -547,6 +549,16 @@ void Camera::buildInfrastructure() {
             std::unique_ptr<PipelineStage>(new CaptureStage(d)));
     }
 
+    mStatsWorker.reset(new StatsWorker());
+    {
+        StatsDispatchStage::Deps d;
+        d.isp         = mIsp;
+        d.statsWorker = mStatsWorker.get();
+        d.bayerSource = mBayerSource.get();
+        mRequestPipeline->appendStage(
+            std::unique_ptr<PipelineStage>(new StatsDispatchStage(d)));
+    }
+
     {
         DemosaicBlitStage::Deps d;
         d.bufferProcessor = mBufferProcessor;
@@ -580,16 +592,13 @@ void Camera::buildInfrastructure() {
         }
         mDelayedControls.reset(new DelayedControls(cfg));
     }
-    mNeonStats.reset(new NeonStatsEncoder());
 
     {
         StatsProcessStage::Deps d;
-        d.isp             = mIsp;
         d.ipa             = mIpa.get();
         d.delayedControls = mDelayedControls.get();
         d.sensorCfg       = &mSensorCfg;
-        d.bayerSource     = mBayerSource.get();
-        d.neonStats       = mNeonStats.get();
+        d.statsWorker     = mStatsWorker.get();
         mStatsProcessStage.reset(new StatsProcessStage(d));
     }
 
@@ -619,7 +628,7 @@ void Camera::destroyInfrastructure() {
     mStatsProcessStage.reset();
     mDemosaicBlitStage.reset();
     mRequestPipeline.reset();
-    mNeonStats.reset();
+    mStatsWorker.reset();
     mDelayedControls.reset();
     mIpa.reset();
     mTracker.reset();
@@ -666,6 +675,11 @@ void Camera::stopWorkers() {
     if (mBayerSource)    mBayerSource->stop();
     if (mPipelineQueue)  mPipelineQueue->requestStop();
     if (mRequestThread)  mRequestThread->stop();
+    /* StatsWorker is stopped after RequestThread (so no more submits
+     * arrive) but can run alongside PipelineThread's drain — the
+     * consumer StatsProcessStage just peeks a stale snapshot once the
+     * worker is quiesced. */
+    if (mStatsWorker)    mStatsWorker->stop();
     if (mPipelineThread) mPipelineThread->stop();
 }
 
@@ -681,21 +695,33 @@ void Camera::startWorkers() {
             return;
         }
     }
+    /* StatsWorker before RequestThread: the producer side must have a
+     * live sink to post Bayer jobs into from the very first
+     * StatsDispatchStage run. */
+    if (mStatsWorker && !mStatsWorker->isRunning()) {
+        if (!mStatsWorker->start("CamStats")) {
+            ALOGE("StatsWorker start failed, unwinding BayerSource");
+            if (mBayerSource) mBayerSource->stop();
+            return;
+        }
+    }
     /* PipelineThread before RequestThread: the downstream consumer
      * must be live before RequestThread starts pushing to pipelineQueue.
      * Swapping the order would have RequestThread block on pushBlocking
      * forever. */
     if (mPipelineThread && !mPipelineThread->isRunning()) {
         if (!mPipelineThread->start("CamPipeline")) {
-            ALOGE("PipelineThread start failed, unwinding BayerSource");
+            ALOGE("PipelineThread start failed, unwinding StatsWorker + BayerSource");
+            if (mStatsWorker) mStatsWorker->stop();
             if (mBayerSource) mBayerSource->stop();
             return;
         }
     }
     if (mRequestThread && !mRequestThread->isRunning()) {
         if (!mRequestThread->start("CamRequest")) {
-            ALOGE("RequestThread start failed, unwinding PipelineThread + BayerSource");
+            ALOGE("RequestThread start failed, unwinding PipelineThread + StatsWorker + BayerSource");
             if (mPipelineThread) mPipelineThread->stop();
+            if (mStatsWorker)    mStatsWorker->stop();
             if (mBayerSource)    mBayerSource->stop();
             return;
         }

@@ -5,37 +5,34 @@
 
 namespace android {
 
-class  IspPipeline;
 class  Ipa;
 class  DelayedControls;
-class  BayerSource;
-class  NeonStatsEncoder;
+class  StatsWorker;
 struct SensorConfig;
 
 /* Runs on PipelineThread once the frame's submit fence has
- * signalled. Reduces the raw Bayer slot into an IpaStats on-thread
- * via NeonStatsEncoder, hands it to the IPA, and publishes the
- * returned control batch into DelayedControls so ApplySettingsStage
- * picks it up on the frame that actually lands the write
- * (seq + controlDelay[id]).
+ * signalled. Peeks the latest IpaStats the StatsWorker has
+ * published (computed off-thread in parallel with the GPU submit),
+ * hands it to the IPA, and publishes the returned control batch
+ * into DelayedControls so ApplySettingsStage picks it up on the
+ * frame that actually lands the write (seq + controlDelay[id]).
  *
- * Not alwaysRun — on an errored context the Bayer content has no
- * meaningful data and the IPA is skipped.
+ * Not alwaysRun — errored contexts skip the IPA since a control
+ * update derived from stats we did not produce for this frame
+ * adds no value.
  *
  * One push per control is issued because each control id carries
  * its own delay and DelayedControls::push tags the whole batch
- * with a single sequence. Today's SensorConfig gives both
- * exposure and gain a delay of 2, so the loop degenerates to a
- * single push, but the shape is future-proof. */
+ * with a single sequence. Today's SensorConfig gives both exposure
+ * and gain a delay of 2, so the loop degenerates to a single
+ * push, but the shape is future-proof. */
 class StatsProcessStage : public PipelineStage {
 public:
     struct Deps {
-        IspPipeline         *isp;
         Ipa                 *ipa;
         DelayedControls     *delayedControls;
         const SensorConfig  *sensorCfg;
-        BayerSource         *bayerSource;
-        NeonStatsEncoder    *neonStats;
+        StatsWorker         *statsWorker;
     };
 
     explicit StatsProcessStage(const Deps &deps);

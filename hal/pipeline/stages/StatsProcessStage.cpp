@@ -2,13 +2,10 @@
 
 #include <stdint.h>
 
-#include "BayerSource.h"
-#include "IspPipeline.h"
 #include "PipelineContext.h"
-#include "Resolution.h"
 #include "ipa/Ipa.h"
 #include "ipa/IpaStats.h"
-#include "ipa/NeonStatsEncoder.h"
+#include "ipa/StatsWorker.h"
 #include "sensor/DelayedControls.h"
 #include "sensor/SensorConfig.h"
 
@@ -17,22 +14,18 @@ namespace android {
 StatsProcessStage::StatsProcessStage(const Deps &d) : deps(d) {}
 
 void StatsProcessStage::process(PipelineContext &ctx) {
-    if (!deps.isp || !deps.ipa || !deps.delayedControls || !deps.sensorCfg
-        || !deps.bayerSource || !deps.neonStats) return;
-    if (!ctx.bayerFrame) return;
-
-    const int slot = ctx.bayerFrame->index;
-    deps.isp->invalidateBayer(slot);
-    const void *bayer = deps.isp->bayerHost(slot);
-    if (!bayer) return;
-
-    const Resolution res = deps.bayerSource->resolution();
+    if (!deps.ipa || !deps.delayedControls || !deps.sensorCfg
+        || !deps.statsWorker) return;
 
     IpaStats stats;
-    deps.neonStats->compute(bayer, res.width, res.height,
-                            ctx.bayerFrame->pixFmt, &stats);
+    uint32_t statsSeq = 0;
+    if (!deps.statsWorker->peek(&stats, &statsSeq)) return;
 
-    DelayedControls::Batch batch = deps.ipa->processStats(ctx.sequence, stats);
+    /* Pass the frame-of-stats sequence to the IPA so it can correlate
+     * with its own history. DelayedControls::push still uses ctx.sequence
+     * for effect timing — the control goes into effect relative to
+     * today's frame, not to the frame the stats came from. */
+    DelayedControls::Batch batch = deps.ipa->processStats(statsSeq, stats);
 
     /* Publish each set control at seq + its own silicon delay.
      * DelayedControls::push tags the whole batch with one sequence,
