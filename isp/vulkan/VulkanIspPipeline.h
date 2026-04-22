@@ -68,6 +68,7 @@ private:
     void releaseScratchResources();
     bool createOutBuffer(size_t size);
     bool createScratchImage(unsigned width, unsigned height);
+    bool createRawStatsBuffer();
     void writeStaticDescriptors();
 
     /* Round-robin slot pick. If the chosen slot is still in flight on
@@ -151,6 +152,18 @@ private:
     VkDeviceMemory mOutMem;
     size_t         mOutSize;
     void          *mOutMap;
+
+    /* Fused-stats output — filled by the demosaic shader at
+     * binding = 4 once the fusion branch lands. Allocated once at
+     * init(), sized for IpaRawStats, host-visible so the CPU-side
+     * IPA consumer can read the uint sums and convert them to
+     * float means. Zeroed before every demosaic dispatch via
+     * CmdFillBuffer so the workgroup atomics accumulate onto a
+     * clean slate. */
+    VkBuffer       mRawStatsBuf;
+    VkDeviceMemory mRawStatsMem;
+    size_t         mRawStatsSize;
+    void          *mRawStatsMap;
 
     /* One param buffer per slot — the compute shader dispatches of two
      * in-flight submits must see independent IspParams content. */

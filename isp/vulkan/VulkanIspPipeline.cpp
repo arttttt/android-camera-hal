@@ -18,6 +18,7 @@ static inline int64_t nowMs() {
 #include "runtime/loader/VulkanPfn.h"
 #include "shaders/DemosaicCompute.h"
 #include "shaders/Blit.h"
+#include "ipa/IpaRawStats.h"
 
 namespace android {
 
@@ -35,6 +36,10 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mOutMem(VK_NULL_HANDLE)
     , mOutSize(0)
     , mOutMap(NULL)
+    , mRawStatsBuf(VK_NULL_HANDLE)
+    , mRawStatsMem(VK_NULL_HANDLE)
+    , mRawStatsSize(0)
+    , mRawStatsMap(NULL)
     , mScratchImg(VK_NULL_HANDLE), mScratchMem(VK_NULL_HANDLE), mScratchView(VK_NULL_HANDLE)
     , mNextSlot(0)
     , mGrallocCache(mDeviceState)
@@ -204,6 +209,28 @@ void VulkanIspPipeline::recordGrallocBlit(int slot, VulkanGrallocCache::Entry *e
         mDeviceState.pfn()->CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                                                mTimeQuery, tsBase + 0);
     }
+
+    /* Zero the raw-stats output before demosaic dispatches. Keeps the
+     * buffer clean for the per-WG atomicAdds the stats-fusion branch
+     * will perform; the fill is cheap (~5 KB TRANSFER) and the barrier
+     * guarantees the zeros are visible to the shader's COMPUTE reads
+     * and writes. Runs even before fusion is wired so the buffer
+     * starts each frame at a known state — measurable impact should
+     * be sub-100 us. */
+    mDeviceState.pfn()->CmdFillBuffer(cb, mRawStatsBuf, 0, mRawStatsSize, 0);
+    VkBufferMemoryBarrier rawStatsBarrier = {};
+    rawStatsBarrier.sType               = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    rawStatsBarrier.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+    rawStatsBarrier.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    rawStatsBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    rawStatsBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    rawStatsBarrier.buffer              = mRawStatsBuf;
+    rawStatsBarrier.offset              = 0;
+    rawStatsBarrier.size                = mRawStatsSize;
+    mDeviceState.pfn()->CmdPipelineBarrier(cb,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 0, NULL, 1, &rawStatsBarrier, 0, NULL);
 
     /* Compute: Bayer → mScratchImg (via binding=1 storage image, set once
      * in ensureBuffers). Dispatch sized to the scratch/capture extent. */
@@ -448,6 +475,7 @@ bool VulkanIspPipeline::init() {
         !createGraphicsPipeline() ||
         !allocateDescriptorSet() ||
         !createCommandObjects() ||
+        !createRawStatsBuffer() ||
         !mYuvEncoder.init() ||
         !mStatsEncoder.init() ||
         !mStatsEncoder.ensureBuffers()) {
@@ -495,8 +523,12 @@ bool VulkanIspPipeline::createDescriptorLayouts() {
      *   binding 3 — combined image sampler, scratch read for the blit
      *               (fragment only). Backed by the same VkImage+view as
      *               binding 1; the sampler gives the fragment path the
-     *               texture cache that imageLoad bypassed. */
-    VkDescriptorSetLayoutBinding bindings[4] = {};
+     *               texture cache that imageLoad bypassed.
+     *   binding 4 — storage buffer, IpaRawStats output (compute only).
+     *               Demosaic shader accumulates per-patch histogram,
+     *               RGB sums and Tenengrad sharpness atomics into it
+     *               once the stats-fusion branch flips on. */
+    VkDescriptorSetLayoutBinding bindings[5] = {};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -510,10 +542,12 @@ bool VulkanIspPipeline::createDescriptorLayouts() {
     bindings[3].binding = 3;
     bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[4] = bindings[0];
+    bindings[4].binding = 4;
 
     VkDescriptorSetLayoutCreateInfo dslci = {};
     dslci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslci.bindingCount = 4;
+    dslci.bindingCount = 5;
     dslci.pBindings    = bindings;
     if (mDeviceState.pfn()->CreateDescriptorSetLayout(
             mDeviceState.device(), &dslci, NULL, &mDescLayout) != VK_SUCCESS) {
@@ -688,12 +722,12 @@ bool VulkanIspPipeline::createGraphicsPipeline() {
 }
 
 bool VulkanIspPipeline::allocateDescriptorSet() {
-    /* Per-slot sets, each binding: 2 storage buffers (input, params) +
-     * 1 storage image (scratch write) + 1 combined image sampler
-     * (scratch read). Pool is sized for the whole ring. */
+    /* Per-slot sets, each binding: 3 storage buffers (input, params,
+     * raw stats) + 1 storage image (scratch write) + 1 combined image
+     * sampler (scratch read). Pool is sized for the whole ring. */
     VkDescriptorPoolSize poolSizes[3] = {};
     poolSizes[0].type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[0].descriptorCount = 2 * SLOT_COUNT;
+    poolSizes[0].descriptorCount = 3 * SLOT_COUNT;
     poolSizes[1].type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     poolSizes[1].descriptorCount = 1 * SLOT_COUNT;
     poolSizes[2].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -861,6 +895,21 @@ bool VulkanIspPipeline::createOutBuffer(size_t size) {
     return true;
 }
 
+bool VulkanIspPipeline::createRawStatsBuffer() {
+    mRawStatsSize = sizeof(IpaRawStats);
+    if (!mDeviceState.createBuffer(&mRawStatsBuf, &mRawStatsMem, mRawStatsSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT)) {
+        ALOGE("Failed to allocate raw-stats buffer (%zu bytes)", mRawStatsSize);
+        return false;
+    }
+    if (mDeviceState.pfn()->MapMemory(mDeviceState.device(), mRawStatsMem, 0,
+                                       mRawStatsSize, 0, &mRawStatsMap) != VK_SUCCESS) {
+        ALOGE("MapMemory for raw-stats buffer failed");
+        return false;
+    }
+    return true;
+}
+
 bool VulkanIspPipeline::createScratchImage(unsigned width, unsigned height) {
     VkImageCreateInfo ici = {};
     ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -968,6 +1017,10 @@ void VulkanIspPipeline::writeStaticDescriptors() {
     sampledInfo.imageView   = mScratchView;
     sampledInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
+    VkDescriptorBufferInfo rawStatsInfo = {};
+    rawStatsInfo.buffer = mRawStatsBuf;
+    rawStatsInfo.range  = mRawStatsSize;
+
     for (size_t s = 0; s < SLOT_COUNT; s++) {
         VkDescriptorBufferInfo inInfo = {};
         inInfo.buffer = mInputRing.buffer(0);
@@ -977,7 +1030,7 @@ void VulkanIspPipeline::writeStaticDescriptors() {
         paramInfo.buffer = mParamBuf[s];
         paramInfo.range  = sizeof(IspParams);
 
-        VkWriteDescriptorSet writes[4] = {};
+        VkWriteDescriptorSet writes[5] = {};
         writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet          = mDescSet[s];
         writes[0].dstBinding      = 0;
@@ -1006,7 +1059,14 @@ void VulkanIspPipeline::writeStaticDescriptors() {
         writes[3].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[3].pImageInfo      = &sampledInfo;
 
-        mDeviceState.pfn()->UpdateDescriptorSets(mDeviceState.device(), 4, writes, 0, NULL);
+        writes[4].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[4].dstSet          = mDescSet[s];
+        writes[4].dstBinding      = 4;
+        writes[4].descriptorCount = 1;
+        writes[4].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[4].pBufferInfo     = &rawStatsInfo;
+
+        mDeviceState.pfn()->UpdateDescriptorSets(mDeviceState.device(), 5, writes, 0, NULL);
     }
 }
 
@@ -1258,6 +1318,16 @@ void VulkanIspPipeline::destroy() {
         mDeviceState.destroyBuffer(mOutBuf, mOutMem);
         mOutBuf = VK_NULL_HANDLE;
         mOutMem = VK_NULL_HANDLE;
+
+        if (mRawStatsMap) {
+            mDeviceState.pfn()->UnmapMemory(mDeviceState.device(), mRawStatsMem);
+            mRawStatsMap = NULL;
+        }
+        mDeviceState.destroyBuffer(mRawStatsBuf, mRawStatsMem);
+        mRawStatsBuf  = VK_NULL_HANDLE;
+        mRawStatsMem  = VK_NULL_HANDLE;
+        mRawStatsSize = 0;
+
         for (size_t s = 0; s < SLOT_COUNT; s++) {
             mDeviceState.destroyBuffer(mParamBuf[s], mParamMem[s]);
             mParamBuf[s] = VK_NULL_HANDLE;
