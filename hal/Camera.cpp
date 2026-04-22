@@ -61,7 +61,7 @@
 #include "pipeline/stages/ResultDispatchStage.h"
 #include "pipeline/stages/StatsDispatchStage.h"
 #include "pipeline/stages/StatsProcessStage.h"
-#include "ipa/StubIpa.h"
+#include "ipa/BasicIpa.h"
 
 extern camera_module_t HAL_MODULE_INFO_SYM;
 
@@ -531,15 +531,16 @@ void Camera::buildInfrastructure() {
     mRequestPipeline.reset(new Pipeline());
     mStatsWorker.reset(new StatsWorker());
 
-    /* 3A plumbing: StubIpa is a no-op — it returns empty batches so
-     * DelayedControls stays at its defaults. BasicIpa, with real AE /
-     * AWB / AF math over IpaStats, lands as a drop-in replacement in
-     * the 3A PR. DelayedControls is seeded from the sensor's silicon
-     * control-delay config so the push effect-sequence matches when
-     * ApplySettingsStage actually latches the value. Built here
-     * before the request pipeline so ApplySettingsStage can receive
-     * the DelayedControls pointer at construction. */
-    mIpa.reset(new StubIpa());
+    /* 3A plumbing. BasicIpa runs the raw-Bayer AE loop over the
+     * NeonStatsEncoder IpaStats; StatsProcessStage feeds it, its
+     * decision goes into DelayedControls at slot (ctx.sequence +
+     * controlDelay[id]), and ApplySettingsStage consumes it via
+     * DelayedControls::pendingWrite on the next frame's manual-or-
+     * auto branch. DelayedControls is seeded from the sensor's
+     * silicon control-delay config so push / apply sequences align.
+     * Built here before the request pipeline so ApplySettingsStage
+     * can receive the DelayedControls pointer at construction. */
+    mIpa.reset(new BasicIpa(mSensorCfg));
     {
         DelayedControls::Config cfg;
         for (int i = 0; i < DelayedControls::COUNT; ++i) {
