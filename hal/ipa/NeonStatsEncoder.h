@@ -34,9 +34,8 @@ public:
      * width,
      * height   Pixel dimensions of the Bayer frame.
      * pixFmt   V4L2 fourcc. Selects bit depth and 2×2 CFA phase.
-     * out      Receives rgbMean + lumaHist. sharpness is zero-filled
-     *          here; filled in once NEON Sobel lands. Caller owns the
-     *          memory; overwrites it fully. */
+     * out      Receives rgbMean, lumaHist and sharpness. Caller owns
+     *          the memory; overwrites it fully. */
     void compute(const void *bayer,
                  unsigned    width,
                  unsigned    height,

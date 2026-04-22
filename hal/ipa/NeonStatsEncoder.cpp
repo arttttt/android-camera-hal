@@ -65,11 +65,15 @@ void NeonStatsEncoder::compute(const void *bayer,
     /* Per-channel sums and counts per patch. Counts are tracked because
      * uneven patch geometry and 2×2 CFA phase shifts mean the pixel-
      * count-per-channel per patch is not a constant fraction of patch
-     * area. */
-    uint64_t sumCh[IpaStats::PATCH_Y][IpaStats::PATCH_X][3];
-    uint32_t cntCh[IpaStats::PATCH_Y][IpaStats::PATCH_X][3];
-    memset(sumCh, 0, sizeof(sumCh));
-    memset(cntCh, 0, sizeof(cntCh));
+     * area. sharpSum holds the Tenengrad accumulator (sum of Gx²+Gy²
+     * on the green sub-lattice) — left unnormalised to match IpaStats'
+     * documented contract. */
+    uint64_t sumCh   [IpaStats::PATCH_Y][IpaStats::PATCH_X][3];
+    uint32_t cntCh   [IpaStats::PATCH_Y][IpaStats::PATCH_X][3];
+    float    sharpSum[IpaStats::PATCH_Y][IpaStats::PATCH_X];
+    memset(sumCh,    0, sizeof(sumCh));
+    memset(cntCh,    0, sizeof(cntCh));
+    memset(sharpSum, 0, sizeof(sharpSum));
 
     for (int py = 0; py < IpaStats::PATCH_Y; ++py) {
         const unsigned y0 = by[py];
@@ -93,6 +97,43 @@ void NeonStatsEncoder::compute(const void *bayer,
                         uint32_t bin = v >> histShift;
                         if (bin > 127u) bin = 127u;
                         out->lumaHist[bin] += 1u;
+
+                        /* Tenengrad on the green sub-lattice. Stepping
+                         * ±2 keeps all nine taps on the same parity, so
+                         * every sample is a green pixel. Clamp at
+                         * edges — the two-pixel ring is negligible for
+                         * an AF peak metric. */
+                        const unsigned yN = (y >= 2u)            ? y - 2u : y;
+                        const unsigned yS = (y + 2u < height)    ? y + 2u : y;
+                        const unsigned xW = (x >= 2u)            ? x - 2u : x;
+                        const unsigned xE = (x + 2u < width)     ? x + 2u : x;
+
+                        uint32_t tl, tc, tr_, ll, rr, bl, bc, br;
+                        if (wide) {
+                            tl  = p16[(size_t)yN * width + xW];
+                            tc  = p16[(size_t)yN * width + x ];
+                            tr_ = p16[(size_t)yN * width + xE];
+                            ll  = p16[(size_t)y  * width + xW];
+                            rr  = p16[(size_t)y  * width + xE];
+                            bl  = p16[(size_t)yS * width + xW];
+                            bc  = p16[(size_t)yS * width + x ];
+                            br  = p16[(size_t)yS * width + xE];
+                        } else {
+                            tl  = p8[(size_t)yN * width + xW];
+                            tc  = p8[(size_t)yN * width + x ];
+                            tr_ = p8[(size_t)yN * width + xE];
+                            ll  = p8[(size_t)y  * width + xW];
+                            rr  = p8[(size_t)y  * width + xE];
+                            bl  = p8[(size_t)yS * width + xW];
+                            bc  = p8[(size_t)yS * width + x ];
+                            br  = p8[(size_t)yS * width + xE];
+                        }
+                        const int32_t gx = (int32_t)(tr_ + 2u * rr + br)
+                                         - (int32_t)(tl  + 2u * ll + bl);
+                        const int32_t gy = (int32_t)(bl  + 2u * bc + br)
+                                         - (int32_t)(tl  + 2u * tc + tr_);
+                        sharpSum[py][px] += (float)gx * (float)gx
+                                          + (float)gy * (float)gy;
                     }
                 }
             }
@@ -108,6 +149,7 @@ void NeonStatsEncoder::compute(const void *bayer,
                 out->rgbMean[py][px][c] =
                     (float)sumCh[py][px][c] / (float)n * invMax;
             }
+            out->sharpness[py][px] = sharpSum[py][px];
         }
     }
 }
