@@ -307,6 +307,12 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
      * "wait for output buffer return timed out after 3000ms". */
     errorCompletePendingRequests();
 
+    /* Drop the StatsWorker's in-progress cycle before the ISP ring
+     * gets resized out from under it. Without this reset the worker's
+     * currentJob.bayer would still point into the old input ring after
+     * ensureBuffers (below) unmaps it on a resolution change. */
+    if (mStatsWorker) mStatsWorker->reset();
+
     ALOGD("V4L2 target resolution: %ux%u, soft_isp=%d",
           width, height, mSoftIspEnabled);
 
