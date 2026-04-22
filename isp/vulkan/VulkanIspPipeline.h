@@ -6,7 +6,6 @@
 #include "runtime/VulkanDeviceState.h"
 #include "io/VulkanInputRing.h"
 #include "io/VulkanGrallocCache.h"
-#include "encode/VulkanStatsEncoder.h"
 #include "encode/VulkanYuvEncoder.h"
 
 #define VK_USE_PLATFORM_ANDROID_KHR
@@ -50,9 +49,6 @@ public:
     int    exportInputBufferFd(int idx) override { return mInputRing.exportFd(idx); }
     void   waitForPreviousFrame() override;
     void   onSessionClose() override;
-
-    void            invalidateStats() override { mStatsEncoder.invalidateForCpu(); }
-    const IpaStats *mappedStats()    const override { return mStatsEncoder.mappedStats(); }
 
     const void *bayerHost(int slot)   const override { return mInputRing.mapped(slot); }
     void        invalidateBayer(int slot) override   { mInputRing.invalidateFromGpu(slot); }
@@ -191,7 +187,6 @@ private:
 
     VulkanGrallocCache mGrallocCache;
     VulkanYuvEncoder   mYuvEncoder;   /* lazy — buffers allocated on first YUV request */
-    VulkanStatsEncoder mStatsEncoder; /* always on — buffer sized once at init() */
 
     /* Per-frame GPU-side timestamps for recordGrallocBlit phases.
      * 4 queries per slot: 0 = top of pipe, 1 = after demosaic,

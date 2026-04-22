@@ -106,7 +106,6 @@ LOCAL_SRC_FILES += \
     isp/vulkan/runtime/loader/SystemVulkanLoader.cpp \
     isp/vulkan/io/VulkanInputRing.cpp \
     isp/vulkan/io/VulkanGrallocCache.cpp \
-    isp/vulkan/encode/VulkanStatsEncoder.cpp \
     isp/vulkan/encode/VulkanYuvEncoder.cpp
 
 LOCAL_SHARED_LIBRARIES += libvulkan
