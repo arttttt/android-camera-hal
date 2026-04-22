@@ -6,6 +6,7 @@
 
 #include "PipelineContext.h"
 #include "ipa/Ipa.h"
+#include "ipa/IpaFrameMeta.h"
 #include "ipa/IpaStats.h"
 #include "ipa/StatsWorker.h"
 #include "sensor/DelayedControls.h"
@@ -19,27 +20,33 @@ void StatsProcessStage::process(PipelineContext &ctx) {
     if (!deps.ipa || !deps.delayedControls || !deps.sensorCfg
         || !deps.statsWorker) return;
 
-    /* Manual AE (AE_MODE_OFF) hands full authority to the framework;
-     * ApplySettingsStage pushes the request's exposure / gain directly
-     * and the IPA's decision would only clobber it. Skip the push in
-     * that mode — the IPA's compute has still run, but its effect
-     * lives only in its internal state (useful for a clean switch
-     * back to auto). */
-    if (ctx.request.settings.exists(ANDROID_CONTROL_AE_MODE)) {
-        const uint8_t aeMode =
-            *ctx.request.settings.find(ANDROID_CONTROL_AE_MODE).data.u8;
-        if (aeMode == ANDROID_CONTROL_AE_MODE_OFF) return;
-    }
-
     IpaStats stats;
     uint32_t statsSeq = 0;
     if (!deps.statsWorker->peek(&stats, &statsSeq)) return;
+
+    /* Carry the framework's per-frame 3A mode / lock flags into the
+     * IPA. Missing keys default to "auto" in IpaFrameMeta's ctor,
+     * matching camera3 metadata semantics. Gating per control (skip
+     * exposure / gain push when AE is OFF, skip WB push when AWB is
+     * OFF or LOCKED) lives inside the IPA, so AE and AWB can be
+     * driven independently — AE_OFF with AWB_AUTO still lets WB
+     * update, and vice versa. */
+    IpaFrameMeta meta;
+    const CameraMetadata &s = ctx.request.settings;
+    if (s.exists(ANDROID_CONTROL_AE_MODE))
+        meta.aeMode  = *s.find(ANDROID_CONTROL_AE_MODE).data.u8;
+    if (s.exists(ANDROID_CONTROL_AE_LOCK))
+        meta.aeLock  = *s.find(ANDROID_CONTROL_AE_LOCK).data.u8;
+    if (s.exists(ANDROID_CONTROL_AWB_MODE))
+        meta.awbMode = *s.find(ANDROID_CONTROL_AWB_MODE).data.u8;
+    if (s.exists(ANDROID_CONTROL_AWB_LOCK))
+        meta.awbLock = *s.find(ANDROID_CONTROL_AWB_LOCK).data.u8;
 
     /* Pass the frame-of-stats sequence to the IPA so it can correlate
      * with its own history. DelayedControls::push still uses ctx.sequence
      * for effect timing — the control goes into effect relative to
      * today's frame, not to the frame the stats came from. */
-    DelayedControls::Batch batch = deps.ipa->processStats(statsSeq, stats);
+    DelayedControls::Batch batch = deps.ipa->processStats(statsSeq, stats, meta);
 
     /* Publish each set control at seq + its own silicon delay.
      * DelayedControls::push tags the whole batch with one sequence,

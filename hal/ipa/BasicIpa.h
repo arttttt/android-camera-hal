@@ -30,7 +30,8 @@ public:
     explicit BasicIpa(const SensorConfig &sensorCfg);
 
     DelayedControls::Batch processStats(uint32_t inputSequence,
-                                        const IpaStats &stats) override;
+                                        const IpaStats &stats,
+                                        const IpaFrameMeta &meta) override;
     void reset() override;
 
 private:

@@ -2,6 +2,9 @@
 
 #include <stdint.h>
 
+#include <system/camera_metadata.h>
+
+#include "IpaFrameMeta.h"
 #include "IpaStats.h"
 #include "sensor/SensorConfig.h"
 
@@ -49,11 +52,23 @@ void BasicIpa::reset() {
 }
 
 DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
-                                               const IpaStats &stats) {
+                                               const IpaStats &stats,
+                                               const IpaFrameMeta &meta) {
     DelayedControls::Batch batch;
     for (int i = 0; i < DelayedControls::COUNT; ++i) {
         batch.has[i] = false;
         batch.val[i] = 0;
+    }
+
+    /* Manual AE hands exposure / gain authority to the framework.
+     * ApplySettingsStage writes its values directly and pushes them
+     * into DelayedControls itself for result metadata; an IPA push
+     * on the same slot would clobber that. Skip the AE math so last*
+     * is frozen at its last auto decision — convergence resumes from
+     * there on switch-back. */
+    if (meta.aeMode == ANDROID_CONTROL_AE_MODE_OFF
+     || meta.aeLock == ANDROID_CONTROL_AE_LOCK_ON) {
+        return batch;
     }
 
     /* Mean bin index of the green-channel histogram over all bins.
