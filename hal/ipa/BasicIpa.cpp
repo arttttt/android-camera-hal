@@ -56,12 +56,18 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
         batch.val[i] = 0;
     }
 
-    /* Mean bin index of the green-channel histogram, excluding the
-     * saturated (127) and black (0) bins so clipped highlights and
-     * fully-dark background don't dominate the AE metric. */
+    /* Mean bin index of the green-channel histogram over all bins.
+     * Dropping the saturated (127) and black (0) bins was tempting to
+     * suppress clipping outliers, but in high-contrast scenes
+     * (backlit subject, laptop screen in a dark room) the excluded
+     * bins actually carry the signal — skipping them made AE chase
+     * an over-exposed result because the remaining low-luma bezel
+     * dominated. Including everything is a cleaner "matrix-style"
+     * mean; saturation explicitly pulls the metric toward 1.0 and AE
+     * backs off. */
     uint32_t count       = 0u;
     uint64_t weightedSum = 0u;
-    for (int i = 1; i < IpaStats::HIST_BINS - 1; ++i) {
+    for (int i = 0; i < IpaStats::HIST_BINS; ++i) {
         count       += stats.lumaHist[i];
         weightedSum += (uint64_t)i * stats.lumaHist[i];
     }
