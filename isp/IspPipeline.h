@@ -8,6 +8,8 @@
 
 namespace android {
 
+struct IpaStats;
+
 /* Common ISP interface — CPU and GPU implementations */
 class IspPipeline {
 public:
@@ -138,6 +140,21 @@ public:
      * scratch image, input ring, shaders) stay since the pipeline
      * instance survives close → reopen. */
     virtual void onSessionClose() {}
+
+    /* Invalidate the CPU cache range backing the most recent
+     * mappedStats() so a host read after the submit's fence signal
+     * sees the GPU-coherent values. Safe to call even on backends
+     * that use HOST_COHERENT memory (no-op). */
+    virtual void invalidateStats() {}
+
+    /* Read-only pointer to the backend's host-mapped statistics
+     * buffer. Returned pointer is valid for the lifetime of the
+     * pipeline (the buffer is allocated once at init) but the
+     * contents are only defined after the most recent
+     * processToGralloc submit's fence has signalled and
+     * invalidateStats() has been called. Returns NULL on backends
+     * that don't produce stats. */
+    virtual const IpaStats *mappedStats() const { return nullptr; }
 
 protected:
     unsigned mWbR = 256, mWbG = 256, mWbB = 256;

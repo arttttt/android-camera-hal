@@ -51,6 +51,9 @@ public:
     void   waitForPreviousFrame() override;
     void   onSessionClose() override;
 
+    void            invalidateStats() override { mStatsEncoder.invalidateForCpu(); }
+    const IpaStats *mappedStats()    const override { return mStatsEncoder.mappedStats(); }
+
 private:
     /* init() sub-steps. Each returns false on Vulkan failure; init() calls
      * destroy() on any false return so a partial state is never left behind. */
