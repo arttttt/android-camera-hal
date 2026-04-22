@@ -6,7 +6,6 @@
 #include <arm_neon.h>
 #include <linux/videodev2.h>
 
-#include "IpaStats.h"
 #include "IspParams.h"
 
 namespace android {
@@ -88,18 +87,24 @@ inline void scalarSobelStep(const uint16_t *p16,
 NeonStatsEncoder::NeonStatsEncoder()  {}
 NeonStatsEncoder::~NeonStatsEncoder() {}
 
-void NeonStatsEncoder::compute(const void *bayer,
-                                unsigned    width,
-                                unsigned    height,
-                                uint32_t    pixFmt,
-                                IpaStats   *out) const {
-    if (!out) return;
-    memset(out, 0, sizeof(*out));
-    if (!bayer || width == 0 || height == 0) return;
+void NeonStatsEncoder::resetPartial(Partial *partial) {
+    memset(partial, 0, sizeof(*partial));
+}
+
+void NeonStatsEncoder::computeRange(const void *bayer,
+                                     unsigned    width,
+                                     unsigned    height,
+                                     uint32_t    pixFmt,
+                                     Partial    *partial,
+                                     int         pyStart,
+                                     int         pyEnd) const {
+    if (!partial || !bayer || width == 0 || height == 0) return;
+    if (pyStart < 0)                pyStart = 0;
+    if (pyEnd   > IpaStats::PATCH_Y) pyEnd  = IpaStats::PATCH_Y;
+    if (pyStart >= pyEnd) return;
 
     const bool     wide     = is10Bit(pixFmt);
     const uint8_t *cfa      = phaseChannel[IspParams::bayerPhaseFromFourcc(pixFmt)];
-    const int      maxValue = wide ? 1023 : 255;
     /* 10-bit → 128 bins = shift 3; 8-bit → shift 1. Keeps the bin index
      * independent of the sensor bit depth while preserving full range
      * coverage. */
@@ -108,9 +113,9 @@ void NeonStatsEncoder::compute(const void *bayer,
     const uint16_t *p16 = reinterpret_cast<const uint16_t *>(bayer);
     const uint8_t  *p8  = reinterpret_cast<const uint8_t  *>(bayer);
 
-    /* Patch boundaries precomputed once; values are uneven for sizes
-     * not divisible by PATCH_{X,Y} (e.g. 1080 / 16 = 67.5 → alternating
-     * 67 / 68 row stripes). */
+    /* Patch boundaries precomputed once per call; values are uneven for
+     * sizes not divisible by PATCH_{X,Y} (e.g. 1080 / 16 = 67.5 →
+     * alternating 67 / 68 row stripes). */
     unsigned bx[IpaStats::PATCH_X + 1];
     unsigned by[IpaStats::PATCH_Y + 1];
     for (int i = 0; i <= IpaStats::PATCH_X; ++i)
@@ -118,20 +123,7 @@ void NeonStatsEncoder::compute(const void *bayer,
     for (int i = 0; i <= IpaStats::PATCH_Y; ++i)
         by[i] = (unsigned)((uint64_t)i * height / IpaStats::PATCH_Y);
 
-    /* Per-channel sums and counts per patch. Counts are tracked because
-     * uneven patch geometry and 2×2 CFA phase shifts mean the pixel-
-     * count-per-channel per patch is not a constant fraction of patch
-     * area. sharpSum holds the Tenengrad accumulator (sum of Gx²+Gy²
-     * on the green sub-lattice) — left unnormalised to match IpaStats'
-     * documented contract. */
-    uint64_t sumCh   [IpaStats::PATCH_Y][IpaStats::PATCH_X][3];
-    uint32_t cntCh   [IpaStats::PATCH_Y][IpaStats::PATCH_X][3];
-    float    sharpSum[IpaStats::PATCH_Y][IpaStats::PATCH_X];
-    memset(sumCh,    0, sizeof(sumCh));
-    memset(cntCh,    0, sizeof(cntCh));
-    memset(sharpSum, 0, sizeof(sharpSum));
-
-    for (int py = 0; py < IpaStats::PATCH_Y; ++py) {
+    for (int py = pyStart; py < pyEnd; ++py) {
         const unsigned y0 = by[py];
         const unsigned y1 = by[py + 1];
         for (unsigned y = y0; y < y1; ++y) {
@@ -150,22 +142,9 @@ void NeonStatsEncoder::compute(const void *bayer,
                 unsigned x = x0;
 
                 if (wide) {
-                    /* NEON: 16 Bayer pixels per iteration. vld2q_u16
-                     * deinterleaves by column parity, so p.val[0] carries
-                     * the eight pixels at even columns of the chunk and
-                     * p.val[1] carries the eight at odd columns. The row
-                     * parity has already fixed which of those vectors
-                     * holds G; the other holds R or B depending on the
-                     * 2×2 phase. Pairwise accumulate widens u16→u32 in
-                     * register so per-patch sums never overflow. */
                     const unsigned chunks  = (x1 - x0) / 16u;
                     const unsigned simdEnd = x0 + chunks * 16u;
 
-                    /* Sobel neighbours span the chunk by ±2 pixels; the
-                     * vectorised kernel is only safe when the whole
-                     * y-2..y+2, x-2..x+17 window stays in-image. Row-
-                     * edge rows and the leftmost / rightmost patches
-                     * fall back to scalar Sobel per G pixel. */
                     const bool neonSobel =
                         (y >= 2u) && (y + 2u < height)
                         && (x0 >= 2u) && (simdEnd + 2u <= width);
@@ -184,25 +163,15 @@ void NeonStatsEncoder::compute(const void *bayer,
                         accEven = vpadalq_u16(accEven, p.val[0]);
                         accOdd  = vpadalq_u16(accOdd,  p.val[1]);
 
-                        /* Histogram walks the eight G values out of
-                         * whichever lane held them. Extracting to a
-                         * tiny stack buffer avoids the immediate-index
-                         * requirement of vgetq_lane_u16 while staying
-                         * in L1. */
                         uint16_t gbuf[8];
                         vst1q_u16(gbuf, gIsEven ? p.val[0] : p.val[1]);
                         for (int i = 0; i < 8; ++i) {
                             uint32_t bin = (uint32_t)gbuf[i] >> histShift;
                             if (bin > 127u) bin = 127u;
-                            out->lumaHist[bin] += 1u;
+                            partial->lumaHist[bin] += 1u;
                         }
 
                         if (neonSobel) {
-                            /* Eight green pixels per chunk, all on the
-                             * same parity sub-lattice. Step-2 taps land
-                             * on the same parity, so each 8-vector of
-                             * neighbours is val[lane] of a vld2q_u16
-                             * with the right column offset. */
                             const int lane = gIsEven ? 0 : 1;
                             const uint16x8_t tl = vld2q_u16(rowN + x - 2u).val[lane];
                             const uint16x8_t tc = vld2q_u16(rowN + x     ).val[lane];
@@ -213,12 +182,6 @@ void NeonStatsEncoder::compute(const void *bayer,
                             const uint16x8_t bc = vld2q_u16(rowS + x     ).val[lane];
                             const uint16x8_t br = vld2q_u16(rowS + x + 2u).val[lane];
 
-                            /* Widen each 8-vector to two s32 4-vectors
-                             * (low / high halves). Gx and Gy fit in
-                             * s32 (max |Gx| ≈ 4×1023) but Gx² overflows
-                             * s32 only for absurd inputs — we promote
-                             * to float before squaring for headroom
-                             * across the whole patch sum. */
                             const int32x4_t tl_lo = vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(tl)));
                             const int32x4_t tl_hi = vreinterpretq_s32_u32(vmovl_u16(vget_high_u16(tl)));
                             const int32x4_t tc_lo = vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(tc)));
@@ -259,61 +222,75 @@ void NeonStatsEncoder::compute(const void *bayer,
                             sharpAccV = vmlaq_f32(sharpAccV, gy_lo_f, gy_lo_f);
                             sharpAccV = vmlaq_f32(sharpAccV, gy_hi_f, gy_hi_f);
                         } else {
-                            /* Edge rows / leftmost / rightmost patches:
-                             * 8 scalar Sobel calls with per-pixel clamp.
-                             * Accounts for a few percent of pixels. */
                             const unsigned xBase = gIsEven ? x : x + 1u;
                             for (int i = 0; i < 8; ++i) {
                                 const unsigned xG = xBase + 2u * (unsigned)i;
                                 scalarSobelStep(p16, p8, /*wide=*/true,
                                                 width, height, xG, y,
-                                                &sharpSum[py][px]);
+                                                &partial->sharpSum[py][px]);
                             }
                         }
                     }
 
-                    sumCh[py][px][chanEven] += hsum_u32x4(accEven);
-                    sumCh[py][px][chanOdd]  += hsum_u32x4(accOdd);
-                    cntCh[py][px][chanEven] += chunks * 8u;
-                    cntCh[py][px][chanOdd]  += chunks * 8u;
-                    sharpSum[py][px]        += hsum_f32x4(sharpAccV);
+                    partial->sumCh[py][px][chanEven] += hsum_u32x4(accEven);
+                    partial->sumCh[py][px][chanOdd]  += hsum_u32x4(accOdd);
+                    partial->cntCh[py][px][chanEven] += chunks * 8u;
+                    partial->cntCh[py][px][chanOdd]  += chunks * 8u;
+                    partial->sharpSum[py][px]        += hsum_f32x4(sharpAccV);
                 }
 
-                /* Scalar tail for the pixels past the NEON block, and
-                 * the whole 8-bit fallback path (production negotiates
-                 * 10-bit, so 8-bit performance is not a concern). */
                 for (; x < x1; ++x) {
                     const unsigned chan = cfa[yParity * 2u + (x & 1u)];
                     const uint32_t v    = wide ? row16[x] : row8[x];
 
-                    sumCh[py][px][chan] += v;
-                    cntCh[py][px][chan] += 1u;
+                    partial->sumCh[py][px][chan] += v;
+                    partial->cntCh[py][px][chan] += 1u;
 
                     if (chan == 1u) {
                         uint32_t bin = v >> histShift;
                         if (bin > 127u) bin = 127u;
-                        out->lumaHist[bin] += 1u;
+                        partial->lumaHist[bin] += 1u;
                         scalarSobelStep(p16, p8, wide,
                                         width, height, x, y,
-                                        &sharpSum[py][px]);
+                                        &partial->sharpSum[py][px]);
                     }
                 }
             }
         }
     }
+}
 
-    const float invMax = 1.0f / (float)maxValue;
+void NeonStatsEncoder::finalize(const Partial &partial,
+                                 uint32_t       pixFmt,
+                                 IpaStats      *out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+
+    memcpy(out->lumaHist, partial.lumaHist, sizeof(out->lumaHist));
+
+    const float invMax = 1.0f / (float)(is10Bit(pixFmt) ? 1023 : 255);
     for (int py = 0; py < IpaStats::PATCH_Y; ++py) {
         for (int px = 0; px < IpaStats::PATCH_X; ++px) {
             for (int c = 0; c < 3; ++c) {
-                const uint32_t n = cntCh[py][px][c];
+                const uint32_t n = partial.cntCh[py][px][c];
                 if (n == 0u) continue;
                 out->rgbMean[py][px][c] =
-                    (float)sumCh[py][px][c] / (float)n * invMax;
+                    (float)partial.sumCh[py][px][c] / (float)n * invMax;
             }
-            out->sharpness[py][px] = sharpSum[py][px];
+            out->sharpness[py][px] = partial.sharpSum[py][px];
         }
     }
+}
+
+void NeonStatsEncoder::compute(const void *bayer,
+                                unsigned    width,
+                                unsigned    height,
+                                uint32_t    pixFmt,
+                                IpaStats   *out) const {
+    Partial partial;
+    resetPartial(&partial);
+    computeRange(bayer, width, height, pixFmt, &partial, 0, IpaStats::PATCH_Y);
+    finalize(partial, pixFmt, out);
 }
 
 } /* namespace android */

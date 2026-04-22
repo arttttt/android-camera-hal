@@ -3,9 +3,9 @@
 
 #include <stdint.h>
 
-namespace android {
+#include "IpaStats.h"
 
-struct IpaStats;
+namespace android {
 
 /* CPU statistics reducer over a raw Bayer slot.
  *
@@ -15,17 +15,43 @@ struct IpaStats;
  * pipelines; IPAs consuming this output must account for the domain
  * difference vs a post-ISP stats path.
  *
- * Stateless. Thread-safe — callers can share one instance across any
- * worker threads that feed it. */
+ * Two entry points:
+ *
+ *   compute() — all-at-once. Builds a Partial, runs the full patch
+ *               grid, finalises. Convenient for callers that want one
+ *               stats result per call in one wall-clock step.
+ *
+ *   computeRange() / finalize() — progressive. The caller owns a
+ *               Partial accumulator, zeroes it with resetPartial(),
+ *               invokes computeRange() over any disjoint sequence of
+ *               patch-row spans that covers [0, PATCH_Y) exactly once,
+ *               then calls finalize() to emit IpaStats. StatsWorker
+ *               uses this to spread one statistics computation across
+ *               multiple incoming frames so the peak CPU per frame
+ *               stays below one sensor period.
+ *
+ * Stateless — the encoder itself holds no per-frame data; the caller
+ * owns any Partial. Thread-safe: multiple StatsWorkers can share one
+ * encoder instance. */
 class NeonStatsEncoder {
 public:
+    /* Progressive-compute accumulator. Owned and zeroed by the caller
+     * before the first computeRange() call of a cycle; mutated in-place
+     * by each subsequent computeRange() and consumed by finalize(). */
+    struct Partial {
+        uint64_t sumCh   [IpaStats::PATCH_Y][IpaStats::PATCH_X][3];
+        uint32_t cntCh   [IpaStats::PATCH_Y][IpaStats::PATCH_X][3];
+        float    sharpSum[IpaStats::PATCH_Y][IpaStats::PATCH_X];
+        uint32_t lumaHist[IpaStats::HIST_BINS];
+    };
+
     NeonStatsEncoder();
     ~NeonStatsEncoder();
 
     NeonStatsEncoder(const NeonStatsEncoder &)            = delete;
     NeonStatsEncoder &operator=(const NeonStatsEncoder &) = delete;
 
-    /* Reduce a raw Bayer slot into IpaStats.
+    /* All-at-once reduce. See class doc for the Partial-based form.
      *
      * bayer    Tightly-packed raw Bayer frame. width * height pixels,
      *          2 bytes/pixel on V4L2_PIX_FMT_S{RGGB,GRBG,GBRG,BGGR}10
@@ -41,6 +67,28 @@ public:
                  unsigned    height,
                  uint32_t    pixFmt,
                  IpaStats   *out) const;
+
+    /* Zero out a Partial so a fresh cycle can begin. */
+    static void resetPartial(Partial *partial);
+
+    /* Accumulate patch rows [pyStart, pyEnd) into `partial`. Any number
+     * of calls is allowed provided the combined ranges cover
+     * [0, PATCH_Y) exactly once before finalize(). `partial` must have
+     * been zeroed by resetPartial() before the first call of a cycle;
+     * it is mutated in place. */
+    void computeRange(const void *bayer,
+                      unsigned    width,
+                      unsigned    height,
+                      uint32_t    pixFmt,
+                      Partial    *partial,
+                      int         pyStart,
+                      int         pyEnd) const;
+
+    /* Emit IpaStats from the accumulated Partial. pixFmt selects the
+     * per-sample dynamic range used to normalise rgbMean to [0, 1]. */
+    static void finalize(const Partial &partial,
+                         uint32_t       pixFmt,
+                         IpaStats      *out);
 };
 
 } /* namespace android */

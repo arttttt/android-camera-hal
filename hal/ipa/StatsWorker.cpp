@@ -12,10 +12,13 @@ namespace android {
 
 StatsWorker::StatsWorker()
     : pendingValid(false),
+      phase(0),
       latestSeq(0),
       latestValid(false) {
-    memset(&pending, 0, sizeof(pending));
-    memset(&latest,  0, sizeof(latest));
+    memset(&pending,    0, sizeof(pending));
+    memset(&currentJob, 0, sizeof(currentJob));
+    memset(&latest,     0, sizeof(latest));
+    NeonStatsEncoder::resetPartial(&partial);
 }
 
 StatsWorker::~StatsWorker() {
@@ -49,6 +52,13 @@ void StatsWorker::reset() {
         std::lock_guard<std::mutex> lock(outLock);
         latestValid = false;
     }
+    /* Cycle state is owned by the worker thread alone, but a race
+     * with an in-flight phase is benign: the next finalize would just
+     * publish into the freshly-invalidated latest slot, and the peek
+     * caller would see valid stats again. When the worker is stopped
+     * around reset() the cycle state is static and this clears it. */
+    phase = 0;
+    NeonStatsEncoder::resetPartial(&partial);
 }
 
 void StatsWorker::threadLoop() {
@@ -67,28 +77,44 @@ void StatsWorker::threadLoop() {
         if (!(p[0].revents & POLLIN)) continue;
         jobEvent.drain();
 
-        Job job;
-        bool haveJob = false;
-        {
-            std::lock_guard<std::mutex> lock(inLock);
-            if (pendingValid) {
-                job          = pending;
-                haveJob      = true;
+        /* Idle → start a new cycle on the most recent pending Bayer.
+         * Each incoming submit advances one phase; phaseCount phases
+         * complete and publish one IpaStats. */
+        if (phase == 0) {
+            Job j;
+            {
+                std::lock_guard<std::mutex> lock(inLock);
+                if (!pendingValid) continue;
+                j = pending;
                 pendingValid = false;
             }
+            currentJob = j;
+            NeonStatsEncoder::resetPartial(&partial);
         }
-        if (!haveJob) continue;
 
-        /* NeonStatsEncoder is stateless, so back-to-back compute()
-         * calls need no tear-down in between. */
-        IpaStats stats;
-        encoder.compute(job.bayer, job.width, job.height, job.pixFmt, &stats);
+        const int rowsPerPhase = IpaStats::PATCH_Y / StatsWorker::phaseCount;
+        const int pyStart      = phase * rowsPerPhase;
+        const int pyEnd        = (phase + 1 == StatsWorker::phaseCount)
+                                    ? IpaStats::PATCH_Y
+                                    : (phase + 1) * rowsPerPhase;
 
-        {
-            std::lock_guard<std::mutex> lock(outLock);
-            latest      = stats;
-            latestSeq   = job.sequence;
-            latestValid = true;
+        encoder.computeRange(currentJob.bayer,
+                             currentJob.width, currentJob.height,
+                             currentJob.pixFmt,
+                             &partial, pyStart, pyEnd);
+
+        ++phase;
+
+        if (phase >= StatsWorker::phaseCount) {
+            IpaStats result;
+            NeonStatsEncoder::finalize(partial, currentJob.pixFmt, &result);
+            {
+                std::lock_guard<std::mutex> lock(outLock);
+                latest      = result;
+                latestSeq   = currentJob.sequence;
+                latestValid = true;
+            }
+            phase = 0;
         }
     }
 }
