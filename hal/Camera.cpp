@@ -580,6 +580,7 @@ void Camera::buildInfrastructure() {
         }
         mDelayedControls.reset(new DelayedControls(cfg));
     }
+    mNeonStats.reset(new NeonStatsEncoder());
 
     {
         StatsProcessStage::Deps d;
@@ -587,6 +588,8 @@ void Camera::buildInfrastructure() {
         d.ipa             = mIpa.get();
         d.delayedControls = mDelayedControls.get();
         d.sensorCfg       = &mSensorCfg;
+        d.bayerSource     = mBayerSource.get();
+        d.neonStats       = mNeonStats.get();
         mStatsProcessStage.reset(new StatsProcessStage(d));
     }
 
@@ -616,6 +619,7 @@ void Camera::destroyInfrastructure() {
     mStatsProcessStage.reset();
     mDemosaicBlitStage.reset();
     mRequestPipeline.reset();
+    mNeonStats.reset();
     mDelayedControls.reset();
     mIpa.reset();
     mTracker.reset();

@@ -8,16 +8,19 @@ namespace android {
 class  IspPipeline;
 class  Ipa;
 class  DelayedControls;
+class  BayerSource;
+class  NeonStatsEncoder;
 struct SensorConfig;
 
 /* Runs on PipelineThread once the frame's submit fence has
- * signalled. Pulls the GPU-written IpaStats off the backend,
- * hands it to the IPA, and publishes the returned control batch
- * into DelayedControls so ApplySettingsStage picks it up on the
- * frame that actually lands the write (seq + controlDelay[id]).
+ * signalled. Reduces the raw Bayer slot into an IpaStats on-thread
+ * via NeonStatsEncoder, hands it to the IPA, and publishes the
+ * returned control batch into DelayedControls so ApplySettingsStage
+ * picks it up on the frame that actually lands the write
+ * (seq + controlDelay[id]).
  *
- * Not alwaysRun — on an errored context the stats buffer has no
- * meaningful content and the IPA is skipped.
+ * Not alwaysRun — on an errored context the Bayer content has no
+ * meaningful data and the IPA is skipped.
  *
  * One push per control is issued because each control id carries
  * its own delay and DelayedControls::push tags the whole batch
@@ -31,6 +34,8 @@ public:
         Ipa                 *ipa;
         DelayedControls     *delayedControls;
         const SensorConfig  *sensorCfg;
+        BayerSource         *bayerSource;
+        NeonStatsEncoder    *neonStats;
     };
 
     explicit StatsProcessStage(const Deps &deps);
