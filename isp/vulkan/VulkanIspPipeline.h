@@ -200,15 +200,6 @@ private:
      * driver reports timestampValidBits == 0. */
     VkQueryPool        mTimeQuery;
     static constexpr size_t TIMESTAMPS_PER_SLOT = 4;
-
-    /* Temporal subsample of the stats dispatch. 3A consumers update
-     * at 10–15 Hz; at 22 fps preview every second stats frame is
-     * dropped on the floor anyway. Running the compute only on every
-     * Nth gralloc submit halves the GPU stats cost on average, and
-     * the per-frame state carries over (the stats buffer holds the
-     * previous dispatch's result until the next one lands). */
-    static constexpr uint32_t STATS_INTERVAL = 2;
-    uint32_t           mStatsFrameCounter;
 };
 
 }; /* namespace android */

@@ -41,7 +41,6 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mYuvEncoder(mDeviceState)
     , mStatsEncoder(mDeviceState)
     , mTimeQuery(VK_NULL_HANDLE)
-    , mStatsFrameCounter(0)
 {
     for (size_t s = 0; s < SLOT_COUNT; s++) {
         mDescSet[s]     = VK_NULL_HANDLE;
@@ -235,16 +234,12 @@ void VulkanIspPipeline::recordGrallocBlit(int slot, VulkanGrallocCache::Entry *e
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
         0, 0, NULL, 0, NULL, 1, &scratchB);
 
-    /* Stats reducer runs every Nth frame (temporal subsample). On
-     * skipped frames the buffer keeps its previous content — fine
-     * for the async 3A consumer, which already lags by a frame.
-     * The post-stats HOST_READ barrier the encoder emits is also
-     * skipped, which is safe: the CPU only reads the stats buffer
-     * after a fence that guards the whole submit, so stale memory
-     * from the previous dispatch is already visible. */
-    const bool runStats = (mStatsFrameCounter++ % STATS_INTERVAL) == 0u;
-    if (runStats)
-        mStatsEncoder.recordDispatch(cb, srcW, srcH);
+    /* Stats reducer is no longer dispatched — StatsProcessStage now
+     * reduces the raw Bayer slot on the CPU via NeonStatsEncoder, so
+     * the GPU slot here is idle between the demosaic barrier above
+     * and the blit pass below. Encoder allocation stays in place
+     * until the full removal commit so this change is a one-line
+     * rollback if the CPU path needs to be reverted. */
     if (mTimeQuery) {
         mDeviceState.pfn()->CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                                mTimeQuery, tsBase + 2);
