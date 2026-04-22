@@ -12,7 +12,14 @@ namespace android {
  * atomicAdds its partials into this buffer at global scope.
  *
  * Fixed-point scaling (shader ↔ CPU convention):
- *   - lumaHist    : plain uint pixel counts, no scaling.
+ *   - lumaHist    : plain uint pixel counts, no scaling. Stored
+ *                   per-patch (PATCH_Y × PATCH_X × HIST_BINS); the
+ *                   CPU consumer sums across patches when a
+ *                   whole-frame histogram is needed. Per-patch
+ *                   layout spreads the 8160 WG / frame fan-in
+ *                   across 256 × 128 distinct addresses, so the L2
+ *                   atomic contention drops from ~8000 contenders
+ *                   per bin to ~32.
  *   - rgbSum      : float channel contribution multiplied by 65536
  *                   (Q16.16). At 1920×1080 the worst-case per-patch
  *                   pixel count is 8040 and per-channel value is [0,1],
@@ -28,13 +35,13 @@ namespace android {
  * in the raw buffer.
  *
  * Layout matches the std430 SSBO the demosaic shader binds at
- * binding = 4. Size 512 + 3072 + 1024 = 4608 B. */
+ * binding = 4. Size 131072 + 3072 + 1024 = 135168 B. */
 struct IpaRawStats {
     static const int HIST_BINS = 128;
     static const int PATCH_X   = 16;
     static const int PATCH_Y   = 16;
 
-    uint32_t lumaHist [HIST_BINS];
+    uint32_t lumaHist [PATCH_Y][PATCH_X][HIST_BINS];
     uint32_t rgbSum   [PATCH_Y][PATCH_X][3];
     uint32_t sharpSum [PATCH_Y][PATCH_X];
 };
