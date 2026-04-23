@@ -171,6 +171,30 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
                 v4["SmoothingWpTrackingFraction"].asFloat();
     }
 
+    const Json::Value &ae = active["ae"];
+    if (ae.isObject()) {
+        const Json::Value &mean = ae["MeanAlg"];
+        if (mean.isObject()
+         && mean.isMember("HigherTarget")  && mean.isMember("LowerTarget")
+         && mean.isMember("ConvergeSpeed")) {
+            mAeParams.higherTarget     = mean["HigherTarget"].asFloat();
+            mAeParams.lowerTarget      = mean["LowerTarget"].asFloat();
+            mAeParams.convergeSpeed    = mean["ConvergeSpeed"].asFloat();
+            /* Brightness bounds are optional — callers that want
+             * adaptive-by-brightness setpoints need both; scalar
+             * setpoint consumers ignore them. */
+            if (mean.isMember("HigherBrightness"))
+                mAeParams.higherBrightness = mean["HigherBrightness"].asFloat();
+            if (mean.isMember("LowerBrightness"))
+                mAeParams.lowerBrightness  = mean["LowerBrightness"].asFloat();
+            mAeParams.loaded = true;
+        }
+        if (ae.isMember("MaxFstopDeltaPos"))
+            mAeParams.maxFstopDeltaPos = ae["MaxFstopDeltaPos"].asFloat();
+        if (ae.isMember("MaxFstopDeltaNeg"))
+            mAeParams.maxFstopDeltaNeg = ae["MaxFstopDeltaNeg"].asFloat();
+    }
+
     ALOGD("tuning loaded: %s (%s/%s) — %zu CCM sets, AF=%d, BL=(%d,%d,%d,%d)",
           fn.c_str(), sensor, integrator, mCcmSets.size(), mHasAf,
           mOpticalBlack.r, mOpticalBlack.gr, mOpticalBlack.gb, mOpticalBlack.b);

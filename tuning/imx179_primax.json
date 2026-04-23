@@ -177,6 +177,17 @@
         "CStatsDarkThreshold": 0.006,
         "SmoothingWpTrackingFraction": 0.1
       }
+    },
+    "ae": {
+      "MeanAlg": {
+        "HigherTarget": 110,
+        "LowerTarget": 120,
+        "HigherBrightness": 10000,
+        "LowerBrightness": 5000,
+        "ConvergeSpeed": 0.2
+      },
+      "MaxFstopDeltaPos": 0.5,
+      "MaxFstopDeltaNeg": 0.5
     }
   },
   "_note": "`active` \u2014 consumed by the current HAL; hardcodes in code are replaced with reads from here. `reserved` \u2014 preserved verbatim from the stock NVIDIA .isp, not consumed yet; keys migrate to `active` as the corresponding shader stages ship.",

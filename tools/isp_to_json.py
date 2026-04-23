@@ -52,6 +52,17 @@ ACTIVE_PREFIXES = (
     "awb.v4.CStatsMinThreshold",
     "awb.v4.CStatsDarkThreshold",
     "awb.v4.SmoothingWpTrackingFraction",
+    # Mean-luma AE setpoint + speed + ratio clamps. BasicIpa blends
+    # HigherTarget / LowerTarget to a single pre-gamma setpoint,
+    # reads ConvergeSpeed as its EMA damping, and converts the f-stop
+    # delta bounds into ratio min / max.
+    "ae.MeanAlg.HigherTarget",
+    "ae.MeanAlg.LowerTarget",
+    "ae.MeanAlg.HigherBrightness",
+    "ae.MeanAlg.LowerBrightness",
+    "ae.MeanAlg.ConvergeSpeed",
+    "ae.MaxFstopDeltaPos",
+    "ae.MaxFstopDeltaNeg",
 )
 
 # Line that starts a new assignment: `<path> = ...`. Path may contain

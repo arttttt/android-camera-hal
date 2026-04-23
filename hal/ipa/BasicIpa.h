@@ -67,21 +67,18 @@ private:
     const SensorTuning  *tuning;
     int16_t             *ccmBufferQ10;
 
-    /* AWB knobs resolved at construction from SensorTuning::AwbParams
+    /* AWB / AE knobs resolved at construction from SensorTuning
      * (with compile-time fallbacks for tunings that predate the
-     * active.awb.v4 section). Stored as members so the ctor init-
-     * list can use them for wbRPrior / wbBPrior normalisation and
-     * the per-frame AWB loop can keep them hot — no tuning
-     * dereference on the stats path.
-     *
-     *   awbMinChannel       — per-channel floor for a patch to be
-     *                         counted in gray-world.
-     *   awbSceneLightFloor  — whole-scene mean-luma floor below
-     *                         which AWB holds last state.
-     *   awbDamping          — EMA fraction on new gains vs. last. */
-    float   awbMinChannel;
-    float   awbSceneLightFloor;
-    float   awbDamping;
+     * active.* promotions). Stored as members so the ctor init-
+     * list can use them and the per-frame loop reads them hot —
+     * no tuning dereference on the stats path. */
+    float   awbMinChannel;       /* CStatsMinThreshold              */
+    float   awbSceneLightFloor;  /* CStatsDarkThreshold             */
+    float   awbDamping;          /* SmoothingWpTrackingFraction     */
+    float   aeSetpoint;          /* (HigherTarget + LowerTarget) / 2/255 */
+    float   aeDamping;           /* ConvergeSpeed                   */
+    float   aeRatioMin;          /* 2^-MaxFstopDeltaNeg             */
+    float   aeRatioMax;          /* 2^+MaxFstopDeltaPos             */
 
     /* AE state. Tracks the last-published decision (not the sensor's
      * actual state). Stays in sync with reality while AE is running
@@ -100,6 +97,10 @@ private:
     float   wbBPrior;
     float   lastWbR;
     float   lastWbB;
+
+    /* Frame counter for throttled diagnostic logs. Incremented on
+     * every processStats entry; a single ALOGD fires per N frames. */
+    uint32_t frameCount;
 };
 
 } /* namespace android */

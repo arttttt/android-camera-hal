@@ -11,34 +11,18 @@
 #include "sensor/SensorConfig.h"
 #include "sensor/SensorTuning.h"
 
+#define LOG_TAG "Cam-BasicIpa"
+#include <utils/Log.h>
+
 namespace android {
 
 namespace {
 
-/* Target mean-luma in the raw-Bayer green-channel histogram. Matches
- * classic 18 % photography middle grey once debayered + gamma-encoded;
- * a bit higher (0.35 here) because we're pre-gamma. Tuneable later
- * from SensorTuning if a sensor wants a different setpoint. */
-constexpr float aeSetpoint = 0.35f;
-
-/* Per-frame fraction of the gap toward setpoint to close. 0.3 gives
- * ~5 frames to converge on a 2× light change, slow enough to avoid
- * pumping on scene motion. */
-constexpr float aeDamping = 0.3f;
-
-/* Bound single-step ratio so a very bright / very dark frame can't
- * slam the sensor into a saturated or blacked-out state in one go. */
-constexpr float aeRatioMin = 0.5f;
-constexpr float aeRatioMax = 2.0f;
-
-/* Minimum measured luma fed into the ratio. Without a floor a pitch-
- * black frame would produce an unbounded ratio. */
-constexpr float aeMeasuredFloor = 0.02f;
-
 /* Exposure envelope used by the AE split. minTotalUs keeps sensor
  * readout honest; maxExposureUs keeps FPS inside the default
  * frame_length. Matches ExposureControl's own clamps so manual /
- * auto agree on reachable values. */
+ * auto agree on reachable values. Sensor-spec, not colour tuning —
+ * lives here rather than in the JSON. */
 constexpr int64_t minTotalUs     = 100;
 constexpr int64_t maxExposureUs  = 200000;
 
@@ -71,21 +55,54 @@ constexpr float awbGainMax = 4.0f;
  * unconditionally since R / B are expressed relative to G. */
 constexpr unsigned wbGainUnityQ8 = 256;
 
-/* Fallbacks for the tuning-driven AWB knobs (stored as BasicIpa
- * members, resolved at construction). Used when the tuning predates
- * active.awb.v4 or ships a zero where the HAL needs a positive
- * value. Match the values NVIDIA ships for IMX179 / OV5693 in their
- * reserved.awb.v4 block so behaviour is identical with or without
- * the promotion. */
+/* Fallbacks for the tuning-driven knobs (stored as BasicIpa members,
+ * resolved at construction). Used when the tuning predates the
+ * active.{awb.v4,ae} promotions or ships a zero where the HAL needs
+ * a positive value. Match NVIDIA's reserved defaults so behaviour
+ * is identical with or without the promotion. */
 constexpr float awbMinChannelFallback      = 0.02f;
 constexpr float awbSceneLightFloorFallback = 0.05f;
 constexpr float awbDampingFallback         = 0.15f;
+constexpr float aeSetpointFallback         = 0.45f;   /* matches 115/255 midpoint */
+constexpr float aeDampingFallback          = 0.2f;
+constexpr float aeRatioMinFallback         = 0.707f;  /* 2^-0.5 fstop */
+constexpr float aeRatioMaxFallback         = 1.414f;  /* 2^+0.5 fstop */
 
 float pickAwbParam(const SensorTuning *t,
                    float (SensorTuning::AwbParams::* field),
                    float fallback) {
     if (t && (t->awbParams().*field) > 0.f)
         return t->awbParams().*field;
+    return fallback;
+}
+
+/* AE setpoint from the MeanAlg target pair. HigherTarget is the
+ * target at bright scenes, LowerTarget at dim scenes — scalar
+ * consumers (like this AE) take the midpoint as a compromise
+ * setpoint. Divides by 255 to match our histogram's [0, 1] scale. */
+float deriveAeSetpoint(const SensorTuning *t, float fallback) {
+    if (!t || !t->aeParams().loaded) return fallback;
+    const float mid = (t->aeParams().higherTarget
+                     + t->aeParams().lowerTarget) * 0.5f;
+    if (mid <= 0.f) return fallback;
+    return mid / 255.0f;
+}
+
+float deriveAeDamping(const SensorTuning *t, float fallback) {
+    if (t && t->aeParams().loaded && t->aeParams().convergeSpeed > 0.f)
+        return t->aeParams().convergeSpeed;
+    return fallback;
+}
+
+float deriveAeRatioMax(const SensorTuning *t, float fallback) {
+    if (t && t->aeParams().loaded && t->aeParams().maxFstopDeltaPos > 0.f)
+        return powf(2.0f, t->aeParams().maxFstopDeltaPos);
+    return fallback;
+}
+
+float deriveAeRatioMin(const SensorTuning *t, float fallback) {
+    if (t && t->aeParams().loaded && t->aeParams().maxFstopDeltaNeg > 0.f)
+        return 1.0f / powf(2.0f, t->aeParams().maxFstopDeltaNeg);
     return fallback;
 }
 
@@ -127,6 +144,10 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
       awbDamping(pickAwbParam(sensorTuning,
                               &SensorTuning::AwbParams::smoothingWpTrackingFraction,
                               awbDampingFallback)),
+      aeSetpoint (deriveAeSetpoint (sensorTuning, aeSetpointFallback)),
+      aeDamping  (deriveAeDamping  (sensorTuning, aeDampingFallback)),
+      aeRatioMin (deriveAeRatioMin (sensorTuning, aeRatioMinFallback)),
+      aeRatioMax (deriveAeRatioMax (sensorTuning, aeRatioMaxFallback)),
       lastExposureUs(cfg.exposureDefault),
       lastGain(cfg.gainDefault),
       /* Normalise the R / B priors against G so the shader-side WB
@@ -139,7 +160,16 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
       wbBPrior(wbGainPrior[1] > awbMinChannel
                ? wbGainPrior[2] / wbGainPrior[1] : 1.0f),
       lastWbR(wbRPrior),
-      lastWbB(wbBPrior) {
+      lastWbB(wbBPrior),
+      frameCount(0) {
+    ALOGD("3A knobs: aeSetpoint=%.3f aeDamping=%.3f aeRatio=[%.3f,%.3f] "
+          "awbMinChannel=%.4f awbSceneLightFloor=%.4f awbDamping=%.3f "
+          "wbPrior=(%.3f,%.3f)",
+          (double)aeSetpoint, (double)aeDamping,
+          (double)aeRatioMin, (double)aeRatioMax,
+          (double)awbMinChannel, (double)awbSceneLightFloor,
+          (double)awbDamping, (double)wbRPrior, (double)wbBPrior);
+
     /* Seed the shader immediately so the very first frame — before
      * any stats land — renders through the prior's WB gains instead
      * of the IspPipeline's unity defaults. Without this, a session
@@ -204,6 +234,15 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
                      && (isp != nullptr)
                      && !isp->awbLocked()
                      && (sceneLuma >= awbSceneLightFloor);
+
+    /* Throttled diagnostic. Logs the scene-luma, AWB gate status,
+     * live gains + Q8 values that end up in IspPipeline, and the
+     * derived CCT. Temporary while we reconcile steady-state colour
+     * cast — remove once confirmed good. */
+    const bool logTick = ((frameCount++ & 0x1f) == 0u);  /* every 32 frames */
+    int diagEstCct = 0;
+    if (tuning && tuning->awbParams().loaded)
+        diagEstCct = tuning->estimateCctFromU(logf(lastWbB));
     if (awbRun) {
         /* Gray-world over rgbMean patches, with saturated / near-black
          * patch exclusion. The pre-WB / pre-CCM domain means a clipped
@@ -264,9 +303,18 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
          * CCM (set by Camera at buildInfrastructure). */
         if (tuning && ccmBufferQ10 && tuning->awbParams().loaded) {
             const float U       = logf(lastWbB);
-            const int   estCctK = tuning->estimateCctFromU(U);
-            tuning->ccmForCctLerpQ10(estCctK, ccmBufferQ10);
+            diagEstCct          = tuning->estimateCctFromU(U);
+            tuning->ccmForCctLerpQ10(diagEstCct, ccmBufferQ10);
         }
+    }
+
+    if (logTick) {
+        ALOGD("3A: frame=%u luma=%.3f awbRun=%d lastWb=(%.3f,%.3f) Q8=(%u,%u) "
+              "estCct=%d exp=%d gain=%d",
+              frameCount, (double)sceneLuma, awbRun ? 1 : 0,
+              (double)lastWbR, (double)lastWbB,
+              toQ8(lastWbR), toQ8(lastWbB),
+              diagEstCct, lastExposureUs, lastGain);
     }
 
     /* Manual AE hands exposure / gain authority to the framework.
@@ -299,7 +347,10 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
 
     const float meanBin = (float)weightedSum / (float)count;
     float meanLuma      = meanBin / (float)(IpaStats::HIST_BINS - 1);
-    if (meanLuma < aeMeasuredFloor) meanLuma = aeMeasuredFloor;
+    /* Re-use the AWB per-channel floor as the AE noise floor — same
+     * semantic (sensor noise prevents reliable readings below this),
+     * so both loops share a single tuning knob. */
+    if (meanLuma < awbMinChannel) meanLuma = awbMinChannel;
 
     /* P-controller toward the setpoint, hard-clamped and EMA-damped. */
     float ratio = aeSetpoint / meanLuma;

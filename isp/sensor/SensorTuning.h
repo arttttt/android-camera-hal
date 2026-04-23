@@ -103,12 +103,42 @@ public:
     bool        hasAf()         const { return mHasAf; }
     const char *bayerPattern()  const { return mBayerPattern.c_str(); }
 
+    /* NVIDIA ae.MeanAlg — the mean-luma AE controller parameters.
+     * Two target/brightness pairs define an adaptive setpoint (dim
+     * scenes target a higher luma, bright scenes target a slightly
+     * lower one), ConvergeSpeed is the EMA damping on the per-frame
+     * correction, and MaxFstopDelta{Pos,Neg} cap the single-frame
+     * exposure change in f-stops. `loaded` detects the promoted
+     * section; tunings without it let BasicIpa fall back to its
+     * compile-time defaults.
+     *
+     * Target / brightness are in NVIDIA's 0..255 mean-luma scale;
+     * the HAL divides by 255 for the [0, 1] pre-gamma domain its
+     * histogram stats report. */
+    struct AeParams {
+        bool  loaded;
+        float higherTarget;
+        float lowerTarget;
+        float higherBrightness;
+        float lowerBrightness;
+        float convergeSpeed;
+        float maxFstopDeltaPos;
+        float maxFstopDeltaNeg;
+        AeParams()
+            : loaded(false),
+              higherTarget(0.f), lowerTarget(0.f),
+              higherBrightness(0.f), lowerBrightness(0.f),
+              convergeSpeed(0.f),
+              maxFstopDeltaPos(0.f), maxFstopDeltaNeg(0.f) {}
+    };
+
     const ModuleInfo&           module()        const { return mModule; }
     const AfParams&             af()            const { return mAf; }
     const std::vector<CcmSet>&  ccmSets()       const { return mCcmSets; }
     const OpticalBlack&         opticalBlack()  const { return mOpticalBlack; }
     const AwbRefs&              awbRefs()       const { return mAwbRefs; }
     const AwbParams&            awbParams()     const { return mAwbParams; }
+    const AeParams&             aeParams()      const { return mAeParams; }
 
     /* Fill `out` (9 entries, row-major 3x3) with the Q10 fixed-point CCM
      * closest to `cctK`. Uses nearest-CCT from ccmSets(); if the tuning
@@ -169,6 +199,7 @@ private:
     OpticalBlack mOpticalBlack;
     AwbRefs      mAwbRefs;
     AwbParams    mAwbParams;
+    AeParams     mAeParams;
     std::string  mBayerPattern;
 };
 
