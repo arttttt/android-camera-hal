@@ -63,7 +63,7 @@ constexpr unsigned wbGainUnityQ8 = 256;
 constexpr float awbMinChannelFallback      = 0.02f;
 constexpr float awbSceneLightFloorFallback = 0.05f;
 constexpr float awbDampingFallback         = 0.15f;
-constexpr float aeSetpointFallback         = 0.45f;   /* matches 115/255 midpoint */
+constexpr float aeSetpointFallback         = 0.18f;   /* 18 % middle grey, linear */
 constexpr float aeDampingFallback          = 0.2f;
 constexpr float aeRatioMinFallback         = 0.707f;  /* 2^-0.5 fstop */
 constexpr float aeRatioMaxFallback         = 1.414f;  /* 2^+0.5 fstop */
@@ -76,16 +76,23 @@ float pickAwbParam(const SensorTuning *t,
     return fallback;
 }
 
-/* AE setpoint from the MeanAlg target pair. HigherTarget is the
- * target at bright scenes, LowerTarget at dim scenes — scalar
- * consumers (like this AE) take the midpoint as a compromise
- * setpoint. Divides by 255 to match our histogram's [0, 1] scale. */
+/* AE setpoint from the MeanAlg target pair. NVIDIA authors these in
+ * the post-gamma 0..255 domain (so 110..120 sits just above sRGB
+ * middle grey 0.45), but our histogram comes off the raw Bayer
+ * green channel — it lives in linear pre-gamma [0, 1] space. Using
+ * 115/255 ≈ 0.45 directly asks AE to push a scene 2.5× brighter
+ * than the tuning actually targets, which over-exposes daylight
+ * preview and pumps the loop hard because luma is always far below
+ * the artificial target. Gamma-decode the midpoint with the
+ * standard sRGB exponent (close enough to the photographer's 2.2
+ * model for AE) so the setpoint lands near 18 % middle grey in the
+ * linear domain — (115/255)^2.2 ≈ 0.174 on both shipped tunings. */
 float deriveAeSetpoint(const SensorTuning *t, float fallback) {
     if (!t || !t->aeParams().loaded) return fallback;
     const float mid = (t->aeParams().higherTarget
                      + t->aeParams().lowerTarget) * 0.5f;
     if (mid <= 0.f) return fallback;
-    return mid / 255.0f;
+    return powf(mid / 255.0f, 2.2f);
 }
 
 float deriveAeDamping(const SensorTuning *t, float fallback) {
