@@ -50,26 +50,41 @@ public:
         int cctCloudy, cctShade, cctIncandescent, cctFluorescent;
     };
 
-    /* Fusion-AWB calibration from the .isp's awb.v4 block — the
-     * linear map between a scene chromaticity measure `U = ln(G/B)`
-     * (computed from raw Bayer means) and its colour temperature in
-     * Kelvin.
-     *
-     *   CCT = UtoCCT[0] + UtoCCT[1] * U
-     *
-     * `lowU` / `highU` clamp U before the conversion so far-off-
-     * calibration chromaticities don't extrapolate CCT beyond the
-     * range the polynomial was fit over. `loaded` lets callers
+    /* Fusion-AWB calibration from the .isp's awb.v4 block, promoted
+     * into the HAL-consumable active section. `loaded` lets callers
      * detect tunings that predate this section and fall back to
-     * their pinned-CCT behaviour. */
+     * their pinned-CCT behaviour for the calibration half.
+     *
+     * CCT axis:
+     *   CCT = uToCct[0] + uToCct[1] * U, with U = ln(meanG/meanB)
+     *   from raw Bayer. `lowU` / `highU` clamp U before the linear
+     *   fit so far-off chromaticities don't extrapolate CCT beyond
+     *   the fit's calibrated range.
+     *
+     * Stats / smoothing axis (consumed by BasicIpa's AWB gate):
+     *   cStatsMinThreshold     — per-channel floor for a patch to
+     *                            be counted in gray-world (noise
+     *                            floor — NVIDIA ships 0.02).
+     *   cStatsDarkThreshold    — whole-scene mean-luma floor below
+     *                            which AWB holds last state
+     *                            (dark-scene pump suppression).
+     *   smoothingWpTrackingFraction — AWB gain EMA damping
+     *                            (fraction of new toward old). */
     struct AwbParams {
         bool  loaded;
-        float uToCct[2];     /* UtoCCT — linear fit in U → Kelvin     */
-        float cctToU[2];     /* CCTtoU — inverse linear fit (unused
-                              *          today; kept for completeness)*/
+        float uToCct[2];
+        float cctToU[2];
         float lowU;
         float highU;
-        AwbParams() : loaded(false), cctToU{0,0}, lowU(0.f), highU(0.f) {
+        float cStatsMinThreshold;
+        float cStatsDarkThreshold;
+        float smoothingWpTrackingFraction;
+        AwbParams()
+            : loaded(false),
+              cctToU{0,0}, lowU(0.f), highU(0.f),
+              cStatsMinThreshold(0.f),
+              cStatsDarkThreshold(0.f),
+              smoothingWpTrackingFraction(0.f) {
             uToCct[0] = 0.f; uToCct[1] = 0.f;
         }
     };
@@ -111,6 +126,14 @@ public:
      * of better info. If the tuning has no sets, writes {1.0, 1.0, 1.0}
      * so callers get a safe unity fallback. */
     void wbGainForCct(int cctK, float out[3]) const;
+
+    /* Fill `out` with the WB gains of the CcmSet with the highest
+     * cctK — the sensor's calibrated daylight anchor. Used as the
+     * prior before any AWB tick has landed (cold boot, session
+     * reset). No literal CCT appears in the caller: "daylight" is
+     * simply "warmest-colour (highest-Kelvin) set the tuning
+     * defines". Falls back to {1,1,1} on an empty tuning. */
+    void defaultWbGain(float out[3]) const;
 
     /* Estimate scene CCT (Kelvin) from a raw-Bayer chromaticity U.
      * Callers usually pass U = ln(meanG / meanB) = ln(lastWbB) from

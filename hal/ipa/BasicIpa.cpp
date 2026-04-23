@@ -42,30 +42,22 @@ constexpr float aeMeasuredFloor = 0.02f;
 constexpr int64_t minTotalUs     = 100;
 constexpr int64_t maxExposureUs  = 200000;
 
-/* Patches below awbMinChannel or above awbMaxChannel in any one
- * channel are dropped from the gray-world sum. The low floor filters
- * out near-black tiles where sensor noise dominates the signal; the
- * high ceiling filters out saturated / near-saturated tiles where
- * the missing highlight biases the mean toward the unclipped
- * channel and drags WB off. rgbMean entries are already in [0, 1]
- * (raw code values normalised by max_code in NeonStatsEncoder). */
-constexpr float awbMinChannel = 0.02f;
+/* Saturation ceiling for per-patch filtering. Patches with any
+ * channel above this value are dropped — the missing highlight
+ * biases the mean toward the unclipped channel. Algorithm choice,
+ * not read from tuning: NVIDIA's CStatsSaturationThreshold
+ * represents a different stats-stage metric, and 0.95 in our
+ * [0, 1] normalised code is what NeonStatsEncoder is calibrated
+ * against. */
 constexpr float awbMaxChannel = 0.95f;
 
 /* Minimum valid-patch count required to update the gains. With 256
- * patches and the above thresholds, a low-contrast scene easily
- * gives > 200 valid; this guard protects the very first few frames
- * where the ISP is warming up, and pathological all-dark / all-
- * saturated frames where a fresh estimate would just pump the
- * gains. Below the threshold we hold the previous EMA-damped gains. */
+ * patches a low-contrast scene easily gives > 200 valid; this
+ * guard protects the first few frames where the ISP is warming up
+ * and pathological all-dark / all-saturated frames where a fresh
+ * estimate would just pump the gains. Below the threshold we hold
+ * the previous EMA-damped state. */
 constexpr int awbMinValidPatches = 32;
-
-/* Damping for the gain EMA. Slower than AE (0.3) because WB is less
- * perceptually tolerant of oscillation — pumping between tints is
- * more visible than pumping between brightness levels. Matches the
- * old in-shader-pipeline gray-world loop so colour-tracking
- * behaviour stays familiar after the move into BasicIpa. */
-constexpr float awbDamping = 0.15f;
 
 /* Final clamp on the gain multipliers, relative to unity (G = 1.0).
  * Matches the [128, 1024] Q8 range the previous estimator used —
@@ -79,15 +71,23 @@ constexpr float awbGainMax = 4.0f;
  * unconditionally since R / B are expressed relative to G. */
 constexpr unsigned wbGainUnityQ8 = 256;
 
-/* Minimum mean luma (bin-weighted average over IpaStats::lumaHist,
- * normalised to [0, 1]) required for AWB to run. Below this floor
- * the raw-Bayer means are dominated by noise — gray-world would
- * output random gains, CCT estimation would oscillate, and the
- * picked CCM would thrash between CcmSet bracket endpoints. Hold
- * the last known-good state instead. Value matches the ~bottom
- * decile of a normally exposed daylight scene, well above the
- * noise floor of IMX179 / OV5693 at gain-max. */
-constexpr float awbSceneLightFloor = 0.05f;
+/* Fallbacks for the tuning-driven AWB knobs (stored as BasicIpa
+ * members, resolved at construction). Used when the tuning predates
+ * active.awb.v4 or ships a zero where the HAL needs a positive
+ * value. Match the values NVIDIA ships for IMX179 / OV5693 in their
+ * reserved.awb.v4 block so behaviour is identical with or without
+ * the promotion. */
+constexpr float awbMinChannelFallback      = 0.02f;
+constexpr float awbSceneLightFloorFallback = 0.05f;
+constexpr float awbDampingFallback         = 0.15f;
+
+float pickAwbParam(const SensorTuning *t,
+                   float (SensorTuning::AwbParams::* field),
+                   float fallback) {
+    if (t && (t->awbParams().*field) > 0.f)
+        return t->awbParams().*field;
+    return fallback;
+}
 
 unsigned toQ8(float x) {
     return (unsigned)(x * 256.0f + 0.5f);
@@ -118,6 +118,15 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
       isp(ispPipeline),
       tuning(sensorTuning),
       ccmBufferQ10(ccmBufQ10),
+      awbMinChannel(pickAwbParam(sensorTuning,
+                                 &SensorTuning::AwbParams::cStatsMinThreshold,
+                                 awbMinChannelFallback)),
+      awbSceneLightFloor(pickAwbParam(sensorTuning,
+                                       &SensorTuning::AwbParams::cStatsDarkThreshold,
+                                       awbSceneLightFloorFallback)),
+      awbDamping(pickAwbParam(sensorTuning,
+                              &SensorTuning::AwbParams::smoothingWpTrackingFraction,
+                              awbDampingFallback)),
       lastExposureUs(cfg.exposureDefault),
       lastGain(cfg.gainDefault),
       /* Normalise the R / B priors against G so the shader-side WB
@@ -130,7 +139,19 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
       wbBPrior(wbGainPrior[1] > awbMinChannel
                ? wbGainPrior[2] / wbGainPrior[1] : 1.0f),
       lastWbR(wbRPrior),
-      lastWbB(wbBPrior) {}
+      lastWbB(wbBPrior) {
+    /* Seed the shader immediately so the very first frame — before
+     * any stats land — renders through the prior's WB gains instead
+     * of the IspPipeline's unity defaults. Without this, a session
+     * that boots below the dark-scene gate (front cam in a dim room)
+     * runs at unity until the gate releases, and the sensor's G-heavy
+     * raw response (IMX179 especially) shows up as a green cast.
+     * The prior is the calibrated daylight anchor — worst-case-best
+     * default across scenes. */
+    if (isp) {
+        isp->setWbGains(toQ8(lastWbR), wbGainUnityQ8, toQ8(lastWbB));
+    }
+}
 
 void BasicIpa::reset() {
     lastExposureUs = sensorCfg.exposureDefault;
@@ -138,10 +159,16 @@ void BasicIpa::reset() {
     lastWbR        = wbRPrior;
     lastWbB        = wbBPrior;
 
-    /* Re-seed the CCM buffer from the prior. Uses the same U→CCT→LERP
-     * path the per-frame update takes so a cold session starts
-     * aligned with where AWB will converge; tunings without awb.v4
-     * skip the reseed and leave whatever Camera loaded at build time. */
+    /* Re-seed the shader with the priors so the next session starts
+     * from the sensor's calibrated daylight anchor even if the first
+     * frame is below the AWB gate. WB goes straight to the ISP, CCM
+     * takes the same U→CCT→LERP path the per-frame AWB tick uses so
+     * cold-start matches where AWB will later converge. Tunings
+     * without awb.v4 skip the CCM reseed and leave whatever Camera
+     * loaded at build time. */
+    if (isp) {
+        isp->setWbGains(toQ8(lastWbR), wbGainUnityQ8, toQ8(lastWbB));
+    }
     if (tuning && ccmBufferQ10 && tuning->awbParams().loaded) {
         const float U       = logf(wbBPrior);
         const int   estCctK = tuning->estimateCctFromU(U);

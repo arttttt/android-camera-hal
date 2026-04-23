@@ -67,6 +67,22 @@ private:
     const SensorTuning  *tuning;
     int16_t             *ccmBufferQ10;
 
+    /* AWB knobs resolved at construction from SensorTuning::AwbParams
+     * (with compile-time fallbacks for tunings that predate the
+     * active.awb.v4 section). Stored as members so the ctor init-
+     * list can use them for wbRPrior / wbBPrior normalisation and
+     * the per-frame AWB loop can keep them hot — no tuning
+     * dereference on the stats path.
+     *
+     *   awbMinChannel       — per-channel floor for a patch to be
+     *                         counted in gray-world.
+     *   awbSceneLightFloor  — whole-scene mean-luma floor below
+     *                         which AWB holds last state.
+     *   awbDamping          — EMA fraction on new gains vs. last. */
+    float   awbMinChannel;
+    float   awbSceneLightFloor;
+    float   awbDamping;
+
     /* AE state. Tracks the last-published decision (not the sensor's
      * actual state). Stays in sync with reality while AE is running
      * in auto mode; after a manual-mode excursion the next
@@ -76,10 +92,10 @@ private:
 
     /* AWB state. R / B gain multipliers relative to G (G pinned at
      * unity on the shader side). The prior values come from the
-     * sensor's tuned wbGain at our pinned CCT (5000K today) — the
-     * "neutral white on this sensor" point. Floats so the EMA damps
-     * cleanly between frames; converted to Q8 only at the setWbGains
-     * boundary. */
+     * sensor's tuned wbGain at its daylight CcmSet (the hottest-CCT
+     * anchor the tuning ships) — the "neutral white on this sensor"
+     * point. Floats so the EMA damps cleanly between frames;
+     * converted to Q8 only at the setWbGains boundary. */
     float   wbRPrior;
     float   wbBPrior;
     float   lastWbR;

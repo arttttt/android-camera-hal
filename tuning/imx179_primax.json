@@ -172,7 +172,10 @@
           0.305851561745
         ],
         "LowU": 0.5718,
-        "HighU": 1.5214
+        "HighU": 1.5214,
+        "CStatsMinThreshold": 0.02,
+        "CStatsDarkThreshold": 0.006,
+        "SmoothingWpTrackingFraction": 0.1
       }
     }
   },

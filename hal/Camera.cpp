@@ -504,27 +504,26 @@ void Camera::buildInfrastructure() {
     if (mTuning.isLoaded())
         mIsp->setBlackLevel(mTuning.opticalBlack().r);
 
-    /* Seed mCcmQ10 so the shader has a working CCM from the first
-     * frame, before any stats are available. BasicIpa then rewrites
-     * this same buffer every AWB tick — its CCT estimate from
-     * ln(G/B) feeds into the CcmSet cctK LERP, so within a few
-     * frames the seed is replaced by an illuminant-matched CCM. The
-     * pointer handed to setCcm is stable for the life of Camera;
-     * the shader re-reads the contents on every submit.
-     *
-     * The seed CCT is deliberately daylight-ish (5000 K) so cold
-     * start on an unknown scene biases toward the dominant shooting
-     * condition. It is not a pin — once stats arrive it is overridden
-     * each frame. Tunings without awb.v4 fall back to pinned CCM
-     * selection (old ccmForCctQ10 path). */
+    /* WB prior + seed CCM. Takes the hottest-CCT CcmSet the tuning
+     * ships as the sensor's calibrated "daylight" anchor — no
+     * literal CCT appears here. BasicIpa stores the same prior as
+     * its lastWbR / lastWbB so the very first frame (before any
+     * stats arrive) renders through sensor-correct WB gains; the
+     * mCcmQ10 buffer handed to setCcm is then rewritten every AWB
+     * tick via BasicIpa's U → CCT → LERP path. Tunings without
+     * awb.v4 fall back to nearest-CCT pick at the same daylight
+     * anchor via the legacy ccmForCctQ10 route. */
     float wbGainPrior[3];
-    mTuning.wbGainForCct(5000, wbGainPrior);
+    mTuning.defaultWbGain(wbGainPrior);
     if (mTuning.awbParams().loaded
      && wbGainPrior[1] > 0.f && wbGainPrior[2] > 0.f) {
         const float uSeed = logf(wbGainPrior[1] / wbGainPrior[2]);
         mTuning.ccmForCctLerpQ10(mTuning.estimateCctFromU(uSeed), mCcmQ10);
-    } else {
-        mTuning.ccmForCctQ10(5000, mCcmQ10);
+    } else if (!mTuning.ccmSets().empty()) {
+        int daylightCctK = mTuning.ccmSets().front().cctK;
+        for (const auto &s : mTuning.ccmSets())
+            if (s.cctK > daylightCctK) daylightCctK = s.cctK;
+        mTuning.ccmForCctQ10(daylightCctK, mCcmQ10);
     }
     mIsp->setCcm(mCcmQ10);
 

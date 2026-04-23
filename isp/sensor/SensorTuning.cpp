@@ -158,6 +158,17 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
             mAwbParams.highU  = v4["HighU"].asFloat();
             mAwbParams.loaded = true;
         }
+        /* Per-frame thresholds & EMA damping. Read independently of
+         * the U↔CCT pair — a tuning may define one axis without the
+         * other. Callers check each field against 0 to detect
+         * presence. */
+        if (v4.isMember("CStatsMinThreshold"))
+            mAwbParams.cStatsMinThreshold = v4["CStatsMinThreshold"].asFloat();
+        if (v4.isMember("CStatsDarkThreshold"))
+            mAwbParams.cStatsDarkThreshold = v4["CStatsDarkThreshold"].asFloat();
+        if (v4.isMember("SmoothingWpTrackingFraction"))
+            mAwbParams.smoothingWpTrackingFraction =
+                v4["SmoothingWpTrackingFraction"].asFloat();
     }
 
     ALOGD("tuning loaded: %s (%s/%s) — %zu CCM sets, AF=%d, BL=(%d,%d,%d,%d)",
@@ -224,6 +235,20 @@ void SensorTuning::wbGainForCct(int cctK, float out[3]) const {
             bestDelta = d;
             best = &mCcmSets[i];
         }
+    }
+    out[0] = best->wbGain[0];
+    out[1] = best->wbGain[1];
+    out[2] = best->wbGain[2];
+}
+
+void SensorTuning::defaultWbGain(float out[3]) const {
+    if (mCcmSets.empty()) {
+        out[0] = out[1] = out[2] = 1.0f;
+        return;
+    }
+    const CcmSet *best = &mCcmSets[0];
+    for (size_t i = 1; i < mCcmSets.size(); i++) {
+        if (mCcmSets[i].cctK > best->cctK) best = &mCcmSets[i];
     }
     out[0] = best->wbGain[0];
     out[1] = best->wbGain[1];

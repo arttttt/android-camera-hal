@@ -40,14 +40,18 @@ ACTIVE_PREFIXES = (
     "colorCorrection.",
     "opticalBlack.",
     "mwbCCT.",
-    # Fusion-AWB calibration — the linear U↔CCT map and its U clamp.
-    # The HAL consumes these to estimate scene CCT from the gray-
-    # world gains NeonStatsEncoder produces, then picks / blends
-    # CcmSets by cctK.
+    # Fusion-AWB calibration — the linear U↔CCT map, its U clamp,
+    # and the per-frame stats / smoothing thresholds BasicIpa uses
+    # when filtering patches and damping its gain EMA. The HAL
+    # consumes these to estimate scene CCT from the gray-world gains
+    # NeonStatsEncoder produces, then picks / blends CcmSets by cctK.
     "awb.v4.UtoCCT",
     "awb.v4.CCTtoU",
     "awb.v4.LowU",
     "awb.v4.HighU",
+    "awb.v4.CStatsMinThreshold",
+    "awb.v4.CStatsDarkThreshold",
+    "awb.v4.SmoothingWpTrackingFraction",
 )
 
 # Line that starts a new assignment: `<path> = ...`. Path may contain
