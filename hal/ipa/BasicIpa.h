@@ -80,12 +80,16 @@ private:
     float   aeRatioMin;          /* 2^-MaxFstopDeltaNeg             */
     float   aeRatioMax;          /* 2^+MaxFstopDeltaPos             */
 
-    /* AE state. Tracks the last-published decision (not the sensor's
-     * actual state). Stays in sync with reality while AE is running
-     * in auto mode; after a manual-mode excursion the next
-     * processStats re-converges from wherever the scene is now. */
-    int32_t lastExposureUs;
-    int32_t lastGain;
+    /* AE state. Total exposure at unity gain (µs) — the
+     * exposureUs × gain / gainUnit scalar the controller accumulates
+     * against the setpoint. Stored as float so tiny per-frame
+     * corrections (damping × clamped ratio) don't vanish into
+     * integer truncation on the gainUnit=1 IMX179 side: rounding
+     * exposure and gain back into ints every frame used to trap AE
+     * at the first split where extraGainQ8 / 256 dropped the
+     * fractional bit, freezing gain at a low step. Exposure and
+     * gain are derived at write-time via SensorConfig::splitExposureGain. */
+    float   lastTotalUs;
 
     /* AWB state. R / B gain multipliers relative to G (G pinned at
      * unity on the shader side). The prior values come from the

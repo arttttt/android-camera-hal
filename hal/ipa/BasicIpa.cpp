@@ -148,8 +148,8 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
       aeDamping  (deriveAeDamping  (sensorTuning, aeDampingFallback)),
       aeRatioMin (deriveAeRatioMin (sensorTuning, aeRatioMinFallback)),
       aeRatioMax (deriveAeRatioMax (sensorTuning, aeRatioMaxFallback)),
-      lastExposureUs(cfg.exposureDefault),
-      lastGain(cfg.gainDefault),
+      lastTotalUs((float)cfg.exposureDefault * (float)cfg.gainDefault
+                  / (float)cfg.gainUnit),
       /* Normalise the R / B priors against G so the shader-side WB
        * (which keeps G at unity) stays consistent. Guard against a
        * zero G entry with the same floor the per-frame AWB uses — a
@@ -184,8 +184,9 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
 }
 
 void BasicIpa::reset() {
-    lastExposureUs = sensorCfg.exposureDefault;
-    lastGain       = sensorCfg.gainDefault;
+    lastTotalUs    = (float)sensorCfg.exposureDefault
+                   * (float)sensorCfg.gainDefault
+                   / (float)sensorCfg.gainUnit;
     lastWbR        = wbRPrior;
     lastWbB        = wbBPrior;
 
@@ -309,12 +310,17 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
     }
 
     if (logTick) {
+        int32_t diagExp = 0, diagExtraQ8 = 256;
+        sensorCfg.splitExposureGain((int32_t)(lastTotalUs + 0.5f),
+                                     &diagExp, &diagExtraQ8);
+        const int32_t diagGain = (int32_t)(((int64_t)sensorCfg.gainUnit
+                                           * diagExtraQ8 + 128) / 256);
         ALOGD("3A: frame=%u luma=%.3f awbRun=%d lastWb=(%.3f,%.3f) Q8=(%u,%u) "
-              "estCct=%d exp=%d gain=%d",
+              "estCct=%d totalUs=%.0f exp=%d gain=%d",
               frameCount, (double)sceneLuma, awbRun ? 1 : 0,
               (double)lastWbR, (double)lastWbB,
               toQ8(lastWbR), toQ8(lastWbB),
-              diagEstCct, lastExposureUs, lastGain);
+              diagEstCct, (double)lastTotalUs, diagExp, diagGain);
     }
 
     /* Manual AE hands exposure / gain authority to the framework.
@@ -358,29 +364,28 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
     if (ratio > aeRatioMax) ratio = aeRatioMax;
     const float adjusted = 1.0f + (ratio - 1.0f) * aeDamping;
 
-    /* Last decision in µs-at-unity-gain: exposureUs × (gain / gainUnit).
-     * The IPA owns both axes — next step multiplies this scalar by the
-     * adjustment, then splits back into (exposure, gain) via
-     * SensorConfig so exposure stays inside the default frame_length. */
-    const int64_t gainUnit  = sensorCfg.gainUnit;
-    const int64_t lastTotal = (int64_t)lastExposureUs * lastGain / gainUnit;
+    /* Accumulate in float "µs at unity gain" space. Exposure and
+     * gain are only materialised at write-time via
+     * SensorConfig::splitExposureGain; storing rounded ints across
+     * frames lost ~1/256 of the signal on gainUnit=1 sensors and
+     * stalled the EMA at its first rounding step. */
+    const int32_t gainUnit = sensorCfg.gainUnit;
+    float newTotal = lastTotalUs * adjusted;
 
-    int64_t newTotal = (int64_t)((float)lastTotal * adjusted);
-
-    const int64_t maxTotal = maxExposureUs * (int64_t)sensorCfg.gainMax / gainUnit;
-    if (newTotal < minTotalUs) newTotal = minTotalUs;
-    if (newTotal > maxTotal)   newTotal = maxTotal;
+    const float maxTotal = (float)maxExposureUs * (float)sensorCfg.gainMax
+                         / (float)gainUnit;
+    if (newTotal < (float)minTotalUs) newTotal = (float)minTotalUs;
+    if (newTotal > maxTotal)          newTotal = maxTotal;
+    lastTotalUs = newTotal;
 
     int32_t newExposureUs;
     int32_t newExtraGainQ8;
-    sensorCfg.splitExposureGain((int32_t)newTotal, &newExposureUs, &newExtraGainQ8);
+    sensorCfg.splitExposureGain((int32_t)(newTotal + 0.5f),
+                                 &newExposureUs, &newExtraGainQ8);
 
-    int32_t newGain = (int32_t)((int64_t)gainUnit * newExtraGainQ8 / 256);
+    int32_t newGain = (int32_t)(((int64_t)gainUnit * newExtraGainQ8 + 128) / 256);
     if (newGain < 1)                 newGain = 1;
     if (newGain > sensorCfg.gainMax) newGain = sensorCfg.gainMax;
-
-    lastExposureUs = newExposureUs;
-    lastGain       = newGain;
 
     batch.has[DelayedControls::EXPOSURE] = true;
     batch.val[DelayedControls::EXPOSURE] = newExposureUs;
