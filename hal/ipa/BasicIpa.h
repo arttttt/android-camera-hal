@@ -79,6 +79,8 @@ private:
     float   aeDamping;           /* ConvergeSpeed                   */
     float   aeRatioMin;          /* 2^-MaxFstopDeltaNeg             */
     float   aeRatioMax;          /* 2^+MaxFstopDeltaPos             */
+    float   aeToleranceInStops;  /* ToleranceIn — dead-band around  */
+                                  /* setpoint where AE stops adjusting */
 
     /* AE state. Total exposure at unity gain (µs) — the
      * exposureUs × gain / gainUnit scalar the controller accumulates

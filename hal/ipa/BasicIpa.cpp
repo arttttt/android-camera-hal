@@ -105,6 +105,11 @@ float deriveAeRatioMin(const SensorTuning *t) {
     return 1.0f / powf(2.0f, t->aeParams().maxFstopDeltaNeg);
 }
 
+float deriveAeTolerance(const SensorTuning *t) {
+    if (!t || !t->aeParams().loaded) return 0.f;
+    return t->aeParams().toleranceIn;
+}
+
 unsigned toQ8(float x) {
     return (unsigned)(x * 256.0f + 0.5f);
 }
@@ -144,6 +149,7 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
       aeDamping  (deriveAeDamping  (sensorTuning)),
       aeRatioMin (deriveAeRatioMin (sensorTuning)),
       aeRatioMax (deriveAeRatioMax (sensorTuning)),
+      aeToleranceInStops(deriveAeTolerance(sensorTuning)),
       lastTotalUs((float)cfg.exposureDefault * (float)cfg.gainDefault
                   / (float)cfg.gainUnit),
       /* Normalise the R / B priors against G so the shader-side WB
@@ -167,14 +173,19 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
                       && awbSceneLightFloor > 0.f
                       && awbDamping > 0.f;
     ALOGD("3A knobs: aeOK=%d aeSetpoint=%.3f aeDamping=%.3f aeRatio=[%.3f,%.3f] "
+          "aeTolIn=%.3fst "
           "awbOK=%d awbMinChannel=%.4f awbSceneLightFloor=%.4f awbDamping=%.3f "
-          "wbPrior=(%.3f,%.3f) tuningLoaded=%d",
+          "wbPrior=(%.3f,%.3f) "
+          "gainMax=%d gainUnit=%d maxExpDef=%d tuningLoaded=%d",
           aeOK ? 1 : 0,
           (double)aeSetpoint, (double)aeDamping,
           (double)aeRatioMin, (double)aeRatioMax,
+          (double)aeToleranceInStops,
           awbOK ? 1 : 0,
           (double)awbMinChannel, (double)awbSceneLightFloor,
           (double)awbDamping, (double)wbRPrior, (double)wbBPrior,
+          sensorCfg.gainMax, sensorCfg.gainUnit,
+          sensorCfg.maxExposureUsDefault(),
           tuning ? (tuning->isLoaded() ? 1 : 0) : -1);
 
     /* Seed the shader immediately so the very first frame — before
@@ -252,6 +263,7 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
     int diagEstCct = 0;
     if (tuning && tuning->awbParams().loaded)
         diagEstCct = tuning->estimateCctFromU(logf(lastWbB));
+    int diagNValid = -1;  /* set inside the AWB block when it runs */
     if (awbRun) {
         /* Gray-world over rgbMean patches, with saturated / near-black
          * patch exclusion. The pre-WB / pre-CCM domain means a clipped
@@ -260,6 +272,7 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
          * raw-domain AWB robustness step. */
         float sumR = 0.f, sumG = 0.f, sumB = 0.f;
         int nValid = 0;
+        diagNValid = 0;  /* will be set to real nValid below */
         for (int py = 0; py < IpaStats::PATCH_Y; ++py) {
             for (int px = 0; px < IpaStats::PATCH_X; ++px) {
                 const float r = stats.rgbMean[py][px][0];
@@ -273,6 +286,7 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
                 ++nValid;
             }
         }
+        diagNValid = nValid;
 
         if (nValid >= awbMinValidPatches) {
             const float meanR = sumR / (float)nValid;
@@ -338,12 +352,16 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
                                      &diagExp, &diagExtraQ8);
         const int32_t diagGain = (int32_t)(((int64_t)sensorCfg.gainUnit
                                            * diagExtraQ8 + 128) / 256);
-        ALOGD("3A: frame=%u luma=%.3f awbRun=%d lastWb=(%.3f,%.3f) Q8=(%u,%u) "
-              "estCct=%d totalUs=%.0f exp=%d gain=%d",
-              frameCount, (double)sceneLuma, awbRun ? 1 : 0,
+        const int32_t diagGainClamped =
+            diagGain > sensorCfg.gainMax ? sensorCfg.gainMax
+                                          : (diagGain < 1 ? 1 : diagGain);
+        ALOGD("3A: frame=%u luma=%.3f nValid=%d awbRun=%d lastWb=(%.3f,%.3f) "
+              "Q8=(%u,%u) estCct=%d totalUs=%.0f exp=%d gain=%d gainClamp=%d",
+              frameCount, (double)sceneLuma, diagNValid, awbRun ? 1 : 0,
               (double)lastWbR, (double)lastWbB,
               toQ8(lastWbR), toQ8(lastWbB),
-              diagEstCct, (double)lastTotalUs, diagExp, diagGain);
+              diagEstCct, (double)lastTotalUs, diagExp,
+              diagGain, diagGainClamped);
     }
 
     /* Manual AE hands exposure / gain authority to the framework.
@@ -381,10 +399,43 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
      * so both loops share a single tuning knob. */
     if (meanLuma < awbMinChannel) meanLuma = awbMinChannel;
 
-    /* P-controller toward the setpoint, hard-clamped and EMA-damped. */
+    /* P-controller toward the setpoint, hard-clamped and EMA-damped.
+     * Dead-band the adjustment when luma is already within
+     * aeToleranceInStops (from tuning's ae.MeanAlg.ToleranceIn) of
+     * the setpoint — stops AE from chasing sensor noise and scene
+     * micro-flutter around the target, which would otherwise show
+     * up as a visible brightness ripple in "well-exposed" scenes.
+     * Tolerance is in f-stops; we compare the log2 of the ratio
+     * against it (ratio=1.414 → 0.5 stops, ratio=0.707 → -0.5
+     * stops). toleranceIn==0 (tuning missing) disables the gate so
+     * BasicIpa behaves as before. */
     float ratio = aeSetpoint / meanLuma;
     if (ratio < aeRatioMin) ratio = aeRatioMin;
     if (ratio > aeRatioMax) ratio = aeRatioMax;
+
+    if (aeToleranceInStops > 0.f) {
+        const float stops = log2f(ratio);
+        const float absStops = stops < 0.f ? -stops : stops;
+        if (absStops < aeToleranceInStops) {
+            /* Inside dead-band — AE is "converged enough". Hold the
+             * state so we don't chase noise; still publish the
+             * split of the current state so the metadata path sees
+             * consistent exposure / gain. */
+            int32_t heldExposureUs, heldExtraGainQ8;
+            sensorCfg.splitExposureGain((int32_t)(lastTotalUs + 0.5f),
+                                         &heldExposureUs, &heldExtraGainQ8);
+            int32_t heldGain = (int32_t)(((int64_t)sensorCfg.gainUnit
+                                         * heldExtraGainQ8 + 128) / 256);
+            if (heldGain < 1)                 heldGain = 1;
+            if (heldGain > sensorCfg.gainMax) heldGain = sensorCfg.gainMax;
+            batch.has[DelayedControls::EXPOSURE] = true;
+            batch.val[DelayedControls::EXPOSURE] = heldExposureUs;
+            batch.has[DelayedControls::GAIN]     = true;
+            batch.val[DelayedControls::GAIN]     = heldGain;
+            return batch;
+        }
+    }
+
     const float adjusted = 1.0f + (ratio - 1.0f) * aeDamping;
 
     /* Accumulate in float "µs at unity gain" space. Exposure and

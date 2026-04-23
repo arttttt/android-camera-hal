@@ -122,6 +122,8 @@ public:
         float higherBrightness;
         float lowerBrightness;
         float convergeSpeed;
+        float toleranceIn;      /* dead-band (stops) around setpoint */
+        float toleranceOut;     /* exit-dead-band threshold (hysteresis) */
         float maxFstopDeltaPos;
         float maxFstopDeltaNeg;
         AeParams()
@@ -129,6 +131,7 @@ public:
               higherTarget(0.f), lowerTarget(0.f),
               higherBrightness(0.f), lowerBrightness(0.f),
               convergeSpeed(0.f),
+              toleranceIn(0.f), toleranceOut(0.f),
               maxFstopDeltaPos(0.f), maxFstopDeltaNeg(0.f) {}
     };
 

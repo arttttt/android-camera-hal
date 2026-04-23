@@ -187,6 +187,10 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
                 mAeParams.higherBrightness = mean["HigherBrightness"].asFloat();
             if (mean.isMember("LowerBrightness"))
                 mAeParams.lowerBrightness  = mean["LowerBrightness"].asFloat();
+            if (mean.isMember("ToleranceIn"))
+                mAeParams.toleranceIn  = mean["ToleranceIn"].asFloat();
+            if (mean.isMember("ToleranceOut"))
+                mAeParams.toleranceOut = mean["ToleranceOut"].asFloat();
             mAeParams.loaded = true;
         }
         if (ae.isMember("MaxFstopDeltaPos"))

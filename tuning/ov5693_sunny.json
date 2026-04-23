@@ -150,7 +150,9 @@
         "LowerTarget": 135,
         "HigherBrightness": 850,
         "LowerBrightness": 700,
-        "ConvergeSpeed": 0.25
+        "ConvergeSpeed": 0.25,
+        "ToleranceIn": 0.05,
+        "ToleranceOut": 0.1
       },
       "MaxFstopDeltaPos": 0.4,
       "MaxFstopDeltaNeg": 0.5

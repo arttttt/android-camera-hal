@@ -61,6 +61,12 @@ ACTIVE_PREFIXES = (
     "ae.MeanAlg.HigherBrightness",
     "ae.MeanAlg.LowerBrightness",
     "ae.MeanAlg.ConvergeSpeed",
+    # Tolerance values act as AE dead-band: once mean luma is within
+    # ToleranceIn stops of the setpoint BasicIpa stops adjusting
+    # exposure/gain — stops the controller from chasing micro scene
+    # flutter and oscillating around the setpoint.
+    "ae.MeanAlg.ToleranceIn",
+    "ae.MeanAlg.ToleranceOut",
     "ae.MaxFstopDeltaPos",
     "ae.MaxFstopDeltaNeg",
 )
