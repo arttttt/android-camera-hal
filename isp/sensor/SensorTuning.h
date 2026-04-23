@@ -79,12 +79,29 @@ public:
         float cStatsMinThreshold;
         float cStatsDarkThreshold;
         float smoothingWpTrackingFraction;
+
+        /* Post-optical-black raw RGB at the tuning's FusionInitLight
+         * entry — NVIDIA's calibrated "start here" illuminant. G is
+         * the average of GR and GB. defaultRawValid stays false when
+         * the tuning has no FusionLights / FusionInitLight; callers
+         * fall back to sensor-neutral (1, 1, 1) priors then.
+         * blackLevelAssumed records the opticalBlack.r used for the
+         * subtract so the caller knows the reference. */
+        bool  defaultRawValid;
+        float defaultRawR;
+        float defaultRawG;
+        float defaultRawB;
+        int   blackLevelAssumed;
+
         AwbParams()
             : loaded(false),
               cctToU{0,0}, lowU(0.f), highU(0.f),
               cStatsMinThreshold(0.f),
               cStatsDarkThreshold(0.f),
-              smoothingWpTrackingFraction(0.f) {
+              smoothingWpTrackingFraction(0.f),
+              defaultRawValid(false),
+              defaultRawR(0.f), defaultRawG(0.f), defaultRawB(0.f),
+              blackLevelAssumed(0) {
             uToCct[0] = 0.f; uToCct[1] = 0.f;
         }
     };
@@ -160,12 +177,21 @@ public:
      * so callers get a safe unity fallback. */
     void wbGainForCct(int cctK, float out[3]) const;
 
-    /* Fill `out` with the WB gains of the CcmSet with the highest
-     * cctK — the sensor's calibrated daylight anchor. Used as the
-     * prior before any AWB tick has landed (cold boot, session
-     * reset). No literal CCT appears in the caller: "daylight" is
-     * simply "warmest-colour (highest-Kelvin) set the tuning
-     * defines". Falls back to {1,1,1} on an empty tuning. */
+    /* Fill `out` (R, G, B) with the cold-start WB gains the shader
+     * should apply before any AWB tick has landed. Source is
+     * awb.v4.FusionLights[FusionInitLight], NVIDIA's calibrated
+     * default illuminant in post-optical-black raw RGB. Returned
+     * values are *G-unity-normalised shader gains* — i.e. the
+     * multiplier each channel needs to reach G_raw:
+     *   out[0] = G_raw / R_raw
+     *   out[1] = 1.0
+     *   out[2] = G_raw / B_raw
+     * which is exactly the gray-world result BasicIpa's per-frame
+     * AWB produces, so cold-start and converged steady-state live
+     * in the same domain and there's no jump at the first tick.
+     * Falls back to {1, 1, 1} when the tuning has no FusionLights
+     * section or the chosen entry has a zero channel after BL
+     * subtract — caller gets unity priors in that case. */
     void defaultWbGain(float out[3]) const;
 
     /* Estimate scene CCT (Kelvin) from a raw-Bayer chromaticity U.

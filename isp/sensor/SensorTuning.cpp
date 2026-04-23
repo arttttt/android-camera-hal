@@ -169,6 +169,37 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
         if (v4.isMember("SmoothingWpTrackingFraction"))
             mAwbParams.smoothingWpTrackingFraction =
                 v4["SmoothingWpTrackingFraction"].asFloat();
+
+        /* Pre-compute the cold-start anchor from FusionLights at
+         * FusionInitLight. Each FusionLight is [R, GR, GB, B] raw
+         * means under one tuned illuminant; the default index is
+         * the one NVIDIA ships as "start here". Subtract
+         * opticalBlack.r so the RGB lives in the same post-BL
+         * domain BasicIpa's stats work in. */
+        const Json::Value &lights = v4["FusionLights"];
+        const Json::Value &init   = v4["FusionInitLight"];
+        if (lights.isArray() && init.isNumeric()) {
+            const int idx = init.asInt();
+            if (idx >= 0 && idx < (int)lights.size()
+             && lights[idx].isArray() && lights[idx].size() == 4) {
+                const float R  = lights[idx][0].asFloat();
+                const float GR = lights[idx][1].asFloat();
+                const float GB = lights[idx][2].asFloat();
+                const float B  = lights[idx][3].asFloat();
+                const int   bl = mOpticalBlack.r;
+                const float fR = (R  > bl) ? (R  - bl) : 0.f;
+                const float fG = ((GR + GB) * 0.5f > bl)
+                               ? ((GR + GB) * 0.5f - bl) : 0.f;
+                const float fB = (B  > bl) ? (B  - bl) : 0.f;
+                if (fR > 0.f && fG > 0.f && fB > 0.f) {
+                    mAwbParams.defaultRawR = fR;
+                    mAwbParams.defaultRawG = fG;
+                    mAwbParams.defaultRawB = fB;
+                    mAwbParams.blackLevelAssumed = bl;
+                    mAwbParams.defaultRawValid = true;
+                }
+            }
+        }
     }
 
     const Json::Value &ae = active["ae"];
@@ -270,17 +301,17 @@ void SensorTuning::wbGainForCct(int cctK, float out[3]) const {
 }
 
 void SensorTuning::defaultWbGain(float out[3]) const {
-    if (mCcmSets.empty()) {
-        out[0] = out[1] = out[2] = 1.0f;
+    if (mAwbParams.defaultRawValid
+     && mAwbParams.defaultRawR > 0.f
+     && mAwbParams.defaultRawG > 0.f
+     && mAwbParams.defaultRawB > 0.f) {
+        const float G = mAwbParams.defaultRawG;
+        out[0] = G / mAwbParams.defaultRawR;
+        out[1] = 1.0f;
+        out[2] = G / mAwbParams.defaultRawB;
         return;
     }
-    const CcmSet *best = &mCcmSets[0];
-    for (size_t i = 1; i < mCcmSets.size(); i++) {
-        if (mCcmSets[i].cctK > best->cctK) best = &mCcmSets[i];
-    }
-    out[0] = best->wbGain[0];
-    out[1] = best->wbGain[1];
-    out[2] = best->wbGain[2];
+    out[0] = out[1] = out[2] = 1.0f;
 }
 
 namespace {

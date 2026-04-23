@@ -52,6 +52,16 @@ ACTIVE_PREFIXES = (
     "awb.v4.CStatsMinThreshold",
     "awb.v4.CStatsDarkThreshold",
     "awb.v4.SmoothingWpTrackingFraction",
+    # NVIDIA's calibrated reference illuminants + the default start
+    # index. FusionLights is the list of raw [R, GR, GB, B] at each
+    # tuned light source; FusionInitLight is the index to use before
+    # any stats have arrived. BasicIpa uses the entry at that index
+    # as the cold-start WB anchor — far better than picking any
+    # CcmSet's wbGain, whose normalisation convention differs between
+    # the two shipped tunings and produced a green-biased prior on
+    # OV5693.
+    "awb.v4.FusionLights",
+    "awb.v4.FusionInitLight",
     # Mean-luma AE setpoint + speed + ratio clamps. BasicIpa blends
     # HigherTarget / LowerTarget to a single pre-gamma setpoint,
     # reads ConvergeSpeed as its EMA damping, and converts the f-stop

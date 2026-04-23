@@ -518,11 +518,17 @@ void Camera::buildInfrastructure() {
      * tick via BasicIpa's U → CCT → LERP path. Tunings without
      * awb.v4 fall back to nearest-CCT pick at the same daylight
      * anchor via the legacy ccmForCctQ10 route. */
+    /* `wbGainPrior` now carries ready-to-apply shader gains —
+     * (G/R, 1.0, G/B) of NVIDIA's FusionInitLight raw anchor, post
+     * black-level. BasicIpa consumes wbGainPrior[0] / wbGainPrior[1]
+     * as wbRPrior and [2] / [1] as wbBPrior (both yield G/{R,B} as
+     * the gray-world R and B multipliers). For the CCM seed we need
+     * the same U = ln(G/B) the per-frame AWB loop uses, which is
+     * directly wbGainPrior[2]. */
     float wbGainPrior[3];
     mTuning.defaultWbGain(wbGainPrior);
-    if (mTuning.awbParams().loaded
-     && wbGainPrior[1] > 0.f && wbGainPrior[2] > 0.f) {
-        const float uSeed = logf(wbGainPrior[1] / wbGainPrior[2]);
+    if (mTuning.awbParams().loaded && wbGainPrior[2] > 0.f) {
+        const float uSeed = logf(wbGainPrior[2]);
         mTuning.ccmForCctLerpQ10(mTuning.estimateCctFromU(uSeed), mCcmQ10);
     } else if (!mTuning.ccmSets().empty()) {
         int daylightCctK = mTuning.ccmSets().front().cctK;
