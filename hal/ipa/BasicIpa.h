@@ -8,6 +8,7 @@
 namespace android {
 
 class  IspPipeline;
+class  SensorTuning;
 struct SensorConfig;
 
 /* Real 3A over the raw-Bayer IpaStats that NeonStatsEncoder produces.
@@ -38,9 +39,22 @@ public:
      * AWB loop starts here on construction and drifts back here on
      * reset(); gray-world's EMA pulls away from this baseline only as
      * the scene gives it reason to. Falls back to unity safely when
-     * the tuning has no CCT sets (all three entries = 1.0). */
+     * the tuning has no CCT sets (all three entries = 1.0).
+     *
+     * `tuning` and `ccmBufferQ10` together drive CCT-aware CCM
+     * selection: every AWB tick that updates the gains also writes a
+     * fresh row-major Q10 CCM into `ccmBufferQ10`, picking / blending
+     * between the sensor's calibrated (wbGain, ccMatrix) anchors.
+     * The buffer is caller-owned (Camera's mCcmQ10) and the same
+     * pointer the ISP has already been handed via setCcm — updating
+     * it in place lets the next demosaic submit read fresh coefficients
+     * without any extra plumbing. Pass tuning == nullptr to disable
+     * the CCT drive and keep the initial CCM stable (test / fallback
+     * path). */
     BasicIpa(const SensorConfig &sensorCfg, IspPipeline *isp,
-             const float wbGainPrior[3]);
+             const SensorTuning *tuning,
+             const float wbGainPrior[3],
+             int16_t *ccmBufferQ10);
 
     DelayedControls::Batch processStats(uint32_t inputSequence,
                                         const IpaStats &stats,
@@ -48,8 +62,10 @@ public:
     void reset() override;
 
 private:
-    const SensorConfig &sensorCfg;
-    IspPipeline        *isp;
+    const SensorConfig  &sensorCfg;
+    IspPipeline         *isp;
+    const SensorTuning  *tuning;
+    int16_t             *ccmBufferQ10;
 
     /* AE state. Tracks the last-published decision (not the sensor's
      * actual state). Stays in sync with reality while AE is running

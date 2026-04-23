@@ -87,6 +87,27 @@ public:
      * so callers get a safe unity fallback. */
     void wbGainForCct(int cctK, float out[3]) const;
 
+    /* Fill `out` (9 entries, row-major Q10) with the CCM closest to a
+     * scene whose raw-domain gray-world gains are (rRatio, bRatio) —
+     * that is, the scene's lastWbR / lastWbB (R and B multipliers to
+     * reach neutral, with G pinned at unity).
+     *
+     * Matching is done in (wbGain[0]/wbGain[1], wbGain[2]/wbGain[1])
+     * space against each CcmSet's priors, which removes the need for
+     * an explicit CCT estimator: the sensor's calibrated (gains,CCM)
+     * pairs act as anchors and we pick by nearest anchor in gain
+     * space, linearly blending between the two closest so the CCM
+     * transitions smoothly as the scene's illuminant drifts.
+     *
+     * Fallback behaviour:
+     *   - 0 sets: identity (1024, 0, 0, 0, 1024, 0, 0, 0, 1024).
+     *   - 1 set: that set's CCM directly.
+     *   - 2+ sets: inverse-distance blend of the two nearest.
+     *
+     * Row/column convention matches ccmForCctQ10 (transposed on write
+     * from the NVIDIA .isp layout to the shader's OUTPUT-row layout). */
+    void ccmForGainsQ10(float rRatio, float bRatio, int16_t out[9]) const;
+
 private:
     bool mLoaded;
     bool mHasAf;

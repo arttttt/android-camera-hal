@@ -213,4 +213,101 @@ void SensorTuning::wbGainForCct(int cctK, float out[3]) const {
     out[2] = best->wbGain[2];
 }
 
+namespace {
+
+/* Write the CcmSet's float ccMatrix into `out` as row-major Q10,
+ * applying the same .isp→shader transpose ccmForCctQ10 uses. Kept
+ * here so both single-set and blended paths share one code path for
+ * the sign-clamp / round-to-nearest. */
+void emitCcmQ10(const SensorTuning::CcmSet &s, int16_t out[9]) {
+    for (int r = 0; r < 3; r++) {
+        for (int c = 0; c < 3; c++) {
+            float v = s.ccMatrix[c][r] * 1024.0f;
+            if (v > 32767.0f)  v = 32767.0f;
+            if (v < -32768.0f) v = -32768.0f;
+            out[r * 3 + c] = (int16_t)(v > 0 ? v + 0.5f : v - 0.5f);
+        }
+    }
+}
+
+/* Blend two CcmSets' float ccMatrix entries by `wa` (weight on `a`)
+ * and 1-wa on `b`, then emit Q10 with the same transpose / clamp /
+ * round semantics as emitCcmQ10. */
+void emitBlendedCcmQ10(const SensorTuning::CcmSet &a,
+                       const SensorTuning::CcmSet &b,
+                       float wa, int16_t out[9]) {
+    const float wb = 1.0f - wa;
+    for (int r = 0; r < 3; r++) {
+        for (int c = 0; c < 3; c++) {
+            float v = (wa * a.ccMatrix[c][r] + wb * b.ccMatrix[c][r]) * 1024.0f;
+            if (v > 32767.0f)  v = 32767.0f;
+            if (v < -32768.0f) v = -32768.0f;
+            out[r * 3 + c] = (int16_t)(v > 0 ? v + 0.5f : v - 0.5f);
+        }
+    }
+}
+
+} /* namespace */
+
+void SensorTuning::ccmForGainsQ10(float rRatio, float bRatio,
+                                    int16_t out[9]) const {
+    if (mCcmSets.empty()) {
+        static const int16_t kIdentity[9] = {
+            1024, 0, 0,
+            0, 1024, 0,
+            0, 0, 1024,
+        };
+        memcpy(out, kIdentity, sizeof(kIdentity));
+        return;
+    }
+
+    if (mCcmSets.size() == 1) {
+        emitCcmQ10(mCcmSets[0], out);
+        return;
+    }
+
+    /* Score each set by squared distance in the (R/G, B/G) prior
+     * space. Keep the two smallest so we can LERP between them for
+     * smooth transitions instead of snapping CCM at each set
+     * boundary. */
+    const CcmSet *a  = nullptr; float aDist = 0.f;
+    const CcmSet *b  = nullptr; float bDist = 0.f;
+    for (size_t i = 0; i < mCcmSets.size(); ++i) {
+        const CcmSet &s = mCcmSets[i];
+        /* Guard against a set with G == 0 (would make the prior
+         * meaningless); treat as unreachable. awbMinChannel on the
+         * IPA side already filters scenes with G below this floor,
+         * so a tuning with G == 0 can only come from corrupt JSON. */
+        if (s.wbGain[1] <= 0.f) continue;
+        const float rp = s.wbGain[0] / s.wbGain[1];
+        const float bp = s.wbGain[2] / s.wbGain[1];
+        const float dr = rp - rRatio;
+        const float db = bp - bRatio;
+        const float d  = dr * dr + db * db;
+        if (!a || d < aDist) {
+            b = a; bDist = aDist;
+            a = &s; aDist = d;
+        } else if (!b || d < bDist) {
+            b = &s; bDist = d;
+        }
+    }
+
+    if (!a) {
+        /* All entries had an unusable G — fall back to nearest CCT. */
+        emitCcmQ10(mCcmSets[0], out);
+        return;
+    }
+    if (!b) {
+        emitCcmQ10(*a, out);
+        return;
+    }
+
+    /* Inverse-distance LERP: scene at a → wa=1; midway → wa=0.5;
+     * scene at b → wa=0. Tiny epsilon on the denominator so scene ==
+     * a (aDist=0) yields wa=1 without a divide-by-zero. */
+    const float sum = aDist + bDist + 1e-9f;
+    const float wa  = bDist / sum;
+    emitBlendedCcmQ10(*a, *b, wa, out);
+}
+
 }; /* namespace android */

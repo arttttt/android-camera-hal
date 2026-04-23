@@ -8,6 +8,7 @@
 #include "IpaStats.h"
 #include "IspPipeline.h"
 #include "sensor/SensorConfig.h"
+#include "sensor/SensorTuning.h"
 
 namespace android {
 
@@ -84,9 +85,13 @@ unsigned toQ8(float x) {
 } /* namespace */
 
 BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
-                   const float wbGainPrior[3])
+                   const SensorTuning *sensorTuning,
+                   const float wbGainPrior[3],
+                   int16_t *ccmBufQ10)
     : sensorCfg(cfg),
       isp(ispPipeline),
+      tuning(sensorTuning),
+      ccmBufferQ10(ccmBufQ10),
       lastExposureUs(cfg.exposureDefault),
       lastGain(cfg.gainDefault),
       /* Normalise the R / B priors against G so the shader-side WB
@@ -106,6 +111,15 @@ void BasicIpa::reset() {
     lastGain       = sensorCfg.gainDefault;
     lastWbR        = wbRPrior;
     lastWbB        = wbBPrior;
+
+    /* Re-write the prior-CCT CCM into the shared buffer so the next
+     * session starts from a calibrated neutral even before the first
+     * AWB tick runs. The ISP's setCcm registered this buffer at
+     * infrastructure build time — updating its contents in place is
+     * enough; no re-setCcm call needed. */
+    if (tuning && ccmBufferQ10) {
+        tuning->ccmForGainsQ10(wbRPrior, wbBPrior, ccmBufferQ10);
+    }
 }
 
 DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
@@ -175,6 +189,17 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
          * into the pipeline's uniform cache, next demosaic picks them
          * up. */
         isp->setWbGains(toQ8(lastWbR), wbGainUnityQ8, toQ8(lastWbB));
+
+        /* CCT-aware CCM. Pick / blend the matching CcmSet in
+         * (R/G, B/G) prior space against the just-updated gains and
+         * write the Q10 coefficients straight into the shared buffer
+         * the ISP already reads on every submit. Gated on the same
+         * awbRun so manual AWB / lock / AF sweep freeze CCM in
+         * lockstep with the gains — a scene where WB is frozen but
+         * CCM keeps drifting would produce visible hue shifts. */
+        if (tuning && ccmBufferQ10) {
+            tuning->ccmForGainsQ10(lastWbR, lastWbB, ccmBufferQ10);
+        }
     }
 
     /* Manual AE hands exposure / gain authority to the framework.
