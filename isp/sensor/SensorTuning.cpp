@@ -193,4 +193,24 @@ void SensorTuning::ccmForCctQ10(int cctK, int16_t out[9]) const {
     }
 }
 
+void SensorTuning::wbGainForCct(int cctK, float out[3]) const {
+    if (mCcmSets.empty()) {
+        out[0] = out[1] = out[2] = 1.0f;
+        return;
+    }
+
+    const CcmSet *best = &mCcmSets[0];
+    int bestDelta = abs(best->cctK - cctK);
+    for (size_t i = 1; i < mCcmSets.size(); i++) {
+        int d = abs(mCcmSets[i].cctK - cctK);
+        if (d < bestDelta) {
+            bestDelta = d;
+            best = &mCcmSets[i];
+        }
+    }
+    out[0] = best->wbGain[0];
+    out[1] = best->wbGain[1];
+    out[2] = best->wbGain[2];
+}
+
 }; /* namespace android */

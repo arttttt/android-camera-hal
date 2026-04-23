@@ -504,10 +504,17 @@ void Camera::buildInfrastructure() {
         mIsp->setBlackLevel(mTuning.opticalBlack().r);
 
     /* CCM pinned at 5000 K for now. Per-CCT selection + interpolation
-     * + wbGain priors arrive with the Tier 3 AWB module; see
-     * docs/open-questions.md. */
+     * lands with a future AWB module; see docs/open-questions.md. */
     mTuning.ccmForCctQ10(5000, mCcmQ10);
     mIsp->setCcm(mCcmQ10);
+
+    /* Per-CCT WB priors at the same 5000 K pin. Consumed by BasicIpa
+     * as the anchor its gray-world EMA drifts back toward — prevents
+     * a scene with a strong colour bias (green LED backlight, red
+     * car) from pumping WB away from the sensor's calibrated neutral.
+     * Falls back to unity if the tuning has no CCT sets. */
+    float wbGainPrior[3];
+    mTuning.wbGainForCct(5000, wbGainPrior);
 
     /* Soft-ISP path owns exposure + AF; HW-ISP firmware owns them
      * otherwise. */
@@ -540,7 +547,7 @@ void Camera::buildInfrastructure() {
      * silicon control-delay config so push / apply sequences align.
      * Built here before the request pipeline so ApplySettingsStage
      * can receive the DelayedControls pointer at construction. */
-    mIpa.reset(new BasicIpa(mSensorCfg, mIsp));
+    mIpa.reset(new BasicIpa(mSensorCfg, mIsp, wbGainPrior));
     {
         DelayedControls::Config cfg;
         for (int i = 0; i < DelayedControls::COUNT; ++i) {

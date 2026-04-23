@@ -83,19 +83,29 @@ unsigned toQ8(float x) {
 
 } /* namespace */
 
-BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline)
+BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
+                   const float wbGainPrior[3])
     : sensorCfg(cfg),
       isp(ispPipeline),
       lastExposureUs(cfg.exposureDefault),
       lastGain(cfg.gainDefault),
-      lastWbR(1.0f),
-      lastWbB(1.0f) {}
+      /* Normalise the R / B priors against G so the shader-side WB
+       * (which keeps G at unity) stays consistent. Guard against a
+       * zero G entry with the same floor the per-frame AWB uses — a
+       * tuning with G == 0 would mean "no prior", and unity is the
+       * safest fallback. */
+      wbRPrior(wbGainPrior[1] > awbMinChannel
+               ? wbGainPrior[0] / wbGainPrior[1] : 1.0f),
+      wbBPrior(wbGainPrior[1] > awbMinChannel
+               ? wbGainPrior[2] / wbGainPrior[1] : 1.0f),
+      lastWbR(wbRPrior),
+      lastWbB(wbBPrior) {}
 
 void BasicIpa::reset() {
     lastExposureUs = sensorCfg.exposureDefault;
     lastGain       = sensorCfg.gainDefault;
-    lastWbR        = 1.0f;
-    lastWbB        = 1.0f;
+    lastWbR        = wbRPrior;
+    lastWbB        = wbBPrior;
 }
 
 DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,

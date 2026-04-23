@@ -77,6 +77,16 @@ public:
      * Vulkan ISP stores the pointer). */
     void ccmForCctQ10(int cctK, int16_t out[9]) const;
 
+    /* Fill `out` (3 entries: R, G, B) with the float WB prior gains from
+     * the nearest-CCT CcmSet to `cctK`. These are the per-sensor neutral
+     * priors NVIDIA ships in the .isp for that illuminant — a raw-domain
+     * gray-world AWB that starts from unity drifts away from a neutral
+     * white if the sensor's native channel response isn't balanced; the
+     * priors are the point the AWB should decay back to in the absence
+     * of better info. If the tuning has no sets, writes {1.0, 1.0, 1.0}
+     * so callers get a safe unity fallback. */
+    void wbGainForCct(int cctK, float out[3]) const;
+
 private:
     bool mLoaded;
     bool mHasAf;

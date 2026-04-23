@@ -32,7 +32,15 @@ struct SensorConfig;
  * (< 1 ms on Tegra K1 CPU). */
 class BasicIpa : public Ipa {
 public:
-    BasicIpa(const SensorConfig &sensorCfg, IspPipeline *isp);
+    /* `wbGainPrior` carries the sensor's per-CCT neutral priors (R, G, B)
+     * from SensorTuning. BasicIpa normalises to R/G and B/G so the
+     * shader-side WB, which keeps G at unity, sees the same white. The
+     * AWB loop starts here on construction and drifts back here on
+     * reset(); gray-world's EMA pulls away from this baseline only as
+     * the scene gives it reason to. Falls back to unity safely when
+     * the tuning has no CCT sets (all three entries = 1.0). */
+    BasicIpa(const SensorConfig &sensorCfg, IspPipeline *isp,
+             const float wbGainPrior[3]);
 
     DelayedControls::Batch processStats(uint32_t inputSequence,
                                         const IpaStats &stats,
@@ -50,9 +58,14 @@ private:
     int32_t lastExposureUs;
     int32_t lastGain;
 
-    /* AWB state. R / B gain multipliers relative to G (which is
-     * pinned at unity). Floats so the EMA damps cleanly between
-     * frames; converted to Q8 only at the setWbGains boundary. */
+    /* AWB state. R / B gain multipliers relative to G (G pinned at
+     * unity on the shader side). The prior values come from the
+     * sensor's tuned wbGain at our pinned CCT (5000K today) — the
+     * "neutral white on this sensor" point. Floats so the EMA damps
+     * cleanly between frames; converted to Q8 only at the setWbGains
+     * boundary. */
+    float   wbRPrior;
+    float   wbBPrior;
     float   lastWbR;
     float   lastWbB;
 };
