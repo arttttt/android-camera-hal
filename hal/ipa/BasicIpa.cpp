@@ -355,10 +355,13 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
         const int32_t diagGainClamped =
             diagGain > sensorCfg.gainMax ? sensorCfg.gainMax
                                           : (diagGain < 1 ? 1 : diagGain);
-        ALOGD("3A: frame=%u luma=%.3f nValid=%d awbRun=%d lastWb=(%.3f,%.3f) "
+        ALOGD("3A: frame=%u luma=%.3f nValid=%d awbRun=%d "
+              "lastWb=(%.3f,%.3f) wbPrior=(%.3f,%.3f) firstTick=%d "
               "Q8=(%u,%u) estCct=%d totalUs=%.0f exp=%d gain=%d gainClamp=%d",
               frameCount, (double)sceneLuma, diagNValid, awbRun ? 1 : 0,
               (double)lastWbR, (double)lastWbB,
+              (double)wbRPrior, (double)wbBPrior,
+              awbFirstTick ? 1 : 0,
               toQ8(lastWbR), toQ8(lastWbB),
               diagEstCct, (double)lastTotalUs, diagExp,
               diagGain, diagGainClamped);
