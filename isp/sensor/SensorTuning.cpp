@@ -143,6 +143,23 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
         mAwbRefs.cctFluorescent  = mwb["fluorescent"].asInt();
     }
 
+    const Json::Value &v4 = active["awb"]["v4"];
+    if (v4.isObject()) {
+        auto read2 = [](const Json::Value &arr, float out[2]) -> bool {
+            if (!arr.isArray() || arr.size() != 2) return false;
+            out[0] = arr[0].asFloat();
+            out[1] = arr[1].asFloat();
+            return true;
+        };
+        const bool okToCct = read2(v4["UtoCCT"], mAwbParams.uToCct);
+        const bool okToU   = read2(v4["CCTtoU"], mAwbParams.cctToU);
+        if (okToCct && okToU && v4.isMember("LowU") && v4.isMember("HighU")) {
+            mAwbParams.lowU   = v4["LowU"].asFloat();
+            mAwbParams.highU  = v4["HighU"].asFloat();
+            mAwbParams.loaded = true;
+        }
+    }
+
     ALOGD("tuning loaded: %s (%s/%s) — %zu CCM sets, AF=%d, BL=(%d,%d,%d,%d)",
           fn.c_str(), sensor, integrator, mCcmSets.size(), mHasAf,
           mOpticalBlack.r, mOpticalBlack.gr, mOpticalBlack.gb, mOpticalBlack.b);
@@ -249,15 +266,24 @@ void emitBlendedCcmQ10(const SensorTuning::CcmSet &a,
 
 } /* namespace */
 
-void SensorTuning::ccmForGainsQ10(float rRatio, float bRatio,
-                                    int16_t out[9]) const {
+int SensorTuning::estimateCctFromU(float U) const {
+    if (!mAwbParams.loaded) return 0;
+    if (U < mAwbParams.lowU)  U = mAwbParams.lowU;
+    if (U > mAwbParams.highU) U = mAwbParams.highU;
+    const float cct = mAwbParams.uToCct[0] + mAwbParams.uToCct[1] * U;
+    if (cct < 1000.f)  return 1000;
+    if (cct > 20000.f) return 20000;
+    return (int)(cct + 0.5f);
+}
+
+void SensorTuning::ccmForCctLerpQ10(int estCctK, int16_t out[9]) const {
     if (mCcmSets.empty()) {
-        static const int16_t kIdentity[9] = {
+        static const int16_t identityQ10[9] = {
             1024, 0, 0,
             0, 1024, 0,
             0, 0, 1024,
         };
-        memcpy(out, kIdentity, sizeof(kIdentity));
+        memcpy(out, identityQ10, sizeof(identityQ10));
         return;
     }
 
@@ -266,48 +292,32 @@ void SensorTuning::ccmForGainsQ10(float rRatio, float bRatio,
         return;
     }
 
-    /* Score each set by squared distance in the (R/G, B/G) prior
-     * space. Keep the two smallest so we can LERP between them for
-     * smooth transitions instead of snapping CCM at each set
-     * boundary. */
-    const CcmSet *a  = nullptr; float aDist = 0.f;
-    const CcmSet *b  = nullptr; float bDist = 0.f;
+    /* Find the two CcmSets whose cctK brackets estCctK: the largest
+     * cctK <= estCctK (lo) and the smallest cctK >= estCctK (hi).
+     * Scene outside the bracket range — clamp to the nearer endpoint
+     * so extreme lighting (sodium-vapour, far UV) can't extrapolate
+     * a CCM that never existed in calibration. */
+    const CcmSet *lo = nullptr;
+    const CcmSet *hi = nullptr;
     for (size_t i = 0; i < mCcmSets.size(); ++i) {
         const CcmSet &s = mCcmSets[i];
-        /* Guard against a set with G == 0 (would make the prior
-         * meaningless); treat as unreachable. awbMinChannel on the
-         * IPA side already filters scenes with G below this floor,
-         * so a tuning with G == 0 can only come from corrupt JSON. */
-        if (s.wbGain[1] <= 0.f) continue;
-        const float rp = s.wbGain[0] / s.wbGain[1];
-        const float bp = s.wbGain[2] / s.wbGain[1];
-        const float dr = rp - rRatio;
-        const float db = bp - bRatio;
-        const float d  = dr * dr + db * db;
-        if (!a || d < aDist) {
-            b = a; bDist = aDist;
-            a = &s; aDist = d;
-        } else if (!b || d < bDist) {
-            b = &s; bDist = d;
+        if (s.cctK <= estCctK) {
+            if (!lo || s.cctK > lo->cctK) lo = &s;
+        }
+        if (s.cctK >= estCctK) {
+            if (!hi || s.cctK < hi->cctK) hi = &s;
         }
     }
 
-    if (!a) {
-        /* All entries had an unusable G — fall back to nearest CCT. */
-        emitCcmQ10(mCcmSets[0], out);
-        return;
-    }
-    if (!b) {
-        emitCcmQ10(*a, out);
-        return;
-    }
+    if (!lo) { emitCcmQ10(*hi, out); return; } /* scene cooler than coldest set */
+    if (!hi) { emitCcmQ10(*lo, out); return; } /* scene warmer than warmest set */
+    if (lo == hi) { emitCcmQ10(*lo, out); return; } /* exact match */
 
-    /* Inverse-distance LERP: scene at a → wa=1; midway → wa=0.5;
-     * scene at b → wa=0. Tiny epsilon on the denominator so scene ==
-     * a (aDist=0) yields wa=1 without a divide-by-zero. */
-    const float sum = aDist + bDist + 1e-9f;
-    const float wa  = bDist / sum;
-    emitBlendedCcmQ10(*a, *b, wa, out);
+    /* LERP weight in Kelvin. wa is the weight on `lo` (warmer end):
+     * estCctK == lo->cctK → wa=1; estCctK == hi->cctK → wa=0. */
+    const float span = (float)(hi->cctK - lo->cctK);
+    const float wa   = (float)(hi->cctK - estCctK) / span;
+    emitBlendedCcmQ10(*lo, *hi, wa, out);
 }
 
 }; /* namespace android */

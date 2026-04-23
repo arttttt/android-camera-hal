@@ -160,9 +160,23 @@
       "manualBiasGR": 64,
       "manualBiasGB": 64,
       "manualBiasB": 64
+    },
+    "awb": {
+      "v4": {
+        "UtoCCT": [
+          5878.934591269852,
+          -1798.081326135574
+        ],
+        "CCTtoU": [
+          0.000170098848,
+          0.305851561745
+        ],
+        "LowU": 0.5718,
+        "HighU": 1.5214
+      }
     }
   },
-  "_note": "`active` — consumed by the current HAL; hardcodes in code are replaced with reads from here. `reserved` — preserved verbatim from the stock NVIDIA .isp, not consumed yet; keys migrate to `active` as the corresponding shader stages ship.",
+  "_note": "`active` \u2014 consumed by the current HAL; hardcodes in code are replaced with reads from here. `reserved` \u2014 preserved verbatim from the stock NVIDIA .isp, not consumed yet; keys migrate to `active` as the corresponding shader stages ship.",
   "reserved": {
     "ae": {
       "AeGroupHoldQuirk": true,

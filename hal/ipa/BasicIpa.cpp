@@ -1,5 +1,6 @@
 #include "BasicIpa.h"
 
+#include <math.h>
 #include <stdint.h>
 
 #include <system/camera_metadata.h>
@@ -78,8 +79,33 @@ constexpr float awbGainMax = 4.0f;
  * unconditionally since R / B are expressed relative to G. */
 constexpr unsigned wbGainUnityQ8 = 256;
 
+/* Minimum mean luma (bin-weighted average over IpaStats::lumaHist,
+ * normalised to [0, 1]) required for AWB to run. Below this floor
+ * the raw-Bayer means are dominated by noise — gray-world would
+ * output random gains, CCT estimation would oscillate, and the
+ * picked CCM would thrash between CcmSet bracket endpoints. Hold
+ * the last known-good state instead. Value matches the ~bottom
+ * decile of a normally exposed daylight scene, well above the
+ * noise floor of IMX179 / OV5693 at gain-max. */
+constexpr float awbSceneLightFloor = 0.05f;
+
 unsigned toQ8(float x) {
     return (unsigned)(x * 256.0f + 0.5f);
+}
+
+/* Mean normalised luma from the green-channel histogram in
+ * IpaStats. Matches the metric AE uses so the light gate is
+ * calibrated against the same number AE optimises. */
+float meanLumaFromHist(const IpaStats &stats) {
+    uint32_t count = 0u;
+    uint64_t weightedSum = 0u;
+    for (int i = 0; i < IpaStats::HIST_BINS; ++i) {
+        count       += stats.lumaHist[i];
+        weightedSum += (uint64_t)i * stats.lumaHist[i];
+    }
+    if (count == 0u) return 0.f;
+    return (float)weightedSum
+         / ((float)count * (float)(IpaStats::HIST_BINS - 1));
 }
 
 } /* namespace */
@@ -112,13 +138,14 @@ void BasicIpa::reset() {
     lastWbR        = wbRPrior;
     lastWbB        = wbBPrior;
 
-    /* Re-write the prior-CCT CCM into the shared buffer so the next
-     * session starts from a calibrated neutral even before the first
-     * AWB tick runs. The ISP's setCcm registered this buffer at
-     * infrastructure build time — updating its contents in place is
-     * enough; no re-setCcm call needed. */
-    if (tuning && ccmBufferQ10) {
-        tuning->ccmForGainsQ10(wbRPrior, wbBPrior, ccmBufferQ10);
+    /* Re-seed the CCM buffer from the prior. Uses the same U→CCT→LERP
+     * path the per-frame update takes so a cold session starts
+     * aligned with where AWB will converge; tunings without awb.v4
+     * skip the reseed and leave whatever Camera loaded at build time. */
+    if (tuning && ccmBufferQ10 && tuning->awbParams().loaded) {
+        const float U       = logf(wbBPrior);
+        const int   estCctK = tuning->estimateCctFromU(U);
+        tuning->ccmForCctLerpQ10(estCctK, ccmBufferQ10);
     }
 }
 
@@ -138,11 +165,18 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
      * (IspPipeline::awbLocked, toggled by AutoFocusController). Preset
      * AWB modes (INCANDESCENT etc.) fall into the "hold" bucket for
      * now — plugging in SensorTuning's per-CCT wbGain priors is the
-     * next AWB commit. */
+     * next AWB commit.
+     *
+     * Low-light gate: below awbSceneLightFloor the patch means are
+     * noise-dominated; computing gains and CCT from them would pump
+     * the CCM between CcmSet brackets and show up as a hue swing.
+     * Holding last-known-good is the right behaviour there. */
+    const float sceneLuma = meanLumaFromHist(stats);
     const bool awbRun = (meta.awbMode == ANDROID_CONTROL_AWB_MODE_AUTO)
                      && (meta.awbLock == ANDROID_CONTROL_AWB_LOCK_OFF)
                      && (isp != nullptr)
-                     && !isp->awbLocked();
+                     && !isp->awbLocked()
+                     && (sceneLuma >= awbSceneLightFloor);
     if (awbRun) {
         /* Gray-world over rgbMean patches, with saturated / near-black
          * patch exclusion. The pre-WB / pre-CCM domain means a clipped
@@ -190,15 +224,21 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
          * up. */
         isp->setWbGains(toQ8(lastWbR), wbGainUnityQ8, toQ8(lastWbB));
 
-        /* CCT-aware CCM. Pick / blend the matching CcmSet in
-         * (R/G, B/G) prior space against the just-updated gains and
-         * write the Q10 coefficients straight into the shared buffer
-         * the ISP already reads on every submit. Gated on the same
-         * awbRun so manual AWB / lock / AF sweep freeze CCM in
-         * lockstep with the gains — a scene where WB is frozen but
-         * CCM keeps drifting would produce visible hue shifts. */
-        if (tuning && ccmBufferQ10) {
-            tuning->ccmForGainsQ10(lastWbR, lastWbB, ccmBufferQ10);
+        /* CCT-driven CCM. Convert the gray-world G/B ratio (= lastWbB
+         * in our R-and-B-relative-to-G normalisation) into the
+         * NVIDIA AWB-v4 chromaticity U = ln(G/B), pass through the
+         * sensor's calibrated U→CCT fit, then LERP between the two
+         * CcmSets whose cctK brackets the estimate. Gated on awbRun
+         * so manual AWB / lock / AF sweep freeze the CCM in lockstep
+         * with the gains — a scene where WB is frozen but CCM keeps
+         * drifting would produce visible hue shifts. Requires the
+         * tuning to have the awb.v4.{UtoCCT,CCTtoU,LowU,HighU}
+         * section; tunings that predate it just keep the boot-time
+         * CCM (set by Camera at buildInfrastructure). */
+        if (tuning && ccmBufferQ10 && tuning->awbParams().loaded) {
+            const float U       = logf(lastWbB);
+            const int   estCctK = tuning->estimateCctFromU(U);
+            tuning->ccmForCctLerpQ10(estCctK, ccmBufferQ10);
         }
     }
 

@@ -27,6 +27,7 @@
 #include <ui/GraphicBufferMapper.h>
 #include <ui/Fence.h>
 #include <assert.h>
+#include <math.h>
 #include <linux/videodev2.h>
 #include <libyuv/scale_argb.h>
 #include <libyuv/rotate_argb.h>
@@ -503,18 +504,28 @@ void Camera::buildInfrastructure() {
     if (mTuning.isLoaded())
         mIsp->setBlackLevel(mTuning.opticalBlack().r);
 
-    /* Seed mCcmQ10 with the prior-CCT matrix so the shader has a
-     * working CCM from the first frame; BasicIpa rewrites this same
-     * buffer per-frame once stats arrive, picking / blending the
-     * matching CcmSet in (R/G, B/G) prior space so the CCM tracks
-     * scene illuminant instead of staying pinned at one CCT. The
-     * pointer we hand to setCcm is stable for the life of Camera;
-     * the shader re-reads the contents on every submit. */
+    /* Seed mCcmQ10 so the shader has a working CCM from the first
+     * frame, before any stats are available. BasicIpa then rewrites
+     * this same buffer every AWB tick — its CCT estimate from
+     * ln(G/B) feeds into the CcmSet cctK LERP, so within a few
+     * frames the seed is replaced by an illuminant-matched CCM. The
+     * pointer handed to setCcm is stable for the life of Camera;
+     * the shader re-reads the contents on every submit.
+     *
+     * The seed CCT is deliberately daylight-ish (5000 K) so cold
+     * start on an unknown scene biases toward the dominant shooting
+     * condition. It is not a pin — once stats arrive it is overridden
+     * each frame. Tunings without awb.v4 fall back to pinned CCM
+     * selection (old ccmForCctQ10 path). */
     float wbGainPrior[3];
     mTuning.wbGainForCct(5000, wbGainPrior);
-    mTuning.ccmForGainsQ10(wbGainPrior[1] > 0.f ? wbGainPrior[0] / wbGainPrior[1] : 1.f,
-                            wbGainPrior[1] > 0.f ? wbGainPrior[2] / wbGainPrior[1] : 1.f,
-                            mCcmQ10);
+    if (mTuning.awbParams().loaded
+     && wbGainPrior[1] > 0.f && wbGainPrior[2] > 0.f) {
+        const float uSeed = logf(wbGainPrior[1] / wbGainPrior[2]);
+        mTuning.ccmForCctLerpQ10(mTuning.estimateCctFromU(uSeed), mCcmQ10);
+    } else {
+        mTuning.ccmForCctQ10(5000, mCcmQ10);
+    }
     mIsp->setCcm(mCcmQ10);
 
     /* Soft-ISP path owns exposure + AF; HW-ISP firmware owns them

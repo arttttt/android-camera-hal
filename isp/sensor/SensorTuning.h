@@ -50,6 +50,30 @@ public:
         int cctCloudy, cctShade, cctIncandescent, cctFluorescent;
     };
 
+    /* Fusion-AWB calibration from the .isp's awb.v4 block — the
+     * linear map between a scene chromaticity measure `U = ln(G/B)`
+     * (computed from raw Bayer means) and its colour temperature in
+     * Kelvin.
+     *
+     *   CCT = UtoCCT[0] + UtoCCT[1] * U
+     *
+     * `lowU` / `highU` clamp U before the conversion so far-off-
+     * calibration chromaticities don't extrapolate CCT beyond the
+     * range the polynomial was fit over. `loaded` lets callers
+     * detect tunings that predate this section and fall back to
+     * their pinned-CCT behaviour. */
+    struct AwbParams {
+        bool  loaded;
+        float uToCct[2];     /* UtoCCT — linear fit in U → Kelvin     */
+        float cctToU[2];     /* CCTtoU — inverse linear fit (unused
+                              *          today; kept for completeness)*/
+        float lowU;
+        float highU;
+        AwbParams() : loaded(false), cctToU{0,0}, lowU(0.f), highU(0.f) {
+            uToCct[0] = 0.f; uToCct[1] = 0.f;
+        }
+    };
+
     SensorTuning();
     ~SensorTuning();
 
@@ -69,6 +93,7 @@ public:
     const std::vector<CcmSet>&  ccmSets()       const { return mCcmSets; }
     const OpticalBlack&         opticalBlack()  const { return mOpticalBlack; }
     const AwbRefs&              awbRefs()       const { return mAwbRefs; }
+    const AwbParams&            awbParams()     const { return mAwbParams; }
 
     /* Fill `out` (9 entries, row-major 3x3) with the Q10 fixed-point CCM
      * closest to `cctK`. Uses nearest-CCT from ccmSets(); if the tuning
@@ -87,26 +112,30 @@ public:
      * so callers get a safe unity fallback. */
     void wbGainForCct(int cctK, float out[3]) const;
 
-    /* Fill `out` (9 entries, row-major Q10) with the CCM closest to a
-     * scene whose raw-domain gray-world gains are (rRatio, bRatio) —
-     * that is, the scene's lastWbR / lastWbB (R and B multipliers to
-     * reach neutral, with G pinned at unity).
+    /* Estimate scene CCT (Kelvin) from a raw-Bayer chromaticity U.
+     * Callers usually pass U = ln(meanG / meanB) = ln(lastWbB) from
+     * the gray-world AWB output. Clamps U into [lowU, highU] so
+     * far-off chromaticities don't extrapolate beyond the tuned
+     * range. Returns 0 when awbParams() isn't loaded — callers should
+     * treat that as "no estimate available" and fall back. */
+    int  estimateCctFromU(float U) const;
+
+    /* Fill `out` (9 entries, row-major Q10) with the CCM for a scene
+     * whose estimated CCT is `estCctK`, linearly interpolating in
+     * Kelvin between the two CcmSets whose cctK brackets the estimate.
      *
-     * Matching is done in (wbGain[0]/wbGain[1], wbGain[2]/wbGain[1])
-     * space against each CcmSet's priors, which removes the need for
-     * an explicit CCT estimator: the sensor's calibrated (gains,CCM)
-     * pairs act as anchors and we pick by nearest anchor in gain
-     * space, linearly blending between the two closest so the CCM
-     * transitions smoothly as the scene's illuminant drifts.
+     * Outside the CcmSet CCT range, clamps to the endpoint's CCM
+     * (so very warm or very cool scenes don't extrapolate into
+     * nonsense).
      *
      * Fallback behaviour:
      *   - 0 sets: identity (1024, 0, 0, 0, 1024, 0, 0, 0, 1024).
      *   - 1 set: that set's CCM directly.
-     *   - 2+ sets: inverse-distance blend of the two nearest.
+     *   - 2+ sets: sort by cctK, find the bracket, LERP.
      *
      * Row/column convention matches ccmForCctQ10 (transposed on write
      * from the NVIDIA .isp layout to the shader's OUTPUT-row layout). */
-    void ccmForGainsQ10(float rRatio, float bRatio, int16_t out[9]) const;
+    void ccmForCctLerpQ10(int estCctK, int16_t out[9]) const;
 
 private:
     bool mLoaded;
@@ -116,6 +145,7 @@ private:
     std::vector<CcmSet> mCcmSets;
     OpticalBlack mOpticalBlack;
     AwbRefs      mAwbRefs;
+    AwbParams    mAwbParams;
     std::string  mBayerPattern;
 };
 

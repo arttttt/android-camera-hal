@@ -126,9 +126,23 @@
       "manualBiasGR": 15,
       "manualBiasGB": 15,
       "manualBiasB": 15
+    },
+    "awb": {
+      "v4": {
+        "UtoCCT": [
+          6153.886634248389,
+          -1586.405238743936
+        ],
+        "CCTtoU": [
+          0.000162498931,
+          0.257789155542
+        ],
+        "LowU": 0.5408,
+        "HighU": 1.4559
+      }
     }
   },
-  "_note": "`active` — consumed by the current HAL; hardcodes in code are replaced with reads from here. `reserved` — preserved verbatim from the stock NVIDIA .isp, not consumed yet; keys migrate to `active` as the corresponding shader stages ship.",
+  "_note": "`active` \u2014 consumed by the current HAL; hardcodes in code are replaced with reads from here. `reserved` \u2014 preserved verbatim from the stock NVIDIA .isp, not consumed yet; keys migrate to `active` as the corresponding shader stages ship.",
   "reserved": {
     "ae": {
       "MeanAlg": {

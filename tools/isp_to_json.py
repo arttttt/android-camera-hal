@@ -40,6 +40,14 @@ ACTIVE_PREFIXES = (
     "colorCorrection.",
     "opticalBlack.",
     "mwbCCT.",
+    # Fusion-AWB calibration — the linear U↔CCT map and its U clamp.
+    # The HAL consumes these to estimate scene CCT from the gray-
+    # world gains NeonStatsEncoder produces, then picks / blends
+    # CcmSets by cctK.
+    "awb.v4.UtoCCT",
+    "awb.v4.CCTtoU",
+    "awb.v4.LowU",
+    "awb.v4.HighU",
 )
 
 # Line that starts a new assignment: `<path> = ...`. Path may contain
