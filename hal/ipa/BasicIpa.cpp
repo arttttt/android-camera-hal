@@ -58,6 +58,16 @@ constexpr float awbGainMax = 4.0f;
  * unconditionally since R / B are expressed relative to G. */
 constexpr unsigned wbGainUnityQ8 = 256;
 
+/* Hard cap on the per-frame AE state multiplier. 2 % per frame at
+ * 30 fps works out to a 1-stop correction in ~35 frames (≈1.2 s) —
+ * slow enough that no individual frame reads as a jump, fast enough
+ * that AE still tracks real lighting changes. Sits on top of the
+ * tuning's MaxFstopDelta × ConvergeSpeed chain, which in principle
+ * allows ~8 % per frame; user-visible smoothness trumps faster
+ * theoretical convergence. */
+constexpr float maxAeStep    = 1.02f;
+constexpr float maxAeStepInv = 1.0f / maxAeStep;
+
 /* Knob derivations from the sensor's tuning. No silent fallbacks —
  * if a field is absent or zero, the corresponding BasicIpa member
  * ends up at zero, which naturally disables the matching AWB / AE
@@ -163,7 +173,7 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
                ? wbGainPrior[2] / wbGainPrior[1] : 1.0f),
       lastWbR(wbRPrior),
       lastWbB(wbBPrior),
-      awbFirstTick(true),
+      smoothedLuma(0.f),
       smoothedAeMult(1.0f),
       frameCount(0) {
     const bool aeOK  = tuning && tuning->aeParams().loaded
@@ -208,7 +218,7 @@ void BasicIpa::reset() {
                    / (float)sensorCfg.gainUnit;
     lastWbR        = wbRPrior;
     lastWbB        = wbBPrior;
-    awbFirstTick   = true;
+    smoothedLuma   = 0.f;
     smoothedAeMult = 1.0f;
 
     /* Re-seed the shader with the priors so the next session starts
@@ -305,23 +315,16 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
             if (bGain < awbGainMin) bGain = awbGainMin;
             if (bGain > awbGainMax) bGain = awbGainMax;
 
-            /* First valid tick of the session: snap directly to the
-             * gray-world estimate instead of damping from the prior.
-             * Priors are sensor-neutral but have no scene-CCT
-             * information, so on a cold start in a warm indoor
-             * scene the EMA would spend ~20 frames crawling from
-             * the (daylight-ish) prior to the correct gains —
-             * visible as a held colour cast at low light, where
-             * damping isn't also hiding the drift. Damping resumes
-             * on the second tick. */
-            if (awbFirstTick) {
-                lastWbR = rGain;
-                lastWbB = bGain;
-                awbFirstTick = false;
-            } else {
-                lastWbR = awbDamping * rGain + (1.0f - awbDamping) * lastWbR;
-                lastWbB = awbDamping * bGain + (1.0f - awbDamping) * lastWbB;
-            }
+            /* Always damp. The old "first-tick snap" skipped damping
+             * on the very first valid tick and let lastWb jump from
+             * the FusionLights prior straight to the current frame's
+             * gray-world output — a visible WB shock even if the new
+             * state was closer to correct. With the priors coming
+             * from a real calibration anchor, the EMA at
+             * SmoothingWpTrackingFraction = 0.1 crawls to the scene
+             * colour in ~20 frames with no single-frame pops. */
+            lastWbR = awbDamping * rGain + (1.0f - awbDamping) * lastWbR;
+            lastWbB = awbDamping * bGain + (1.0f - awbDamping) * lastWbB;
         }
 
         /* Publish even when no update happened, so lock → unlock
@@ -358,12 +361,11 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
             diagGain > sensorCfg.gainMax ? sensorCfg.gainMax
                                           : (diagGain < 1 ? 1 : diagGain);
         ALOGD("3A: frame=%u luma=%.3f nValid=%d awbRun=%d "
-              "lastWb=(%.3f,%.3f) wbPrior=(%.3f,%.3f) firstTick=%d "
+              "lastWb=(%.3f,%.3f) wbPrior=(%.3f,%.3f) "
               "Q8=(%u,%u) estCct=%d totalUs=%.0f exp=%d gain=%d gainClamp=%d",
               frameCount, (double)sceneLuma, diagNValid, awbRun ? 1 : 0,
               (double)lastWbR, (double)lastWbB,
               (double)wbRPrior, (double)wbBPrior,
-              awbFirstTick ? 1 : 0,
               toQ8(lastWbR), toQ8(lastWbB),
               diagEstCct, (double)lastTotalUs, diagExp,
               diagGain, diagGainClamped);
@@ -403,6 +405,18 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
      * semantic (sensor noise prevents reliable readings below this),
      * so both loops share a single tuning knob. */
     if (meanLuma < awbMinChannel) meanLuma = awbMinChannel;
+
+    /* EMA the measured luma before the controller sees it. Static
+     * scene + hand-shake + sensor noise would otherwise wiggle raw
+     * meanLuma ±30 % frame to frame, which is more than the
+     * ToleranceIn dead-band is wide — the controller would enter
+     * and exit the dead-band on every other frame and AE would look
+     * visibly unstable. Seed on first hit so the filter doesn't
+     * spend its start-up ramp dragging from zero. */
+    if (smoothedLuma <= 0.f) smoothedLuma = meanLuma;
+    else                     smoothedLuma = aeDamping * meanLuma
+                                           + (1.0f - aeDamping) * smoothedLuma;
+    meanLuma = smoothedLuma;
 
     /* P-controller toward the setpoint, hard-clamped and EMA-damped.
      * Dead-band the adjustment when luma is already within
@@ -459,6 +473,14 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
      * smooth. */
     const float adjusted = 1.0f + (ratio - 1.0f) * aeDamping;
     smoothedAeMult = aeDamping * adjusted + (1.0f - aeDamping) * smoothedAeMult;
+
+    /* Hard-clamp the per-frame state multiplier to maxAeStep so a
+     * sustained dark→bright transition can't run the cascade at
+     * full ±6 % per frame for 30 frames and show up as a visible
+     * brightness ramp. Every AE tick now moves state by at most
+     * 2 %, which reads as gradual, not as a step. */
+    if (smoothedAeMult > maxAeStep)    smoothedAeMult = maxAeStep;
+    if (smoothedAeMult < maxAeStepInv) smoothedAeMult = maxAeStepInv;
 
     /* Accumulate in float "µs at unity gain" space. Exposure and
      * gain are only materialised at write-time via

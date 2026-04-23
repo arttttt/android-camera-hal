@@ -103,25 +103,19 @@ private:
     float   lastWbR;
     float   lastWbB;
 
-    /* True until the first AWB tick has a valid gray-world estimate.
-     * On that first tick we assign the gains directly (no EMA damp)
-     * so the boot frame of a scene the prior was wrong for — e.g.
-     * front cam opening in a warm 2700K room with a 5000K prior —
-     * doesn't spend dozens of frames crawling from the prior to the
-     * scene's colour. Steady-state damping resumes from the second
-     * tick onward. Reset back to true in reset() for every new
-     * session. */
-    bool    awbFirstTick;
+    /* Smoothed scene luma. Measurement noise and frame-to-frame
+     * scene flutter would otherwise push AE in and out of the
+     * dead-band on every other frame, which was visible as lost AE
+     * stability on a nominally static shot. EMA'd with ConvergeSpeed
+     * so the controller sees an already-low-passed reading. */
+    float   smoothedLuma;
 
-    /* Second-order smoothing on the AE per-frame multiplier. The
-     * first-order damped ratio (1 + (ratio-1)*aeDamping) is clamped
-     * to ±aeDamping×0.414 per frame (~8 % max on a 0.2 damping, 0.5
-     * stop clamp). On step scene changes that was still visible as a
-     * single jerky frame. Pass the multiplier through a second EMA
-     * (same ConvergeSpeed) before applying so the per-frame state
-     * change ramps up gradually — sub-2 % on the first few frames of
-     * a big input step, still reaching target in ~30 frames. Seeded
-     * to 1.0 (no-op) at ctor and on session reset. */
+    /* Second-order smoothing on the AE per-frame multiplier, then
+     * hard-clamped to a tight per-frame envelope so state can never
+     * step more than maxAeStep in one tick regardless of scene
+     * swings. User-facing effect: every AE adjustment is too small
+     * to be visible as a jump, even on huge scene changes — they
+     * converge smoothly over ~30–40 frames instead of a couple. */
     float   smoothedAeMult;
 
     /* Frame counter for throttled diagnostic logs. Incremented on
