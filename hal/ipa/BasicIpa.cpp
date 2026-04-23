@@ -55,62 +55,51 @@ constexpr float awbGainMax = 4.0f;
  * unconditionally since R / B are expressed relative to G. */
 constexpr unsigned wbGainUnityQ8 = 256;
 
-/* Fallbacks for the tuning-driven knobs (stored as BasicIpa members,
- * resolved at construction). Used when the tuning predates the
- * active.{awb.v4,ae} promotions or ships a zero where the HAL needs
- * a positive value. Match NVIDIA's reserved defaults so behaviour
- * is identical with or without the promotion. */
-constexpr float awbMinChannelFallback      = 0.02f;
-constexpr float awbSceneLightFloorFallback = 0.05f;
-constexpr float awbDampingFallback         = 0.15f;
-constexpr float aeSetpointFallback         = 0.18f;   /* 18 % middle grey, linear */
-constexpr float aeDampingFallback          = 0.2f;
-constexpr float aeRatioMinFallback         = 0.707f;  /* 2^-0.5 fstop */
-constexpr float aeRatioMaxFallback         = 1.414f;  /* 2^+0.5 fstop */
+/* Knob derivations from the sensor's tuning. No silent fallbacks —
+ * if a field is absent or zero, the corresponding BasicIpa member
+ * ends up at zero, which naturally disables the matching AWB / AE
+ * branch (awbDamping == 0 → EMA freezes, aeDamping == 0 → AE
+ * freezes, gated on flagged control modes). The contract is that
+ * `active.{ae,awb.v4}` is always populated for any shipping tuning;
+ * if it isn't, the IPA does nothing and V4L2 runs on the framework /
+ * manual path instead of sneaking in compile-time heuristics. */
 
-float pickAwbParam(const SensorTuning *t,
-                   float (SensorTuning::AwbParams::* field),
-                   float fallback) {
-    if (t && (t->awbParams().*field) > 0.f)
-        return t->awbParams().*field;
-    return fallback;
+float awbParam(const SensorTuning *t,
+               float (SensorTuning::AwbParams::* field)) {
+    return (t && (t->awbParams().*field) > 0.f) ? t->awbParams().*field : 0.f;
 }
 
 /* AE setpoint from the MeanAlg target pair. NVIDIA authors these in
- * the post-gamma 0..255 domain (so 110..120 sits just above sRGB
- * middle grey 0.45), but our histogram comes off the raw Bayer
- * green channel — it lives in linear pre-gamma [0, 1] space. Using
- * 115/255 ≈ 0.45 directly asks AE to push a scene 2.5× brighter
- * than the tuning actually targets, which over-exposes daylight
- * preview and pumps the loop hard because luma is always far below
- * the artificial target. Gamma-decode the midpoint with the
- * standard sRGB exponent (close enough to the photographer's 2.2
- * model for AE) so the setpoint lands near 18 % middle grey in the
- * linear domain — (115/255)^2.2 ≈ 0.174 on both shipped tunings. */
-float deriveAeSetpoint(const SensorTuning *t, float fallback) {
-    if (!t || !t->aeParams().loaded) return fallback;
+ * the post-gamma 0..255 domain (so 110..120 sits around sRGB middle
+ * grey 0.45 post-gamma); our histogram comes off the raw Bayer
+ * green channel in linear pre-gamma [0, 1] space. Gamma-decode the
+ * midpoint with the standard 2.2 exponent so the setpoint lands
+ * near 18 % middle grey linear — (115/255)^2.2 ≈ 0.174 for IMX179,
+ * (130/255)^2.2 ≈ 0.227 for OV5693 (different MeanAlg targets per
+ * sensor). */
+float deriveAeSetpoint(const SensorTuning *t) {
+    if (!t || !t->aeParams().loaded) return 0.f;
     const float mid = (t->aeParams().higherTarget
                      + t->aeParams().lowerTarget) * 0.5f;
-    if (mid <= 0.f) return fallback;
+    if (mid <= 0.f) return 0.f;
     return powf(mid / 255.0f, 2.2f);
 }
 
-float deriveAeDamping(const SensorTuning *t, float fallback) {
-    if (t && t->aeParams().loaded && t->aeParams().convergeSpeed > 0.f)
-        return t->aeParams().convergeSpeed;
-    return fallback;
+float deriveAeDamping(const SensorTuning *t) {
+    if (!t || !t->aeParams().loaded) return 0.f;
+    return t->aeParams().convergeSpeed;
 }
 
-float deriveAeRatioMax(const SensorTuning *t, float fallback) {
-    if (t && t->aeParams().loaded && t->aeParams().maxFstopDeltaPos > 0.f)
-        return powf(2.0f, t->aeParams().maxFstopDeltaPos);
-    return fallback;
+float deriveAeRatioMax(const SensorTuning *t) {
+    if (!t || !t->aeParams().loaded
+     || t->aeParams().maxFstopDeltaPos <= 0.f) return 0.f;
+    return powf(2.0f, t->aeParams().maxFstopDeltaPos);
 }
 
-float deriveAeRatioMin(const SensorTuning *t, float fallback) {
-    if (t && t->aeParams().loaded && t->aeParams().maxFstopDeltaNeg > 0.f)
-        return 1.0f / powf(2.0f, t->aeParams().maxFstopDeltaNeg);
-    return fallback;
+float deriveAeRatioMin(const SensorTuning *t) {
+    if (!t || !t->aeParams().loaded
+     || t->aeParams().maxFstopDeltaNeg <= 0.f) return 0.f;
+    return 1.0f / powf(2.0f, t->aeParams().maxFstopDeltaNeg);
 }
 
 unsigned toQ8(float x) {
@@ -142,19 +131,16 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
       isp(ispPipeline),
       tuning(sensorTuning),
       ccmBufferQ10(ccmBufQ10),
-      awbMinChannel(pickAwbParam(sensorTuning,
-                                 &SensorTuning::AwbParams::cStatsMinThreshold,
-                                 awbMinChannelFallback)),
-      awbSceneLightFloor(pickAwbParam(sensorTuning,
-                                       &SensorTuning::AwbParams::cStatsDarkThreshold,
-                                       awbSceneLightFloorFallback)),
-      awbDamping(pickAwbParam(sensorTuning,
-                              &SensorTuning::AwbParams::smoothingWpTrackingFraction,
-                              awbDampingFallback)),
-      aeSetpoint (deriveAeSetpoint (sensorTuning, aeSetpointFallback)),
-      aeDamping  (deriveAeDamping  (sensorTuning, aeDampingFallback)),
-      aeRatioMin (deriveAeRatioMin (sensorTuning, aeRatioMinFallback)),
-      aeRatioMax (deriveAeRatioMax (sensorTuning, aeRatioMaxFallback)),
+      awbMinChannel     (awbParam(sensorTuning,
+                                  &SensorTuning::AwbParams::cStatsMinThreshold)),
+      awbSceneLightFloor(awbParam(sensorTuning,
+                                  &SensorTuning::AwbParams::cStatsDarkThreshold)),
+      awbDamping        (awbParam(sensorTuning,
+                                  &SensorTuning::AwbParams::smoothingWpTrackingFraction)),
+      aeSetpoint (deriveAeSetpoint (sensorTuning)),
+      aeDamping  (deriveAeDamping  (sensorTuning)),
+      aeRatioMin (deriveAeRatioMin (sensorTuning)),
+      aeRatioMax (deriveAeRatioMax (sensorTuning)),
       lastTotalUs((float)cfg.exposureDefault * (float)cfg.gainDefault
                   / (float)cfg.gainUnit),
       /* Normalise the R / B priors against G so the shader-side WB
@@ -170,13 +156,23 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
       lastWbB(wbBPrior),
       awbFirstTick(true),
       frameCount(0) {
-    ALOGD("3A knobs: aeSetpoint=%.3f aeDamping=%.3f aeRatio=[%.3f,%.3f] "
-          "awbMinChannel=%.4f awbSceneLightFloor=%.4f awbDamping=%.3f "
-          "wbPrior=(%.3f,%.3f)",
+    const bool aeOK  = tuning && tuning->aeParams().loaded
+                      && aeSetpoint > 0.f && aeDamping > 0.f
+                      && aeRatioMin > 0.f && aeRatioMax > 0.f;
+    const bool awbOK = tuning && tuning->awbParams().loaded
+                      && awbMinChannel > 0.f
+                      && awbSceneLightFloor > 0.f
+                      && awbDamping > 0.f;
+    ALOGD("3A knobs: aeOK=%d aeSetpoint=%.3f aeDamping=%.3f aeRatio=[%.3f,%.3f] "
+          "awbOK=%d awbMinChannel=%.4f awbSceneLightFloor=%.4f awbDamping=%.3f "
+          "wbPrior=(%.3f,%.3f) tuningLoaded=%d",
+          aeOK ? 1 : 0,
           (double)aeSetpoint, (double)aeDamping,
           (double)aeRatioMin, (double)aeRatioMax,
+          awbOK ? 1 : 0,
           (double)awbMinChannel, (double)awbSceneLightFloor,
-          (double)awbDamping, (double)wbRPrior, (double)wbBPrior);
+          (double)awbDamping, (double)wbRPrior, (double)wbBPrior,
+          tuning ? (tuning->isLoaded() ? 1 : 0) : -1);
 
     /* Seed the shader immediately so the very first frame — before
      * any stats land — renders through the prior's WB gains instead
