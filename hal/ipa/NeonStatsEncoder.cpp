@@ -90,6 +90,7 @@ void NeonStatsEncoder::computeRange(const void *bayer,
                                      unsigned    width,
                                      unsigned    height,
                                      uint32_t    pixFmt,
+                                     uint32_t    blackLevel,
                                      Partial    *partial,
                                      int         pyStart,
                                      int         pyEnd) const {
@@ -104,6 +105,10 @@ void NeonStatsEncoder::computeRange(const void *bayer,
      * independent of the sensor bit depth while preserving full range
      * coverage. */
     const int      histShift = wide ? 3 : 1;
+
+    /* Cast once for the per-sample histogram subtract. sumCh keeps
+     * the raw accumulation and is corrected in bulk at finalize. */
+    const uint32_t bl = blackLevel;
 
     const uint16_t *p16 = reinterpret_cast<const uint16_t *>(bayer);
     const uint8_t  *p8  = reinterpret_cast<const uint8_t  *>(bayer);
@@ -165,7 +170,9 @@ void NeonStatsEncoder::computeRange(const void *bayer,
                         uint16_t gbuf[8];
                         vst1q_u16(gbuf, gIsEven ? p.val[0] : p.val[1]);
                         for (int i = 0; i < 8; ++i) {
-                            uint32_t bin = (uint32_t)gbuf[i] >> histShift;
+                            uint32_t v = (uint32_t)gbuf[i];
+                            v = (v > bl) ? (v - bl) : 0u;
+                            uint32_t bin = v >> histShift;
                             if (bin > 127u) bin = 127u;
                             partial->lumaHist[bin] += 1u;
                         }
@@ -235,7 +242,8 @@ void NeonStatsEncoder::computeRange(const void *bayer,
                     partial->cntCh[py][px][chan] += 1u;
 
                     if (chan == 1u) {
-                        uint32_t bin = v >> histShift;
+                        uint32_t vBin = (v > bl) ? (v - bl) : 0u;
+                        uint32_t bin = vBin >> histShift;
                         if (bin > 127u) bin = 127u;
                         partial->lumaHist[bin] += 1u;
                         scalarSobelStep(p16, p8, wide,
@@ -250,20 +258,37 @@ void NeonStatsEncoder::computeRange(const void *bayer,
 
 void NeonStatsEncoder::finalize(const Partial &partial,
                                  uint32_t       pixFmt,
+                                 uint32_t       blackLevel,
                                  IpaStats      *out) {
     if (!out) return;
     memset(out, 0, sizeof(*out));
 
     memcpy(out->lumaHist, partial.lumaHist, sizeof(out->lumaHist));
 
-    const float invMax = 1.0f / (float)(is10Bit(pixFmt) ? 1023 : 255);
+    /* Normalise against the signal range after optical-black, not the
+     * raw code range — matches the demosaic shader's rescale by
+     * 255 / (maxRaw - blackLevel). A tuning with blackLevel == 0 or
+     * a pathological blackLevel >= maxRaw degenerates to the old
+     * normalisation so AWB never divides by zero. */
+    const uint32_t maxRaw = is10Bit(pixFmt) ? 1023u : 255u;
+    const uint32_t denom  = (blackLevel < maxRaw) ? (maxRaw - blackLevel) : 1u;
+    const float invMax    = 1.0f / (float)denom;
+
     for (int py = 0; py < IpaStats::PATCH_Y; ++py) {
         for (int px = 0; px < IpaStats::PATCH_X; ++px) {
             for (int c = 0; c < 3; ++c) {
                 const uint32_t n = partial.cntCh[py][px][c];
                 if (n == 0u) continue;
-                out->rgbMean[py][px][c] =
-                    (float)partial.sumCh[py][px][c] / (float)n * invMax;
+                /* Bulk-subtract the optical-black bias: each sample
+                 * contributed raw = signal + blackLevel, so the sum
+                 * carries `n * blackLevel` of bias. Saturates at 0 on
+                 * under-exposed patches where the raw mean sat right
+                 * at the black floor. */
+                const uint64_t bias = (uint64_t)n * (uint64_t)blackLevel;
+                const uint64_t adj  = (partial.sumCh[py][px][c] > bias)
+                                      ? partial.sumCh[py][px][c] - bias
+                                      : 0ull;
+                out->rgbMean[py][px][c] = (float)adj / (float)n * invMax;
             }
             /* Cast u64 → float for the published IpaStats. Per-patch
              * sum peaks around 1.3e11 on extreme high-frequency scenes,
@@ -280,11 +305,13 @@ void NeonStatsEncoder::compute(const void *bayer,
                                 unsigned    width,
                                 unsigned    height,
                                 uint32_t    pixFmt,
+                                uint32_t    blackLevel,
                                 IpaStats   *out) const {
     Partial partial;
     resetPartial(&partial);
-    computeRange(bayer, width, height, pixFmt, &partial, 0, IpaStats::PATCH_Y);
-    finalize(partial, pixFmt, out);
+    computeRange(bayer, width, height, pixFmt, blackLevel,
+                 &partial, 0, IpaStats::PATCH_Y);
+    finalize(partial, pixFmt, blackLevel, out);
 }
 
 } /* namespace android */

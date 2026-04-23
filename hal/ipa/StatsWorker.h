@@ -64,6 +64,14 @@ public:
     StatsWorker();
     ~StatsWorker() override;
 
+    /* Sensor optical-black bias. Subtracted per-sample in the NEON
+     * histogram path and in bulk at finalize for sumCh, matching the
+     * demosaic shader's black-level correction so AWB and AE see the
+     * same signal space as what the shader renders. 0 disables the
+     * correction (legacy / tuning-less path). Must be set before
+     * start() and not changed while a cycle is in flight. */
+    void setBlackLevel(uint32_t bl) { blackLevel = bl; }
+
     /* Post the latest work to the worker. Overwrites any pending but
      * not-yet-started job. Safe from any thread. */
     void submit(const Job &job);
@@ -87,6 +95,7 @@ protected:
 
 private:
     NeonStatsEncoder encoder;
+    uint32_t         blackLevel;
 
     /* Producer → worker: pending latest job + a mutex-guarded "valid"
      * flag, woken via jobEvent. A separate eventfd lets the worker

@@ -58,19 +58,24 @@ public:
 
     /* All-at-once reduce. See class doc for the Partial-based form.
      *
-     * bayer    Tightly-packed raw Bayer frame. width * height pixels,
-     *          2 bytes/pixel on V4L2_PIX_FMT_S{RGGB,GRBG,GBRG,BGGR}10
-     *          (10-bit values stored in 16-bit, low bits valid),
-     *          1 byte/pixel on the 8-bit variants.
+     * bayer       Tightly-packed raw Bayer frame. width * height pixels,
+     *             2 bytes/pixel on V4L2_PIX_FMT_S{RGGB,GRBG,GBRG,BGGR}10
+     *             (10-bit values stored in 16-bit, low bits valid),
+     *             1 byte/pixel on the 8-bit variants.
      * width,
-     * height   Pixel dimensions of the Bayer frame.
-     * pixFmt   V4L2 fourcc. Selects bit depth and 2×2 CFA phase.
-     * out      Receives rgbMean, lumaHist and sharpness. Caller owns
-     *          the memory; overwrites it fully. */
+     * height      Pixel dimensions of the Bayer frame.
+     * pixFmt      V4L2 fourcc. Selects bit depth and 2×2 CFA phase.
+     * blackLevel  Per-sample optical-black bias the sensor encodes in
+     *             the raw output. Subtracted from each histogram
+     *             sample before binning and from every accumulated
+     *             sum at finalize time, matching what the demosaic
+     *             shader does downstream. 0 disables the correction
+     *             (tunings without an opticalBlack section). */
     void compute(const void *bayer,
                  unsigned    width,
                  unsigned    height,
                  uint32_t    pixFmt,
+                 uint32_t    blackLevel,
                  IpaStats   *out) const;
 
     /* Zero out a Partial so a fresh cycle can begin. */
@@ -80,19 +85,26 @@ public:
      * of calls is allowed provided the combined ranges cover
      * [0, PATCH_Y) exactly once before finalize(). `partial` must have
      * been zeroed by resetPartial() before the first call of a cycle;
-     * it is mutated in place. */
+     * it is mutated in place. `blackLevel` must be the same across all
+     * calls within one cycle. */
     void computeRange(const void *bayer,
                       unsigned    width,
                       unsigned    height,
                       uint32_t    pixFmt,
+                      uint32_t    blackLevel,
                       Partial    *partial,
                       int         pyStart,
                       int         pyEnd) const;
 
-    /* Emit IpaStats from the accumulated Partial. pixFmt selects the
-     * per-sample dynamic range used to normalise rgbMean to [0, 1]. */
+    /* Emit IpaStats from the accumulated Partial. `pixFmt` selects the
+     * raw dynamic range (1023 for 10-bit, 255 for 8-bit); `blackLevel`
+     * is then subtracted from every per-channel sum (sumCh already
+     * holds raw samples as accumulated) and from the range denominator
+     * so rgbMean is normalised against (maxRaw - blackLevel) — the
+     * actual signal headroom after optical-black correction. */
     static void finalize(const Partial &partial,
                          uint32_t       pixFmt,
+                         uint32_t       blackLevel,
                          IpaStats      *out);
 };
 

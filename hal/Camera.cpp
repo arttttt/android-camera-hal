@@ -499,10 +499,15 @@ void Camera::buildInfrastructure() {
     }
     mIsp->setEnabled(mSoftIspEnabled);
 
-    /* Optical-black bias: sensor-native analog floor. Constant per
-     * channel in stock tuning — one scalar is enough. */
+    /* Optical-black bias — set on the ISP only here; the same value is
+     * also pushed into StatsWorker further down, once that object has
+     * been constructed. Shared between the demosaic shader and the
+     * CPU stats encoder so both read the same signal space; mismatched
+     * bias on the stats side lets the offset dominate raw means on
+     * dark scenes and collapses the R/G/B ratios gray-world AWB
+     * needs. */
     if (mTuning.isLoaded())
-        mIsp->setBlackLevel(mTuning.opticalBlack().r);
+        mIsp->setBlackLevel((uint32_t)mTuning.opticalBlack().r);
 
     /* WB prior + seed CCM. Takes the hottest-CCT CcmSet the tuning
      * ships as the sensor's calibrated "daylight" anchor — no
@@ -548,6 +553,8 @@ void Camera::buildInfrastructure() {
     mPipelineQueue.reset(new EventQueue<PipelineContext*>(PIPELINE_QUEUE_CAPACITY));
     mRequestPipeline.reset(new Pipeline());
     mStatsWorker.reset(new StatsWorker());
+    if (mTuning.isLoaded())
+        mStatsWorker->setBlackLevel((uint32_t)mTuning.opticalBlack().r);
 
     /* 3A plumbing. BasicIpa runs the raw-Bayer AE loop over the
      * NeonStatsEncoder IpaStats; StatsProcessStage feeds it, its

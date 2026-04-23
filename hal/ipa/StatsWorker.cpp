@@ -11,7 +11,8 @@
 namespace android {
 
 StatsWorker::StatsWorker()
-    : pendingValid(false),
+    : blackLevel(0),
+      pendingValid(false),
       phase(0),
       latestSeq(0),
       latestValid(false) {
@@ -100,14 +101,15 @@ void StatsWorker::threadLoop() {
 
         encoder.computeRange(currentJob.bayer,
                              currentJob.width, currentJob.height,
-                             currentJob.pixFmt,
+                             currentJob.pixFmt, blackLevel,
                              &partial, pyStart, pyEnd);
 
         ++phase;
 
         if (phase >= StatsWorker::phaseCount) {
             IpaStats result;
-            NeonStatsEncoder::finalize(partial, currentJob.pixFmt, &result);
+            NeonStatsEncoder::finalize(partial, currentJob.pixFmt,
+                                        blackLevel, &result);
             {
                 std::lock_guard<std::mutex> lock(outLock);
                 latest      = result;
