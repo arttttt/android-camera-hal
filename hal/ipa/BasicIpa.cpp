@@ -110,11 +110,6 @@ float deriveAeTolIn(const SensorTuning *t) {
     return t->aeParams().toleranceIn;
 }
 
-float deriveAeTolOut(const SensorTuning *t) {
-    if (!t || !t->aeParams().loaded) return 0.f;
-    return t->aeParams().toleranceOut;
-}
-
 unsigned toQ8(float x) {
     return (unsigned)(x * 256.0f + 0.5f);
 }
@@ -155,7 +150,6 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
       aeRatioMin (deriveAeRatioMin (sensorTuning)),
       aeRatioMax (deriveAeRatioMax (sensorTuning)),
       aeToleranceInStops (deriveAeTolIn (sensorTuning)),
-      aeToleranceOutStops(deriveAeTolOut(sensorTuning)),
       lastTotalUs((float)cfg.exposureDefault * (float)cfg.gainDefault
                   / (float)cfg.gainUnit),
       /* Normalise the R / B priors against G so the shader-side WB
@@ -170,7 +164,7 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
       lastWbR(wbRPrior),
       lastWbB(wbBPrior),
       awbFirstTick(true),
-      aeConverged(false),
+      smoothedAeMult(1.0f),
       frameCount(0) {
     const bool aeOK  = tuning && tuning->aeParams().loaded
                       && aeSetpoint > 0.f && aeDamping > 0.f
@@ -215,7 +209,7 @@ void BasicIpa::reset() {
     lastWbR        = wbRPrior;
     lastWbB        = wbBPrior;
     awbFirstTick   = true;
-    aeConverged    = false;
+    smoothedAeMult = 1.0f;
 
     /* Re-seed the shader with the priors so the next session starts
      * from the sensor's calibrated daylight anchor even if the first
@@ -424,26 +418,19 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
     if (ratio < aeRatioMin) ratio = aeRatioMin;
     if (ratio > aeRatioMax) ratio = aeRatioMax;
 
-    /* Schmitt-trigger convergence gate from the tuning's Tolerance
-     * pair. We enter "converged" when luma settles within ToleranceIn
-     * stops of the setpoint and then hold AE state until it drifts
-     * past ToleranceOut stops (wider) — stops micro-jitter of the
-     * scene's mean luma from pushing AE around once it's happy, while
-     * a real lighting change still re-engages tracking.
-     *
-     * Thresholds of 0 (tuning missing) disable the gate and AE
-     * behaves as a pure P-controller. */
-    if (aeToleranceInStops > 0.f && aeToleranceOutStops > 0.f) {
+    /* Dead-band from the tuning's ToleranceIn: when luma is already
+     * within that many stops of the setpoint, hold the AE state and
+     * republish the current split so result metadata stays
+     * consistent. No Schmitt latch — the cascaded smoothing below is
+     * what keeps AE from jerking on micro-scene flutter; adding an
+     * exit-gate on top only made AE visibly freeze once it settled.
+     * While held, relax the smoothed multiplier back toward 1.0 so
+     * the next tick out of dead-band doesn't resume with a stale
+     * ramp. */
+    if (aeToleranceInStops > 0.f) {
         const float stops = log2f(ratio);
         const float absStops = stops < 0.f ? -stops : stops;
-        if (aeConverged) {
-            if (absStops > aeToleranceOutStops) aeConverged = false;
-        } else {
-            if (absStops < aeToleranceInStops)  aeConverged = true;
-        }
-        if (aeConverged) {
-            /* Held — republish the current split so result metadata
-             * stays consistent with the frozen state. */
+        if (absStops < aeToleranceInStops) {
             int32_t heldExposureUs, heldExtraGainQ8;
             sensorCfg.splitExposureGain((int32_t)(lastTotalUs + 0.5f),
                                          &heldExposureUs, &heldExtraGainQ8);
@@ -455,11 +442,23 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
             batch.val[DelayedControls::EXPOSURE] = heldExposureUs;
             batch.has[DelayedControls::GAIN]     = true;
             batch.val[DelayedControls::GAIN]     = heldGain;
+            smoothedAeMult = aeDamping * 1.0f
+                           + (1.0f - aeDamping) * smoothedAeMult;
             return batch;
         }
     }
 
+    /* Cascaded smoothing on the AE per-frame multiplier. The
+     * first-order damped ratio is itself EMA'd (same ConvergeSpeed)
+     * before being applied to the state. Effect: on a step scene
+     * change the per-frame state delta starts at ~damping² of the
+     * target (≈1 % at ConvergeSpeed=0.2) and ramps up smoothly,
+     * instead of jumping to damping×ratio_clamp (≈8 %) on the very
+     * first frame. Convergence envelope stays similar — a full stop
+     * is still closed in ~30 frames — but the ride is visibly
+     * smooth. */
     const float adjusted = 1.0f + (ratio - 1.0f) * aeDamping;
+    smoothedAeMult = aeDamping * adjusted + (1.0f - aeDamping) * smoothedAeMult;
 
     /* Accumulate in float "µs at unity gain" space. Exposure and
      * gain are only materialised at write-time via
@@ -474,7 +473,7 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
      * driver clamps to gainMax silently), producing lag and a
      * brightness overshoot on scene transitions. */
     const int32_t gainUnit = sensorCfg.gainUnit;
-    float newTotal = lastTotalUs * adjusted;
+    float newTotal = lastTotalUs * smoothedAeMult;
 
     const float maxTotal = (float)sensorCfg.maxExposureUsDefault()
                          * (float)sensorCfg.gainMax / (float)gainUnit;

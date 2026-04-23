@@ -79,8 +79,7 @@ private:
     float   aeDamping;           /* ConvergeSpeed                   */
     float   aeRatioMin;          /* 2^-MaxFstopDeltaNeg             */
     float   aeRatioMax;          /* 2^+MaxFstopDeltaPos             */
-    float   aeToleranceInStops;  /* ToleranceIn  — enter converged band */
-    float   aeToleranceOutStops; /* ToleranceOut — exit converged band */
+    float   aeToleranceInStops;  /* ToleranceIn — hard dead-band around setpoint */
 
     /* AE state. Total exposure at unity gain (µs) — the
      * exposureUs × gain / gainUnit scalar the controller accumulates
@@ -114,15 +113,16 @@ private:
      * session. */
     bool    awbFirstTick;
 
-    /* AE convergence latch — Schmitt-trigger hysteresis using the
-     * tuning's ToleranceIn (enter) / ToleranceOut (exit) thresholds.
-     * Once AE sees luma within ToleranceIn stops of the setpoint,
-     * aeConverged flips to true and subsequent updates are
-     * suppressed until luma drifts past ToleranceOut stops — so
-     * small scene flutter can no longer push AE around once it has
-     * settled, while a real lighting change still kicks it back
-     * into tracking mode. Reset on every session boundary. */
-    bool    aeConverged;
+    /* Second-order smoothing on the AE per-frame multiplier. The
+     * first-order damped ratio (1 + (ratio-1)*aeDamping) is clamped
+     * to ±aeDamping×0.414 per frame (~8 % max on a 0.2 damping, 0.5
+     * stop clamp). On step scene changes that was still visible as a
+     * single jerky frame. Pass the multiplier through a second EMA
+     * (same ConvergeSpeed) before applying so the per-frame state
+     * change ramps up gradually — sub-2 % on the first few frames of
+     * a big input step, still reaching target in ~30 frames. Seeded
+     * to 1.0 (no-op) at ctor and on session reset. */
+    float   smoothedAeMult;
 
     /* Frame counter for throttled diagnostic logs. Incremented on
      * every processStats entry; a single ALOGD fires per N frames. */
