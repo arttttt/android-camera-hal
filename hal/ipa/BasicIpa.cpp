@@ -18,13 +18,16 @@ namespace android {
 
 namespace {
 
-/* Exposure envelope used by the AE split. minTotalUs keeps sensor
- * readout honest; maxExposureUs keeps FPS inside the default
- * frame_length. Matches ExposureControl's own clamps so manual /
- * auto agree on reachable values. Sensor-spec, not colour tuning —
- * lives here rather than in the JSON. */
-constexpr int64_t minTotalUs     = 100;
-constexpr int64_t maxExposureUs  = 200000;
+/* Exposure and gain envelopes come from SensorConfig at write-time —
+ * no compile-time constants. `maxExposureUsDefault()` respects the
+ * sensor's default frame_length (so AE doesn't drop FPS by stretching
+ * exposure past one frame period), and `gainMax` is the live value
+ * V4L2 QUERYCTRL advertised on this driver. Using a HAL-side
+ * `maxExposureUs = 200000 µs` constant inflated the AE state ceiling
+ * to ~6× what the sensor can physically reach at 30 fps, so a dark
+ * scene saturated `lastTotalUs` into phantom territory and AE
+ * needed dozens of frames to unwind once the scene brightened —
+ * visible as daylight over-exposure + brightness pumping. */
 
 /* Saturation ceiling for per-patch filtering. Patches with any
  * channel above this value are dropped — the missing highlight
@@ -388,14 +391,22 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
      * gain are only materialised at write-time via
      * SensorConfig::splitExposureGain; storing rounded ints across
      * frames lost ~1/256 of the signal on gainUnit=1 sensors and
-     * stalled the EMA at its first rounding step. */
+     * stalled the EMA at its first rounding step.
+     *
+     * Clamp to what the sensor can physically deliver at its default
+     * frame_length: max exposure × driver-advertised gainMax, both
+     * read from SensorConfig. Letting the state exceed this walks AE
+     * into a region where every increment is ignored by V4L2 (the
+     * driver clamps to gainMax silently), producing lag and a
+     * brightness overshoot on scene transitions. */
     const int32_t gainUnit = sensorCfg.gainUnit;
     float newTotal = lastTotalUs * adjusted;
 
-    const float maxTotal = (float)maxExposureUs * (float)sensorCfg.gainMax
-                         / (float)gainUnit;
-    if (newTotal < (float)minTotalUs) newTotal = (float)minTotalUs;
-    if (newTotal > maxTotal)          newTotal = maxTotal;
+    const float maxTotal = (float)sensorCfg.maxExposureUsDefault()
+                         * (float)sensorCfg.gainMax / (float)gainUnit;
+    const float minTotal = (float)sensorCfg.lineTimeUs * 2.0f;
+    if (newTotal < minTotal) newTotal = minTotal;
+    if (newTotal > maxTotal) newTotal = maxTotal;
     lastTotalUs = newTotal;
 
     int32_t newExposureUs;
