@@ -102,6 +102,16 @@ private:
     float   lastWbR;
     float   lastWbB;
 
+    /* True until the first AWB tick has a valid gray-world estimate.
+     * On that first tick we assign the gains directly (no EMA damp)
+     * so the boot frame of a scene the prior was wrong for — e.g.
+     * front cam opening in a warm 2700K room with a 5000K prior —
+     * doesn't spend dozens of frames crawling from the prior to the
+     * scene's colour. Steady-state damping resumes from the second
+     * tick onward. Reset back to true in reset() for every new
+     * session. */
+    bool    awbFirstTick;
+
     /* Frame counter for throttled diagnostic logs. Incremented on
      * every processStats entry; a single ALOGD fires per N frames. */
     uint32_t frameCount;

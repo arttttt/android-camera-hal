@@ -161,6 +161,7 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
                ? wbGainPrior[2] / wbGainPrior[1] : 1.0f),
       lastWbR(wbRPrior),
       lastWbB(wbBPrior),
+      awbFirstTick(true),
       frameCount(0) {
     ALOGD("3A knobs: aeSetpoint=%.3f aeDamping=%.3f aeRatio=[%.3f,%.3f] "
           "awbMinChannel=%.4f awbSceneLightFloor=%.4f awbDamping=%.3f "
@@ -189,6 +190,7 @@ void BasicIpa::reset() {
                    / (float)sensorCfg.gainUnit;
     lastWbR        = wbRPrior;
     lastWbB        = wbBPrior;
+    awbFirstTick   = true;
 
     /* Re-seed the shader with the priors so the next session starts
      * from the sensor's calibrated daylight anchor even if the first
@@ -281,8 +283,23 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
             if (bGain < awbGainMin) bGain = awbGainMin;
             if (bGain > awbGainMax) bGain = awbGainMax;
 
-            lastWbR = awbDamping * rGain + (1.0f - awbDamping) * lastWbR;
-            lastWbB = awbDamping * bGain + (1.0f - awbDamping) * lastWbB;
+            /* First valid tick of the session: snap directly to the
+             * gray-world estimate instead of damping from the prior.
+             * Priors are sensor-neutral but have no scene-CCT
+             * information, so on a cold start in a warm indoor
+             * scene the EMA would spend ~20 frames crawling from
+             * the (daylight-ish) prior to the correct gains —
+             * visible as a held colour cast at low light, where
+             * damping isn't also hiding the drift. Damping resumes
+             * on the second tick. */
+            if (awbFirstTick) {
+                lastWbR = rGain;
+                lastWbB = bGain;
+                awbFirstTick = false;
+            } else {
+                lastWbR = awbDamping * rGain + (1.0f - awbDamping) * lastWbR;
+                lastWbB = awbDamping * bGain + (1.0f - awbDamping) * lastWbB;
+            }
         }
 
         /* Publish even when no update happened, so lock → unlock
