@@ -79,8 +79,8 @@ private:
     float   aeDamping;           /* ConvergeSpeed                   */
     float   aeRatioMin;          /* 2^-MaxFstopDeltaNeg             */
     float   aeRatioMax;          /* 2^+MaxFstopDeltaPos             */
-    float   aeToleranceInStops;  /* ToleranceIn — dead-band around  */
-                                  /* setpoint where AE stops adjusting */
+    float   aeToleranceInStops;  /* ToleranceIn  — enter converged band */
+    float   aeToleranceOutStops; /* ToleranceOut — exit converged band */
 
     /* AE state. Total exposure at unity gain (µs) — the
      * exposureUs × gain / gainUnit scalar the controller accumulates
@@ -113,6 +113,16 @@ private:
      * tick onward. Reset back to true in reset() for every new
      * session. */
     bool    awbFirstTick;
+
+    /* AE convergence latch — Schmitt-trigger hysteresis using the
+     * tuning's ToleranceIn (enter) / ToleranceOut (exit) thresholds.
+     * Once AE sees luma within ToleranceIn stops of the setpoint,
+     * aeConverged flips to true and subsequent updates are
+     * suppressed until luma drifts past ToleranceOut stops — so
+     * small scene flutter can no longer push AE around once it has
+     * settled, while a real lighting change still kicks it back
+     * into tracking mode. Reset on every session boundary. */
+    bool    aeConverged;
 
     /* Frame counter for throttled diagnostic logs. Incremented on
      * every processStats entry; a single ALOGD fires per N frames. */

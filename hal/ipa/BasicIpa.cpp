@@ -105,9 +105,14 @@ float deriveAeRatioMin(const SensorTuning *t) {
     return 1.0f / powf(2.0f, t->aeParams().maxFstopDeltaNeg);
 }
 
-float deriveAeTolerance(const SensorTuning *t) {
+float deriveAeTolIn(const SensorTuning *t) {
     if (!t || !t->aeParams().loaded) return 0.f;
     return t->aeParams().toleranceIn;
+}
+
+float deriveAeTolOut(const SensorTuning *t) {
+    if (!t || !t->aeParams().loaded) return 0.f;
+    return t->aeParams().toleranceOut;
 }
 
 unsigned toQ8(float x) {
@@ -149,7 +154,8 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
       aeDamping  (deriveAeDamping  (sensorTuning)),
       aeRatioMin (deriveAeRatioMin (sensorTuning)),
       aeRatioMax (deriveAeRatioMax (sensorTuning)),
-      aeToleranceInStops(deriveAeTolerance(sensorTuning)),
+      aeToleranceInStops (deriveAeTolIn (sensorTuning)),
+      aeToleranceOutStops(deriveAeTolOut(sensorTuning)),
       lastTotalUs((float)cfg.exposureDefault * (float)cfg.gainDefault
                   / (float)cfg.gainUnit),
       /* Normalise the R / B priors against G so the shader-side WB
@@ -164,6 +170,7 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
       lastWbR(wbRPrior),
       lastWbB(wbBPrior),
       awbFirstTick(true),
+      aeConverged(false),
       frameCount(0) {
     const bool aeOK  = tuning && tuning->aeParams().loaded
                       && aeSetpoint > 0.f && aeDamping > 0.f
@@ -208,6 +215,7 @@ void BasicIpa::reset() {
     lastWbR        = wbRPrior;
     lastWbB        = wbBPrior;
     awbFirstTick   = true;
+    aeConverged    = false;
 
     /* Re-seed the shader with the priors so the next session starts
      * from the sensor's calibrated daylight anchor even if the first
@@ -416,14 +424,26 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
     if (ratio < aeRatioMin) ratio = aeRatioMin;
     if (ratio > aeRatioMax) ratio = aeRatioMax;
 
-    if (aeToleranceInStops > 0.f) {
+    /* Schmitt-trigger convergence gate from the tuning's Tolerance
+     * pair. We enter "converged" when luma settles within ToleranceIn
+     * stops of the setpoint and then hold AE state until it drifts
+     * past ToleranceOut stops (wider) — stops micro-jitter of the
+     * scene's mean luma from pushing AE around once it's happy, while
+     * a real lighting change still re-engages tracking.
+     *
+     * Thresholds of 0 (tuning missing) disable the gate and AE
+     * behaves as a pure P-controller. */
+    if (aeToleranceInStops > 0.f && aeToleranceOutStops > 0.f) {
         const float stops = log2f(ratio);
         const float absStops = stops < 0.f ? -stops : stops;
-        if (absStops < aeToleranceInStops) {
-            /* Inside dead-band — AE is "converged enough". Hold the
-             * state so we don't chase noise; still publish the
-             * split of the current state so the metadata path sees
-             * consistent exposure / gain. */
+        if (aeConverged) {
+            if (absStops > aeToleranceOutStops) aeConverged = false;
+        } else {
+            if (absStops < aeToleranceInStops)  aeConverged = true;
+        }
+        if (aeConverged) {
+            /* Held — republish the current split so result metadata
+             * stays consistent with the frozen state. */
             int32_t heldExposureUs, heldExtraGainQ8;
             sensorCfg.splitExposureGain((int32_t)(lastTotalUs + 0.5f),
                                          &heldExposureUs, &heldExtraGainQ8);
