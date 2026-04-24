@@ -386,8 +386,17 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
         }
         int32_t gMin, gMax, gDef;
         if (mDev->queryControl(V4L2_CID_GAIN, &gMin, &gMax, &gDef)) {
-            mSensorCfg.gainMax = gMax;
+            mSensorCfg.gainMax     = gMax;
+            mSensorCfg.gainDefault = gDef;
             ALOGD("Gain: min=%d max=%d def=%d", gMin, gMax, gDef);
+        }
+        /* Exposure default from V4L2 (µs). Driver ships 33000 by
+         * default at 30 fps; keep the SensorConfig fallback (30000)
+         * if QUERYCTRL ever fails so startup state stays sane. */
+        int32_t eMin, eMax, eDef;
+        if (mDev->queryControl(V4L2_CID_EXPOSURE, &eMin, &eMax, &eDef)) {
+            mSensorCfg.exposureDefault = eDef;
+            ALOGD("Exposure: min=%d max=%d def=%d (us)", eMin, eMax, eDef);
         }
     }
 
