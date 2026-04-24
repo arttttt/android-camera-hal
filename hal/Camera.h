@@ -107,6 +107,13 @@ private:
     void buildInfrastructure();
     void destroyInfrastructure();
 
+    /* Pull driver-advertised ranges (frame-length, gain, exposure)
+     * into mSensorCfg via VIDIOC_QUERYCTRL. Called from openDevice
+     * before buildInfrastructure so every subsequent consumer —
+     * BasicIpa's ctor, ExposureControl, result metadata — reads
+     * live V4L2 values rather than SensorConfig's static seeds. */
+    void populateSensorConfigFromDriver();
+
     /* Stop / (re)start the capture and request workers around a
      * configure_streams boundary. Both are idempotent; starting a
      * worker that's already running is a no-op. */

@@ -181,6 +181,31 @@ status_t Camera::cameraInfo(struct camera_info *info) {
     return NO_ERROR;
 }
 
+void Camera::populateSensorConfigFromDriver() {
+    int32_t flMin, flMax, flDef;
+    if (mDev->queryControl(V4L2_CID_FRAME_LENGTH, &flMin, &flMax, &flDef)) {
+        mSensorCfg.frameLenDefault = flDef;
+        /* Cap at 3× default so AE can't stretch frame_length to
+         * 30 kilo-lines in a dark scene; beyond 3× the fps drop is
+         * more disruptive than the extra exposure headroom is
+         * worth. */
+        mSensorCfg.frameLenMax = (flMax > flDef * 3) ? flDef * 3 : flMax;
+        ALOGD("Frame length: def=%d max=%d (driver max=%d)",
+              mSensorCfg.frameLenDefault, mSensorCfg.frameLenMax, flMax);
+    }
+    int32_t gMin, gMax, gDef;
+    if (mDev->queryControl(V4L2_CID_GAIN, &gMin, &gMax, &gDef)) {
+        mSensorCfg.gainMax     = gMax;
+        mSensorCfg.gainDefault = gDef;
+        ALOGD("Gain: min=%d max=%d def=%d", gMin, gMax, gDef);
+    }
+    int32_t eMin, eMax, eDef;
+    if (mDev->queryControl(V4L2_CID_EXPOSURE, &eMin, &eMax, &eDef)) {
+        mSensorCfg.exposureDefault = eDef;
+        ALOGD("Exposure: min=%d max=%d def=%d (us)", eMin, eMax, eDef);
+    }
+}
+
 int Camera::openDevice(hw_device_t **device) {
     DBGUTILS_AUTOLOGCALL(__func__);
     Mutex::Autolock lock(mMutex);
@@ -190,6 +215,14 @@ int Camera::openDevice(hw_device_t **device) {
     /* Open focuser for back camera */
     if (mFacing == CAMERA_FACING_BACK)
         mDev->openFocuser("/dev/v4l-subdev0");
+
+    /* Pull driver-advertised ranges into mSensorCfg before anything
+     * consumes it. BasicIpa's ctor (inside buildInfrastructure) uses
+     * gainDefault / exposureDefault / gainMax / frameLenDefault to
+     * seed AE state — querying afterwards leaves BasicIpa holding
+     * stale values from SensorConfig's static seeds until the first
+     * session's configureStreams runs. */
+    populateSensorConfigFromDriver();
 
     /* Lazy first-time build of the long-lived infrastructure. Kept
      * alive across close/reopen cycles; destroyed only in ~Camera. */
@@ -373,31 +406,6 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
     if(!mDev->setStreaming(true)) {
         ALOGE("Could not start streaming");
         return NO_INIT;
-    }
-
-    /* Update sensor config from driver queries */
-    {
-        int32_t flMin, flMax, flDef;
-        if (mDev->queryControl(V4L2_CID_FRAME_LENGTH, &flMin, &flMax, &flDef)) {
-            mSensorCfg.frameLenDefault = flDef;
-            mSensorCfg.frameLenMax = (flMax > flDef * 3) ? flDef * 3 : flMax;
-            ALOGD("Frame length: def=%d max=%d (driver max=%d)",
-                  mSensorCfg.frameLenDefault, mSensorCfg.frameLenMax, flMax);
-        }
-        int32_t gMin, gMax, gDef;
-        if (mDev->queryControl(V4L2_CID_GAIN, &gMin, &gMax, &gDef)) {
-            mSensorCfg.gainMax     = gMax;
-            mSensorCfg.gainDefault = gDef;
-            ALOGD("Gain: min=%d max=%d def=%d", gMin, gMax, gDef);
-        }
-        /* Exposure default from V4L2 (µs). Driver ships 33000 by
-         * default at 30 fps; keep the SensorConfig fallback (30000)
-         * if QUERYCTRL ever fails so startup state stays sane. */
-        int32_t eMin, eMax, eDef;
-        if (mDev->queryControl(V4L2_CID_EXPOSURE, &eMin, &eMax, &eDef)) {
-            mSensorCfg.exposureDefault = eDef;
-            ALOGD("Exposure: min=%d max=%d def=%d (us)", eMin, eMax, eDef);
-        }
     }
 
     startWorkers();

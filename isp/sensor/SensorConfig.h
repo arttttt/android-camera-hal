@@ -8,29 +8,48 @@
 namespace android {
 
 /*
- * Per-sensor configuration — eliminates hardcoded constants.
- * Populated at configure time from driver queries + known sensor data.
+ * Per-sensor configuration. Fields split by source:
+ *
+ *  - Driver-queried at openDevice via VIDIOC_QUERYCTRL. The per-sensor
+ *    builders (imx179() / ov5693()) leave these at 0 since
+ *    Camera::populateSensorConfigFromDriver() always runs before any
+ *    consumer reads them. If QUERYCTRL fails, the HAL won't start AE
+ *    anyway — zero is the honest "not yet known" value.
+ *
+ *  - Sensor-physical properties the driver doesn't expose through
+ *    standard V4L2 CIDs. Hardcoded in the per-sensor builder because
+ *    that's where the sensor-specific knowledge lives; getting them
+ *    from the driver would require custom CIDs or OTP parsing.
+ *
+ *  - Silicon / convention properties that can't change at runtime.
  */
 struct SensorConfig {
-    /* Timing (from driver queryControl or mode tables) */
-    int32_t frameLenDefault;    /* default frame_length (lines) */
-    int32_t frameLenMax;        /* max allowed frame_length (capped for VI) */
-    int32_t lineTimeUs;         /* approx. line time in µs (pix_clk / line_length) */
+    /* Driver-queried — V4L2_CID_FRAME_LENGTH min/max/def. */
+    int32_t frameLenDefault;
+    int32_t frameLenMax;
+
+    /* Sensor-physical — not exposed via stock V4L2 today. */
+    int32_t lineTimeUs;         /* per-line time (µs) at default mode */
     int32_t maxCoarseDiff;      /* frame_length - max_coarse_time */
 
-    /* Gain (sensor-specific encoding) */
-    int32_t gainUnit;           /* gain value for 1.0x: 1 for IMX179, 256 for OV5693 */
-    int32_t gainDefault;        /* initial gain: 8 for IMX179, 2048 for OV5693 */
-    int32_t gainMax;            /* max gain from driver */
+    /* Gain convention: Q8 fixed-point throughout (256 = 1.0x) for
+     * the sensors we ship now. The builder records the unit so
+     * callers can reason about it without assuming Q8; drivers that
+     * later join with a different encoding fill this per-sensor. */
+    int32_t gainUnit;
 
-    /* Defaults */
-    int32_t exposureDefault;    /* initial exposure in µs */
+    /* Driver-queried — V4L2_CID_GAIN def/max. */
+    int32_t gainDefault;
+    int32_t gainMax;
 
-    /* Number of frames between writing a sensor control and the
-     * resulting frame being exposed. Silicon property — not tunable
-     * per integrator. Default 2/2 follows the libcamera convention
-     * for rolling-shutter CMOS; verify empirically once a real 3A
-     * loop drives it. Consumed by DelayedControls. */
+    /* Driver-queried — V4L2_CID_EXPOSURE def (µs). */
+    int32_t exposureDefault;
+
+    /* Silicon property — number of frames between writing a sensor
+     * control and the resulting frame being exposed. Not tunable per
+     * integrator. Default 2/2 matches the libcamera convention for
+     * rolling-shutter CMOS; verify empirically once a real 3A loop
+     * drives it. Consumed by DelayedControls. */
     int32_t controlDelay[DelayedControls::COUNT];
 
     /* --- Helpers --- */
@@ -73,37 +92,33 @@ struct SensorConfig {
         }
     }
 
-    /* Pre-built configs for known sensors */
+    /* Pre-built configs for known sensors — carry only the fields
+     * QUERYCTRL can't give us. Camera::populateSensorConfigFromDriver
+     * fills the rest before any consumer reads mSensorCfg. */
     static SensorConfig imx179() {
         return {
-            .frameLenDefault = 2510,
-            .frameLenMax     = 7500,
+            .frameLenDefault = 0,
+            .frameLenMax     = 0,
             .lineTimeUs      = 13,
             .maxCoarseDiff   = 6,
-            /* Q8 (256 = 1.00x) to match the kernel driver post-patch.
-             * gainMax tracks the kernel's IMX179_MAX_GAIN = 16384
-             * (64x); gainDefault is 256 (1x) so AE starts at unity
-             * instead of 8x — QUERYCTRL on configureStreams still
-             * overrides gainMax from the driver if we ever run
-             * against an older kernel. */
             .gainUnit        = 256,
-            .gainDefault     = 256,
-            .gainMax         = 64 * 256,
-            .exposureDefault = 30000,
+            .gainDefault     = 0,
+            .gainMax         = 0,
+            .exposureDefault = 0,
             .controlDelay    = { 2, 2 },
         };
     }
 
     static SensorConfig ov5693() {
         return {
-            .frameLenDefault = 2510,
-            .frameLenMax     = 7500,
+            .frameLenDefault = 0,
+            .frameLenMax     = 0,
             .lineTimeUs      = 17,
             .maxCoarseDiff   = 6,
             .gainUnit        = 256,
-            .gainDefault     = 2048,
-            .gainMax         = 65535,
-            .exposureDefault = 30000,
+            .gainDefault     = 0,
+            .gainMax         = 0,
+            .exposureDefault = 0,
             .controlDelay    = { 2, 2 },
         };
     }
