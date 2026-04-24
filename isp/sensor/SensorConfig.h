@@ -80,9 +80,15 @@ struct SensorConfig {
             .frameLenMax     = 7500,
             .lineTimeUs      = 13,
             .maxCoarseDiff   = 6,
-            .gainUnit        = 1,
-            .gainDefault     = 8,
-            .gainMax         = 255,
+            /* Q8 (256 = 1.00x) to match the kernel driver post-patch.
+             * gainMax tracks the kernel's IMX179_MAX_GAIN = 16384
+             * (64x); gainDefault is 256 (1x) so AE starts at unity
+             * instead of 8x — QUERYCTRL on configureStreams still
+             * overrides gainMax from the driver if we ever run
+             * against an older kernel. */
+            .gainUnit        = 256,
+            .gainDefault     = 256,
+            .gainMax         = 64 * 256,
             .exposureDefault = 30000,
             .controlDelay    = { 2, 2 },
         };

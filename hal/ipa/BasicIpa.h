@@ -110,12 +110,14 @@ private:
      * so the controller sees an already-low-passed reading. */
     float   smoothedLuma;
 
-    /* Second-order smoothing on the AE per-frame multiplier, then
-     * hard-clamped to a tight per-frame envelope so state can never
-     * step more than maxAeStep in one tick regardless of scene
-     * swings. User-facing effect: every AE adjustment is too small
-     * to be visible as a jump, even on huge scene changes — they
-     * converge smoothly over ~30–40 frames instead of a couple. */
+    /* Second-order smoothing on the AE per-frame multiplier. The
+     * first-order damped ratio (1 + (ratio-1)*aeDamping) is run
+     * through a second EMA (same ConvergeSpeed) so step scene
+     * changes ramp up over a few frames instead of producing a
+     * single-frame pop. Now that IMX179 advertises gain in Q8 too
+     * (post-kernel-patch), the combined (ratio_clamp × damping ×
+     * cascade EMA) chain already lands under perceptibility for
+     * every individual frame — no hard per-frame cap needed. */
     float   smoothedAeMult;
 
     /* Frame counter for throttled diagnostic logs. Incremented on

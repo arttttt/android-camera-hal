@@ -58,15 +58,6 @@ constexpr float awbGainMax = 4.0f;
  * unconditionally since R / B are expressed relative to G. */
 constexpr unsigned wbGainUnityQ8 = 256;
 
-/* Hard cap on the per-frame AE state multiplier. 2 % per frame at
- * 30 fps works out to a 1-stop correction in ~35 frames (≈1.2 s) —
- * slow enough that no individual frame reads as a jump, fast enough
- * that AE still tracks real lighting changes. Sits on top of the
- * tuning's MaxFstopDelta × ConvergeSpeed chain, which in principle
- * allows ~8 % per frame; user-visible smoothness trumps faster
- * theoretical convergence. */
-constexpr float maxAeStep    = 1.02f;
-constexpr float maxAeStepInv = 1.0f / maxAeStep;
 
 /* Knob derivations from the sensor's tuning. No silent fallbacks —
  * if a field is absent or zero, the corresponding BasicIpa member
@@ -345,7 +336,12 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
          * section; tunings that predate it just keep the boot-time
          * CCM (set by Camera at buildInfrastructure). */
         if (tuning && ccmBufferQ10 && tuning->awbParams().loaded) {
-            const float U       = logf(lastWbB);
+            /* Apply the tuning's gray-line soft-clamp to U before
+             * feeding CCT — noise on dark scenes pushes raw
+             * ln(G/B) outside the calibrated range, and the clamp
+             * snaps it back onto the locus the sensor was
+             * characterised over. */
+            const float U       = tuning->clampU(logf(lastWbB));
             diagEstCct          = tuning->estimateCctFromU(U);
             tuning->ccmForCctLerpQ10(diagEstCct, ccmBufferQ10);
         }
@@ -473,14 +469,11 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
      * smooth. */
     const float adjusted = 1.0f + (ratio - 1.0f) * aeDamping;
     smoothedAeMult = aeDamping * adjusted + (1.0f - aeDamping) * smoothedAeMult;
-
-    /* Hard-clamp the per-frame state multiplier to maxAeStep so a
-     * sustained dark→bright transition can't run the cascade at
-     * full ±6 % per frame for 30 frames and show up as a visible
-     * brightness ramp. Every AE tick now moves state by at most
-     * 2 %, which reads as gradual, not as a step. */
-    if (smoothedAeMult > maxAeStep)    smoothedAeMult = maxAeStep;
-    if (smoothedAeMult < maxAeStepInv) smoothedAeMult = maxAeStepInv;
+    /* No hard per-frame cap: with the Q8 gain fix on IMX179 (kernel
+     * patch) the sensor no longer quantises to whole-stop brackets,
+     * so cascade EMA × ratio_clamp × damping already lands under the
+     * perceptibility threshold for every individual frame while
+     * keeping convergence at ~0.5 s per stop. */
 
     /* Accumulate in float "µs at unity gain" space. Exposure and
      * gain are only materialised at write-time via

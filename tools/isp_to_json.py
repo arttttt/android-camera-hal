@@ -62,6 +62,16 @@ ACTIVE_PREFIXES = (
     # OV5693.
     "awb.v4.FusionLights",
     "awb.v4.FusionInitLight",
+    # Piecewise-linear 1D soft clamp on the AWB chromaticity U
+    # before it feeds UtoCCT / gain compute. Each row is
+    # (U_in, U_out, thickness); slopes extend the map beyond the
+    # first / last tabulated point. BasicIpa applies this to keep
+    # dark-scene noise from driving WB / CCT selection into regions
+    # the sensor was never calibrated for.
+    "awb.v4.GrayLineSoftClamp",
+    "awb.v4.NumGrayLineSoftClampPoints",
+    "awb.v4.GrayLineSoftClampSlopeBeforeFirstPoint",
+    "awb.v4.GrayLineSoftClampSlopeAfterLastPoint",
     # Mean-luma AE setpoint + speed + ratio clamps. BasicIpa blends
     # HigherTarget / LowerTarget to a single pre-gamma setpoint,
     # reads ConvergeSpeed as its EMA damping, and converts the f-stop

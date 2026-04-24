@@ -93,6 +93,26 @@ public:
         float defaultRawB;
         int   blackLevelAssumed;
 
+        /* AWB chromaticity soft-clamp. NVIDIA's gray-line-soft-clamp
+         * is a piecewise-linear 1D map from measured U to a clamped
+         * U, with linear slope extensions beyond the first and last
+         * tabulated point. Applied to the U value before it feeds
+         * UtoCCT / gain compute so noisy dark-scene U never drives
+         * AWB into territory the sensor was never calibrated for.
+         * graylineCount == 0 disables the clamp (legacy tuning). */
+        static constexpr int kGraylineMaxPoints = 16;
+        struct GraylinePoint {
+            float uIn;
+            float uOut;
+            float thickness;     /* tuning carries this but we
+                                  * apply only piecewise-linear map
+                                  * for now — room to refine later */
+        };
+        int   graylineCount;
+        GraylinePoint graylinePoints[kGraylineMaxPoints];
+        float graylineSlopeBefore;
+        float graylineSlopeAfter;
+
         AwbParams()
             : loaded(false),
               cctToU{0,0}, lowU(0.f), highU(0.f),
@@ -101,8 +121,16 @@ public:
               smoothingWpTrackingFraction(0.f),
               defaultRawValid(false),
               defaultRawR(0.f), defaultRawG(0.f), defaultRawB(0.f),
-              blackLevelAssumed(0) {
+              blackLevelAssumed(0),
+              graylineCount(0),
+              graylineSlopeBefore(0.f),
+              graylineSlopeAfter(0.f) {
             uToCct[0] = 0.f; uToCct[1] = 0.f;
+            for (int i = 0; i < kGraylineMaxPoints; ++i) {
+                graylinePoints[i].uIn      = 0.f;
+                graylinePoints[i].uOut     = 0.f;
+                graylinePoints[i].thickness = 0.f;
+            }
         }
     };
 
@@ -201,6 +229,17 @@ public:
      * range. Returns 0 when awbParams() isn't loaded — callers should
      * treat that as "no estimate available" and fall back. */
     int  estimateCctFromU(float U) const;
+
+    /* Apply NVIDIA's gray-line soft clamp to a measured chromaticity
+     * U: piecewise-linear interpolation between the tabulated
+     * (U_in, U_out) points, linear slope extensions beyond the first
+     * and last. Upstream of CCT estimation / WB gain compute this
+     * bounds AWB to the region the sensor is actually calibrated
+     * over — noisy dark-scene U that would otherwise drive both
+     * branches out of their trusted range snaps to the nearest
+     * on-locus value instead. Pass-through when the tuning has no
+     * graylineCount > 0. */
+    float clampU(float U) const;
 
     /* Fill `out` (9 entries, row-major Q10) with the CCM for a scene
      * whose estimated CCT is `estCctK`, linearly interpolating in

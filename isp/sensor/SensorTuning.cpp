@@ -170,6 +170,40 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
             mAwbParams.smoothingWpTrackingFraction =
                 v4["SmoothingWpTrackingFraction"].asFloat();
 
+        /* Gray-line soft-clamp LUT. Each row in GrayLineSoftClamp
+         * is [U_in, U_out, thickness]; NumGrayLineSoftClampPoints
+         * bounds the usable range (the array is padded with
+         * trailing zero rows). Two slope parameters extend the map
+         * beyond the first and last tabulated point. Thickness is
+         * read but not yet used — the piecewise-linear map is
+         * enough to bound AWB to calibration territory; the
+         * band-softening the thickness enables is a later refine. */
+        const Json::Value &gl    = v4["GrayLineSoftClamp"];
+        const Json::Value &glN   = v4["NumGrayLineSoftClampPoints"];
+        const Json::Value &glSB  = v4["GrayLineSoftClampSlopeBeforeFirstPoint"];
+        const Json::Value &glSA  = v4["GrayLineSoftClampSlopeAfterLastPoint"];
+        if (gl.isArray() && glN.isNumeric()) {
+            int n = glN.asInt();
+            if (n < 0) n = 0;
+            if (n > AwbParams::kGraylineMaxPoints)
+                n = AwbParams::kGraylineMaxPoints;
+            int kept = 0;
+            for (int i = 0; i < n && i < (int)gl.size(); ++i) {
+                const Json::Value &row = gl[i];
+                if (!row.isArray() || row.size() < 2) break;
+                mAwbParams.graylinePoints[kept].uIn  = row[0].asFloat();
+                mAwbParams.graylinePoints[kept].uOut = row[1].asFloat();
+                mAwbParams.graylinePoints[kept].thickness =
+                    row.size() >= 3 ? row[2].asFloat() : 0.f;
+                ++kept;
+            }
+            mAwbParams.graylineCount = kept;
+        }
+        if (glSB.isNumeric())
+            mAwbParams.graylineSlopeBefore = glSB.asFloat();
+        if (glSA.isNumeric())
+            mAwbParams.graylineSlopeAfter  = glSA.asFloat();
+
         /* Pre-compute the cold-start anchor from FusionLights at
          * FusionInitLight. Each FusionLight is [R, GR, GB, B] raw
          * means under one tuned illuminant; the default index is
@@ -358,6 +392,28 @@ int SensorTuning::estimateCctFromU(float U) const {
     if (cct < 1000.f)  return 1000;
     if (cct > 20000.f) return 20000;
     return (int)(cct + 0.5f);
+}
+
+float SensorTuning::clampU(float U) const {
+    const int n = mAwbParams.graylineCount;
+    if (n <= 0) return U;
+
+    const auto &p = mAwbParams.graylinePoints;
+
+    if (U <= p[0].uIn)
+        return p[0].uOut + mAwbParams.graylineSlopeBefore * (U - p[0].uIn);
+
+    for (int i = 0; i < n - 1; ++i) {
+        if (U >= p[i].uIn && U <= p[i + 1].uIn) {
+            const float span = p[i + 1].uIn - p[i].uIn;
+            if (span <= 0.f) return p[i].uOut;
+            const float t = (U - p[i].uIn) / span;
+            return p[i].uOut + t * (p[i + 1].uOut - p[i].uOut);
+        }
+    }
+
+    return p[n - 1].uOut
+         + mAwbParams.graylineSlopeAfter * (U - p[n - 1].uIn);
 }
 
 void SensorTuning::ccmForCctLerpQ10(int estCctK, int16_t out[9]) const {
