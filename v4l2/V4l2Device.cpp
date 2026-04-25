@@ -642,7 +642,23 @@ void V4l2Device::setDmaBufFds(const int *fds, int count) {
         }
     }
 
-    if (fds == NULL || count <= 0) {
+    const uint32_t newType = (fds == NULL || count <= 0)
+                              ? V4L2_MEMORY_MMAP
+                              : V4L2_MEMORY_DMABUF;
+
+    /* Switching memory type means the kernel-side buffers REQBUFS'd
+     * under the old type are no longer valid for QBUF. Wipe the
+     * cached format so the next setResolution() goes through
+     * setResolutionAndAllocateBuffers (which re-REQBUFS) instead of
+     * short-circuiting on a same-w-same-h match. Without this, the
+     * caller can land at the right resolution for the current session
+     * (connect()'s default == configureStreams target) and still hit
+     * Pre-STREAMON QBUF EINVAL because the kernel buffers are
+     * MMAP-bound while we're trying to bind dmabuf fds. */
+    if (newType != mMemoryType)
+        memset(&mFormat, 0, sizeof(mFormat));
+
+    if (newType == V4L2_MEMORY_MMAP) {
         mMemoryType = V4L2_MEMORY_MMAP;
         return;
     }
