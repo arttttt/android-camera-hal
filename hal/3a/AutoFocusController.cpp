@@ -334,6 +334,20 @@ void AutoFocusController::advanceCoarse(float score) {
         /* Restart from the original (best) position so Coarse2
          * covers the other half of the range cleanly. */
         mSweepPos       = mSweepBestPos;
+        /* Reset the peak tracker. Coarse1's "best" wasn't a real
+         * peak — that's exactly why we're reversing; the running
+         * max never advanced past the start sample. Carrying that
+         * stale score forward poisons the peakPassed gate in
+         * Coarse2: AE drift across the Coarse1 stretch routinely
+         * lands the first Coarse2 sample (revisiting the start
+         * position) below `ratio × Coarse1_best`, which trips
+         * peakPassed and drops the controller into Fine before
+         * Coarse2 has explored the other side at all. Starting
+         * Coarse2 with an empty window lets it build its own
+         * fresh running max from the new direction. */
+        mSweepBestScore    = 0.f;
+        mCoarseSampleCount = 0;
+        mLastSeen          = {0, 0.f};
     } else if (peakPassed || atLimit) {
         /* Sub-step coarse peak from the 3-sample parabolic fit if
          * we have all three; falls back to mSweepBestPos otherwise.
