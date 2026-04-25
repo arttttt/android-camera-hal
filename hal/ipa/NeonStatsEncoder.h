@@ -47,6 +47,11 @@ public:
          * the hot path — see the vmlal_s16 accumulator in computeRange.
          * finalize() casts down to the IpaStats float field. */
         uint64_t sharpSum[IpaStats::PATCH_Y][IpaStats::PATCH_X];
+        /* Sum of green-pixel² per patch. Forms the denominator of the
+         * exposure-invariant `focusMetric` IpaStats field. Accumulated
+         * in u64 for the same reason as sharpSum: the inner NEON loop
+         * folds two u32x4 vmlal_u16 lanes into u64 per cell. */
+        uint64_t greenSqSum[IpaStats::PATCH_Y][IpaStats::PATCH_X];
         uint32_t lumaHist[IpaStats::HIST_BINS];
     };
 

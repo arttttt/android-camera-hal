@@ -41,7 +41,8 @@ inline void scalarSobelStep(const uint16_t *p16,
                              bool            wide,
                              unsigned        width, unsigned height,
                              unsigned        xG, unsigned y,
-                             uint64_t       *sharpAccum) {
+                             uint64_t       *sharpAccum,
+                             uint64_t       *greenSqAccum) {
     const unsigned yN = (y >= 2u)         ? y - 2u : y;
     const unsigned yS = (y + 2u < height) ? y + 2u : y;
     const unsigned xW = (xG >= 2u)            ? xG - 2u : xG;
@@ -74,7 +75,13 @@ inline void scalarSobelStep(const uint16_t *p16,
     /* |gx|, |gy| ≤ 4·1023 = 4092 on 10-bit Bayer, so gx² + gy² fits
      * comfortably inside int32 (max ≈ 33.5M). Widen to u64 only on
      * the final accumulate. */
-    *sharpAccum += (uint64_t)(gx * gx + gy * gy);
+    *sharpAccum    += (uint64_t)(gx * gx + gy * gy);
+    /* Green pixel² is 1023² ≈ 1M on 10-bit; promote on the way in
+     * so we don't sign-extend a high lane out of u32 when the
+     * accumulator path goes through s32. */
+    const uint32_t gC = wide ? p16[(size_t)y * width + xG]
+                              : p8 [(size_t)y * width + xG];
+    *greenSqAccum  += (uint64_t)gC * (uint64_t)gC;
 }
 
 } /* namespace */
@@ -161,14 +168,38 @@ void NeonStatsEncoder::computeRange(const void *bayer,
                      * per lane ≈ 450M, well inside s32. Folded into
                      * partial->sharpSum (u64) at the end of each cell. */
                     int32x4_t  sharpAccV = vdupq_n_s32(0);
+                    /* Sum of green² in u32 lanes — feeds the
+                     * exposure-invariant focusMetric. Worst case at
+                     * 1080p: ~4000 green pixels per cell × 1023²
+                     * spread over 4 lanes ≈ 1G per lane, just inside
+                     * u32 (4.3G). Two accumulators (low / high) so
+                     * the 8-wide green vector can be squared without
+                     * an extra widen. */
+                    uint32x4_t greenSqLoV = vdupq_n_u32(0);
+                    uint32x4_t greenSqHiV = vdupq_n_u32(0);
 
                     for (; x < simdEnd; x += 16u) {
                         uint16x8x2_t p = vld2q_u16(row16 + x);
                         accEven = vpadalq_u16(accEven, p.val[0]);
                         accOdd  = vpadalq_u16(accOdd,  p.val[1]);
 
+                        const uint16x8_t gVec = gIsEven ? p.val[0] : p.val[1];
+
+                        /* Square-and-accumulate the green vector. Two
+                         * vmlal_u16 (one per 4-lane half) keep the
+                         * full u16×u16 → u32 product without widening
+                         * outside this NEON kernel. ~4 cycles added
+                         * per chunk on Cortex-A15 vs the ~50+ cycles
+                         * the rest of the chunk already costs. */
+                        greenSqLoV = vmlal_u16(greenSqLoV,
+                                                vget_low_u16(gVec),
+                                                vget_low_u16(gVec));
+                        greenSqHiV = vmlal_u16(greenSqHiV,
+                                                vget_high_u16(gVec),
+                                                vget_high_u16(gVec));
+
                         uint16_t gbuf[8];
-                        vst1q_u16(gbuf, gIsEven ? p.val[0] : p.val[1]);
+                        vst1q_u16(gbuf, gVec);
                         for (int i = 0; i < 8; ++i) {
                             uint32_t v = (uint32_t)gbuf[i];
                             v = (v > bl) ? (v - bl) : 0u;
@@ -221,7 +252,8 @@ void NeonStatsEncoder::computeRange(const void *bayer,
                                 const unsigned xG = xBase + 2u * (unsigned)i;
                                 scalarSobelStep(p16, p8, /*wide=*/true,
                                                 width, height, xG, y,
-                                                &partial->sharpSum[py][px]);
+                                                &partial->sharpSum[py][px],
+                                                &partial->greenSqSum[py][px]);
                             }
                         }
                     }
@@ -232,6 +264,9 @@ void NeonStatsEncoder::computeRange(const void *bayer,
                     partial->cntCh[py][px][chanOdd]  += chunks * 8u;
                     partial->sharpSum[py][px]        +=
                         (uint64_t)hsum_u32x4(vreinterpretq_u32_s32(sharpAccV));
+                    partial->greenSqSum[py][px]      +=
+                        (uint64_t)hsum_u32x4(greenSqLoV)
+                      + (uint64_t)hsum_u32x4(greenSqHiV);
                 }
 
                 for (; x < x1; ++x) {
@@ -248,7 +283,8 @@ void NeonStatsEncoder::computeRange(const void *bayer,
                         partial->lumaHist[bin] += 1u;
                         scalarSobelStep(p16, p8, wide,
                                         width, height, x, y,
-                                        &partial->sharpSum[py][px]);
+                                        &partial->sharpSum[py][px],
+                                        &partial->greenSqSum[py][px]);
                     }
                 }
             }
@@ -297,6 +333,14 @@ void NeonStatsEncoder::finalize(const Partial &partial,
              * detection, which only compares patches against each
              * other. */
             out->sharpness[py][px] = (float)partial.sharpSum[py][px];
+
+            /* Exposure-invariant focus score: gradient² / pixel². The
+             * 1.0f floor protects against the all-black patch where
+             * greenSqSum is zero — we want a small finite score there,
+             * not a divide-by-zero. */
+            const uint64_t denomSq = partial.greenSqSum[py][px];
+            out->focusMetric[py][px] = (float)partial.sharpSum[py][px]
+                                     / (float)(denomSq > 0ull ? denomSq : 1ull);
         }
     }
 }
