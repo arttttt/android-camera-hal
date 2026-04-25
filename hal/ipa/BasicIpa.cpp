@@ -376,18 +376,33 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
      * into DelayedControls itself for result metadata; an IPA push
      * on the same slot would clobber that. Skip the AE math so last*
      * is frozen at its last auto decision — convergence resumes from
-     * there on switch-back.
-     *
-     * `mAeLocked` (toggled via setAeLock by AF before / after a
-     * sweep) freezes the controller the same way: no batch entries
-     * are populated, internal state stays put, DelayedControls
-     * keeps re-publishing the last queued exposure / gain, and the
-     * sensor sits at the converged operating point. Releasing the
-     * lock resumes from where convergence left off, not from a
-     * stale-mid-update value. */
-    if (meta.aeMode == ANDROID_CONTROL_AE_MODE_OFF
-     || meta.aeLock == ANDROID_CONTROL_AE_LOCK_ON
-     || mAeLocked) {
+     * there on switch-back. */
+    if (meta.aeMode == ANDROID_CONTROL_AE_MODE_OFF) {
+        return batch;
+    }
+
+    /* AE locked — by the framework's AE_LOCK or by AF (across a
+     * sweep). Hold the converged operating point: keep `lastTotalUs`
+     * and the EMA state untouched, but **re-publish the held
+     * exposure / gain into DelayedControls every frame** so
+     * ApplySettingsStage sees a populated `pendingWrite` and stays
+     * on the converged values. Returning an empty batch here would
+     * fall through to ApplySettingsStage's manual path and write
+     * the framework's request-side exposure / gain to the sensor,
+     * jumping the image off the converged operating point — which
+     * is what an "AE lock" must not do. */
+    if (meta.aeLock == ANDROID_CONTROL_AE_LOCK_ON || mAeLocked) {
+        int32_t heldExposureUs, heldExtraGainQ8;
+        sensorCfg.splitExposureGain((int32_t)(lastTotalUs + 0.5f),
+                                     &heldExposureUs, &heldExtraGainQ8);
+        int32_t heldGain = (int32_t)(((int64_t)sensorCfg.gainUnit
+                                     * heldExtraGainQ8 + 128) / 256);
+        if (heldGain < 1)                 heldGain = 1;
+        if (heldGain > sensorCfg.gainMax) heldGain = sensorCfg.gainMax;
+        batch.has[DelayedControls::EXPOSURE] = true;
+        batch.val[DelayedControls::EXPOSURE] = heldExposureUs;
+        batch.has[DelayedControls::GAIN]     = true;
+        batch.val[DelayedControls::GAIN]     = heldGain;
         return batch;
     }
 
