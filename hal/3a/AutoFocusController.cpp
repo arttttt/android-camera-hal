@@ -118,6 +118,11 @@ AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
     , mSceneChangeCount(0)
     , mFramesSinceLastSweep(UINT32_MAX)
 {
+    /* A full Coarse1 + Coarse2 + Fine + Settle sweep produces around
+     * 30-50 samples; reserving 64 covers the typical case without a
+     * heap reallocation mid-sweep. */
+    mScanData.reserve(64);
+
     if (tuning && tuning->isLoaded() && tuning->hasAf()) {
         const SensorTuning::AfParams &af = tuning->af();
         if (af.moduleCalEnable) {
