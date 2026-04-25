@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <camera/CameraMetadata.h>
 
+#include "ipa/IpaStats.h"
+
 namespace android {
 
 class V4l2Device;
@@ -41,6 +43,12 @@ public:
      * the sweep reaches the end of its range, commits the best VCM
      * position and releases the AWB lock. No-op outside of a sweep. */
     void onFrameData(const uint8_t *rgba, unsigned width, unsigned height);
+
+    /* Advance the sweep against the per-patch sharpness grid for the
+     * current frame. Caller hands over the same stats buffer the IPA
+     * has already finished with. No-op outside of a sweep. */
+    void onSharpnessStats(
+        const float sharpness[IpaStats::PATCH_Y][IpaStats::PATCH_X]);
 
     Report report() const;
     bool   isSweeping() const { return mSweepActive; }

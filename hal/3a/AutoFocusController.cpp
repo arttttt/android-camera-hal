@@ -31,6 +31,14 @@ constexpr float   kVcmPerDiopter = 50.0f;
 constexpr uint32_t kContinuousRetriggerPeriod = 60; /* frames */
 constexpr int32_t  kFramePeriodMsApprox       = 33; /* 30 fps preview */
 
+/* Centre region of the patch grid: the inclusive [4, 11] band on each
+ * axis covers the middle 50 % of the frame on both dimensions —
+ * matches what the previous RGBA-domain sharpness measured on the
+ * centre 1/4 of the rendered preview, so AF behaviour stays in the
+ * same ballpark across the metric switch. */
+constexpr int kRoiPatchLo = 4;
+constexpr int kRoiPatchHi = 12;
+
 /* Normalised Laplacian on the centre 1/4 of the frame. Dividing by the
  * mean brightness keeps the score comparable across sweep steps even
  * when AE/AWB shifts brightness slightly. */
@@ -93,17 +101,27 @@ AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
 {
     if (tuning && tuning->isLoaded() && tuning->hasAf()) {
         const SensorTuning::AfParams &af = tuning->af();
-        /* `inf + inf_offset` is the calibrated real-world infinity
-         * position (NVIDIA tuning convention — raw `inf` is the
-         * mechanical limit, the offset trims it to the lens's actual
-         * focus). Same for macro. */
-        mVcmInfinity    = af.infPos + af.infOffset;
-        mVcmMacroEnd    = af.macroPos + af.macroOffset;
-        mVcmAutoEnd     = af.macroPos;
+        if (af.moduleCalEnable) {
+            /* `inf + inf_offset` is the calibrated real-world
+             * infinity position (NVIDIA tuning convention — raw
+             * `inf` is the mechanical limit, the offset trims it to
+             * the lens's actual focus). Same for macro. */
+            mVcmInfinity = af.infPos + af.infOffset;
+            mVcmMacroEnd = af.macroPos + af.macroOffset;
+        } else {
+            /* Per-unit calibration not trusted (NVIDIA convention,
+             * matches `lensShading.module_cal_enable=0`). Use the
+             * mechanical anchors directly so a miscalibrated module
+             * doesn't push the lens beyond its useful range. */
+            mVcmInfinity = af.infPos;
+            mVcmMacroEnd = af.macroPos;
+        }
+        mVcmAutoEnd = af.macroPos;
         /* Settle time as frames at 30 fps preview, rounded up, minimum 1. */
         int frames = (af.settleTimeMs + kFramePeriodMsApprox - 1) / kFramePeriodMsApprox;
         mVcmSettleFrames = frames > 0 ? frames : 1;
-        ALOGD("AF tuning: inf=%d macro=%d auto_end=%d settle=%d frame(s)",
+        ALOGD("AF tuning: cal=%d inf=%d macro=%d auto_end=%d settle=%d frame(s)",
+              af.moduleCalEnable ? 1 : 0,
               mVcmInfinity, mVcmMacroEnd, mVcmAutoEnd, mVcmSettleFrames);
     }
     /* Macro mode starts at the midpoint between infinity and macro. */
@@ -209,6 +227,55 @@ void AutoFocusController::onFrameData(const uint8_t *rgba,
     }
 
     uint64_t score = measureSharpness(rgba, width, height);
+    if (score > mSweepBestScore) {
+        mSweepBestScore = score;
+        mSweepBestPos = mSweepPos;
+    }
+    ALOGD("AF: pos=%d score=%llu best=%d/%llu",
+          mSweepPos, (unsigned long long)score,
+          mSweepBestPos, (unsigned long long)mSweepBestScore);
+
+    mSweepPos += mSweepStep;
+    if (mSweepPos > mSweepEnd) {
+        mDev->setFocusPosition(mSweepBestPos);
+        mFocusPosition = mSweepBestPos;
+        mSweepActive = false;
+        mIsp->setAwbLock(false);
+        ALOGD("AF done: best=%d score=%llu", mSweepBestPos,
+              (unsigned long long)mSweepBestScore);
+        return;
+    }
+
+    mDev->setFocusPosition(mSweepPos);
+    mSettleFrames = mVcmSettleFrames;
+}
+
+void AutoFocusController::onSharpnessStats(
+    const float sharpness[IpaStats::PATCH_Y][IpaStats::PATCH_X]) {
+    if (!mSweepActive || !sharpness)
+        return;
+
+    /* After a VCM move, the lens needs a couple of frames to settle
+     * before the contrast reading is trustworthy. */
+    if (mSettleFrames > 0) {
+        mSettleFrames--;
+        return;
+    }
+
+    /* Tenengrad sum over the centre 8x8 of the 16x16 patch grid.
+     * AWB is locked across the sweep (mIsp->setAwbLock in
+     * startSweep) so per-patch absolute scores stay comparable
+     * within one sweep without per-frame normalisation. Cast to
+     * uint64_t for storage comparison; max plausible per-frame sum
+     * is ~8e12, well within range. */
+    float fsum = 0.f;
+    for (int py = kRoiPatchLo; py < kRoiPatchHi; ++py) {
+        for (int px = kRoiPatchLo; px < kRoiPatchHi; ++px) {
+            fsum += sharpness[py][px];
+        }
+    }
+    uint64_t score = (fsum > 0.f) ? (uint64_t)fsum : 0ull;
+
     if (score > mSweepBestScore) {
         mSweepBestScore = score;
         mSweepBestPos = mSweepPos;
