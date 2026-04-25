@@ -50,6 +50,25 @@ public:
      * on session boundary (closeDevice) alongside the other
      * per-session resets. */
     virtual void reset() = 0;
+
+    /* True when the AE controller has been within its dead-band for
+     * long enough to call exposure / gain converged. Used by the AF
+     * controller to gate sweep launches on a stable exposure — a
+     * sweep started while AE is still chasing the scene gives a
+     * brightness-modulated score curve regardless of the focus
+     * metric's exposure invariance. Implementations without an AE
+     * loop (StubIpa) always return true so the gate doesn't block
+     * AF on builds that do their own framework-side exposure. */
+    virtual bool isAeConverged() const = 0;
+
+    /* Toggle "hold the converged AE target" mode. The IPA stops
+     * proposing new exposure / gain values for the duration of the
+     * lock — DelayedControls keeps re-publishing the last queued
+     * batch, the sensor stays put, the IPA's internal state stays
+     * frozen so it resumes from the converged operating point on
+     * unlock instead of restarting from a stale-mid-update value.
+     * AF holds this on across a sweep. */
+    virtual void setAeLock(bool lock) = 0;
 };
 
 } /* namespace android */

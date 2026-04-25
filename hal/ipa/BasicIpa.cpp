@@ -166,7 +166,9 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
       lastWbB(wbBPrior),
       smoothedLuma(0.f),
       smoothedAeMult(1.0f),
-      frameCount(0) {
+      frameCount(0),
+      mAeLocked(false),
+      mAeConvergedFrames(0) {
     const bool aeOK  = tuning && tuning->aeParams().loaded
                       && aeSetpoint > 0.f && aeDamping > 0.f
                       && aeRatioMin > 0.f && aeRatioMax > 0.f;
@@ -211,6 +213,8 @@ void BasicIpa::reset() {
     lastWbB        = wbBPrior;
     smoothedLuma   = 0.f;
     smoothedAeMult = 1.0f;
+    mAeLocked          = false;
+    mAeConvergedFrames = 0;
 
     /* Re-seed the shader with the priors so the next session starts
      * from the sensor's calibrated daylight anchor even if the first
@@ -372,9 +376,18 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
      * into DelayedControls itself for result metadata; an IPA push
      * on the same slot would clobber that. Skip the AE math so last*
      * is frozen at its last auto decision — convergence resumes from
-     * there on switch-back. */
+     * there on switch-back.
+     *
+     * `mAeLocked` (toggled via setAeLock by AF before / after a
+     * sweep) freezes the controller the same way: no batch entries
+     * are populated, internal state stays put, DelayedControls
+     * keeps re-publishing the last queued exposure / gain, and the
+     * sensor sits at the converged operating point. Releasing the
+     * lock resumes from where convergence left off, not from a
+     * stale-mid-update value. */
     if (meta.aeMode == ANDROID_CONTROL_AE_MODE_OFF
-     || meta.aeLock == ANDROID_CONTROL_AE_LOCK_ON) {
+     || meta.aeLock == ANDROID_CONTROL_AE_LOCK_ON
+     || mAeLocked) {
         return batch;
     }
 
@@ -454,9 +467,16 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
             batch.val[DelayedControls::GAIN]     = heldGain;
             smoothedAeMult = aeDamping * 1.0f
                            + (1.0f - aeDamping) * smoothedAeMult;
+            /* Each in-tolerance frame counts toward the convergence
+             * report — once the count crosses the threshold,
+             * isAeConverged() flips true. */
+            if (mAeConvergedFrames < INT32_MAX) mAeConvergedFrames++;
             return batch;
         }
     }
+    /* Out of dead-band (or dead-band disabled): AE actively chasing,
+     * so we're not stably at setpoint. */
+    mAeConvergedFrames = 0;
 
     /* Cascaded smoothing on the AE per-frame multiplier. The
      * first-order damped ratio is itself EMA'd (same ConvergeSpeed)
@@ -511,6 +531,19 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
     batch.has[DelayedControls::GAIN]     = true;
     batch.val[DelayedControls::GAIN]     = newGain;
     return batch;
+}
+
+bool BasicIpa::isAeConverged() const {
+    /* Five consecutive in-tolerance frames is enough for the
+     * controller's cascade EMA to have a meaningful chance of being
+     * settled, while still being short enough that AF doesn't wait
+     * a noticeable beat after the first dead-band entry. */
+    constexpr int32_t kRequired = 5;
+    return mAeConvergedFrames >= kRequired;
+}
+
+void BasicIpa::setAeLock(bool lock) {
+    mAeLocked = lock;
 }
 
 } /* namespace android */

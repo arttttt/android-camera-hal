@@ -17,6 +17,10 @@ public:
                                         const IpaStats &stats,
                                         const IpaFrameMeta &meta) override;
     void reset() override;
+    /* No AE loop here — always reports converged so the AF gate
+     * doesn't block on stub builds; lock is a structural no-op. */
+    bool isAeConverged() const override { return true; }
+    void setAeLock(bool /*lock*/) override {}
 };
 
 } /* namespace android */
