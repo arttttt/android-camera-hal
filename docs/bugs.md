@@ -109,6 +109,26 @@ effect on preview brightness.
 
 **Status:** Logged, no fix scheduled. Tier TBD.
 
+## V4L2 fd reopened on every camera open — should only reopen on stream config change
+
+**Symptom:** After dropping `V4L2DEVICE_OPEN_ONCE` the V4L2 fd now closes
+on every `closeDevice` and reopens on every `openDevice`. That carries
+the full `S_FMT` + `REQBUFS` + buffer reallocation cost on each
+open/close cycle, even when the next session uses the exact same
+stream configuration as the previous one.
+
+**Better policy (TBD, needs investigation):** keep the fd open across
+`closeDevice → openDevice` and only reopen when `configureStreams`
+actually requests a different resolution / pixel format / memory type
+than what the device is already set up for. May need to keep more than
+just the fd alive — current `cleanup()` also drops `mFormat`, the
+DMABUF binding, and the buffer mappings. Investigate what's safe to
+keep across a session boundary vs what the V4L2 contract requires
+fresh.
+
+**Status:** Logged, no fix scheduled. Tier TBD. Removing the original
+flag was the right move; the replacement just over-cleans.
+
 ## Tap-to-focus ignored — AF_REGIONS not consumed
 
 **Symptom:** Tapping a non-centre region in the camera app does not
