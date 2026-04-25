@@ -29,66 +29,10 @@ public:
         return NULL;
     }
 
-    /* Synchronous demosaic + RGB→YUV conversion into an internal
-     * CPU-readable NV12 buffer (Y plane at offset 0, interleaved UV
-     * plane at offset width*height). Returned pointer is valid until
-     * the next process*() call on this pipeline. Returns NULL on
-     * failure. Width must be divisible by 4 and height by 2; caller
-     * repacks NV12 into any other 420 layout (YV12 / NV21 / I420) the
-     * framework requests. */
-    virtual const uint8_t *processToYuv420(const uint8_t *src,
-                                             unsigned width, unsigned height,
-                                             uint32_t pixFmt,
-                                             int srcInputSlot) {
-        (void)src; (void)width; (void)height; (void)pixFmt; (void)srcInputSlot;
-        return NULL;
-    }
-
     /* Run a dummy dispatch at the target stream dimensions so the backend's
      * shader / GPU state is warm before the first real frame. Default no-op. */
     virtual void prewarm(unsigned width, unsigned height, uint32_t pixFmt) {
         (void)width; (void)height; (void)pixFmt;
-    }
-
-    /* Process Bayer and blit result directly to gralloc buffer (no CPU readback).
-     * nativeBuffer: ANativeWindowBuffer* cast to void*.
-     * srcW, srcH:   capture (Bayer) resolution — also the ISP scratch size.
-     * dstW, dstH:   destination framebuffer (gralloc) resolution.
-     * acquireFence: caller-owned fd that signals when buffer is ready for GPU writes.
-     *               Implementation consumes (closes) it on success, leaves open on failure.
-     *               Pass -1 if no fence.
-     * releaseFence: [out] non-null. Set to sync_fence fd that signals when GPU is done
-     *               writing the gralloc image. Handed to the framework via
-     *               camera3_stream_buffer::release_fence. Caller owns and must close.
-     *               -1 means no fence (invalid / fell back).
-     * submitFence:  [out, may be NULL] if non-null, set to a sync_fence fd that signals
-     *               when the submit's command buffer completes. Intended for the
-     *               upcoming PipelineThread poll set so it can run the next stage
-     *               without vkWaitForFences. Caller owns and must close. Pass NULL
-     *               to skip (the backend then drops the fd internally).
-     * srcInputSlot: if >=0, the Bayer data is already in the backend's input
-     *               ring slot `srcInputSlot` (DMABUF capture path); `src` is
-     *               ignored. If -1, the backend memcpy's `src` into its own
-     *               staging buffer.
-     * crop:         sub-region of the scratch image (in source coordinates)
-     *               to sample into the destination. Identity is
-     *               {0, 0, srcW, srcH}.
-     * Returns false on backend / hardware failure; the caller has no
-     * fallback on Bayer hardware and should propagate the error. */
-    virtual bool processToGralloc(const uint8_t *src, void *nativeBuffer,
-                                   unsigned srcW, unsigned srcH,
-                                   unsigned dstW, unsigned dstH,
-                                   uint32_t pixFmt,
-                                   int acquireFence,
-                                   int *releaseFence, int *submitFence,
-                                   int srcInputSlot,
-                                   const CropRect &crop) {
-        (void)src; (void)nativeBuffer;
-        (void)srcW; (void)srcH; (void)dstW; (void)dstH;
-        (void)pixFmt; (void)acquireFence; (void)srcInputSlot; (void)crop;
-        *releaseFence = -1;
-        if (submitFence) *submitFence = -1;
-        return false;
     }
 
     /* Produce-once / sample-many API.
@@ -198,8 +142,7 @@ public:
     bool awbLocked() const     { return mAwbLocked; }
 
     /* Number of exportable Bayer input buffers the backend has pre-allocated.
-     * 0 means the backend does not support DMABUF input — callers must
-     * feed Bayer data through processToGralloc's src pointer instead. */
+     * 0 means the backend does not support DMABUF input. */
     virtual int inputBufferCount() const { return 0; }
 
     /* Size (bytes) of each input buffer. Valid once the backend has been

@@ -30,21 +30,7 @@ public:
                                  uint32_t pixFmt,
                                  int srcInputSlot) override;
 
-    const uint8_t *processToYuv420(const uint8_t *src,
-                                     unsigned width, unsigned height,
-                                     uint32_t pixFmt,
-                                     int srcInputSlot) override;
-
     void prewarm(unsigned width, unsigned height, uint32_t pixFmt) override;
-
-    bool processToGralloc(const uint8_t *src, void *nativeBuffer,
-                           unsigned srcW, unsigned srcH,
-                           unsigned dstW, unsigned dstH,
-                           uint32_t pixFmt,
-                           int acquireFence,
-                           int *releaseFence, int *submitFence,
-                           int srcInputSlot,
-                           const CropRect &crop) override;
 
     bool beginFrame(unsigned srcW, unsigned srcH, uint32_t pixFmt,
                      int srcInputSlot) override;
@@ -92,10 +78,11 @@ private:
     void writeStaticDescriptors();
 
     /* Round-robin slot pick. If the chosen slot is still in flight on
-     * the GPU, block on WaitForFences and reset before returning.
-     * In steady state (processToGralloc spacing ≥ 1 frame) the slot's
-     * fence has already signalled so the wait is a no-op — the ring
-     * turns into a pure overlap-enabler. */
+     * the GPU, block on its sync_fd via poll() before returning. In
+     * steady state (frame spacing ≥ 1 frame_period) the slot's fence
+     * has already signalled so the wait is a no-op — the ring buys
+     * CPU↔GPU overlap. Also destroys any leftover acquire-fence
+     * semaphores from the slot's previous submit. */
     int acquireSlot();
 
     /* Write `p` into the slot's param buffer and flush the memory range
@@ -110,15 +97,10 @@ private:
     /* Record the slot's cmd buffer with pipeline+descriptor bind and a
      * single compute dispatch sized for (width, height); optionally
      * append an image→buffer copy of mScratchImg into mOutBuf so CPU
-     * can read the result via mOutMap. Submits on mFence[slot]. */
+     * can read the result via mOutMap. Submits on mFence[slot]. Used by
+     * the legacy CPU-readback (BLOB) and prewarm paths. */
     void recordAndSubmit(int slot, unsigned width, unsigned height,
                           bool copyToOutBuf);
-
-    /* Record the slot's cmd buffer with demosaic → scratch → yuv-encode
-     * compute chain and submit on mFence[slot]. The yuv encoder writes
-     * its own mapped NV12 buffer; caller reads it via
-     * mYuvEncoder.mappedBuffer() after fence wait. */
-    void recordDemosaicAndYuvEncode(int slot, unsigned width, unsigned height);
 
     /* Open the slot's cmd buffer and record demosaic compute + scratch
      * write→read barrier. Buffer stays open for blit append calls. */
@@ -140,26 +122,6 @@ private:
      * wait fires the semaphore reverts to permanent (no-payload) state
      * and is safe to destroy after the submit's fence signals. */
     bool importAcquireSemaphore(int acquireFence, VkSemaphore *out);
-
-    /* Zero-copy gralloc path: record compute → memory barrier → render
-     * pass blit of mScratchImg into the entry's framebuffer, no final
-     * submit. Caller follows with submitWithReleaseFence().
-     * srcW/H:  scratch image size (matches the capture resolution the
-     *          compute demosaic writes).
-     * dstW/H:  framebuffer / gralloc output size.
-     * crop:    sub-region of the scratch to sample, in source coords.
-     *          Identity blit passes {0, 0, srcW, srcH} with dst == src. */
-    void recordGrallocBlit(int slot, VulkanGrallocCache::Entry *entry,
-                            unsigned srcW, unsigned srcH,
-                            unsigned dstW, unsigned dstH,
-                            const CropRect &crop);
-
-    /* Submit slot's cmd buffer on mFence[slot] and ask the driver for
-     * a sync_fence fd that signals once the blit completes — the
-     * framework waits on it before compositing. Writes -1 to
-     * *releaseFence on failure. */
-    void submitWithReleaseFence(int slot, VulkanGrallocCache::Entry *entry,
-                                 int *releaseFence);
 
     /* Per-submit GPU resources are held in a round-robin ring so the
      * CPU side of frame N+1 (cmd-buffer record + descriptor update +
@@ -260,11 +222,10 @@ private:
     };
     FrameRecording mRec;
 
-    /* Per-frame GPU-side timestamps for recordGrallocBlit phases.
-     * 3 queries per slot: 0 = top of pipe, 1 = after demosaic,
-     * 2 = after blit. Read in processToGralloc right after
-     * WaitForFences, logged as PERF-GPU. Null when the driver
-     * reports timestampValidBits == 0. */
+    /* Per-slot GPU-side timestamp pool. 3 queries per slot, allocated
+     * by createCommandObjects when the driver reports a non-zero
+     * timestampValidBits. Currently no consumer in the produce-once
+     * path; kept allocated for future PERF instrumentation. */
     VkQueryPool        mTimeQuery;
     static constexpr size_t TIMESTAMPS_PER_SLOT = 3;
 };
