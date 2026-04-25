@@ -111,9 +111,8 @@ AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
     , mSweepBestPos(0)
     , mSweepBestScore(0.f)
     , mSettleFrames(0)
-    , mCoarseSampleCount(0)
-    , mLastSeen{0, 0.f}
-    , mFineSampleCount(0)
+    , mCoarsePhaseStart(0)
+    , mFinePhaseStart(0)
     , mCoarseReversed(false)
     , mSceneFocusSnapshot(0.f)
     , mSceneRgbSnapshot{0.f, 0.f, 0.f}
@@ -202,12 +201,12 @@ void AutoFocusController::startSweep(uint8_t afMode) {
      * controller from chasing scene changes the sweep itself
      * provokes. Released on commit / cancel / reset. */
     if (mIpa) mIpa->setAeLock(true);
-    mSettleFrames      = 0;
-    mSweepBestScore    = 0.f;
-    mCoarseSampleCount = 0;
-    mLastSeen          = {0, 0.f};
-    mFineSampleCount   = 0;
-    mSceneChangeCount  = 0;
+    mSettleFrames     = 0;
+    mSweepBestScore   = 0.f;
+    mScanData.clear();
+    mCoarsePhaseStart = 0;
+    mFinePhaseStart   = 0;
+    mSceneChangeCount = 0;
 
     if (afMode == ANDROID_CONTROL_AF_MODE_MACRO) {
         /* Macro is a half-range scan from the midpoint to the macro
@@ -235,70 +234,49 @@ void AutoFocusController::cancelSweep() {
     mState = ScanState::Idle;
 }
 
-void AutoFocusController::recordCoarseSample(int32_t pos, float score) {
-    /* Track running max + maintain a 3-sample window so
-     * parabolicPeak can interpolate sub-step accuracy off coarse
-     * data. Slot [1] is always the running peak, [0] the immediate
-     * predecessor sample (regardless of whether it was itself a
-     * peak), [2] the first sample below the running peak. The
-     * predecessor matters: feeding the parabolic vertex math with a
-     * non-adjacent "old peak" sample skews the fit toward whichever
-     * side has the more distant neighbour and lands the interpolated
-     * peak well off the actual maximum. */
-    if (score > mSweepBestScore) {
-        if (mCoarseSampleCount > 0) {
-            mCoarseSamples[0] = mLastSeen;
-        }
-        mCoarseSamples[1].pos   = pos;
-        mCoarseSamples[1].score = score;
-        mCoarseSampleCount = mCoarseSampleCount < 2 ? mCoarseSampleCount + 1 : 2;
-        mSweepBestScore = score;
-        mSweepBestPos   = pos;
-    } else if (mCoarseSampleCount == 2) {
-        mCoarseSamples[2].pos   = pos;
-        mCoarseSamples[2].score = score;
-        mCoarseSampleCount = 3;
-    }
-    mLastSeen.pos   = pos;
-    mLastSeen.score = score;
-}
-
-void AutoFocusController::recordFineSample(int32_t pos, float score) {
-    /* Fine fills slots in lens-travel order; the closing step in
-     * advanceFine sorts the array so the highest-score sample lands
-     * in slot [1] before the parabolic vertex calculation. */
-    if (mFineSampleCount < 3) {
-        mFineSamples[mFineSampleCount].pos   = pos;
-        mFineSamples[mFineSampleCount].score = score;
-        mFineSampleCount++;
-    }
+void AutoFocusController::recordSample(int32_t pos, float score) {
+    mScanData.push_back({pos, score});
     if (score > mSweepBestScore) {
         mSweepBestScore = score;
         mSweepBestPos   = pos;
     }
 }
 
-int32_t AutoFocusController::parabolicPeak(const ScanSample s[3], int n) const {
-    if (n < 3) return mSweepBestPos;
-    const float x0 = (float)s[0].pos, y0 = s[0].score;
-    const float x1 = (float)s[1].pos, y1 = s[1].score;
-    const float x2 = (float)s[2].pos, y2 = s[2].score;
-    /* Parabolic vertex: x* = x1 - 0.5 * ((x1-x0)^2(y1-y2) - (x1-x2)^2(y1-y0))
-     *                            / ((x1-x0)(y1-y2) - (x1-x2)(y1-y0))
-     * Numerically stable form factoring out common diffs. Caller
-     * places the highest-score sample at index 1. */
+int32_t AutoFocusController::findPeak(size_t start, size_t end) const {
+    if (end > mScanData.size()) end = mScanData.size();
+    if (start >= end) return mSweepBestPos;
+
+    /* Discrete argmax across the slice. */
+    size_t maxIdx = start;
+    for (size_t i = start + 1; i < end; ++i) {
+        if (mScanData[i].score > mScanData[maxIdx].score) maxIdx = i;
+    }
+    /* No room to fit a parabola: return the discrete winner. */
+    if (maxIdx == start || maxIdx + 1 >= end) {
+        return mScanData[maxIdx].pos;
+    }
+
+    const ScanSample &s0 = mScanData[maxIdx - 1];
+    const ScanSample &s1 = mScanData[maxIdx];
+    const ScanSample &s2 = mScanData[maxIdx + 1];
+    /* Parabolic vertex through (s0, s1, s2) with s1 the discrete
+     * max. Numerically stable form, factoring out common diffs.
+     * Degenerate denominator (collinear points) → discrete max. */
+    const float x0 = (float)s0.pos, y0 = s0.score;
+    const float x1 = (float)s1.pos, y1 = s1.score;
+    const float x2 = (float)s2.pos, y2 = s2.score;
     const float a = (x1 - x0);
     const float b = (x1 - x2);
     const float p = a * (y1 - y2);
     const float q = b * (y1 - y0);
     const float denom = p - q;
-    if (fabsf(denom) < 1e-6f) return mSweepBestPos;
+    if (fabsf(denom) < 1e-6f) return s1.pos;
     const float vx = x1 - 0.5f * (a * p - b * q) / denom;
     int32_t out = (int32_t)(vx + 0.5f);
-    /* Sanity-clamp to between the outer samples — a degenerate fit
-     * can extrapolate well outside the bracket. */
-    int32_t lo = s[0].pos < s[2].pos ? s[0].pos : s[2].pos;
-    int32_t hi = s[0].pos < s[2].pos ? s[2].pos : s[0].pos;
+    /* Clamp to the outer samples — a degenerate fit can extrapolate
+     * well outside the immediate bracket. */
+    int32_t lo = s0.pos < s2.pos ? s0.pos : s2.pos;
+    int32_t hi = s0.pos < s2.pos ? s2.pos : s0.pos;
     if (out < lo) out = lo;
     if (out > hi) out = hi;
     return clampVcm(out);
@@ -306,79 +284,81 @@ int32_t AutoFocusController::parabolicPeak(const ScanSample s[3], int n) const {
 
 void AutoFocusController::advanceCoarse(float score) {
     const int32_t prevPos = mSweepPos;
-    recordCoarseSample(mSweepPos, score);
+    recordSample(mSweepPos, score);
+
+    /* How many Coarse-phase samples have advanced the running max.
+     * `>= 2` means the curve has actually risen at least once in
+     * this direction, which is the necessary precondition for
+     * peakPassed to mean anything. Without it, a single dip below
+     * `ratio × first_sample` would trip Fine on a phase that
+     * hasn't done any exploration. Counted over the slice
+     * `[mCoarsePhaseStart, end)` so a Coarse1→Coarse2 reversal-
+     * with-reset doesn't carry the stale Coarse1 ladder forward. */
+    size_t phaseRising = 0;
+    float  phaseMax    = 0.f;
+    for (size_t i = mCoarsePhaseStart; i < mScanData.size(); ++i) {
+        if (mScanData[i].score > phaseMax) {
+            phaseMax = mScanData[i].score;
+            phaseRising++;
+        }
+    }
+    const size_t phaseSampleCount = mScanData.size() - mCoarsePhaseStart;
 
     const bool peakPassed =
         mSweepBestScore > 0.f &&
-        score < mContrastRatio * mSweepBestScore;
+        score < mContrastRatio * mSweepBestScore &&
+        (mState == ScanState::Coarse1 || phaseRising >= 2);
     const bool atLimit =
         (mSweepStep > 0 && mSweepPos >= mVcmAutoEnd) ||
         (mSweepStep < 0 && mSweepPos <= mVcmInfinity);
 
-    /* Coarse1 may discover its first sample is already low — fast
-     * path that bails on a single-step ratio drop, so we don't waste
-     * the entire Coarse1 walk before realising we're heading the
-     * wrong way. */
+    /* Coarse1 fast-path: one big step downwards on the second
+     * sample → reverse without walking the whole half-range. */
     const bool fastReverse =
         mState == ScanState::Coarse1 && !mCoarseReversed &&
-        mCoarseSampleCount == 1 &&
+        phaseSampleCount == 2 &&
         score < mContrastRatio * mSweepBestScore;
 
-    /* Slow-descent reversal: Coarse1 ran to peakPassed / atLimit but
-     * never advanced its running peak past the very first sample.
-     * That means contrast slid downward the whole way — the peak is
-     * on the opposite side of the start position, not behind us.
-     * Without this trigger the algorithm enters Fine at the start
-     * pos (= the discrete max it saw) and commits there, so a
-     * mid-range → macro transition just parks the lens at the old
-     * focus. RPi libcamera uses the same `first-sample == max`
+    /* Slow-descent reversal: Coarse1 walked all the way to the
+     * peakPassed / atLimit gate but the running max never moved
+     * past the start sample (`phaseRising <= 1`). Means the curve
+     * slid downward the whole way — the peak is on the opposite
+     * side. RPi libcamera uses the same first-sample-was-max
      * check after Coarse1 termination. */
     const bool slowReverse =
         mState == ScanState::Coarse1 && !mCoarseReversed &&
         (peakPassed || atLimit) &&
-        mCoarseSampleCount <= 1;
+        phaseRising <= 1;
 
     if (fastReverse || slowReverse) {
         mSweepStep      = -mSweepStep;
         mState          = ScanState::Coarse2;
         mCoarseReversed = true;
-        /* Restart from the original (best) position so Coarse2
-         * covers the other half of the range cleanly. */
         mSweepPos       = mSweepBestPos;
-        /* Reset the peak tracker. Coarse1's "best" wasn't a real
-         * peak — that's exactly why we're reversing; the running
-         * max never advanced past the start sample. Carrying that
-         * stale score forward poisons the peakPassed gate in
-         * Coarse2: AE drift across the Coarse1 stretch routinely
-         * lands the first Coarse2 sample (revisiting the start
-         * position) below `ratio × Coarse1_best`, which trips
-         * peakPassed and drops the controller into Fine before
-         * Coarse2 has explored the other side at all. Starting
-         * Coarse2 with an empty window lets it build its own
-         * fresh running max from the new direction. */
-        mSweepBestScore    = 0.f;
-        mCoarseSampleCount = 0;
-        mLastSeen          = {0, 0.f};
+        /* Coarse1's running max wasn't a real peak — that's the
+         * trigger condition. Drop the running peak score so
+         * Coarse2's peakPassed gate compares against its own
+         * fresh max; bump the phase boundary so subsequent
+         * findPeak() / phase-rising counts only see Coarse2. The
+         * scan history itself stays intact for diagnostics. */
+        mSweepBestScore   = 0.f;
+        mCoarsePhaseStart = mScanData.size();
     } else if (peakPassed || atLimit) {
-        /* Sub-step coarse peak from the 3-sample parabolic fit if
-         * we have all three; falls back to mSweepBestPos otherwise.
-         * Using this as Fine's centre ensures the ±stepFine bracket
-         * brackets the real peak even when it sits between coarse
-         * samples. */
-        const int32_t coarsePk =
-            parabolicPeak(mCoarseSamples, mCoarseSampleCount);
-        /* Step into Fine, ±stepFine away from the interpolated peak,
-         * direction continuing where Coarse left off so the lens
-         * keeps moving the same way. */
+        /* Coarse → Fine handoff. Parabolic peak over the Coarse
+         * phase samples gives a sub-step centre for the Fine
+         * bracket — even when the real maximum sits between two
+         * coarse-step anchors, the Fine sweep can land on it. */
+        const int32_t coarsePk = findPeak(mCoarsePhaseStart,
+                                           mScanData.size());
         if (mSweepStep > 0) {
-            mSweepPos = clampVcm(coarsePk - mStepFine);
+            mSweepPos  = clampVcm(coarsePk - mStepFine);
             mSweepStep = mStepFine;
         } else {
-            mSweepPos = clampVcm(coarsePk + mStepFine);
+            mSweepPos  = clampVcm(coarsePk + mStepFine);
             mSweepStep = -mStepFine;
         }
-        mState           = ScanState::Fine;
-        mFineSampleCount = 0;
+        mState          = ScanState::Fine;
+        mFinePhaseStart = mScanData.size();
     } else {
         mSweepPos = clampVcm(mSweepPos + mSweepStep);
     }
@@ -388,23 +368,17 @@ void AutoFocusController::advanceCoarse(float score) {
 
 void AutoFocusController::advanceFine(float score) {
     const int32_t prevPos = mSweepPos;
-    recordFineSample(mSweepPos, score);
+    recordSample(mSweepPos, score);
 
-    /* Three Fine samples is enough to confirm the parabolic peak.
-     * Past that we'd just be fighting VCM noise. */
-    if (mFineSampleCount >= 3) {
-        /* Numerical stability for the parabolic vertex needs the
-         * highest-score sample anchored at slot [1]. Fine collected
-         * the trio in lens-travel order, so swap if needed. */
-        int maxIdx = 0;
-        if (mFineSamples[1].score > mFineSamples[maxIdx].score) maxIdx = 1;
-        if (mFineSamples[2].score > mFineSamples[maxIdx].score) maxIdx = 2;
-        if (maxIdx != 1) {
-            ScanSample tmp = mFineSamples[1];
-            mFineSamples[1] = mFineSamples[maxIdx];
-            mFineSamples[maxIdx] = tmp;
-        }
-        const int32_t finePk = parabolicPeak(mFineSamples, 3);
+    /* Three Fine samples bracket the peak well enough to interpolate
+     * a sub-stepFine maximum; past that we'd just be fighting VCM
+     * noise. findPeak over the Fine slice picks discrete argmax +
+     * parabolic on its immediate neighbours, so the commit position
+     * benefits from sub-step accuracy whenever the actual maximum
+     * sits between two fine-step samples. */
+    if (mScanData.size() - mFinePhaseStart >= 3) {
+        const int32_t finePk = findPeak(mFinePhaseStart,
+                                         mScanData.size());
         mSweepPos = finePk;
         mState    = ScanState::Settle;
     } else {
@@ -434,7 +408,8 @@ void AutoFocusController::commitSweep(bool focused) {
      * set by advanceFine to the parabolic vertex). Falls back to
      * mSweepBestPos only if Fine never managed a fit, which happens
      * when Coarse hit a range limit before bracketing the peak. */
-    const int32_t finalPos = (mFineSampleCount >= 3)
+    const size_t fineSamples = mScanData.size() - mFinePhaseStart;
+    const int32_t finalPos = (fineSamples >= 3)
                              ? mSweepPos
                              : mSweepBestPos;
     mDev->setFocusPosition(finalPos);
@@ -616,9 +591,9 @@ void AutoFocusController::reset() {
     mSweepBestPos       = mVcmInfinity;
     mSweepBestScore     = 0.f;
     mSettleFrames       = 0;
-    mCoarseSampleCount  = 0;
-    mLastSeen           = {0, 0.f};
-    mFineSampleCount    = 0;
+    mScanData.clear();
+    mCoarsePhaseStart   = 0;
+    mFinePhaseStart     = 0;
     mCoarseReversed     = false;
     mSceneFocusSnapshot = 0.f;
     mSceneRgbSnapshot[0]    = 0.f;

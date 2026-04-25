@@ -2,6 +2,8 @@
 #define HAL_3A_AUTO_FOCUS_CONTROLLER_H
 
 #include <stdint.h>
+#include <vector>
+
 #include <camera/CameraMetadata.h>
 
 #include "ipa/IpaStats.h"
@@ -112,9 +114,12 @@ private:
     void   advanceCoarse(float score);
     void   advanceFine(float score);
     void   commitSweep(bool focused);
-    void   recordCoarseSample(int32_t pos, float score);
-    void   recordFineSample(int32_t pos, float score);
-    int32_t parabolicPeak(const ScanSample s[3], int n) const;
+    void   recordSample(int32_t pos, float score);
+    /* Discrete argmax inside [start, end) over `mScanData`, plus a
+     * parabolic refinement using the immediate neighbours when
+     * argmax isn't on the boundary. Falls back to the discrete
+     * sample at the boundary or when the parabolic fit degenerates. */
+    int32_t findPeak(size_t start, size_t end) const;
     bool   nearLimit(int32_t pos, int32_t limit) const;
     void   setSettleForMove(int32_t fromPos, int32_t toPos);
 
@@ -149,24 +154,25 @@ private:
     int32_t   mSweepBestPos;
     float     mSweepBestScore;
     int32_t   mSettleFrames;
-    /* Three-sample windows for parabolic interpolation, separate per
-     * phase so the coarse-step and fine-step samples never share a
-     * fit. Coarse keeps the running peak in slot [1] with the sample
-     * before the rise in [0] and the first sample below the peak in
-     * [2]. Fine fills slots in lens-travel order, then the closing
-     * step puts the highest-score sample in [1] before invoking the
-     * parabolic vertex calculation. */
-    ScanSample mCoarseSamples[3];
-    int        mCoarseSampleCount;
-    /* Most recent sample considered by recordCoarseSample, regardless
-     * of whether it became a new running peak. When the next peak
-     * arrives this is the immediate predecessor that lands in slot
-     * [0]; using "last peak demoted" instead would feed parabolic
-     * with non-adjacent neighbours and bias the vertex. */
-    ScanSample mLastSeen;
-    ScanSample mFineSamples[3];
-    int        mFineSampleCount;
-    bool       mCoarseReversed;
+    /* Full per-sweep score history. Every Coarse / Fine sample
+     * appends; cleared on startSweep. Parabolic peak interpolation
+     * runs over phase-bounded slices of this vector so coarse-step
+     * and fine-step samples don't get mixed in one fit (different
+     * sample spacings would skew the vertex calculation). The full
+     * history is what RPi libcamera's `scanData_` does — keeping
+     * every reading lets the closing peak search look at the
+     * complete curve rather than a sliding 3-sample window that
+     * loses points on slow descents. */
+    std::vector<ScanSample> mScanData;
+    /* Index in `mScanData` where Coarse-phase samples begin. Coarse2
+     * after a reversal-with-reset advances this past the Coarse1
+     * remnants so the Coarse → Fine handoff sees only the
+     * meaningful direction. */
+    size_t mCoarsePhaseStart;
+    /* Index where Fine-phase samples begin. -1 / vector-size while
+     * Coarse is still running. */
+    size_t mFinePhaseStart;
+    bool   mCoarseReversed;
 
     /* Continuous-AF scene-change tracking. Snapshot is multi-channel
      * — sharpness plus per-channel RGB mean over the centre patches —
