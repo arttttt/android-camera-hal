@@ -87,10 +87,6 @@ V4l2Device::V4l2Device(const char *devNode)
     }
     mPFd.fd = -1;
     mPFd.events = POLLIN | POLLRDNORM;
-
-#ifdef V4L2DEVICE_OPEN_ONCE
-    connect();
-#endif
 }
 
 V4l2Device::~V4l2Device() {
@@ -428,9 +424,7 @@ bool V4l2Device::disconnect() {
         return false;
 
     setStreaming(false);
-#ifndef V4L2DEVICE_OPEN_ONCE
     cleanup();
-#endif
 
     return true;
 }
@@ -462,12 +456,9 @@ bool V4l2Device::setStreaming(bool enable) {
     } else {
         /* STREAMOFF is load-bearing: the V4L2 kernel contract is that
          * it returns every in-flight buffer to USERSPACE state, which
-         * drops any inter-session captures held by the driver. Skip
-         * it (like the V4L2DEVICE_OPEN_ONCE fast path used to) and
-         * the next session sees ring slots that were written by the
-         * sensor during the gap with stale scene / old exposure.
-         * The fd itself stays open — V4L2DEVICE_OPEN_ONCE still
-         * guards the cleanup()/close() path in disconnect(). */
+         * drops any inter-session captures held by the driver. Skipping
+         * it lets the next session see ring slots that were written by
+         * the sensor during the gap with stale scene / old exposure. */
         if(!iocStreamOff()) {
             ALOGE("Could not stop streaming: %s (%d)", strerror(errno), errno);
             return false;

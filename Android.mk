@@ -16,9 +16,6 @@ LOCAL_CFLAGS += -pthread
 
 LOCAL_CFLAGS += -DV4L2DEVICE_BUF_COUNT=8
 
-# Configure and open device once on HAL start
-LOCAL_CFLAGS += -DV4L2DEVICE_OPEN_ONCE
-
 
 # Compile debug code - comment out to disable
 #LOCAL_CFLAGS += -UNDEBUG -DDEBUG
