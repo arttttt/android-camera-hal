@@ -43,12 +43,12 @@ constexpr float   kDefContrastRatio  = 0.75f;
 constexpr float   kDefRetriggerRatio = 0.75f;
 constexpr int32_t kDefRetriggerDelay = 10;
 
-float sumCentreSharpness(
-    const float sharpness[IpaStats::PATCH_Y][IpaStats::PATCH_X]) {
+float sumCentreFocus(
+    const float metric[IpaStats::PATCH_Y][IpaStats::PATCH_X]) {
     float s = 0.f;
     for (int py = kRoiPatchLo; py < kRoiPatchHi; ++py) {
         for (int px = kRoiPatchLo; px < kRoiPatchHi; ++px) {
-            s += sharpness[py][px];
+            s += metric[py][px];
         }
     }
     return s;
@@ -112,7 +112,7 @@ AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
     , mLastSeen{0, 0.f}
     , mFineSampleCount(0)
     , mCoarseReversed(false)
-    , mSceneSharpnessSnapshot(0.f)
+    , mSceneFocusSnapshot(0.f)
     , mSceneRgbSnapshot{0.f, 0.f, 0.f}
     , mSceneChangeCount(0)
 {
@@ -433,7 +433,7 @@ void AutoFocusController::commitSweep(bool focused) {
      * — at commit time we don't yet have a stats frame for the
      * just-committed lens position; better to read it on the next
      * incoming frame than to copy stale running values. */
-    mSceneSharpnessSnapshot = 0.f;
+    mSceneFocusSnapshot = 0.f;
     mSceneRgbSnapshot[0]    = 0.f;
     mSceneRgbSnapshot[1]    = 0.f;
     mSceneRgbSnapshot[2]    = 0.f;
@@ -485,7 +485,7 @@ void AutoFocusController::onFrameStart() {
 }
 
 void AutoFocusController::onStats(const IpaStats &stats) {
-    const float score = sumCentreSharpness(stats.sharpness);
+    const float score = sumCentreFocus(stats.focusMetric);
 
     if (mState == ScanState::Idle) {
         /* Continuous-AF watches scene statistics for movement /
@@ -504,10 +504,10 @@ void AutoFocusController::onStats(const IpaStats &stats) {
         sumCentreRgb(stats.rgbMean, curRgb);
 
         /* First idle frame after a sweep — capture snapshot and
-         * skip change detection. mSceneSharpnessSnapshot==0 is the
+         * skip change detection. mSceneFocusSnapshot==0 is the
          * sentinel commitSweep / reset / ctor leave behind. */
-        if (mSceneSharpnessSnapshot <= 0.f) {
-            mSceneSharpnessSnapshot = score;
+        if (mSceneFocusSnapshot <= 0.f) {
+            mSceneFocusSnapshot = score;
             mSceneRgbSnapshot[0]    = curRgb[0];
             mSceneRgbSnapshot[1]    = curRgb[1];
             mSceneRgbSnapshot[2]    = curRgb[2];
@@ -516,7 +516,7 @@ void AutoFocusController::onStats(const IpaStats &stats) {
         }
 
         const bool changed =
-            outsideRatio(score,    mSceneSharpnessSnapshot, mRetriggerRatio) ||
+            outsideRatio(score,    mSceneFocusSnapshot, mRetriggerRatio) ||
             outsideRatio(curRgb[0], mSceneRgbSnapshot[0],    mRetriggerRatio) ||
             outsideRatio(curRgb[1], mSceneRgbSnapshot[1],    mRetriggerRatio) ||
             outsideRatio(curRgb[2], mSceneRgbSnapshot[2],    mRetriggerRatio);
@@ -527,7 +527,7 @@ void AutoFocusController::onStats(const IpaStats &stats) {
              * its property — the snapshot moves with the scene, so a
              * sustained pan keeps tripping ratio and the counter
              * never advances past 1. */
-            mSceneSharpnessSnapshot = score;
+            mSceneFocusSnapshot = score;
             mSceneRgbSnapshot[0]    = curRgb[0];
             mSceneRgbSnapshot[1]    = curRgb[1];
             mSceneRgbSnapshot[2]    = curRgb[2];
@@ -539,7 +539,7 @@ void AutoFocusController::onStats(const IpaStats &stats) {
         if (mSceneChangeCount >= mRetriggerDelay) {
             ALOGD("AF: scene stabilised after change, starting sweep "
                   "(snap_sh=%.0f cur_sh=%.0f)",
-                  (double)mSceneSharpnessSnapshot, (double)score);
+                  (double)mSceneFocusSnapshot, (double)score);
             startSweep(mAfMode);
         }
         return;
@@ -595,7 +595,7 @@ void AutoFocusController::reset() {
     mLastSeen           = {0, 0.f};
     mFineSampleCount    = 0;
     mCoarseReversed     = false;
-    mSceneSharpnessSnapshot = 0.f;
+    mSceneFocusSnapshot = 0.f;
     mSceneRgbSnapshot[0]    = 0.f;
     mSceneRgbSnapshot[1]    = 0.f;
     mSceneRgbSnapshot[2]    = 0.f;

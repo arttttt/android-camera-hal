@@ -175,7 +175,7 @@ private:
      * retrigger-delay to elapse. The counter increments only after
      * the first detect, so on a fully stable boot we don't sweep
      * spuriously. */
-    float     mSceneSharpnessSnapshot;
+    float     mSceneFocusSnapshot;
     float     mSceneRgbSnapshot[3];
     int32_t   mSceneChangeCount;
 };
