@@ -203,8 +203,7 @@ void NeonStatsEncoder::computeRange(const void *bayer,
                         for (int i = 0; i < 8; ++i) {
                             uint32_t v = (uint32_t)gbuf[i];
                             v = (v > bl) ? (v - bl) : 0u;
-                            const uint32_t bin = v >> histShift;
-                            partial->lumaHist[bin] += 1u;
+                            partial->lumaHist[v >> histShift] += 1u;
                         }
 
                         if (neonSobel) {
@@ -235,11 +234,11 @@ void NeonStatsEncoder::computeRange(const void *bayer,
                             const int16x8_t br_s = vreinterpretq_s16_u16(br);
 
                             const int16x8_t gx = vsubq_s16(
-                                vaddq_s16(vaddq_s16(tr_s, br_s), vaddq_s16(rr_s, rr_s)),
-                                vaddq_s16(vaddq_s16(tl_s, bl_s), vaddq_s16(ll_s, ll_s)));
+                                vaddq_s16(vaddq_s16(tr_s, br_s), vshlq_n_s16(rr_s, 1)),
+                                vaddq_s16(vaddq_s16(tl_s, bl_s), vshlq_n_s16(ll_s, 1)));
                             const int16x8_t gy = vsubq_s16(
-                                vaddq_s16(vaddq_s16(bl_s, br_s), vaddq_s16(bc_s, bc_s)),
-                                vaddq_s16(vaddq_s16(tl_s, tr_s), vaddq_s16(tc_s, tc_s)));
+                                vaddq_s16(vaddq_s16(bl_s, br_s), vshlq_n_s16(bc_s, 1)),
+                                vaddq_s16(vaddq_s16(tl_s, tr_s), vshlq_n_s16(tc_s, 1)));
 
                             sharpAccV = vmlal_s16(sharpAccV, vget_low_s16(gx),  vget_low_s16(gx));
                             sharpAccV = vmlal_s16(sharpAccV, vget_high_s16(gx), vget_high_s16(gx));
@@ -277,8 +276,7 @@ void NeonStatsEncoder::computeRange(const void *bayer,
 
                     if (chan == 1u) {
                         const uint32_t vBin = (v > bl) ? (v - bl) : 0u;
-                        const uint32_t bin  = vBin >> histShift;
-                        partial->lumaHist[bin] += 1u;
+                        partial->lumaHist[vBin >> histShift] += 1u;
                         scalarSobelStep(p16, p8, wide,
                                         width, height, x, y,
                                         &partial->sharpSum[py][px],
