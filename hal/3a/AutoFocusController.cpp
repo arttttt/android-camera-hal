@@ -4,8 +4,6 @@
 
 #include <math.h>
 
-#include <limits>
-
 #include <utils/Log.h>
 #include <system/camera_metadata.h>
 
@@ -322,33 +320,13 @@ void AutoFocusController::advanceCoarse(float score) {
      * with-reset doesn't carry the stale Coarse1 ladder forward. */
     size_t phaseRising = 0;
     float  phaseMax    = 0.f;
-    float  phaseMin    = std::numeric_limits<float>::infinity();
     for (size_t i = mCoarsePhaseStart; i < mScanData.size(); ++i) {
-        const float s = mScanData[i].score;
-        if (s > phaseMax) {
-            phaseMax = s;
+        if (mScanData[i].score > phaseMax) {
+            phaseMax = mScanData[i].score;
             phaseRising++;
         }
-        if (s < phaseMin) phaseMin = s;
     }
     const size_t phaseSampleCount = mScanData.size() - mCoarsePhaseStart;
-
-    /* Flatness early-abort. After enough Coarse samples to call it
-     * — four within this phase — if the dynamic range stays under
-     * half the no-signal floor, the curve is flat to within sensor
-     * noise and the rest of the sweep would just walk to atLimit
-     * before a Failed Settle. Skip straight to commitSweep with
-     * focused=false; the lens parks back at pre-sweep position
-     * (no theatrical full-range walk) and the AfState honestly
-     * reports the result. */
-    if (phaseSampleCount >= 4 &&
-        (phaseMax - phaseMin) < 0.5f * mMinFocusSignal) {
-        ALOGD("AF: Coarse flat (range=%.0f < %.0f), abort early",
-              (double)(phaseMax - phaseMin),
-              (double)(0.5f * mMinFocusSignal));
-        commitSweep(false);
-        return;
-    }
 
     const bool peakPassed =
         mSweepBestScore > 0.f &&
@@ -543,17 +521,26 @@ void AutoFocusController::onStats(const IpaStats &stats) {
         if (mAfMode != ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE)
             return;
 
-        /* No usable focus signal in the current frame — textureless
-         * wall, very dim scene, occlusion. Retriggering on RGB
-         * change alone would launch a sweep that has no peak to
-         * find; better to stay idle and let the framework see a
-         * stable AfState. We also intentionally skip refreshing
-         * the snapshot so a transient blackout doesn't reset the
-         * scene-change baseline; once signal returns, the next
-         * frame compares against the last good snapshot and the
-         * normal retrigger logic can fire if the scene has
-         * actually moved. */
-        if (score < mMinFocusSignal) return;
+        /* Skip the retrigger only when *both* the live frame and the
+         * last-converged snapshot are below the no-signal floor —
+         * i.e. we've been on a textureless / very dim scene and
+         * nothing about the scene's focus quality has changed. A
+         * legitimately out-of-focus real subject (after the user
+         * moves the camera away from a macro target) drops the
+         * live score below the floor too, but the snapshot from
+         * the previous successful focus is high; that case must
+         * still launch a sweep, otherwise the lens stays parked
+         * on stale macro position while the new subject blurs.
+         *
+         * On the very first idle frame the snapshot is 0 (sentinel
+         * — captured next), so this gate doesn't apply yet.
+         * `mSceneFocusSnapshot > 0.f` keeps us out of the gate
+         * until we have a real comparison point. */
+        if (score < mMinFocusSignal &&
+            mSceneFocusSnapshot > 0.f &&
+            mSceneFocusSnapshot < mMinFocusSignal) {
+            return;
+        }
 
         float curRgb[3];
         sumCentreRgb(stats.rgbMean, curRgb);
