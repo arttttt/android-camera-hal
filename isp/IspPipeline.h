@@ -150,6 +150,17 @@ public:
         return false;
     }
 
+    /* Host-mapped NV12 buffer the most recent blitToYuv encoded into. Valid
+     * only after endFrame's fence has been reaped and invalidateYuvForCpu()
+     * has been called. The buffer is shared across the (at most) one
+     * in-flight frame; multi-frame pipelining would need a per-slot ring. */
+    virtual const uint8_t *yuvHostBuffer() const { return nullptr; }
+
+    /* Invalidate the CPU cache for the YUV host buffer so a host read after
+     * the GPU write sees coherent data. Called by the consumer right before
+     * libyuv reads the buffer. */
+    virtual void invalidateYuvForCpu() {}
+
     /* Submit the recorded command buffer. Must be called once per matching
      * beginFrame, after all blitTo* calls.
      * submitFenceOut: [out, may be NULL] sync_fd that signals when the

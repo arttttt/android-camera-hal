@@ -10,6 +10,7 @@
 #include "PipelineStage.h"
 #include "InFlightTracker.h"
 #include "BayerSource.h"
+#include "BufferProcessor.h"
 
 #define LOG_TAG "Cam-PipelineThread"
 
@@ -58,6 +59,15 @@ void PipelineThread::drainFences(PipelineContext *ctx, int timeoutMs) {
 }
 
 void PipelineThread::completeCtx(PipelineContext *ctx) {
+    /* CPU finalize for outputs whose GPU half ran into a host-mapped
+     * backend buffer (YUV NV12). Locks the gralloc, libyuv-repacks from
+     * the ISP host buffer, unlocks. Must run before stats and dispatch:
+     * the framework's release_fence for these outputs is -1 (no GPU
+     * fence), so the gralloc must be fully populated by the time
+     * ResultDispatch sends the result. */
+    if (deps.bufferProcessor)
+        deps.bufferProcessor->finalizeCpuOutputs(*ctx);
+
     /* Stats consumer runs between fence reap and result dispatch —
      * the submit's fence has signalled (so the GPU-written stats
      * buffer is coherent) and the frame has not yet been returned to

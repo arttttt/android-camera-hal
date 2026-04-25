@@ -12,6 +12,7 @@
 #include "PipelineContext.h"
 #include "BufferProcessor.h"
 #include "BayerSource.h"
+#include "IspPipeline.h"
 
 #define LOG_TAG "Cam-DemosaicBlitStage"
 
@@ -39,6 +40,16 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
     ctx.outputStatuses.assign(n, CAMERA3_BUFFER_STATUS_OK);
     ctx.outputNeedsFinalUnlock.assign(n, true);
 
+    /* Open the ISP recording for this frame — demosaic gets recorded once;
+     * each blitTo* call inside the loop appends a per-output operation to
+     * the same command buffer; endFrame submits the lot. */
+    if (!deps.isp->beginFrame(res.width, res.height, fctx.pixFmt, fctx.frameSlotIdx)) {
+        ALOGE("beginFrame failed for frame %u", ctx.request.frameNumber);
+        ctx.errorCode = NO_INIT;
+        ctx.outputNeedsFinalUnlock.assign(n, false);
+        return;
+    }
+
     for (size_t i = 0; i < n; ++i) {
         CaptureRequest::Buffer &outBuf = ctx.request.outputBuffers[i];
 
@@ -52,18 +63,14 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
         BufferProcessor::OutputState state;
         status_t e = deps.bufferProcessor->processOne(sb, fctx, ctx.request.settings,
                                                      ctx.request.frameNumber,
-                                                     &state);
+                                                     &state,
+                                                     &ctx.outputReleaseFences[i]);
         if (e != NO_ERROR) {
             ALOGE("processOne failed at output %zu for frame %u: %d",
                   i, ctx.request.frameNumber, (int)e);
             for (size_t j = 0; j <= i; ++j) {
                 GraphicBufferMapper::get().unlock(*ctx.request.outputBuffers[j].buffer);
             }
-            /* Earlier outputs in this request already got QSRIA
-             * release-fences we won't be returning to the framework
-             * (ResultDispatch's error branch emits notify(ERROR_REQUEST)
-             * and skips the per-output plumbing). Close them here so
-             * they don't leak as orphan sync_fds. */
             for (size_t j = 0; j < i; ++j) {
                 if (ctx.outputReleaseFences[j] >= 0) {
                     ::close(ctx.outputReleaseFences[j]);
@@ -72,13 +79,32 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
             }
             ctx.outputNeedsFinalUnlock.assign(n, false);
             ctx.errorCode = (int)e;
+            /* Submit the partial recording anyway so slot fences end up in a
+             * consistent state for the next frame; release fences for any
+             * already-recorded blits get dropped above. */
+            int submitFd = -1;
+            (void)deps.isp->endFrame(&submitFd);
+            if (submitFd >= 0) ::close(submitFd);
             return;
         }
         ctx.outputNeedsFinalUnlock[i] = state.needsFinalUnlock;
-        ctx.outputReleaseFences[i]    = state.releaseFd;
-        if (state.submitSyncFd >= 0)
-            ctx.pendingFenceFds.push_back(state.submitSyncFd);
     }
+
+    int submitFenceFd = -1;
+    if (!deps.isp->endFrame(&submitFenceFd)) {
+        ALOGE("endFrame failed for frame %u", ctx.request.frameNumber);
+        for (size_t j = 0; j < n; ++j) {
+            if (ctx.outputReleaseFences[j] >= 0) {
+                ::close(ctx.outputReleaseFences[j]);
+                ctx.outputReleaseFences[j] = -1;
+            }
+        }
+        ctx.outputNeedsFinalUnlock.assign(n, false);
+        ctx.errorCode = NO_INIT;
+        return;
+    }
+    if (submitFenceFd >= 0)
+        ctx.pendingFenceFds.push_back(submitFenceFd);
 }
 
 } /* namespace android */

@@ -8,10 +8,13 @@
 #include <hardware/camera3.h>
 #include <camera/CameraMetadata.h>
 
+#include "CaptureRequest.h"
+
 namespace android {
 
 class IspPipeline;
 class JpegEncoder;
+struct PipelineContext;
 
 /* Per-output-buffer processing. Takes a just-dequeued V4L2 Bayer
  * frame and emits either a zero-copy RGBA gralloc (preview) or a
@@ -41,35 +44,46 @@ public:
 
     struct OutputState {
         bool needsFinalUnlock;
-        int  releaseFd;
-        /* sync_fd from the GPU submit that produced this output (-1
-         * if none). Caller owns and must close. Used by PipelineThread
-         * to poll submit completion; ResultDispatchStage closes any
-         * remaining fds if the work was already drained synchronously. */
-        int  submitSyncFd;
     };
 
     explicit BufferProcessor(const Deps &deps);
 
-    /* Process one output buffer. On NO_ERROR, `*state` is populated. */
+    /* Process one output buffer of a frame whose ISP recording is open
+     * (DemosaicBlitStage has called isp->beginFrame). On NO_ERROR the
+     * output's blit / encode has been recorded; the actual GPU work is
+     * kicked off later by isp->endFrame.
+     *
+     * releaseFenceOut: address of the slot in ctx.outputReleaseFences for
+     *                  this output. RGBA outputs stash the address inside
+     *                  the ISP and endFrame writes the per-output sync_fd
+     *                  there. YUV / BLOB leave it -1 (CPU finalize is
+     *                  synchronous in the consumer thread). */
     status_t processOne(const camera3_stream_buffer &srcBuf,
                         const FrameContext &ctx,
                         const CameraMetadata &cm,
                         uint32_t frameNumber,
-                        OutputState *state);
+                        OutputState *state,
+                        int *releaseFenceOut);
+
+    /* Post-fence-reap CPU finalize for outputs whose GPU half ran into a
+     * host-mapped backend buffer (YUV NV12). Called by PipelineThread on
+     * a successfully completed frame, before stats and result dispatch.
+     * No-op when no YUV output is in the request. */
+    void finalizeCpuOutputs(PipelineContext &ctx);
 
 private:
     /* Block until the consumer releases srcBuf for writing. */
     status_t waitAcquireFence(const camera3_stream_buffer &srcBuf,
                               uint32_t frameNumber);
 
-    /* GPU demosaic + optional crop/scale direct into gralloc. On
-     * success populates state->releaseFd. Returns false if
-     * processToGralloc failed — that is an error on Bayer hardware
-     * and the caller propagates it. */
+    /* Record an RGBA blit on the open ISP recording. acquireFence
+     * (sync_fd from srcBuf) is imported as a binary VkSemaphore so the
+     * eventual submit GPU-waits on framework readiness. The releaseFenceOut
+     * pointer is stashed inside the ISP and populated by endFrame. */
     bool     tryZeroCopy(const camera3_stream_buffer &srcBuf,
                          const FrameContext &ctx,
-                         OutputState *state);
+                         OutputState *state,
+                         int *releaseFenceOut);
 
     /* Lock the gralloc buffer for CPU write; writes the mapped pointer
      * to *outBuf. Used by the BLOB path — libjpeg writes into it. */
@@ -82,14 +96,18 @@ private:
                                const FrameContext &ctx,
                                const CameraMetadata &cm);
 
-    /* YUV_420_888 output — GPU NV12 via IspPipeline::processToYuv420 +
-     * layout repack through libyuv. Locks + unlocks the gralloc buffer
-     * internally (like the BLOB path); state->needsFinalUnlock stays
-     * true so the outer loop's unlock is a no-op on already-unlocked
-     * buffers. */
-    status_t processYuvOutput(const camera3_stream_buffer &srcBuf,
+    /* Record a GPU NV12 encode dispatch on the open ISP recording. CPU
+     * wait on srcBuf.acquire_fence happens here so the subsequent
+     * finalizeYuvOutput can lock the gralloc without blocking. */
+    status_t recordYuvOutput(const camera3_stream_buffer &srcBuf,
                               const FrameContext &ctx,
                               uint32_t frameNumber);
+
+    /* Lock the gralloc, libyuv-repack from the ISP host buffer, unlock.
+     * Called from finalizeCpuOutputs once the frame's submit fence has
+     * signalled. */
+    void     finalizeYuvOutput(const CaptureRequest::Buffer &outBuf,
+                                uint32_t frameNumber);
 
     Deps mDeps;
 };

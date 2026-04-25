@@ -60,6 +60,9 @@ public:
                     int *releaseFenceOut) override;
     bool endFrame(int *submitFenceOut) override;
 
+    const uint8_t *yuvHostBuffer() const override { return mYuvEncoder.mappedBuffer(); }
+    void           invalidateYuvForCpu() override { mYuvEncoder.invalidateForCpu(); }
+
     int    inputBufferCount() const override { return mInputRing.slotCount(); }
     size_t inputBufferSize()  const override { return mInputRing.slotSize(); }
     int    exportInputBufferFd(int idx) override { return mInputRing.exportFd(idx); }

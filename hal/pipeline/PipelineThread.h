@@ -12,6 +12,7 @@ namespace android {
 
 class PipelineStage;
 class BayerSource;
+class BufferProcessor;
 class InFlightTracker;
 
 /* GPU-submit side of the async pipeline.
@@ -35,6 +36,7 @@ public:
         PipelineStage                *statsProcess;    /* may be null */
         PipelineStage                *resultDispatch;
         BayerSource                  *bayerSource;
+        BufferProcessor              *bufferProcessor; /* CPU finalize for YUV outputs */
         InFlightTracker              *tracker;
         std::size_t                   maxInFlight;
     };

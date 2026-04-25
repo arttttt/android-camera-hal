@@ -17,6 +17,7 @@
 
 #include "IspPipeline.h"
 #include "jpeg/JpegEncoder.h"
+#include "PipelineContext.h"
 #include "DbgUtils.h"
 
 namespace android {
@@ -60,9 +61,13 @@ status_t BufferProcessor::waitAcquireFence(const camera3_stream_buffer &srcBuf,
 
 bool BufferProcessor::tryZeroCopy(const camera3_stream_buffer &srcBuf,
                                    const FrameContext &ctx,
-                                   OutputState *state) {
+                                   OutputState *state,
+                                   int *releaseFenceOut) {
     /* The caller guarantees this stream is RGBA_8888 (Bayer sensor =
-     * the only source). Shader handles crop + rescale per push-constant. */
+     * the only source). The shader handles crop + rescale per push-constant.
+     * acquire_fence (sync_fd) gets imported as a binary VkSemaphore so the
+     * eventual submit GPU-waits on framework readiness without blocking
+     * this thread. */
     unsigned streamW = srcBuf.stream->width;
     unsigned streamH = srcBuf.stream->height;
 
@@ -71,23 +76,17 @@ bool BufferProcessor::tryZeroCopy(const camera3_stream_buffer &srcBuf,
         GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_COMPOSER,
         streamW, const_cast<native_handle_t *>(*srcBuf.buffer),
         false);
-    int zcReleaseFd = -1;
-    int zcSubmitFd  = -1;
     bool zcOk = false;
     BENCHMARK_SECTION("Raw->RGBA") {
         CropRect crop = { ctx.cropX, ctx.cropY, ctx.cropW, ctx.cropH };
-        zcOk = mDeps.isp->processToGralloc(ctx.frameBuf, gb->getNativeBuffer(),
-                                            ctx.resW, ctx.resH,
-                                            streamW, streamH,
-                                            ctx.pixFmt,
-                                            -1, &zcReleaseFd, &zcSubmitFd,
-                                            ctx.frameSlotIdx, crop);
+        zcOk = mDeps.isp->blitToGralloc(gb->getNativeBuffer(),
+                                         streamW, streamH, crop,
+                                         srcBuf.acquire_fence,
+                                         releaseFenceOut);
     }
     if (!zcOk)
         return false;
 
-    state->releaseFd        = zcReleaseFd;
-    state->submitSyncFd     = zcSubmitFd;
     state->needsFinalUnlock = false;
     return true;
 }
@@ -107,32 +106,55 @@ status_t BufferProcessor::lockSwWrite(const camera3_stream_buffer &srcBuf,
     return NO_ERROR;
 }
 
-status_t BufferProcessor::processYuvOutput(const camera3_stream_buffer &srcBuf,
+status_t BufferProcessor::recordYuvOutput(const camera3_stream_buffer &srcBuf,
                                             const FrameContext &ctx,
                                             uint32_t frameNumber) {
+    /* CPU-wait on the framework acquire_fence here so finalizeYuvOutput's
+     * lockYCbCr (post-fence-reap) doesn't have to block. The wait is a
+     * few ms in steady state; the GPU encode dispatch we record next
+     * runs in parallel with subsequent frames. */
+    status_t e = waitAcquireFence(srcBuf, frameNumber);
+    if (e != NO_ERROR)
+        return e;
+
     unsigned w = srcBuf.stream->width;
     unsigned h = srcBuf.stream->height;
-
-    const uint8_t *nv12 = NULL;
+    int releaseFd = -1;
+    CropRect crop = { ctx.cropX, ctx.cropY, ctx.cropW, ctx.cropH };
+    bool ok = false;
     BENCHMARK_SECTION("Raw->NV12") {
-        nv12 = mDeps.isp->processToYuv420(ctx.frameBuf, w, h,
-                                           ctx.pixFmt, ctx.frameSlotIdx);
+        ok = mDeps.isp->blitToYuv(srcBuf.buffer, w, h, crop, -1, &releaseFd);
     }
-    if (!nv12) {
-        ALOGE("buffer %p  frame %-4u  processToYuv420 failed",
+    if (!ok) {
+        ALOGE("buffer %p  frame %-4u  blitToYuv failed",
               srcBuf.buffer, frameNumber);
         return NO_INIT;
+    }
+    return NO_ERROR;
+}
+
+void BufferProcessor::finalizeYuvOutput(const CaptureRequest::Buffer &outBuf,
+                                          uint32_t frameNumber) {
+    unsigned w = outBuf.stream->width;
+    unsigned h = outBuf.stream->height;
+
+    mDeps.isp->invalidateYuvForCpu();
+    const uint8_t *nv12 = mDeps.isp->yuvHostBuffer();
+    if (!nv12) {
+        ALOGE("buffer %p  frame %-4u  yuvHostBuffer null at finalize",
+              outBuf.buffer, frameNumber);
+        return;
     }
     const uint8_t *srcY  = nv12;
     const uint8_t *srcUv = nv12 + (size_t)w * h;
 
     android_ycbcr dst = {};
     const Rect rect((int)w, (int)h);
-    status_t e = GraphicBufferMapper::get().lockYCbCr(*srcBuf.buffer,
+    status_t e = GraphicBufferMapper::get().lockYCbCr(*outBuf.buffer,
         GRALLOC_USAGE_SW_WRITE_OFTEN, rect, &dst);
     if (e != NO_ERROR) {
-        ALOGE("buffer %p  frame %-4u  lockYCbCr failed", srcBuf.buffer, frameNumber);
-        return NO_INIT;
+        ALOGE("buffer %p  frame %-4u  lockYCbCr failed", outBuf.buffer, frameNumber);
+        return;
     }
 
     uint8_t *dstY  = (uint8_t *)dst.y;
@@ -141,40 +163,35 @@ status_t BufferProcessor::processYuvOutput(const camera3_stream_buffer &srcBuf,
 
     BENCHMARK_SECTION("NV12->gralloc") {
         if (dst.chroma_step == 2 && dstCb + 1 == dstCr) {
-            /* NV12 target — both planes are identical layout to the
-             * source, just stride-aware memcpy each. */
             libyuv::CopyPlane(srcY,  (int)w, dstY,  (int)dst.ystride,
                               (int)w, (int)h);
             libyuv::CopyPlane(srcUv, (int)w, dstCb, (int)dst.cstride,
                               (int)w, (int)h / 2);
         } else if (dst.chroma_step == 1) {
-            /* I420 / YV12 target — NV12ToI420 copies Y and deinterleaves
-             * UV into the two planar halves. layout.cb/layout.cr already
-             * point at the physically correct plane for whichever of
-             * I420 or YV12 the framework chose; libyuv writes to the
-             * pointers we pass. */
             libyuv::NV12ToI420(srcY, (int)w, srcUv, (int)w,
                                dstY,  (int)dst.ystride,
                                dstCb, (int)dst.cstride,
                                dstCr, (int)dst.cstride,
                                (int)w, (int)h);
         } else {
-            /* NV21 target (chroma_step == 2, cr precedes cb). The
-             * Android-7 libyuv we link has no direct NV12→NV21 and
-             * scalar UV-pair swap would blow the frame budget. Fail
-             * NO_INIT; the "proper fix" (malloc-free NEON swap or GPU
-             * shader targeting NV21 directly) is tracked in
-             * docs/open-questions.md. */
             ALOGE("buffer %p  frame %-4u  YUV layout not supported "
                   "(chroma_step=%d, cb=%p, cr=%p)",
-                  srcBuf.buffer, frameNumber,
+                  outBuf.buffer, frameNumber,
                   dst.chroma_step, dstCb, dstCr);
-            GraphicBufferMapper::get().unlock(*srcBuf.buffer);
-            return NO_INIT;
         }
     }
 
-    return NO_ERROR;
+    GraphicBufferMapper::get().unlock(*outBuf.buffer);
+}
+
+void BufferProcessor::finalizeCpuOutputs(PipelineContext &ctx) {
+    if (ctx.errorCode) return;
+    for (size_t i = 0; i < ctx.request.outputBuffers.size(); ++i) {
+        const CaptureRequest::Buffer &ob = ctx.request.outputBuffers[i];
+        if (ob.stream->format != HAL_PIXEL_FORMAT_YCbCr_420_888) continue;
+        if (ctx.outputStatuses[i] != CAMERA3_BUFFER_STATUS_OK) continue;
+        finalizeYuvOutput(ob, ctx.request.frameNumber);
+    }
 }
 
 void BufferProcessor::processBlobOutput(uint8_t *buf, const FrameContext &ctx,
@@ -194,33 +211,47 @@ status_t BufferProcessor::processOne(const camera3_stream_buffer &srcBuf,
                                       const FrameContext &ctx,
                                       const CameraMetadata &cm,
                                       uint32_t frameNumber,
-                                      OutputState *state) {
+                                      OutputState *state,
+                                      int *releaseFenceOut) {
     state->needsFinalUnlock = true;
-    state->releaseFd        = -1;
-    state->submitSyncFd     = -1;
-
-    status_t e = waitAcquireFence(srcBuf, frameNumber);
-    if (e != NO_ERROR)
-        return e;
+    if (releaseFenceOut) *releaseFenceOut = -1;
 
     switch (srcBuf.stream->format) {
         case HAL_PIXEL_FORMAT_RGBA_8888:
-            /* Zero-copy is the only RGBA path. processToGralloc must
-             * succeed on Bayer hardware; a false return here is a
-             * hardware / driver failure, not a fall-through trigger. */
-            if (!tryZeroCopy(srcBuf, ctx, state)) {
+            /* RGBA zero-copy: GPU writes directly into the gralloc via the
+             * blit render pass, framework acquire_fence is imported as a
+             * VkSemaphore on the submit, release_fence is exported per
+             * output by endFrame. needsFinalUnlock=false — the gralloc is
+             * never CPU-locked. */
+            if (!tryZeroCopy(srcBuf, ctx, state, releaseFenceOut)) {
                 ALOGE("buffer %p  frame %-4u  zero-copy failed",
                       srcBuf.buffer, frameNumber);
                 return NO_INIT;
             }
             return NO_ERROR;
-        case HAL_PIXEL_FORMAT_YCbCr_420_888:
-            return processYuvOutput(srcBuf, ctx, frameNumber);
+        case HAL_PIXEL_FORMAT_YCbCr_420_888: {
+            /* GPU encode dispatch is recorded now; libyuv repack into the
+             * gralloc happens in finalizeCpuOutputs after the frame's
+             * fence has been reaped. needsFinalUnlock=false — finalize
+             * does its own lock/unlock and releaseFenceOut stays -1
+             * (CPU finalize is synchronous). */
+            status_t e = recordYuvOutput(srcBuf, ctx, frameNumber);
+            if (e != NO_ERROR) return e;
+            state->needsFinalUnlock = false;
+            return NO_ERROR;
+        }
         case HAL_PIXEL_FORMAT_BLOB: {
+            /* JPEG legacy path until the JpegWorker split lands. CPU-wait
+             * acquire_fence then run libjpeg synchronously inside
+             * processBlobOutput. Demosaic happens via the legacy
+             * processToCpu — separate submit from the produce-once one,
+             * but harmless: both overwrite the same scratch with the same
+             * Bayer + params. */
+            status_t e = waitAcquireFence(srcBuf, frameNumber);
+            if (e != NO_ERROR) return e;
             uint8_t *buf = NULL;
             e = lockSwWrite(srcBuf, frameNumber, &buf);
-            if (e != NO_ERROR)
-                return e;
+            if (e != NO_ERROR) return e;
             processBlobOutput(buf, ctx, cm);
             return NO_ERROR;
         }

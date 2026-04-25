@@ -638,6 +638,7 @@ void Camera::buildInfrastructure() {
         DemosaicBlitStage::Deps d;
         d.bufferProcessor = mBufferProcessor;
         d.bayerSource     = mBayerSource.get();
+        d.isp             = mIsp;
         d.jpegBufferSize  = &mJpegBufferSize;
         mDemosaicBlitStage.reset(new DemosaicBlitStage(d));
     }
@@ -667,13 +668,14 @@ void Camera::buildInfrastructure() {
                                            mTracker.get()));
     {
         PipelineThread::Deps d;
-        d.queue          = mPipelineQueue.get();
-        d.demosaicBlit   = mDemosaicBlitStage.get();
-        d.statsProcess   = mStatsProcessStage.get();
-        d.resultDispatch = mResultDispatchStage.get();
-        d.bayerSource    = mBayerSource.get();
-        d.tracker        = mTracker.get();
-        d.maxInFlight    = PIPELINE_MAX_IN_FLIGHT;
+        d.queue           = mPipelineQueue.get();
+        d.demosaicBlit    = mDemosaicBlitStage.get();
+        d.statsProcess    = mStatsProcessStage.get();
+        d.resultDispatch  = mResultDispatchStage.get();
+        d.bayerSource     = mBayerSource.get();
+        d.bufferProcessor = mBufferProcessor;
+        d.tracker         = mTracker.get();
+        d.maxInFlight     = PIPELINE_MAX_IN_FLIGHT;
         mPipelineThread.reset(new PipelineThread(d));
     }
 
