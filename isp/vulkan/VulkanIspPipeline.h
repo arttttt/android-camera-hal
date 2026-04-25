@@ -1,6 +1,8 @@
 #ifndef VULKAN_ISP_PIPELINE_H
 #define VULKAN_ISP_PIPELINE_H
 
+#include <vector>
+
 #include "IspPipeline.h"
 #include "IspParams.h"
 #include "runtime/VulkanDeviceState.h"
@@ -43,6 +45,20 @@ public:
                            int *releaseFence, int *submitFence,
                            int srcInputSlot,
                            const CropRect &crop) override;
+
+    bool beginFrame(unsigned srcW, unsigned srcH, uint32_t pixFmt,
+                     int srcInputSlot) override;
+    bool blitToGralloc(void *nativeBuffer,
+                        unsigned dstW, unsigned dstH,
+                        const CropRect &crop,
+                        int acquireFence,
+                        int *releaseFenceOut) override;
+    bool blitToYuv(void *nativeBuffer,
+                    unsigned dstW, unsigned dstH,
+                    const CropRect &crop,
+                    int acquireFence,
+                    int *releaseFenceOut) override;
+    bool endFrame() override;
 
     int    inputBufferCount() const override { return mInputRing.slotCount(); }
     size_t inputBufferSize()  const override { return mInputRing.slotSize(); }
@@ -100,6 +116,27 @@ private:
      * its own mapped NV12 buffer; caller reads it via
      * mYuvEncoder.mappedBuffer() after fence wait. */
     void recordDemosaicAndYuvEncode(int slot, unsigned width, unsigned height);
+
+    /* Open the slot's cmd buffer and record demosaic compute + scratch
+     * write→read barrier. Buffer stays open for blit append calls. */
+    void recordDemosaicOpen(int slot, unsigned srcW, unsigned srcH);
+
+    /* Append a sampler-blit render pass (scratch → gralloc framebuffer)
+     * to the open cmd buffer. */
+    void recordRgbaBlitRenderPass(int slot, VulkanGrallocCache::Entry *entry,
+                                    unsigned srcW, unsigned srcH,
+                                    unsigned dstW, unsigned dstH,
+                                    const CropRect &crop);
+
+    /* Append a compute NV12 encode dispatch (scratch → mYuvEncoder buffer)
+     * to the open cmd buffer. */
+    void recordYuvEncodeDispatch(int slot, unsigned width, unsigned height);
+
+    /* Import a framework acquire_fence (sync_fd) as a binary VkSemaphore
+     * with TEMPORARY semantic: subsequent submit waits on it; once the
+     * wait fires the semaphore reverts to permanent (no-payload) state
+     * and is safe to destroy after the submit's fence signals. */
+    bool importAcquireSemaphore(int acquireFence, VkSemaphore *out);
 
     /* Zero-copy gralloc path: record compute → memory barrier → render
      * pass blit of mScratchImg into the entry's framebuffer, no final
@@ -186,6 +223,39 @@ private:
 
     VulkanGrallocCache mGrallocCache;
     VulkanYuvEncoder   mYuvEncoder;   /* lazy — buffers allocated on first YUV request */
+
+    /* In-flight per-slot acquire-fence semaphores. Imported with TEMPORARY
+     * payload during blitTo*; held until the slot is reused, then destroyed.
+     * One vector per slot — slot reuse implies the prior submit's fence has
+     * signalled (acquireSlot waits on it), at which point the prior frame's
+     * semaphores have already been consumed by the submit and are safe to
+     * release. */
+    std::vector<VkSemaphore> mSlotAcquireSemaphores[SLOT_COUNT];
+
+    /* Per-frame produce-once recording state. Active between beginFrame
+     * and endFrame; reset on either path's failure. */
+    struct PendingBlit {
+        VulkanGrallocCache::Entry *entry;   /* RGBA only; null for YUV */
+        int                       *releaseFenceOut;
+    };
+    struct FrameRecording {
+        bool                       active = false;
+        int                        slot = -1;
+        unsigned                   srcW = 0;
+        unsigned                   srcH = 0;
+        std::vector<VkSemaphore>   waitSemaphores;
+        std::vector<PendingBlit>   blits;
+
+        void reset() {
+            active = false;
+            slot = -1;
+            srcW = 0;
+            srcH = 0;
+            waitSemaphores.clear();
+            blits.clear();
+        }
+    };
+    FrameRecording mRec;
 
     /* Per-frame GPU-side timestamps for recordGrallocBlit phases.
      * 3 queries per slot: 0 = top of pipe, 1 = after demosaic,
