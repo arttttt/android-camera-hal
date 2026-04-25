@@ -11,6 +11,7 @@ namespace android {
 class V4l2Device;
 class IspPipeline;
 class SensorTuning;
+class Ipa;
 
 /* Contrast-detect autofocus for a single-VCM sensor.
  *
@@ -46,8 +47,16 @@ public:
     /* `tuning` is optional — pass nullptr or a !isLoaded() instance and
      * the controller falls back to compile-time VCM defaults. When the
      * tuning provides AF data we consume it (inf/macro positions,
-     * settle time, sweep step + scene-change knobs). */
-    AutoFocusController(V4l2Device *dev, IspPipeline *isp,
+     * settle time, sweep step + scene-change knobs).
+     *
+     * `ipa` is the AE coordination channel. The controller asks it
+     * whether AE has converged before launching a continuous-AF
+     * retrigger (refusing to scan on a still-chasing exposure) and
+     * tells it to hold the converged target across an active sweep
+     * (so AE doesn't keep adjusting brightness mid-scan). May be
+     * null for cold-bring-up — the AE checks then degenerate to
+     * "always converged, never lock", matching StubIpa. */
+    AutoFocusController(V4l2Device *dev, IspPipeline *isp, Ipa *ipa,
                         const SensorTuning *tuning);
 
     /* Drive the state machine from request metadata. Reads AF_MODE,
@@ -111,6 +120,7 @@ private:
 
     V4l2Device  *mDev;
     IspPipeline *mIsp;
+    Ipa         *mIpa;
 
     /* Calibrated VCM positions — resolved from SensorTuning at
      * construction when available, otherwise compile-time defaults. */

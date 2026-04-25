@@ -555,11 +555,18 @@ void Camera::buildInfrastructure() {
     }
     mIsp->setCcm(mCcmQ10);
 
+    /* IPA built before the AF controller so the latter can take a
+     * non-null Ipa* — AF queries `isAeConverged()` to gate
+     * continuous-mode retriggers and toggles `setAeLock` across
+     * each sweep. The IPA reads tuning + isp + ccm only at
+     * construction; nothing else needed yet at this point. */
+    mIpa.reset(new BasicIpa(mSensorCfg, mIsp, &mTuning, wbGainPrior, mCcmQ10));
+
     /* Soft-ISP path owns exposure + AF; HW-ISP firmware owns them
      * otherwise. */
     if (mSoftIspEnabled) {
         mExposure = new ExposureControl(mDev, mSensorCfg);
-        mAf       = new AutoFocusController(mDev, mIsp, &mTuning);
+        mAf       = new AutoFocusController(mDev, mIsp, mIpa.get(), &mTuning);
     }
 
     mJpeg = new JpegEncoder(mIsp);
@@ -578,16 +585,11 @@ void Camera::buildInfrastructure() {
     if (mTuning.isLoaded())
         mStatsWorker->setBlackLevel((uint32_t)mTuning.opticalBlack().r);
 
-    /* 3A plumbing. BasicIpa runs the raw-Bayer AE loop over the
-     * NeonStatsEncoder IpaStats; StatsProcessStage feeds it, its
-     * decision goes into DelayedControls at slot (ctx.sequence +
-     * controlDelay[id]), and ApplySettingsStage consumes it via
-     * DelayedControls::pendingWrite on the next frame's manual-or-
-     * auto branch. DelayedControls is seeded from the sensor's
-     * silicon control-delay config so push / apply sequences align.
-     * Built here before the request pipeline so ApplySettingsStage
-     * can receive the DelayedControls pointer at construction. */
-    mIpa.reset(new BasicIpa(mSensorCfg, mIsp, &mTuning, wbGainPrior, mCcmQ10));
+    /* DelayedControls plumbing for the AE / gain push from the IPA's
+     * processStats() into the ApplySettingsStage write path. The
+     * ring is seeded from the sensor's silicon control-delay config
+     * so push / apply sequences align; built here so the request
+     * pipeline can take the pointer at construction. */
     {
         DelayedControls::Config cfg;
         for (int i = 0; i < DelayedControls::COUNT; ++i) {

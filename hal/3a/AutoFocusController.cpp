@@ -9,6 +9,7 @@
 
 #include "V4l2Device.h"
 #include "IspPipeline.h"
+#include "ipa/Ipa.h"
 #include "sensor/SensorTuning.h"
 
 namespace android {
@@ -85,9 +86,11 @@ int32_t clampVcm(int32_t pos) {
 } /* namespace */
 
 AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
+                                         Ipa *ipa,
                                          const SensorTuning *tuning)
     : mDev(dev)
     , mIsp(isp)
+    , mIpa(ipa)
     , mVcmInfinity(kVcmInfinityFallback)
     , mVcmMacroStart(0)
     , mVcmMacroEnd(kVcmMacroEndFallback)
@@ -192,6 +195,13 @@ void AutoFocusController::beginCoarseFromCurrent() {
 
 void AutoFocusController::startSweep(uint8_t afMode) {
     mIsp->setAwbLock(true);
+    /* Hold the converged AE target across the sweep. The score is
+     * already exposure-invariant by construction (focusMetric =
+     * grad²/pixel²), but locking AE removes any residual brightness
+     * drift from sensor-side gain ladders and stops the AE
+     * controller from chasing scene changes the sweep itself
+     * provokes. Released on commit / cancel / reset. */
+    if (mIpa) mIpa->setAeLock(true);
     mSettleFrames      = 0;
     mSweepBestScore    = 0.f;
     mCoarseSampleCount = 0;
@@ -221,6 +231,7 @@ void AutoFocusController::startSweep(uint8_t afMode) {
 void AutoFocusController::cancelSweep() {
     if (mState == ScanState::Idle) return;
     mIsp->setAwbLock(false);
+    if (mIpa) mIpa->setAeLock(false);
     mState = ScanState::Idle;
 }
 
@@ -429,6 +440,7 @@ void AutoFocusController::commitSweep(bool focused) {
     mDev->setFocusPosition(finalPos);
     mFocusPosition = finalPos;
     mIsp->setAwbLock(false);
+    if (mIpa) mIpa->setAeLock(false);
     /* Force the next idle onStats to capture a fresh scene snapshot
      * — at commit time we don't yet have a stats frame for the
      * just-committed lens position; better to read it on the next
@@ -536,7 +548,17 @@ void AutoFocusController::onStats(const IpaStats &stats) {
             mSceneChangeCount++;
         }
 
-        if (mSceneChangeCount >= mRetriggerDelay) {
+        /* Hold the retrigger off until AE has actually converged
+         * on the new scene. Without this gate the AF re-fires while
+         * the AE controller is still chasing — both stats inputs
+         * (focus + RGB) are mid-transient, the snapshot used for
+         * the next scene-change comparison gets contaminated, and
+         * the sweep itself runs on an unstable image. The gate
+         * keeps `mSceneChangeCount` at its current value, so once
+         * AE settles the scan launches immediately rather than
+         * having to wait `retriggerDelay` again. */
+        const bool aeReady = !mIpa || mIpa->isAeConverged();
+        if (mSceneChangeCount >= mRetriggerDelay && aeReady) {
             ALOGD("AF: scene stabilised after change, starting sweep "
                   "(snap_sh=%.0f cur_sh=%.0f)",
                   (double)mSceneFocusSnapshot, (double)score);
@@ -583,7 +605,10 @@ void AutoFocusController::onStats(const IpaStats &stats) {
 }
 
 void AutoFocusController::reset() {
-    if (mState != ScanState::Idle) mIsp->setAwbLock(false);
+    if (mState != ScanState::Idle) {
+        mIsp->setAwbLock(false);
+        if (mIpa) mIpa->setAeLock(false);
+    }
     mState              = ScanState::Idle;
     mAfMode             = ANDROID_CONTROL_AF_MODE_OFF;
     mSweepPos           = 0;
