@@ -100,10 +100,20 @@ void StatsWorker::threadLoop() {
                                     ? IpaStats::PATCH_Y
                                     : (phase + 1) * rowsPerPhase;
 
+        /* Centre 8×8 of the patch grid — same rectangle the AF
+         * controller integrates over. Tap-to-focus, when wired up,
+         * will publish a different rectangle per frame; until then
+         * the IpaStats compile-time defaults are the single source. */
+        const NeonStatsEncoder::FocusRoi focusRoi = {
+            IpaStats::FOCUS_ROI_PY_LO, IpaStats::FOCUS_ROI_PY_HI,
+            IpaStats::FOCUS_ROI_PX_LO, IpaStats::FOCUS_ROI_PX_HI,
+        };
+
         const nsecs_t tNeon0 = systemTime();
         encoder.computeRange(currentJob.bayer,
                              currentJob.width, currentJob.height,
                              currentJob.pixFmt, blackLevel,
+                             focusRoi,
                              &partial, pyStart, pyEnd);
         const nsecs_t tNeon1 = systemTime();
 

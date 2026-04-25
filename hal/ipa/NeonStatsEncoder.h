@@ -35,6 +35,20 @@ namespace android {
  * encoder instance. */
 class NeonStatsEncoder {
 public:
+    /* Patch-grid rectangle the encoder computes the focus signal
+     * (Sobel sharpSum + green² denominator) over. Half-open on each
+     * axis. Patches outside the rectangle skip the Sobel kernel and
+     * the greenSq accumulation entirely; their `sharpSum` /
+     * `greenSqSum` slots in the Partial stay at zero, which finalize
+     * surfaces as `focusMetric == 0`. Histogram and rgbMean still run
+     * full-frame because AE / AWB consume them across all patches. */
+    struct FocusRoi {
+        int pyLo;
+        int pyHi;
+        int pxLo;
+        int pxHi;
+    };
+
     /* Progressive-compute accumulator. Owned and zeroed by the caller
      * before the first computeRange() call of a cycle; mutated in-place
      * by each subsequent computeRange() and consumed by finalize(). */
@@ -76,12 +90,13 @@ public:
      *             sum at finalize time, matching what the demosaic
      *             shader does downstream. 0 disables the correction
      *             (tunings without an opticalBlack section). */
-    void compute(const void *bayer,
-                 unsigned    width,
-                 unsigned    height,
-                 uint32_t    pixFmt,
-                 uint32_t    blackLevel,
-                 IpaStats   *out) const;
+    void compute(const void     *bayer,
+                 unsigned        width,
+                 unsigned        height,
+                 uint32_t        pixFmt,
+                 uint32_t        blackLevel,
+                 const FocusRoi &focusRoi,
+                 IpaStats       *out) const;
 
     /* Zero out a Partial so a fresh cycle can begin. */
     static void resetPartial(Partial *partial);
@@ -90,16 +105,17 @@ public:
      * of calls is allowed provided the combined ranges cover
      * [0, PATCH_Y) exactly once before finalize(). `partial` must have
      * been zeroed by resetPartial() before the first call of a cycle;
-     * it is mutated in place. `blackLevel` must be the same across all
-     * calls within one cycle. */
-    void computeRange(const void *bayer,
-                      unsigned    width,
-                      unsigned    height,
-                      uint32_t    pixFmt,
-                      uint32_t    blackLevel,
-                      Partial    *partial,
-                      int         pyStart,
-                      int         pyEnd) const;
+     * it is mutated in place. `blackLevel` and `focusRoi` must be the
+     * same across all calls within one cycle. */
+    void computeRange(const void     *bayer,
+                      unsigned        width,
+                      unsigned        height,
+                      uint32_t        pixFmt,
+                      uint32_t        blackLevel,
+                      const FocusRoi &focusRoi,
+                      Partial        *partial,
+                      int             pyStart,
+                      int             pyEnd) const;
 
     /* Emit IpaStats from the accumulated Partial. `pixFmt` selects the
      * raw dynamic range (1023 for 10-bit, 255 for 8-bit); `blackLevel`

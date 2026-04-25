@@ -93,14 +93,15 @@ void NeonStatsEncoder::resetPartial(Partial *partial) {
     memset(partial, 0, sizeof(*partial));
 }
 
-void NeonStatsEncoder::computeRange(const void *bayer,
-                                     unsigned    width,
-                                     unsigned    height,
-                                     uint32_t    pixFmt,
-                                     uint32_t    blackLevel,
-                                     Partial    *partial,
-                                     int         pyStart,
-                                     int         pyEnd) const {
+void NeonStatsEncoder::computeRange(const void     *bayer,
+                                     unsigned        width,
+                                     unsigned        height,
+                                     uint32_t        pixFmt,
+                                     uint32_t        blackLevel,
+                                     const FocusRoi &focusRoi,
+                                     Partial        *partial,
+                                     int             pyStart,
+                                     int             pyEnd) const {
     if (!partial || !bayer || width == 0 || height == 0) return;
     if (pyStart < 0)                pyStart = 0;
     if (pyEnd   > IpaStats::PATCH_Y) pyEnd  = IpaStats::PATCH_Y;
@@ -146,6 +147,14 @@ void NeonStatsEncoder::computeRange(const void *bayer,
                 const unsigned x0 = bx[px];
                 const unsigned x1 = bx[px + 1];
 
+                /* Skip the Sobel kernel and greenSq accumulation when
+                 * this patch sits outside the AF focus rectangle. The
+                 * histogram and rgbMean still run on every patch since
+                 * AE / AWB consume them frame-wide. */
+                const bool inFocusRoi =
+                    (py >= focusRoi.pyLo) && (py < focusRoi.pyHi)
+                 && (px >= focusRoi.pxLo) && (px < focusRoi.pxHi);
+
                 unsigned x = x0;
 
                 if (wide) {
@@ -185,18 +194,18 @@ void NeonStatsEncoder::computeRange(const void *bayer,
 
                         const uint16x8_t gVec = gIsEven ? p.val[0] : p.val[1];
 
-                        /* Square-and-accumulate the green vector. Two
-                         * vmlal_u16 (one per 4-lane half) keep the
-                         * full u16×u16 → u32 product without widening
-                         * outside this NEON kernel. ~4 cycles added
-                         * per chunk on Cortex-A15 vs the ~50+ cycles
-                         * the rest of the chunk already costs. */
-                        greenSqLoV = vmlal_u16(greenSqLoV,
-                                                vget_low_u16(gVec),
-                                                vget_low_u16(gVec));
-                        greenSqHiV = vmlal_u16(greenSqHiV,
-                                                vget_high_u16(gVec),
-                                                vget_high_u16(gVec));
+                        if (inFocusRoi) {
+                            /* Square-and-accumulate the green vector.
+                             * Two vmlal_u16 (one per 4-lane half) keep
+                             * the full u16×u16 → u32 product without
+                             * widening outside this NEON kernel. */
+                            greenSqLoV = vmlal_u16(greenSqLoV,
+                                                    vget_low_u16(gVec),
+                                                    vget_low_u16(gVec));
+                            greenSqHiV = vmlal_u16(greenSqHiV,
+                                                    vget_high_u16(gVec),
+                                                    vget_high_u16(gVec));
+                        }
 
                         uint16_t gbuf[8];
                         vst1q_u16(gbuf, gVec);
@@ -206,7 +215,7 @@ void NeonStatsEncoder::computeRange(const void *bayer,
                             partial->lumaHist[v >> histShift] += 1u;
                         }
 
-                        if (neonSobel) {
+                        if (inFocusRoi && neonSobel) {
                             const int lane = gIsEven ? 0 : 1;
                             const uint16x8_t tl = vld2q_u16(rowN + x - 2u).val[lane];
                             const uint16x8_t tc = vld2q_u16(rowN + x     ).val[lane];
@@ -244,7 +253,7 @@ void NeonStatsEncoder::computeRange(const void *bayer,
                             sharpAccV = vmlal_s16(sharpAccV, vget_high_s16(gx), vget_high_s16(gx));
                             sharpAccV = vmlal_s16(sharpAccV, vget_low_s16(gy),  vget_low_s16(gy));
                             sharpAccV = vmlal_s16(sharpAccV, vget_high_s16(gy), vget_high_s16(gy));
-                        } else {
+                        } else if (inFocusRoi) {
                             const unsigned xBase = gIsEven ? x : x + 1u;
                             for (int i = 0; i < 8; ++i) {
                                 const unsigned xG = xBase + 2u * (unsigned)i;
@@ -260,11 +269,13 @@ void NeonStatsEncoder::computeRange(const void *bayer,
                     partial->sumCh[py][px][chanOdd]  += hsum_u32x4(accOdd);
                     partial->cntCh[py][px][chanEven] += chunks * 8u;
                     partial->cntCh[py][px][chanOdd]  += chunks * 8u;
-                    partial->sharpSum[py][px]        +=
-                        (uint64_t)hsum_u32x4(vreinterpretq_u32_s32(sharpAccV));
-                    partial->greenSqSum[py][px]      +=
-                        (uint64_t)hsum_u32x4(greenSqLoV)
-                      + (uint64_t)hsum_u32x4(greenSqHiV);
+                    if (inFocusRoi) {
+                        partial->sharpSum[py][px]   +=
+                            (uint64_t)hsum_u32x4(vreinterpretq_u32_s32(sharpAccV));
+                        partial->greenSqSum[py][px] +=
+                            (uint64_t)hsum_u32x4(greenSqLoV)
+                          + (uint64_t)hsum_u32x4(greenSqHiV);
+                    }
                 }
 
                 for (; x < x1; ++x) {
@@ -277,10 +288,12 @@ void NeonStatsEncoder::computeRange(const void *bayer,
                     if (chan == 1u) {
                         const uint32_t vBin = (v > bl) ? (v - bl) : 0u;
                         partial->lumaHist[vBin >> histShift] += 1u;
-                        scalarSobelStep(p16, p8, wide,
-                                        width, height, x, y,
-                                        &partial->sharpSum[py][px],
-                                        &partial->greenSqSum[py][px]);
+                        if (inFocusRoi) {
+                            scalarSobelStep(p16, p8, wide,
+                                            width, height, x, y,
+                                            &partial->sharpSum[py][px],
+                                            &partial->greenSqSum[py][px]);
+                        }
                     }
                 }
             }
@@ -337,15 +350,16 @@ void NeonStatsEncoder::finalize(const Partial &partial,
     }
 }
 
-void NeonStatsEncoder::compute(const void *bayer,
-                                unsigned    width,
-                                unsigned    height,
-                                uint32_t    pixFmt,
-                                uint32_t    blackLevel,
-                                IpaStats   *out) const {
+void NeonStatsEncoder::compute(const void     *bayer,
+                                unsigned        width,
+                                unsigned        height,
+                                uint32_t        pixFmt,
+                                uint32_t        blackLevel,
+                                const FocusRoi &focusRoi,
+                                IpaStats       *out) const {
     Partial partial;
     resetPartial(&partial);
-    computeRange(bayer, width, height, pixFmt, blackLevel,
+    computeRange(bayer, width, height, pixFmt, blackLevel, focusRoi,
                  &partial, 0, IpaStats::PATCH_Y);
     finalize(partial, pixFmt, blackLevel, out);
 }
