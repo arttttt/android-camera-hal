@@ -12,7 +12,6 @@
 #include "PipelineContext.h"
 #include "BufferProcessor.h"
 #include "BayerSource.h"
-#include "3a/AutoFocusController.h"
 
 #define LOG_TAG "Cam-DemosaicBlitStage"
 
@@ -40,8 +39,6 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
     ctx.outputStatuses.assign(n, CAMERA3_BUFFER_STATUS_OK);
     ctx.outputNeedsFinalUnlock.assign(n, true);
 
-    uint8_t *rgbaBuffer = nullptr;
-
     for (size_t i = 0; i < n; ++i) {
         CaptureRequest::Buffer &outBuf = ctx.request.outputBuffers[i];
 
@@ -55,7 +52,7 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
         BufferProcessor::OutputState state;
         status_t e = deps.bufferProcessor->processOne(sb, fctx, ctx.request.settings,
                                                      ctx.request.frameNumber,
-                                                     &state, &rgbaBuffer);
+                                                     &state);
         if (e != NO_ERROR) {
             ALOGE("processOne failed at output %zu for frame %u: %d",
                   i, ctx.request.frameNumber, (int)e);
@@ -82,8 +79,6 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
         if (state.submitSyncFd >= 0)
             ctx.pendingFenceFds.push_back(state.submitSyncFd);
     }
-
-    if (deps.af) deps.af->onFrameData(rgbaBuffer, res.width, res.height);
 }
 
 } /* namespace android */

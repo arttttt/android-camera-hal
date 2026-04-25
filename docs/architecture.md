@@ -101,12 +101,11 @@ The flow is **strictly synchronous**, single-threaded, single-buffer:
          to gralloc, submits async, returns a release_fence fd.
        - BLOB     → SW_WRITE_OFTEN lock + JpegEncoder::encode
                     (synchronous processToCpu → libjpeg).
-9. mAf->onFrameData(rgba, …)            ← contrast metric for the sweep
-10. mDev->unlock(frame)                 ← in DMABUF mode: stash slot
+9.  mDev->unlock(frame)                 ← in DMABUF mode: stash slot
                                           for deferred QBUF at step 5
                                           of the next frame
-11. ResultMetadataBuilder::build(cm, …) ← per-frame echo metadata
-12. callbacks.process_capture_result(result)
+10. ResultMetadataBuilder::build(cm, …) ← per-frame echo metadata
+11. callbacks.process_capture_result(result)
 ```
 
 The entire sequence runs under `mMutex` (held from step 1 through step 10).
@@ -178,22 +177,24 @@ call.
 ## AF state machine
 
 Owned by `AutoFocusController` in `hal/3a/`. Camera dispatches into it
-at three per-frame points (`onSettings`, `onFrameStart`, `onFrameData`)
-and reads back AF/focus state via `report()`. Semantics:
+at three per-frame points (`onSettings`, `onFrameStart`,
+`onSharpnessStats`) and reads back AF/focus state via `report()`.
+Semantics:
 
 - **AF_MODE_OFF** — pass through `LENS_FOCUS_DISTANCE` verbatim to VCM.
   Trigger is a no-op.
 - **AF_MODE_AUTO** / **MACRO** — one-shot contrast sweep on trigger:
-  steps VCM across the range, 2-frame settle per step, picks the position
-  with the highest normalised Laplacian score in the centre 1/4 of the
-  frame. AWB is locked during the sweep (via
-  `IspPipeline::setAwbLock(true)`) to prevent exposure drift from
+  steps VCM across the range, settle frames per step (from tuning),
+  picks the position with the highest Tenengrad score over the centre
+  8x8 patches of the IPA stats grid. AWB is locked during the sweep
+  (via `IspPipeline::setAwbLock(true)`) to prevent exposure drift from
   polluting the metric.
 - **AF_MODE_CONTINUOUS_PICTURE** — re-triggers a sweep every 60 frames.
 
-The sweep reads **the rendered preview RGBA buffer**, not a dedicated
-statistics channel. This is a known limitation — see
-[camera3-compliance.md](camera3-compliance.md).
+The sharpness grid comes from `IpaStats::sharpness[16][16]` produced by
+`NeonStatsEncoder` off the raw Bayer green channel — same buffer the
+IPA's AE/AWB consumes — so AF no longer locks the rendered RGBA
+gralloc for a CPU read.
 
 ## Configuration knobs
 

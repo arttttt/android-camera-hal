@@ -39,11 +39,6 @@ public:
      * Called right after V4L2 dequeue, before CPU/GPU processing. */
     void onFrameStart();
 
-    /* Measure sharpness of the RGBA frame and advance the sweep. When
-     * the sweep reaches the end of its range, commits the best VCM
-     * position and releases the AWB lock. No-op outside of a sweep. */
-    void onFrameData(const uint8_t *rgba, unsigned width, unsigned height);
-
     /* Advance the sweep against the per-patch sharpness grid for the
      * current frame. Caller hands over the same stats buffer the IPA
      * has already finished with. No-op outside of a sweep. */
@@ -81,7 +76,7 @@ private:
     int32_t  mSweepStep;
     int32_t  mSweepEnd;
     int32_t  mSweepBestPos;
-    uint64_t mSweepBestScore;
+    float    mSweepBestScore;
     int32_t  mSettleFrames;
 };
 

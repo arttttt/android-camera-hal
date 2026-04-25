@@ -5,6 +5,7 @@
 #include <system/camera_metadata.h>
 
 #include "PipelineContext.h"
+#include "3a/AutoFocusController.h"
 #include "ipa/Ipa.h"
 #include "ipa/IpaFrameMeta.h"
 #include "ipa/IpaStats.h"
@@ -47,6 +48,12 @@ void StatsProcessStage::process(PipelineContext &ctx) {
      * for effect timing — the control goes into effect relative to
      * today's frame, not to the frame the stats came from. */
     DelayedControls::Batch batch = deps.ipa->processStats(statsSeq, stats, meta);
+
+    /* Feed the same per-patch sharpness grid into AF. The state
+     * machine no-ops outside an active sweep, so the unconditional
+     * call is the cheapest way to keep AF and IPA on the same hot
+     * stats path without per-stage gating. */
+    if (deps.af) deps.af->onSharpnessStats(stats.sharpness);
 
     /* Publish each set control at seq + its own silicon delay.
      * DelayedControls::push tags the whole batch with one sequence,

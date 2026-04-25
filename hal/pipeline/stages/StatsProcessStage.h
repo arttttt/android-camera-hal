@@ -8,6 +8,7 @@ namespace android {
 class  Ipa;
 class  DelayedControls;
 class  StatsWorker;
+class  AutoFocusController;
 struct SensorConfig;
 
 /* Runs on PipelineThread once the frame's submit fence has
@@ -16,6 +17,12 @@ struct SensorConfig;
  * hands it to the IPA, and publishes the returned control batch
  * into DelayedControls so ApplySettingsStage picks it up on the
  * frame that actually lands the write (seq + controlDelay[id]).
+ *
+ * The same stats buffer also feeds AutoFocusController's sweep
+ * scoring — the per-patch sharpness grid is already computed and
+ * AF only needs a small reduction over the centre, so doing it
+ * here keeps everything that consumes IPA stats on one thread
+ * while the buffer is hot.
  *
  * Not alwaysRun — errored contexts skip the IPA since a control
  * update derived from stats we did not produce for this frame
@@ -33,6 +40,7 @@ public:
         DelayedControls     *delayedControls;
         const SensorConfig  *sensorCfg;
         StatsWorker         *statsWorker;
+        AutoFocusController *af;          /* may be null */
     };
 
     explicit StatsProcessStage(const Deps &deps);

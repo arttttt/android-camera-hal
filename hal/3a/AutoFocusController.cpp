@@ -39,45 +39,6 @@ constexpr int32_t  kFramePeriodMsApprox       = 33; /* 30 fps preview */
 constexpr int kRoiPatchLo = 4;
 constexpr int kRoiPatchHi = 12;
 
-/* Normalised Laplacian on the centre 1/4 of the frame. Dividing by the
- * mean brightness keeps the score comparable across sweep steps even
- * when AE/AWB shifts brightness slightly. */
-uint64_t measureSharpness(const uint8_t *rgba, unsigned w, unsigned h) {
-    unsigned cx = w / 4;
-    unsigned cy = h / 4;
-    unsigned cw = w / 2;
-    unsigned ch = h / 2;
-    uint64_t gradSum = 0;
-    uint64_t brightSum = 0;
-    unsigned nSamples = 0;
-    for (unsigned y = cy + 1; y < cy + ch - 1; y += 4) {
-        const uint8_t *row  = rgba + y * w * 4;
-        const uint8_t *rowU = rgba + (y - 1) * w * 4;
-        const uint8_t *rowD = rgba + (y + 1) * w * 4;
-        for (unsigned x = cx + 1; x < cx + cw - 1; x += 4) {
-            int g  = row [x * 4 + 1];
-            int gl = row [(x - 1) * 4 + 1];
-            int gr = row [(x + 1) * 4 + 1];
-            int gu = rowU[x * 4 + 1];
-            int gd = rowD[x * 4 + 1];
-            int lapH = 2 * g - gl - gr;
-            int lapV = 2 * g - gu - gd;
-            gradSum += (lapH < 0 ? -lapH : lapH) + (lapV < 0 ? -lapV : lapV);
-            brightSum += g;
-            nSamples++;
-        }
-    }
-    if (brightSum == 0 || nSamples == 0)
-        return 0;
-    /* Algebraically: gradSum * 1000 / (brightSum / nSamples).
-     * Written this way the integer truncation of brightSum / nSamples
-     * could produce zero (on very dark scenes or a buffer whose GPU
-     * write has not yet landed), causing SIGFPE in the outer division.
-     * Rearrange to keep the same quotient without the trip through
-     * zero. */
-    return (gradSum * 1000 * nSamples) / brightSum;
-}
-
 } /* namespace */
 
 AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
@@ -214,42 +175,6 @@ void AutoFocusController::onFrameStart() {
     mDev->setFocusPosition(mSweepPos);
 }
 
-void AutoFocusController::onFrameData(const uint8_t *rgba,
-                                      unsigned width, unsigned height) {
-    if (!mSweepActive || !rgba)
-        return;
-
-    /* After a VCM move, the lens needs a couple of frames to settle
-     * before the contrast reading is trustworthy. */
-    if (mSettleFrames > 0) {
-        mSettleFrames--;
-        return;
-    }
-
-    uint64_t score = measureSharpness(rgba, width, height);
-    if (score > mSweepBestScore) {
-        mSweepBestScore = score;
-        mSweepBestPos = mSweepPos;
-    }
-    ALOGD("AF: pos=%d score=%llu best=%d/%llu",
-          mSweepPos, (unsigned long long)score,
-          mSweepBestPos, (unsigned long long)mSweepBestScore);
-
-    mSweepPos += mSweepStep;
-    if (mSweepPos > mSweepEnd) {
-        mDev->setFocusPosition(mSweepBestPos);
-        mFocusPosition = mSweepBestPos;
-        mSweepActive = false;
-        mIsp->setAwbLock(false);
-        ALOGD("AF done: best=%d score=%llu", mSweepBestPos,
-              (unsigned long long)mSweepBestScore);
-        return;
-    }
-
-    mDev->setFocusPosition(mSweepPos);
-    mSettleFrames = mVcmSettleFrames;
-}
-
 void AutoFocusController::onSharpnessStats(
     const float sharpness[IpaStats::PATCH_Y][IpaStats::PATCH_X]) {
     if (!mSweepActive || !sharpness)
@@ -265,24 +190,21 @@ void AutoFocusController::onSharpnessStats(
     /* Tenengrad sum over the centre 8x8 of the 16x16 patch grid.
      * AWB is locked across the sweep (mIsp->setAwbLock in
      * startSweep) so per-patch absolute scores stay comparable
-     * within one sweep without per-frame normalisation. Cast to
-     * uint64_t for storage comparison; max plausible per-frame sum
-     * is ~8e12, well within range. */
-    float fsum = 0.f;
+     * within one sweep without per-frame normalisation. */
+    float score = 0.f;
     for (int py = kRoiPatchLo; py < kRoiPatchHi; ++py) {
         for (int px = kRoiPatchLo; px < kRoiPatchHi; ++px) {
-            fsum += sharpness[py][px];
+            score += sharpness[py][px];
         }
     }
-    uint64_t score = (fsum > 0.f) ? (uint64_t)fsum : 0ull;
 
     if (score > mSweepBestScore) {
         mSweepBestScore = score;
         mSweepBestPos = mSweepPos;
     }
-    ALOGD("AF: pos=%d score=%llu best=%d/%llu",
-          mSweepPos, (unsigned long long)score,
-          mSweepBestPos, (unsigned long long)mSweepBestScore);
+    ALOGD("AF: pos=%d score=%.0f best=%d/%.0f",
+          mSweepPos, (double)score,
+          mSweepBestPos, (double)mSweepBestScore);
 
     mSweepPos += mSweepStep;
     if (mSweepPos > mSweepEnd) {
@@ -290,8 +212,8 @@ void AutoFocusController::onSharpnessStats(
         mFocusPosition = mSweepBestPos;
         mSweepActive = false;
         mIsp->setAwbLock(false);
-        ALOGD("AF done: best=%d score=%llu", mSweepBestPos,
-              (unsigned long long)mSweepBestScore);
+        ALOGD("AF done: best=%d score=%.0f", mSweepBestPos,
+              (double)mSweepBestScore);
         return;
     }
 

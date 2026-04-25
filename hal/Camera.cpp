@@ -567,7 +567,6 @@ void Camera::buildInfrastructure() {
     BufferProcessor::Deps bpDeps;
     bpDeps.isp  = mIsp;
     bpDeps.jpeg = mJpeg;
-    bpDeps.af   = mAf;
     mBufferProcessor = new BufferProcessor(bpDeps);
 
     mBayerSource.reset(new V4l2Source(mDev));
@@ -637,7 +636,6 @@ void Camera::buildInfrastructure() {
         DemosaicBlitStage::Deps d;
         d.bufferProcessor = mBufferProcessor;
         d.bayerSource     = mBayerSource.get();
-        d.af              = mAf;
         d.jpegBufferSize  = &mJpegBufferSize;
         mDemosaicBlitStage.reset(new DemosaicBlitStage(d));
     }
@@ -657,6 +655,7 @@ void Camera::buildInfrastructure() {
         d.delayedControls = mDelayedControls.get();
         d.sensorCfg       = &mSensorCfg;
         d.statsWorker     = mStatsWorker.get();
+        d.af              = mAf;
         mStatsProcessStage.reset(new StatsProcessStage(d));
     }
 
