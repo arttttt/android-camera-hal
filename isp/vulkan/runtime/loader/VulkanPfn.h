@@ -106,6 +106,40 @@ typedef VkResult (VKAPI_PTR *PFN_vkGetFenceFdKHR)(
     VkDevice device, const VkFenceGetFdInfoKHR *pGetFdInfo, int *pFd);
 #endif
 
+/* VK_KHR_external_semaphore + VK_KHR_external_semaphore_fd — also absent in
+ * android-24. SYNC_FD_BIT lets a framework acquire_fence (sync_fd) be imported
+ * as a binary VkSemaphore that the next submit waits on, so the recording
+ * thread never blocks on framework backpressure. */
+#ifndef VK_KHR_EXTERNAL_SEMAPHORE_FD_FALLBACK
+#define VK_KHR_EXTERNAL_SEMAPHORE_FD_FALLBACK
+typedef enum VkExternalSemaphoreHandleTypeFlagBitsKHR {
+    VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT_KHR        = 0x00000001,
+    VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT_KHR     = 0x00000002,
+    VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT_KHR = 0x00000004,
+    VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT_KHR      = 0x00000008,
+    VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT_KHR          = 0x00000010,
+} VkExternalSemaphoreHandleTypeFlagBitsKHR;
+
+typedef enum VkSemaphoreImportFlagBitsKHR {
+    VK_SEMAPHORE_IMPORT_TEMPORARY_BIT_KHR = 0x00000001,
+} VkSemaphoreImportFlagBitsKHR;
+typedef VkFlags VkSemaphoreImportFlagsKHR;
+
+#define VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR ((VkStructureType)1000079000)
+
+typedef struct VkImportSemaphoreFdInfoKHR {
+    VkStructureType                          sType;
+    const void                              *pNext;
+    VkSemaphore                              semaphore;
+    VkSemaphoreImportFlagsKHR                flags;
+    VkExternalSemaphoreHandleTypeFlagBitsKHR handleType;
+    int                                      fd;
+} VkImportSemaphoreFdInfoKHR;
+
+typedef VkResult (VKAPI_PTR *PFN_vkImportSemaphoreFdKHR)(
+    VkDevice device, const VkImportSemaphoreFdInfoKHR *pImportSemaphoreFdInfo);
+#endif
+
 namespace android {
 
 /* Dispatch table of Vulkan function pointers populated by VulkanLoader.
@@ -159,6 +193,9 @@ struct VulkanPfn {
     PFN_vkDestroyFence                              DestroyFence;
     PFN_vkWaitForFences                             WaitForFences;
     PFN_vkResetFences                               ResetFences;
+
+    PFN_vkCreateSemaphore                           CreateSemaphore;
+    PFN_vkDestroySemaphore                          DestroySemaphore;
 
     PFN_vkCreateShaderModule                        CreateShaderModule;
     PFN_vkDestroyShaderModule                       DestroyShaderModule;
@@ -219,6 +256,10 @@ struct VulkanPfn {
 
     /* VK_KHR_external_fence_fd — export VkFence completion as Android sync_fd */
     PFN_vkGetFenceFdKHR                             GetFenceFdKHR;
+
+    /* VK_KHR_external_semaphore_fd — import a sync_fd as a binary VkSemaphore
+     * so the next submit waits on framework acquire_fence GPU-side */
+    PFN_vkImportSemaphoreFdKHR                      ImportSemaphoreFdKHR;
 };
 
 }; /* namespace android */

@@ -77,6 +77,9 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
     DEV(WaitForFences);
     DEV(ResetFences);
 
+    DEV(CreateSemaphore);
+    DEV(DestroySemaphore);
+
     DEV(CreateShaderModule);
     DEV(DestroyShaderModule);
     DEV(CreateDescriptorSetLayout);
@@ -136,6 +139,9 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
 
     /* VK_KHR_external_fence_fd */
     DEV(GetFenceFdKHR);
+
+    /* VK_KHR_external_semaphore_fd */
+    DEV(ImportSemaphoreFdKHR);
 
     #undef DEV
 }

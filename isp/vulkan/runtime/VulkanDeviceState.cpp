@@ -47,7 +47,7 @@ bool VulkanDeviceState::init() {
     appInfo.apiVersion = VK_API_VERSION;
 
     bool hasGpdp2 = false, hasExtMemCaps = false, hasNvExtMemCaps = false;
-    bool hasExtFenceCaps = false;
+    bool hasExtFenceCaps = false, hasExtSemCaps = false;
     {
         PFN_vkEnumerateInstanceExtensionProperties gieep =
             mLoader->getEnumerateInstanceExtensionProperties();
@@ -68,6 +68,8 @@ bool VulkanDeviceState::init() {
                 hasNvExtMemCaps = true;
             if (!strcmp(ex[i].extensionName, "VK_KHR_external_fence_capabilities"))
                 hasExtFenceCaps = true;
+            if (!strcmp(ex[i].extensionName, "VK_KHR_external_semaphore_capabilities"))
+                hasExtSemCaps = true;
         }
         delete[] ex;
     }
@@ -78,6 +80,7 @@ bool VulkanDeviceState::init() {
     if (hasExtMemCaps)  iexts[iec++] = "VK_KHR_external_memory_capabilities";
     if (hasNvExtMemCaps)iexts[iec++] = "VK_NV_external_memory_capabilities";
     if (hasExtFenceCaps)iexts[iec++] = "VK_KHR_external_fence_capabilities";
+    if (hasExtSemCaps)  iexts[iec++] = "VK_KHR_external_semaphore_capabilities";
 
     VkInstanceCreateInfo ici = {};
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -111,6 +114,7 @@ bool VulkanDeviceState::init() {
     bool hasKhrExtMem = false, hasKhrExtMemFd = false;
     bool hasExtExtMemDmaBuf = false, hasNvExtMem = false;
     bool hasKhrExtFence = false, hasKhrExtFenceFd = false;
+    bool hasKhrExtSem = false, hasKhrExtSemFd = false;
     mNativeBufferAvail = false;
     {
         uint32_t extCount = 0;
@@ -135,6 +139,10 @@ bool VulkanDeviceState::init() {
                 hasKhrExtFence = true;
             if (!strcmp(exts[i].extensionName, "VK_KHR_external_fence_fd"))
                 hasKhrExtFenceFd = true;
+            if (!strcmp(exts[i].extensionName, "VK_KHR_external_semaphore"))
+                hasKhrExtSem = true;
+            if (!strcmp(exts[i].extensionName, "VK_KHR_external_semaphore_fd"))
+                hasKhrExtSemFd = true;
         }
         delete[] exts;
     }
@@ -142,6 +150,8 @@ bool VulkanDeviceState::init() {
           hasKhrExtMem, hasKhrExtMemFd, hasExtExtMemDmaBuf, hasNvExtMem);
     ALOGD("External fence device ext: KHR_external_fence=%d fd=%d",
           hasKhrExtFence, hasKhrExtFenceFd);
+    ALOGD("External semaphore device ext: KHR_external_semaphore=%d fd=%d",
+          hasKhrExtSem, hasKhrExtSemFd);
     if (!hasNvGlsl) {
         ALOGE("VK_NV_glsl_shader not supported");
         destroy();
@@ -187,7 +197,7 @@ bool VulkanDeviceState::init() {
     qci.queueCount = 1;
     qci.pQueuePriorities = &qPriority;
 
-    const char *enabledExts[10];
+    const char *enabledExts[12];
     uint32_t enabledExtCount = 0;
     enabledExts[enabledExtCount++] = "VK_NV_glsl_shader";
     if (mNativeBufferAvail)   enabledExts[enabledExtCount++] = "VK_ANDROID_native_buffer";
@@ -197,6 +207,8 @@ bool VulkanDeviceState::init() {
     if (hasNvExtMem)          enabledExts[enabledExtCount++] = "VK_NV_external_memory";
     if (hasKhrExtFence)       enabledExts[enabledExtCount++] = "VK_KHR_external_fence";
     if (hasKhrExtFenceFd)     enabledExts[enabledExtCount++] = "VK_KHR_external_fence_fd";
+    if (hasKhrExtSem)         enabledExts[enabledExtCount++] = "VK_KHR_external_semaphore";
+    if (hasKhrExtSemFd)       enabledExts[enabledExtCount++] = "VK_KHR_external_semaphore_fd";
 
     VkDeviceCreateInfo dci = {};
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
