@@ -883,6 +883,17 @@ void V4l2Device::cleanup() {
     closeFd(&mFd);
     mPFd.fd = -1;
     mConnected = false;
+
+    /* Wipe the cached V4L2 format. The kernel-side state is gone with
+     * the fd, so the next connect() must run a fresh S_FMT + REQBUFS
+     * to bind buffers to whichever memory type the next session ends
+     * up using (DMABUF after configureStreams + setDmaBufFds, or MMAP
+     * for the bring-up default). Skipping this leaves a stale
+     * 1920×1080 cached from session 1; session 2's setResolution then
+     * sees "same as cached" and short-circuits, so REQBUFS never
+     * re-runs and QBUF EINVALs at the next STREAMON. mPixelFormat
+     * and mAvailableResolutions are sensor capabilities and stay. */
+    memset(&mFormat, 0, sizeof(mFormat));
 }
 
 /******************************************************************************\
