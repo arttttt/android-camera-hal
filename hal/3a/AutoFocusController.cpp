@@ -105,6 +105,7 @@ AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
     , mSettleFramesFine(1)
     , mAfMode(ANDROID_CONTROL_AF_MODE_OFF)
     , mFocusPosition(0)
+    , mPreSweepFocusPosition(0)
     , mState(ScanState::Idle)
     , mSweepPos(0)
     , mSweepStep(0)
@@ -193,6 +194,10 @@ void AutoFocusController::beginCoarseFromCurrent() {
 }
 
 void AutoFocusController::startSweep(uint8_t afMode) {
+    /* Snapshot the converged lens position so a Failed sweep can
+     * park the lens here instead of committing the noise argmax
+     * of a flat scan. */
+    mPreSweepFocusPosition = mFocusPosition;
     mIsp->setAwbLock(true);
     /* Hold the converged AE target across the sweep. The score is
      * already exposure-invariant by construction (focusMetric =
@@ -404,14 +409,21 @@ void AutoFocusController::setSettleForMove(int32_t fromPos, int32_t toPos) {
 }
 
 void AutoFocusController::commitSweep(bool focused) {
-    /* Drive to the Fine-interpolated peak (mSweepPos at this point —
-     * set by advanceFine to the parabolic vertex). Falls back to
+    /* On Failed, park back at the position the lens was at before
+     * this sweep started — committing the noise-driven argmax of a
+     * flat scan actively *defocuses* the image relative to whatever
+     * the previous sweep had landed on. On Focused, drive to the
+     * Fine-interpolated peak (mSweepPos at this point — set by
+     * advanceFine to the parabolic vertex). Falls back to
      * mSweepBestPos only if Fine never managed a fit, which happens
      * when Coarse hit a range limit before bracketing the peak. */
-    const size_t fineSamples = mScanData.size() - mFinePhaseStart;
-    const int32_t finalPos = (fineSamples >= 3)
-                             ? mSweepPos
-                             : mSweepBestPos;
+    int32_t finalPos;
+    if (!focused) {
+        finalPos = mPreSweepFocusPosition;
+    } else {
+        const size_t fineSamples = mScanData.size() - mFinePhaseStart;
+        finalPos = (fineSamples >= 3) ? mSweepPos : mSweepBestPos;
+    }
     mDev->setFocusPosition(finalPos);
     mFocusPosition = finalPos;
     mIsp->setAwbLock(false);

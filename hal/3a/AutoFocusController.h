@@ -146,6 +146,12 @@ private:
 
     uint8_t  mAfMode;
     int32_t  mFocusPosition;
+    /* Lens position before the current sweep launched. Saved at
+     * startSweep so a `Failed` Settle gate can park the lens back
+     * where it was — committing the noise-driven argmax of a flat
+     * scan would actively *defocus* the image relative to whatever
+     * the previous sweep had landed on. */
+    int32_t  mPreSweepFocusPosition;
 
     /* Sweep state — only meaningful when mState != Idle. */
     ScanState mState;
