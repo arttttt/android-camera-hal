@@ -100,8 +100,9 @@ private:
     void   advanceCoarse(float score);
     void   advanceFine(float score);
     void   commitSweep(bool focused);
-    int32_t parabolicPeak() const;
-    void   recordSample(int32_t pos, float score);
+    void   recordCoarseSample(int32_t pos, float score);
+    void   recordFineSample(int32_t pos, float score);
+    int32_t parabolicPeak(const ScanSample s[3], int n) const;
     bool   nearLimit(int32_t pos, int32_t limit) const;
 
     V4l2Device  *mDev;
@@ -133,11 +134,17 @@ private:
     int32_t   mSweepBestPos;
     float     mSweepBestScore;
     int32_t   mSettleFrames;
-    /* Recent score samples for parabolic peak interpolation. We keep
-     * three: the running peak and its immediate neighbours. */
-    ScanSample mSamples[3];
-    int        mSampleCount;
-    int        mFineCount;     /* samples consumed inside Fine        */
+    /* Three-sample windows for parabolic interpolation, separate per
+     * phase so the coarse-step and fine-step samples never share a
+     * fit. Coarse keeps the running peak in slot [1] with the sample
+     * before the rise in [0] and the first sample below the peak in
+     * [2]. Fine fills slots in lens-travel order, then the closing
+     * step puts the highest-score sample in [1] before invoking the
+     * parabolic vertex calculation. */
+    ScanSample mCoarseSamples[3];
+    int        mCoarseSampleCount;
+    ScanSample mFineSamples[3];
+    int        mFineSampleCount;
     bool       mCoarseReversed;
 
     /* Continuous-AF scene-change tracking: snapshot of the per-frame
