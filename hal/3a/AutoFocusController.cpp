@@ -28,13 +28,6 @@ constexpr int32_t kVcmMin              = 0;
 constexpr int32_t kVcmMax              = 1023;
 constexpr float   kVcmPerDiopter       = 50.0f;
 
-/* Centre region of the patch grid: the inclusive [4, 11] band on each
- * axis covers the middle 50 % of the frame on both dimensions —
- * matches what the previous RGBA-domain sharpness measured on the
- * centre 1/4 of the rendered preview. */
-constexpr int kRoiPatchLo = 4;
-constexpr int kRoiPatchHi = 12;
-
 /* Compile-time CDAF defaults — used only when the tuning is missing
  * the matching `active.af.*` keys. Same magnitudes the JSON ships
  * for the IMX179 module. */
@@ -47,8 +40,8 @@ constexpr int32_t kDefRetriggerDelay = 10;
 float sumCentreFocus(
     const float metric[IpaStats::PATCH_Y][IpaStats::PATCH_X]) {
     float s = 0.f;
-    for (int py = kRoiPatchLo; py < kRoiPatchHi; ++py) {
-        for (int px = kRoiPatchLo; px < kRoiPatchHi; ++px) {
+    for (int py = IpaStats::FOCUS_ROI_PY_LO; py < IpaStats::FOCUS_ROI_PY_HI; ++py) {
+        for (int px = IpaStats::FOCUS_ROI_PX_LO; px < IpaStats::FOCUS_ROI_PX_HI; ++px) {
             s += metric[py][px];
         }
     }
@@ -59,8 +52,8 @@ void sumCentreRgb(
     const float rgbMean[IpaStats::PATCH_Y][IpaStats::PATCH_X][3],
     float out[3]) {
     out[0] = out[1] = out[2] = 0.f;
-    for (int py = kRoiPatchLo; py < kRoiPatchHi; ++py) {
-        for (int px = kRoiPatchLo; px < kRoiPatchHi; ++px) {
+    for (int py = IpaStats::FOCUS_ROI_PY_LO; py < IpaStats::FOCUS_ROI_PY_HI; ++py) {
+        for (int px = IpaStats::FOCUS_ROI_PX_LO; px < IpaStats::FOCUS_ROI_PX_HI; ++px) {
             out[0] += rgbMean[py][px][0];
             out[1] += rgbMean[py][px][1];
             out[2] += rgbMean[py][px][2];

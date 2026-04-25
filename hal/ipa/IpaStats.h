@@ -18,6 +18,19 @@ struct IpaStats {
     static const int PATCH_X     = 16;
     static const int PATCH_Y     = 16;
 
+    /* Focus-metric region of interest, expressed as a half-open
+     * patch-grid rectangle [LO, HI) on each axis. Default covers the
+     * centre 8×8 patches — 50 % of each frame dimension, the same band
+     * the AF controller integrates `focusMetric` over. The encoder
+     * accepts this as a runtime argument; tap-to-focus would publish
+     * a different rectangle per request once that path is wired up.
+     * Acts as a single source of truth: AF uses the same values for
+     * its centre-only ROI sums. */
+    static const int FOCUS_ROI_PX_LO = 4;
+    static const int FOCUS_ROI_PX_HI = 12;
+    static const int FOCUS_ROI_PY_LO = 4;
+    static const int FOCUS_ROI_PY_HI = 12;
+
     /* Rec. 601 luma, bin = clamp(luma * HIST_BINS, 0, HIST_BINS-1).
      * uint32_t per bin gives > 4e9 headroom vs 1920*1080 pixels. */
     uint32_t lumaHist[HIST_BINS];
