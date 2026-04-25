@@ -304,17 +304,35 @@ void AutoFocusController::advanceCoarse(float score) {
         (mSweepStep > 0 && mSweepPos >= mVcmAutoEnd) ||
         (mSweepStep < 0 && mSweepPos <= mVcmInfinity);
 
-    /* Coarse1 may discover its first sample is already low — in that
-     * case the peak isn't on this side of the start position; reverse
-     * direction and try the other side. */
-    if (mState == ScanState::Coarse1 && !mCoarseReversed &&
+    /* Coarse1 may discover its first sample is already low — fast
+     * path that bails on a single-step ratio drop, so we don't waste
+     * the entire Coarse1 walk before realising we're heading the
+     * wrong way. */
+    const bool fastReverse =
+        mState == ScanState::Coarse1 && !mCoarseReversed &&
         mCoarseSampleCount == 1 &&
-        score < mContrastRatio * mSweepBestScore) {
+        score < mContrastRatio * mSweepBestScore;
+
+    /* Slow-descent reversal: Coarse1 ran to peakPassed / atLimit but
+     * never advanced its running peak past the very first sample.
+     * That means contrast slid downward the whole way — the peak is
+     * on the opposite side of the start position, not behind us.
+     * Without this trigger the algorithm enters Fine at the start
+     * pos (= the discrete max it saw) and commits there, so a
+     * mid-range → macro transition just parks the lens at the old
+     * focus. RPi libcamera uses the same `first-sample == max`
+     * check after Coarse1 termination. */
+    const bool slowReverse =
+        mState == ScanState::Coarse1 && !mCoarseReversed &&
+        (peakPassed || atLimit) &&
+        mCoarseSampleCount <= 1;
+
+    if (fastReverse || slowReverse) {
         mSweepStep      = -mSweepStep;
         mState          = ScanState::Coarse2;
         mCoarseReversed = true;
-        /* Restart from the original position so Coarse2 covers the
-         * other half of the range cleanly. */
+        /* Restart from the original (best) position so Coarse2
+         * covers the other half of the range cleanly. */
         mSweepPos       = mSweepBestPos;
     } else if (peakPassed || atLimit) {
         /* Sub-step coarse peak from the 3-sample parabolic fit if
