@@ -214,6 +214,50 @@ void writeSensorRanges(CameraMetadata &cm) {
     cm.update(ANDROID_SENSOR_MAX_ANALOG_SENSITIVITY, &sensorMaxAnalogSensitivity, 1);
 }
 
+/* AE_AVAILABLE_TARGET_FPS_RANGES from VIDIOC_ENUM_FRAMEINTERVALS.
+ *
+ * For every FPS value the driver advertises across any supported
+ * resolution, emit a constant-rate range `[fps, fps]` plus a variable
+ * range `[kFpsLowerFloor, fps]` that lets AE drop the rate in low
+ * light up to `fps`. Both forms are required by camera2 apps:
+ * constants for video / ZSL, variable for preview AE flexibility.
+ *
+ * Falls back to {[15, 30], [30, 30]} if the driver reports no
+ * intervals — same as the pre-honest hardcoded list, minus the
+ * useless [15, 15] entry. Capped at `kFpsMaxRanges` pairs to bound
+ * the metadata blob size when a sensor advertises many discrete
+ * rates. */
+constexpr int32_t kFpsLowerFloor = 15;
+constexpr size_t  kFpsMaxRanges  = 16;
+
+void writeAvailableFpsRanges(CameraMetadata &cm, V4l2Device *dev) {
+    const Vector<int32_t> &fpsList = dev->availableFps();
+
+    int32_t ranges[kFpsMaxRanges * 2];
+    size_t  count  = 0;
+
+    auto emit = [&](int32_t lo, int32_t hi) {
+        if (count >= kFpsMaxRanges) return;
+        ranges[2 * count + 0] = lo;
+        ranges[2 * count + 1] = hi;
+        ++count;
+    };
+
+    if (fpsList.isEmpty()) {
+        emit(kFpsLowerFloor, 30);
+        emit(30, 30);
+    } else {
+        for (size_t i = 0; i < fpsList.size(); ++i) {
+            int32_t fps = fpsList[i];
+            if (fps > kFpsLowerFloor) emit(kFpsLowerFloor, fps);
+            emit(fps, fps);
+        }
+    }
+
+    cm.update(ANDROID_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES, ranges,
+              count * 2);
+}
+
 /* 3A capabilities + feature flags (flash, stats, scene modes, effects,
  * stabilization). Everything that tells the framework "what we support"
  * outside of resolutions/ranges. */
@@ -256,13 +300,6 @@ void writeControlInfo(CameraMetadata &cm, int facing) {
 
     int32_t controlAeCompensationRange[] = {-9, 9};
     cm.update(ANDROID_CONTROL_AE_COMPENSATION_RANGE, controlAeCompensationRange, NELEM(controlAeCompensationRange));
-
-    static const int32_t controlAeAvailableTargetFpsRanges[] = {
-        15, 15,
-        15, 30,
-        30, 30,
-    };
-    cm.update(ANDROID_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES, controlAeAvailableTargetFpsRanges, NELEM(controlAeAvailableTargetFpsRanges));
 
     static const uint8_t controlAeAvailableAntibandingModes[] = {
             ANDROID_CONTROL_AE_ANTIBANDING_MODE_OFF
@@ -310,12 +347,13 @@ camera_metadata_t *CameraStaticMetadata::build(V4l2Device *dev, int facing,
                                                 const SensorTuning *tuning,
                                                 size_t *jpegBufferSize) {
     CameraMetadata cm;
-    writeSensorInfo   (cm, dev, tuning, facing);
-    writeScalerConfigs(cm, dev);
-    writeJpegInfo     (cm, dev, jpegBufferSize);
-    writeSensorRanges (cm);
-    writeControlInfo  (cm, facing);
-    writeHalInfo      (cm);
+    writeSensorInfo         (cm, dev, tuning, facing);
+    writeScalerConfigs      (cm, dev);
+    writeJpegInfo           (cm, dev, jpegBufferSize);
+    writeSensorRanges       (cm);
+    writeAvailableFpsRanges (cm, dev);
+    writeControlInfo        (cm, facing);
+    writeHalInfo            (cm);
     return cm.release();
 }
 

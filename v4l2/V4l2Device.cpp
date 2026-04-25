@@ -243,6 +243,75 @@ int64_t V4l2Device::minFrameDurationNs(unsigned width, unsigned height) {
     return minNs;
 }
 
+const Vector<int32_t> & V4l2Device::availableFps() {
+    if (!mAvailableFps.isEmpty())
+        return mAvailableFps;
+
+    int fd;
+    bool fdNeedsClose = false;
+    if (mFd >= 0) {
+        fd = mFd;
+    } else {
+        fd = openFd(mDevNode);
+        fdNeedsClose = true;
+    }
+    if (fd < 0)
+        return mAvailableFps;
+
+    if (!mPixelFormat)
+        negotiatePixelFormat(fd);
+
+    /* Walk every advertised resolution, query its frame intervals,
+     * collect unique FPS values. Insertion-sorted into mAvailableFps so
+     * the static-metadata builder can iterate ascending without an
+     * extra sort pass. */
+    const Vector<Resolution> &resolutions = availableResolutions();
+    for (size_t r = 0; r < resolutions.size(); ++r) {
+        struct v4l2_frmivalenum e;
+        memset(&e, 0, sizeof(e));
+        e.pixel_format = mPixelFormat;
+        e.width        = resolutions[r].width;
+        e.height       = resolutions[r].height;
+        e.index        = 0;
+
+        while (ioctl(fd, VIDIOC_ENUM_FRAMEINTERVALS, &e) == 0) {
+            int32_t fps = 0;
+            if (e.type == V4L2_FRMIVAL_TYPE_DISCRETE) {
+                if (e.discrete.numerator > 0)
+                    fps = (int32_t)(e.discrete.denominator / e.discrete.numerator);
+            } else {
+                /* Stepwise / continuous: use the shortest interval
+                 * (= highest FPS) the driver advertises for this mode.
+                 * One ENUM call exhausts the description for stepwise,
+                 * so break after consuming this entry. */
+                if (e.stepwise.min.numerator > 0)
+                    fps = (int32_t)(e.stepwise.min.denominator
+                                  / e.stepwise.min.numerator);
+            }
+
+            if (fps > 0) {
+                /* Insertion-sort into mAvailableFps; skip duplicates. */
+                bool dup = false;
+                size_t pos = mAvailableFps.size();
+                for (size_t i = 0; i < mAvailableFps.size(); ++i) {
+                    if (mAvailableFps[i] == fps) { dup = true; break; }
+                    if (mAvailableFps[i] >  fps) { pos = i;     break; }
+                }
+                if (!dup) mAvailableFps.insertAt(fps, pos);
+            }
+
+            if (e.type != V4L2_FRMIVAL_TYPE_DISCRETE)
+                break;
+            ++e.index;
+        }
+    }
+
+    if (fdNeedsClose)
+        closeFd(&fd);
+
+    return mAvailableFps;
+}
+
 Resolution V4l2Device::sensorResolution() {
     const Vector<Resolution> &formats = availableResolutions();
     Resolution max = {0, 0};

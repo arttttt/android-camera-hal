@@ -49,6 +49,13 @@ public:
      * no framerate info for that mode. */
     int64_t minFrameDurationNs(unsigned width, unsigned height);
 
+    /* Sorted, deduplicated set of FPS values the driver advertises across
+     * every supported resolution at the current pixel format, gathered via
+     * VIDIOC_ENUM_FRAMEINTERVALS. Empty when the driver reports no
+     * intervals. Used by static metadata to populate
+     * AE_AVAILABLE_TARGET_FPS_RANGES instead of a hardcoded list. */
+    const Vector<int32_t> & availableFps();
+
     bool setResolution(unsigned width, unsigned height);
     Resolution resolution();
 
@@ -127,6 +134,7 @@ private:
     int mPendingQbuf[V4L2DEVICE_BUF_COUNT];
     int mPendingQbufCount;
     Vector<Resolution> mAvailableResolutions;
+    Vector<int32_t>    mAvailableFps;
     struct v4l2_format mFormat;
     VBuffer mBuf[V4L2DEVICE_BUF_COUNT];
     struct pollfd mPFd;
