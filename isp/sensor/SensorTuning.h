@@ -34,6 +34,29 @@ public:
         int  macroMax;
         int  settleTimeMs;
         bool moduleCalEnable;
+
+        /* Contrast-detect AF tunables. NVIDIA's stock .isp does not
+         * carry these — they're HAL-side knobs, defaulted to RPi
+         * libcamera's working values (see reference_af_projects.md)
+         * and overridable per-sensor via `active.af.*` JSON keys. */
+        int   stepCoarse;       /* coarse sweep step (VCM units)        */
+        int   stepFine;         /* fine refinement step (VCM units)     */
+        float contrastRatio;    /* sharpness drop fraction that confirms
+                                 * the peak has been passed             */
+        float retriggerRatio;   /* scene-change threshold; sharpness or
+                                 * RGB mean differing from the
+                                 * post-converge snapshot by more than
+                                 * this fraction starts the
+                                 * re-trigger countdown                  */
+        int   retriggerDelay;   /* frames the change must persist before
+                                 * a continuous-AF re-trigger fires      */
+
+        /* PDAF gate. None of the sensors we ship now have phase
+         * pixels (IMX179 / OV5693 / IMX219 are all pre-PDAF Bayer),
+         * so the `Pdaf` state in AutoFocusController is a reserved
+         * future-work slot. Setting `pdafEnabled=true` without
+         * matching kernel + sensor support is a no-op + warning. */
+        bool  pdafEnabled;
     };
 
     struct CcmSet {

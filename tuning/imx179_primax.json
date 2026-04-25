@@ -25,7 +25,13 @@
       "macro": 640,
       "inf_offset": -82,
       "macro_offset": 58,
-      "macro_max": 100
+      "macro_max": 100,
+      "step_coarse": 25,
+      "step_fine": 5,
+      "contrast_ratio": 0.75,
+      "retrigger_ratio": 0.75,
+      "retrigger_delay_frames": 10,
+      "pdaf_enabled": false
     },
     "mwbCCT": {
       "cloudy": 7000,

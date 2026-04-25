@@ -12,9 +12,29 @@ class V4l2Device;
 class IspPipeline;
 class SensorTuning;
 
-/* Contrast-detect autofocus for a single-VCM sensor. Drives the V4L2
- * focus subdev and integrates with the ISP AWB lock so the sharpness
- * metric isn't skewed by gain flicker during a sweep. */
+/* Contrast-detect autofocus for a single-VCM sensor.
+ *
+ * Drives the V4L2 focus subdev through a coarse-to-fine sweep
+ * around the current lens position, then validates the result
+ * before reporting Focused / Failed. The ISP's AWB lock is held
+ * across a sweep so brightness drift can't distort the score
+ * curve. In CONTINUOUS_PICTURE the controller idles between
+ * sweeps and re-triggers only when scene-statistics depart far
+ * enough from the post-converge snapshot.
+ *
+ * State diagram:
+ *
+ *   Idle ──▶ [Pdaf]* ──▶ Coarse1 ──▶ Coarse2 ──▶ Fine ──▶ Settle ──▶ Idle
+ *                            └──────────────────▶ Fine
+ *
+ *   *Pdaf reserved for future hybrid PDAF + CDAF on hardware that
+ *    exposes phase data. None of the sensors we ship today have it
+ *    (IMX179 / OV5693 / IMX219 are pre-PDAF Bayer parts), and there
+ *    is no kernel-level phase output. The state value sits in the
+ *    enum so a later refactor doesn't have to renumber everything;
+ *    the runtime path skips straight to Coarse1. See
+ *    raspberrypi/libcamera src/ipa/rpi/controller/rpi/af.cpp for
+ *    the hybrid pattern when the hardware finally arrives. */
 class AutoFocusController {
 public:
     struct Report {
@@ -26,13 +46,14 @@ public:
     /* `tuning` is optional — pass nullptr or a !isLoaded() instance and
      * the controller falls back to compile-time VCM defaults. When the
      * tuning provides AF data we consume it (inf/macro positions,
-     * settle time). */
+     * settle time, sweep step + scene-change knobs). */
     AutoFocusController(V4l2Device *dev, IspPipeline *isp,
                         const SensorTuning *tuning);
 
     /* Drive the state machine from request metadata. Reads AF_MODE,
-     * LENS_FOCUS_DISTANCE, AF_TRIGGER; also handles the periodic
-     * re-trigger in CONTINUOUS_PICTURE mode (gated by frameNumber). */
+     * LENS_FOCUS_DISTANCE, AF_TRIGGER. Continuous-mode re-triggering
+     * is driven by scene statistics in onSharpnessStats, not by a
+     * frame counter here. */
     void onSettings(const CameraMetadata &cm, uint32_t frameNumber);
 
     /* If a sweep is active, move the VCM to the current sweep position.
@@ -40,13 +61,14 @@ public:
     void onFrameStart();
 
     /* Advance the sweep against the per-patch sharpness grid for the
-     * current frame. Caller hands over the same stats buffer the IPA
-     * has already finished with. No-op outside of a sweep. */
+     * current frame, or evaluate scene-change in continuous-AF idle.
+     * Caller hands over the same stats buffer the IPA has already
+     * finished with. */
     void onSharpnessStats(
         const float sharpness[IpaStats::PATCH_Y][IpaStats::PATCH_X]);
 
     Report report() const;
-    bool   isSweeping() const { return mSweepActive; }
+    bool   isSweeping() const { return mState != ScanState::Idle; }
 
     /* Reset the state-machine to the initial post-construction
      * state. Used at camera close so a stale sweep doesn't leak
@@ -55,8 +77,32 @@ public:
     void reset();
 
 private:
-    void startSweep(uint8_t afMode);
-    void cancelSweep();
+    enum class ScanState {
+        Idle,      /* between sweeps; CAF watches for scene change       */
+        Pdaf,      /* reserved for hybrid PDAF — see class comment       */
+        Coarse1,   /* initial direction probe from current lens pos      */
+        Coarse2,   /* reverse direction when Coarse1 didn't bracket peak */
+        Fine,      /* +/- stepFine refinement around interpolated peak   */
+        Settle,    /* validate final contrast, commit best position      */
+    };
+
+    /* One row of the score curve we accumulate during a sweep.
+     * `parabolicPeak` reads three of these to interpolate a sub-step
+     * peak position; `score` is the centre-ROI Tenengrad sum. */
+    struct ScanSample {
+        int32_t pos;
+        float   score;
+    };
+
+    void   startSweep(uint8_t afMode);
+    void   cancelSweep();
+    void   beginCoarseFromCurrent();
+    void   advanceCoarse(float score);
+    void   advanceFine(float score);
+    void   commitSweep(bool focused);
+    int32_t parabolicPeak() const;
+    void   recordSample(int32_t pos, float score);
+    bool   nearLimit(int32_t pos, int32_t limit) const;
 
     V4l2Device  *mDev;
     IspPipeline *mIsp;
@@ -69,21 +115,36 @@ private:
     int32_t  mVcmAutoEnd;
     int32_t  mVcmSettleFrames;
 
+    /* HAL-side tunables resolved from SensorTuning::AfParams. */
+    int32_t  mStepCoarse;
+    int32_t  mStepFine;
+    float    mContrastRatio;
+    float    mRetriggerRatio;
+    int32_t  mRetriggerDelay;
+    bool     mPdafEnabled;
+
     uint8_t  mAfMode;
     int32_t  mFocusPosition;
-    bool     mSweepActive;
-    int32_t  mSweepPos;
-    int32_t  mSweepStep;
-    int32_t  mSweepEnd;
-    int32_t  mSweepBestPos;
-    float    mSweepBestScore;
-    int32_t  mSettleFrames;
-    /* Consecutive frames whose score is far enough below the running
-     * peak that the sweep can be terminated early. The lens
-     * physically walks through every sampled position, so cutting
-     * the tail saves both time and the visible "racks all the way
-     * to macro then snaps back" lens travel. */
-    int32_t  mBelowPeakCount;
+
+    /* Sweep state — only meaningful when mState != Idle. */
+    ScanState mState;
+    int32_t   mSweepPos;      /* current / next VCM target           */
+    int32_t   mSweepStep;     /* signed: positive toward macro       */
+    int32_t   mSweepBestPos;
+    float     mSweepBestScore;
+    int32_t   mSettleFrames;
+    /* Recent score samples for parabolic peak interpolation. We keep
+     * three: the running peak and its immediate neighbours. */
+    ScanSample mSamples[3];
+    int        mSampleCount;
+    int        mFineCount;     /* samples consumed inside Fine        */
+    bool       mCoarseReversed;
+
+    /* Continuous-AF scene-change tracking: snapshot of the per-frame
+     * score we converged to, plus a frame counter that has to reach
+     * `mRetriggerDelay` before a fresh sweep is launched. */
+    float     mSceneScoreSnapshot;
+    int32_t   mSceneChangeCount;
 };
 
 }; /* namespace android */

@@ -100,6 +100,22 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
         mAf.macroMax         = af["macro_max"].asInt();
         mAf.settleTimeMs     = af["settle_time"].asInt();
         mAf.moduleCalEnable  = af["module_cal_enable"].asInt() != 0;
+
+        /* HAL-side CDAF knobs. Defaults match the reference values
+         * RPi libcamera ships in their per-module tuning; overridable
+         * via JSON when a sensor needs different settle / step. */
+        mAf.stepCoarse =
+            af.get("step_coarse", 25).asInt();
+        mAf.stepFine =
+            af.get("step_fine", 5).asInt();
+        mAf.contrastRatio =
+            af.get("contrast_ratio", 0.75f).asFloat();
+        mAf.retriggerRatio =
+            af.get("retrigger_ratio", 0.75f).asFloat();
+        mAf.retriggerDelay =
+            af.get("retrigger_delay_frames", 10).asInt();
+        mAf.pdafEnabled =
+            af.get("pdaf_enabled", false).asBool();
         mHasAf = true;
     }
 
