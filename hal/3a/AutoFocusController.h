@@ -143,6 +143,12 @@ private:
      * parabolic vertex calculation. */
     ScanSample mCoarseSamples[3];
     int        mCoarseSampleCount;
+    /* Most recent sample considered by recordCoarseSample, regardless
+     * of whether it became a new running peak. When the next peak
+     * arrives this is the immediate predecessor that lands in slot
+     * [0]; using "last peak demoted" instead would feed parabolic
+     * with non-adjacent neighbours and bias the vertex. */
+    ScanSample mLastSeen;
     ScanSample mFineSamples[3];
     int        mFineSampleCount;
     bool       mCoarseReversed;

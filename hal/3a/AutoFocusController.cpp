@@ -89,6 +89,7 @@ AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
     , mSweepBestScore(0.f)
     , mSettleFrames(0)
     , mCoarseSampleCount(0)
+    , mLastSeen{0, 0.f}
     , mFineSampleCount(0)
     , mCoarseReversed(false)
     , mSceneScoreSnapshot(0.f)
@@ -169,9 +170,17 @@ void AutoFocusController::beginCoarseFromCurrent() {
 
 void AutoFocusController::startSweep(uint8_t afMode) {
     mIsp->setAwbLock(true);
+    /* Lock AE for the duration of the sweep — without it, the IPA's
+     * exposure / gain controller crawls toward its setpoint while
+     * the lens is moving and the resulting brightness drift
+     * skews the sharpness scores Coarse → Fine → Settle compare
+     * against each other. The lock releases on commitSweep /
+     * cancelSweep / reset. */
+    mIsp->setAeLock(true);
     mSettleFrames      = 0;
     mSweepBestScore    = 0.f;
     mCoarseSampleCount = 0;
+    mLastSeen          = {0, 0.f};
     mFineSampleCount   = 0;
     mSceneChangeCount  = 0;
 
@@ -197,17 +206,23 @@ void AutoFocusController::startSweep(uint8_t afMode) {
 void AutoFocusController::cancelSweep() {
     if (mState == ScanState::Idle) return;
     mIsp->setAwbLock(false);
+    mIsp->setAeLock(false);
     mState = ScanState::Idle;
 }
 
 void AutoFocusController::recordCoarseSample(int32_t pos, float score) {
     /* Track running max + maintain a 3-sample window so
      * parabolicPeak can interpolate sub-step accuracy off coarse
-     * data. Slot [1] is always the running peak, [0] the sample
-     * before the rise, [2] the first sample below the peak. */
+     * data. Slot [1] is always the running peak, [0] the immediate
+     * predecessor sample (regardless of whether it was itself a
+     * peak), [2] the first sample below the running peak. The
+     * predecessor matters: feeding the parabolic vertex math with a
+     * non-adjacent "old peak" sample skews the fit toward whichever
+     * side has the more distant neighbour and lands the interpolated
+     * peak well off the actual maximum. */
     if (score > mSweepBestScore) {
         if (mCoarseSampleCount > 0) {
-            mCoarseSamples[0] = mCoarseSamples[1];
+            mCoarseSamples[0] = mLastSeen;
         }
         mCoarseSamples[1].pos   = pos;
         mCoarseSamples[1].score = score;
@@ -219,6 +234,8 @@ void AutoFocusController::recordCoarseSample(int32_t pos, float score) {
         mCoarseSamples[2].score = score;
         mCoarseSampleCount = 3;
     }
+    mLastSeen.pos   = pos;
+    mLastSeen.score = score;
 }
 
 void AutoFocusController::recordFineSample(int32_t pos, float score) {
@@ -348,6 +365,7 @@ void AutoFocusController::commitSweep(bool focused) {
     mDev->setFocusPosition(finalPos);
     mFocusPosition = finalPos;
     mIsp->setAwbLock(false);
+    mIsp->setAeLock(false);
     mSceneScoreSnapshot = mSweepBestScore;
     mSceneChangeCount   = 0;
     mState = ScanState::Idle;
@@ -465,7 +483,10 @@ void AutoFocusController::onSharpnessStats(
 }
 
 void AutoFocusController::reset() {
-    if (mState != ScanState::Idle) mIsp->setAwbLock(false);
+    if (mState != ScanState::Idle) {
+        mIsp->setAwbLock(false);
+        mIsp->setAeLock(false);
+    }
     mState              = ScanState::Idle;
     mAfMode             = ANDROID_CONTROL_AF_MODE_OFF;
     mSweepPos           = 0;
@@ -474,6 +495,7 @@ void AutoFocusController::reset() {
     mSweepBestScore     = 0.f;
     mSettleFrames       = 0;
     mCoarseSampleCount  = 0;
+    mLastSeen           = {0, 0.f};
     mFineSampleCount    = 0;
     mCoarseReversed     = false;
     mSceneScoreSnapshot = 0.f;

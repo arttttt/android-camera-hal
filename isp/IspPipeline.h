@@ -111,6 +111,12 @@ public:
     void setAwbLock(bool lock) { mAwbLocked = lock; }
     bool awbLocked() const     { return mAwbLocked; }
 
+    /* Lock AE — freeze exposure / gain during AF sweep so the
+     * sharpness curve isn't distorted by the controller chasing
+     * a moving brightness target. */
+    void setAeLock(bool lock) { mAeLocked = lock; }
+    bool aeLocked() const     { return mAeLocked; }
+
     /* Number of exportable Bayer input buffers the backend has pre-allocated.
      * 0 means the backend does not support DMABUF input — callers must
      * feed Bayer data through processToGralloc's src pointer instead. */
@@ -163,6 +169,7 @@ protected:
     uint32_t mBlackLevel = 0;
     bool mEnabled = true;
     bool mAwbLocked = false;
+    bool mAeLocked  = false;
 };
 
 /* Pick and construct an ISP backend based on runtime properties.

@@ -372,9 +372,15 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
      * into DelayedControls itself for result metadata; an IPA push
      * on the same slot would clobber that. Skip the AE math so last*
      * is frozen at its last auto decision — convergence resumes from
-     * there on switch-back. */
+     * there on switch-back.
+     *
+     * IspPipeline::aeLocked() adds a transient lock toggled by
+     * AutoFocusController across a sweep, so the sharpness curve the
+     * controller scores isn't distorted by AE chasing brightness
+     * mid-sweep. Released on commit / cancel. */
     if (meta.aeMode == ANDROID_CONTROL_AE_MODE_OFF
-     || meta.aeLock == ANDROID_CONTROL_AE_LOCK_ON) {
+     || meta.aeLock == ANDROID_CONTROL_AE_LOCK_ON
+     || (isp != nullptr && isp->aeLocked())) {
         return batch;
     }
 
