@@ -58,7 +58,7 @@ public:
                     const CropRect &crop,
                     int acquireFence,
                     int *releaseFenceOut) override;
-    bool endFrame() override;
+    bool endFrame(int *submitFenceOut) override;
 
     int    inputBufferCount() const override { return mInputRing.slotCount(); }
     size_t inputBufferSize()  const override { return mInputRing.slotSize(); }

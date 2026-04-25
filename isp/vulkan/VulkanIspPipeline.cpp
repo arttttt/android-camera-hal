@@ -1,6 +1,7 @@
 #define LOG_TAG "Cam-VulkanISP"
 #include <utils/Log.h>
 #include <cstring>
+#include <errno.h>
 #include <unistd.h>
 #include <linux/videodev2.h>
 #include <math.h>
@@ -602,7 +603,8 @@ bool VulkanIspPipeline::blitToYuv(void *nativeBuffer,
     return true;
 }
 
-bool VulkanIspPipeline::endFrame() {
+bool VulkanIspPipeline::endFrame(int *submitFenceOut) {
+    if (submitFenceOut) *submitFenceOut = -1;
     if (!mRec.active) {
         ALOGE("endFrame called without an active beginFrame");
         return false;
@@ -656,7 +658,9 @@ bool VulkanIspPipeline::endFrame() {
 
     /* Export the slot's fence as a sync_fd into mSlotSyncFd[slot] for the
      * next acquireSlot to poll on. vkGetFenceFdKHR with SYNC_FD also
-     * resets the fence atomically. */
+     * resets the fence atomically. The same signal is dup'd into
+     * submitFenceOut so the caller's poll set (PipelineThread) sees the
+     * same completion event without consuming the slot's tracking fd. */
     if (mDeviceState.pfn()->GetFenceFdKHR) {
         VkFenceGetFdInfoKHR gi = {};
         gi.sType      = VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR;
@@ -665,6 +669,15 @@ bool VulkanIspPipeline::endFrame() {
         int fd = -1;
         if (mDeviceState.pfn()->GetFenceFdKHR(mDeviceState.device(), &gi, &fd) == VK_SUCCESS) {
             mSlotSyncFd[slot] = fd;
+            if (submitFenceOut) {
+                int dupFd = ::dup(fd);
+                if (dupFd < 0) {
+                    ALOGW("dup of slot sync_fd failed: errno=%d", errno);
+                    *submitFenceOut = -1;
+                } else {
+                    *submitFenceOut = dupFd;
+                }
+            }
         } else {
             ALOGW("vkGetFenceFdKHR(SYNC_FD) failed; falling back to inline wait");
             mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1,

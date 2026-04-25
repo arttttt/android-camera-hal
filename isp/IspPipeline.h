@@ -151,9 +151,20 @@ public:
     }
 
     /* Submit the recorded command buffer. Must be called once per matching
-     * beginFrame, after all blitTo* calls. Returns false on submit failure,
-     * leaving release fences from blitTo* invalid. */
-    virtual bool endFrame() { return false; }
+     * beginFrame, after all blitTo* calls.
+     * submitFenceOut: [out, may be NULL] sync_fd that signals when the
+     *                 submit completes. Caller-owned; push into
+     *                 ctx.pendingFenceFds for the consumer's poll set.
+     *                 Equivalent (timing-wise) to any per-output release
+     *                 fence; provided as a separate handle so frames with
+     *                 only non-fence outputs (YUV / BLOB) still expose a
+     *                 completion signal. -1 if the backend cannot export.
+     * Returns false on submit failure; release fences from blitTo* are
+     * invalid in that case. */
+    virtual bool endFrame(int *submitFenceOut) {
+        if (submitFenceOut) *submitFenceOut = -1;
+        return false;
+    }
 
     /* AWB gains (Q8: 256 = 1.0x) */
     void setWbGains(unsigned r, unsigned g, unsigned b) {
