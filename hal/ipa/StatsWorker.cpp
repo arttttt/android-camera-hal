@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include <utils/Log.h>
+#include <utils/Timers.h>
 
 #define LOG_TAG "Cam-StatsWorker"
 
@@ -99,24 +100,39 @@ void StatsWorker::threadLoop() {
                                     ? IpaStats::PATCH_Y
                                     : (phase + 1) * rowsPerPhase;
 
+        const nsecs_t tNeon0 = systemTime();
         encoder.computeRange(currentJob.bayer,
                              currentJob.width, currentJob.height,
                              currentJob.pixFmt, blackLevel,
                              &partial, pyStart, pyEnd);
+        const nsecs_t tNeon1 = systemTime();
 
+        const int phaseDone = phase;
         ++phase;
 
         if (phase >= StatsWorker::phaseCount) {
             IpaStats result;
+            const nsecs_t tFin0 = systemTime();
             NeonStatsEncoder::finalize(partial, currentJob.pixFmt,
                                         blackLevel, &result);
+            const nsecs_t tFin1 = systemTime();
             {
                 std::lock_guard<std::mutex> lock(outLock);
                 latest      = result;
                 latestSeq   = currentJob.sequence;
                 latestValid = true;
             }
+            ALOGD("PERF: phase=%d/%d neon=%lldus finalize=%lldus seq=%u",
+                  phaseDone + 1, StatsWorker::phaseCount,
+                  (long long)((tNeon1 - tNeon0) / 1000),
+                  (long long)((tFin1  - tFin0)  / 1000),
+                  currentJob.sequence);
             phase = 0;
+        } else {
+            ALOGD("PERF: phase=%d/%d neon=%lldus seq=%u",
+                  phaseDone + 1, StatsWorker::phaseCount,
+                  (long long)((tNeon1 - tNeon0) / 1000),
+                  currentJob.sequence);
         }
     }
 }
