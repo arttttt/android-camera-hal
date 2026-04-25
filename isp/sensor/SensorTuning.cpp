@@ -116,6 +116,10 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
             af.get("retrigger_delay_frames", 10).asInt();
         mAf.pdafEnabled =
             af.get("pdaf_enabled", false).asBool();
+        mAf.settleFramesCoarse =
+            af.get("settle_frames_coarse", 2).asInt();
+        mAf.settleFramesFine =
+            af.get("settle_frames_fine", 1).asInt();
         mHasAf = true;
     }
 

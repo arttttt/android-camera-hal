@@ -23,12 +23,9 @@ namespace {
 constexpr int32_t kVcmInfinityFallback = 140;
 constexpr int32_t kVcmMacroEndFallback = 650;
 constexpr int32_t kVcmAutoEndFallback  = 640;
-constexpr int32_t kVcmSettleFallback   = 2;
 constexpr int32_t kVcmMin              = 0;
 constexpr int32_t kVcmMax              = 1023;
 constexpr float   kVcmPerDiopter       = 50.0f;
-
-constexpr int32_t kFramePeriodMsApprox = 33;  /* 30 fps preview */
 
 /* Centre region of the patch grid: the inclusive [4, 11] band on each
  * axis covers the middle 50 % of the frame on both dimensions —
@@ -57,6 +54,28 @@ float sumCentreSharpness(
     return s;
 }
 
+void sumCentreRgb(
+    const float rgbMean[IpaStats::PATCH_Y][IpaStats::PATCH_X][3],
+    float out[3]) {
+    out[0] = out[1] = out[2] = 0.f;
+    for (int py = kRoiPatchLo; py < kRoiPatchHi; ++py) {
+        for (int px = kRoiPatchLo; px < kRoiPatchHi; ++px) {
+            out[0] += rgbMean[py][px][0];
+            out[1] += rgbMean[py][px][1];
+            out[2] += rgbMean[py][px][2];
+        }
+    }
+}
+
+bool outsideRatio(float a, float b, float ratio) {
+    /* Symmetric ratio test with a small tolerance to absorb sensor
+     * noise — `+1.0` matches the magnitude RPi libcamera uses on
+     * its (much smaller) raw stats values. Both `a / b < ratio` and
+     * `b / a < ratio` register as "different enough"; either side
+     * darkening or brightening counts. */
+    return (a + 1.f) < ratio * b || (b + 1.f) < ratio * a;
+}
+
 int32_t clampVcm(int32_t pos) {
     if (pos < kVcmMin) return kVcmMin;
     if (pos > kVcmMax) return kVcmMax;
@@ -73,13 +92,14 @@ AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
     , mVcmMacroStart(0)
     , mVcmMacroEnd(kVcmMacroEndFallback)
     , mVcmAutoEnd(kVcmAutoEndFallback)
-    , mVcmSettleFrames(kVcmSettleFallback)
     , mStepCoarse(kDefStepCoarse)
     , mStepFine(kDefStepFine)
     , mContrastRatio(kDefContrastRatio)
     , mRetriggerRatio(kDefRetriggerRatio)
     , mRetriggerDelay(kDefRetriggerDelay)
     , mPdafEnabled(false)
+    , mSettleFramesCoarse(2)
+    , mSettleFramesFine(1)
     , mAfMode(ANDROID_CONTROL_AF_MODE_OFF)
     , mFocusPosition(0)
     , mState(ScanState::Idle)
@@ -92,7 +112,8 @@ AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
     , mLastSeen{0, 0.f}
     , mFineSampleCount(0)
     , mCoarseReversed(false)
-    , mSceneScoreSnapshot(0.f)
+    , mSceneSharpnessSnapshot(0.f)
+    , mSceneRgbSnapshot{0.f, 0.f, 0.f}
     , mSceneChangeCount(0)
 {
     if (tuning && tuning->isLoaded() && tuning->hasAf()) {
@@ -105,21 +126,22 @@ AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
             mVcmMacroEnd = af.macroPos;
         }
         mVcmAutoEnd = af.macroPos;
-        int frames = (af.settleTimeMs + kFramePeriodMsApprox - 1) / kFramePeriodMsApprox;
-        mVcmSettleFrames = frames > 0 ? frames : 1;
 
-        if (af.stepCoarse     > 0)   mStepCoarse     = af.stepCoarse;
-        if (af.stepFine       > 0)   mStepFine       = af.stepFine;
-        if (af.contrastRatio  > 0.f) mContrastRatio  = af.contrastRatio;
-        if (af.retriggerRatio > 0.f) mRetriggerRatio = af.retriggerRatio;
-        if (af.retriggerDelay > 0)   mRetriggerDelay = af.retriggerDelay;
+        if (af.stepCoarse         > 0)   mStepCoarse         = af.stepCoarse;
+        if (af.stepFine           > 0)   mStepFine           = af.stepFine;
+        if (af.contrastRatio      > 0.f) mContrastRatio      = af.contrastRatio;
+        if (af.retriggerRatio     > 0.f) mRetriggerRatio     = af.retriggerRatio;
+        if (af.retriggerDelay     > 0)   mRetriggerDelay     = af.retriggerDelay;
+        if (af.settleFramesCoarse > 0)   mSettleFramesCoarse = af.settleFramesCoarse;
+        if (af.settleFramesFine   > 0)   mSettleFramesFine   = af.settleFramesFine;
         mPdafEnabled = af.pdafEnabled;
 
-        ALOGD("AF tuning: cal=%d inf=%d macro=%d auto_end=%d settle=%d frame(s) "
-              "step=%d/%d ratios=%.2f/%.2f delay=%d pdaf=%d",
+        ALOGD("AF tuning: cal=%d inf=%d macro=%d auto_end=%d "
+              "step=%d/%d settle=%d/%d ratios=%.2f/%.2f delay=%d pdaf=%d",
               af.moduleCalEnable ? 1 : 0,
-              mVcmInfinity, mVcmMacroEnd, mVcmAutoEnd, mVcmSettleFrames,
+              mVcmInfinity, mVcmMacroEnd, mVcmAutoEnd,
               mStepCoarse, mStepFine,
+              mSettleFramesCoarse, mSettleFramesFine,
               (double)mContrastRatio, (double)mRetriggerRatio, mRetriggerDelay,
               mPdafEnabled ? 1 : 0);
 
@@ -272,6 +294,7 @@ int32_t AutoFocusController::parabolicPeak(const ScanSample s[3], int n) const {
 }
 
 void AutoFocusController::advanceCoarse(float score) {
+    const int32_t prevPos = mSweepPos;
     recordCoarseSample(mSweepPos, score);
 
     const bool peakPassed =
@@ -293,9 +316,7 @@ void AutoFocusController::advanceCoarse(float score) {
         /* Restart from the original position so Coarse2 covers the
          * other half of the range cleanly. */
         mSweepPos       = mSweepBestPos;
-    }
-
-    if (peakPassed || atLimit) {
+    } else if (peakPassed || atLimit) {
         /* Sub-step coarse peak from the 3-sample parabolic fit if
          * we have all three; falls back to mSweepBestPos otherwise.
          * Using this as Fine's centre ensures the ±stepFine bracket
@@ -315,13 +336,15 @@ void AutoFocusController::advanceCoarse(float score) {
         }
         mState           = ScanState::Fine;
         mFineSampleCount = 0;
-        return;
+    } else {
+        mSweepPos = clampVcm(mSweepPos + mSweepStep);
     }
 
-    mSweepPos = clampVcm(mSweepPos + mSweepStep);
+    setSettleForMove(prevPos, mSweepPos);
 }
 
 void AutoFocusController::advanceFine(float score) {
+    const int32_t prevPos = mSweepPos;
     recordFineSample(mSweepPos, score);
 
     /* Three Fine samples is enough to confirm the parabolic peak.
@@ -341,9 +364,26 @@ void AutoFocusController::advanceFine(float score) {
         const int32_t finePk = parabolicPeak(mFineSamples, 3);
         mSweepPos = finePk;
         mState    = ScanState::Settle;
-        return;
+    } else {
+        mSweepPos = clampVcm(mSweepPos + mSweepStep);
     }
-    mSweepPos = clampVcm(mSweepPos + mSweepStep);
+
+    setSettleForMove(prevPos, mSweepPos);
+}
+
+void AutoFocusController::setSettleForMove(int32_t fromPos, int32_t toPos) {
+    /* Pick settle frames from the magnitude of the actual VCM move,
+     * not from the state we're about to be in. Coarse-magnitude
+     * moves (initial probe steps, direction reversal back to the
+     * running peak, the jump from coarse position into the Fine
+     * bracket) all need the longer wait to let the open-loop motor
+     * physically arrive — there's no V4L2 feedback on actual lens
+     * position, so we wait by frame count instead. Fine-magnitude
+     * moves take the shorter wait. */
+    const int32_t mag = (toPos > fromPos) ? (toPos - fromPos)
+                                          : (fromPos - toPos);
+    mSettleFrames = (mag > mStepFine) ? mSettleFramesCoarse
+                                      : mSettleFramesFine;
 }
 
 void AutoFocusController::commitSweep(bool focused) {
@@ -357,7 +397,14 @@ void AutoFocusController::commitSweep(bool focused) {
     mDev->setFocusPosition(finalPos);
     mFocusPosition = finalPos;
     mIsp->setAwbLock(false);
-    mSceneScoreSnapshot = mSweepBestScore;
+    /* Force the next idle onStats to capture a fresh scene snapshot
+     * — at commit time we don't yet have a stats frame for the
+     * just-committed lens position; better to read it on the next
+     * incoming frame than to copy stale running values. */
+    mSceneSharpnessSnapshot = 0.f;
+    mSceneRgbSnapshot[0]    = 0.f;
+    mSceneRgbSnapshot[1]    = 0.f;
+    mSceneRgbSnapshot[2]    = 0.f;
     mSceneChangeCount   = 0;
     mState = ScanState::Idle;
 
@@ -405,39 +452,70 @@ void AutoFocusController::onFrameStart() {
     mDev->setFocusPosition(mSweepPos);
 }
 
-void AutoFocusController::onSharpnessStats(
-    const float sharpness[IpaStats::PATCH_Y][IpaStats::PATCH_X]) {
-    if (!sharpness) return;
-    const float score = sumCentreSharpness(sharpness);
+void AutoFocusController::onStats(const IpaStats &stats) {
+    const float score = sumCentreSharpness(stats.sharpness);
 
     if (mState == ScanState::Idle) {
-        /* CONTINUOUS_PICTURE: watch the sharpness signal and re-trigger
-         * a sweep when it's drifted far enough from where we converged.
-         * The symmetric ratio test catches both "scene got blurrier"
-         * and "scene got crisper than what we locked on" — both mean
-         * the lens needs another look. */
-        if (mAfMode == ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE &&
-            mSceneScoreSnapshot > 0.f) {
-            const bool changed =
-                score < mRetriggerRatio * mSceneScoreSnapshot ||
-                mSceneScoreSnapshot < mRetriggerRatio * score;
-            if (changed) {
-                mSceneChangeCount++;
-                if (mSceneChangeCount >= mRetriggerDelay) {
-                    ALOGD("AF: scene change detected (snap=%.0f cur=%.0f), "
-                          "starting sweep",
-                          (double)mSceneScoreSnapshot, (double)score);
-                    startSweep(mAfMode);
-                }
-            } else {
-                mSceneChangeCount = 0;
-            }
+        /* Continuous-AF watches scene statistics for movement /
+         * composition change. The snapshot-on-detect + count-while-
+         * stable pattern is the natural motion gate: when the user
+         * pans, every frame trips the ratio test, the snapshot is
+         * replaced, and the counter resets to 1 — so the controller
+         * never fires while panning is in progress. Once the camera
+         * holds still, the ratio test starts passing, the counter
+         * ticks up, and a fresh sweep launches once stability has
+         * persisted for `mRetriggerDelay` frames. */
+        if (mAfMode != ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            return;
+
+        float curRgb[3];
+        sumCentreRgb(stats.rgbMean, curRgb);
+
+        /* First idle frame after a sweep — capture snapshot and
+         * skip change detection. mSceneSharpnessSnapshot==0 is the
+         * sentinel commitSweep / reset / ctor leave behind. */
+        if (mSceneSharpnessSnapshot <= 0.f) {
+            mSceneSharpnessSnapshot = score;
+            mSceneRgbSnapshot[0]    = curRgb[0];
+            mSceneRgbSnapshot[1]    = curRgb[1];
+            mSceneRgbSnapshot[2]    = curRgb[2];
+            mSceneChangeCount       = 0;
+            return;
+        }
+
+        const bool changed =
+            outsideRatio(score,    mSceneSharpnessSnapshot, mRetriggerRatio) ||
+            outsideRatio(curRgb[0], mSceneRgbSnapshot[0],    mRetriggerRatio) ||
+            outsideRatio(curRgb[1], mSceneRgbSnapshot[1],    mRetriggerRatio) ||
+            outsideRatio(curRgb[2], mSceneRgbSnapshot[2],    mRetriggerRatio);
+
+        if (changed) {
+            /* Refresh the snapshot to *current* values and (re)start
+             * the countdown. Refresh is what gives the panning gate
+             * its property — the snapshot moves with the scene, so a
+             * sustained pan keeps tripping ratio and the counter
+             * never advances past 1. */
+            mSceneSharpnessSnapshot = score;
+            mSceneRgbSnapshot[0]    = curRgb[0];
+            mSceneRgbSnapshot[1]    = curRgb[1];
+            mSceneRgbSnapshot[2]    = curRgb[2];
+            mSceneChangeCount       = 1;
+        } else if (mSceneChangeCount > 0) {
+            mSceneChangeCount++;
+        }
+
+        if (mSceneChangeCount >= mRetriggerDelay) {
+            ALOGD("AF: scene stabilised after change, starting sweep "
+                  "(snap_sh=%.0f cur_sh=%.0f)",
+                  (double)mSceneSharpnessSnapshot, (double)score);
+            startSweep(mAfMode);
         }
         return;
     }
 
-    /* After a VCM move, give the lens a couple of frames to settle
-     * before reading the score. */
+    /* After a VCM move, give the lens a few frames to settle before
+     * reading the score. settleFrames was set by the previous step
+     * based on its move magnitude. */
     if (mSettleFrames > 0) {
         mSettleFrames--;
         return;
@@ -470,7 +548,6 @@ void AutoFocusController::onSharpnessStats(
     }
 
     mDev->setFocusPosition(mSweepPos);
-    mSettleFrames = mVcmSettleFrames;
 }
 
 void AutoFocusController::reset() {
@@ -486,7 +563,10 @@ void AutoFocusController::reset() {
     mLastSeen           = {0, 0.f};
     mFineSampleCount    = 0;
     mCoarseReversed     = false;
-    mSceneScoreSnapshot = 0.f;
+    mSceneSharpnessSnapshot = 0.f;
+    mSceneRgbSnapshot[0]    = 0.f;
+    mSceneRgbSnapshot[1]    = 0.f;
+    mSceneRgbSnapshot[2]    = 0.f;
     mSceneChangeCount   = 0;
     /* mFocusPosition kept — it reflects the physical VCM state,
      * not session state. */

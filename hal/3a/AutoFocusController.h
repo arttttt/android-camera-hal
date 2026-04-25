@@ -60,12 +60,15 @@ public:
      * Called right after V4L2 dequeue, before CPU/GPU processing. */
     void onFrameStart();
 
-    /* Advance the sweep against the per-patch sharpness grid for the
-     * current frame, or evaluate scene-change in continuous-AF idle.
+    /* Advance the sweep against the IPA stats grid for the current
+     * frame, or evaluate scene-change in continuous-AF idle. Reads
+     * both `sharpness` (Tenengrad) and `rgbMean` over the centre
+     * 8x8 patches — the latter feeds the multi-channel scene-change
+     * gate so the AWB / movement of the camera stops triggering
+     * focus retriggers as soon as the sharpness signal alone wobbles.
      * Caller hands over the same stats buffer the IPA has already
      * finished with. */
-    void onSharpnessStats(
-        const float sharpness[IpaStats::PATCH_Y][IpaStats::PATCH_X]);
+    void onStats(const IpaStats &stats);
 
     Report report() const;
     bool   isSweeping() const { return mState != ScanState::Idle; }
@@ -104,6 +107,7 @@ private:
     void   recordFineSample(int32_t pos, float score);
     int32_t parabolicPeak(const ScanSample s[3], int n) const;
     bool   nearLimit(int32_t pos, int32_t limit) const;
+    void   setSettleForMove(int32_t fromPos, int32_t toPos);
 
     V4l2Device  *mDev;
     IspPipeline *mIsp;
@@ -114,7 +118,6 @@ private:
     int32_t  mVcmMacroStart;
     int32_t  mVcmMacroEnd;
     int32_t  mVcmAutoEnd;
-    int32_t  mVcmSettleFrames;
 
     /* HAL-side tunables resolved from SensorTuning::AfParams. */
     int32_t  mStepCoarse;
@@ -123,6 +126,8 @@ private:
     float    mRetriggerRatio;
     int32_t  mRetriggerDelay;
     bool     mPdafEnabled;
+    int32_t  mSettleFramesCoarse;
+    int32_t  mSettleFramesFine;
 
     uint8_t  mAfMode;
     int32_t  mFocusPosition;
@@ -153,10 +158,25 @@ private:
     int        mFineSampleCount;
     bool       mCoarseReversed;
 
-    /* Continuous-AF scene-change tracking: snapshot of the per-frame
-     * score we converged to, plus a frame counter that has to reach
-     * `mRetriggerDelay` before a fresh sweep is launched. */
-    float     mSceneScoreSnapshot;
+    /* Continuous-AF scene-change tracking. Snapshot is multi-channel
+     * — sharpness plus per-channel RGB mean over the centre patches —
+     * because sharpness alone is a poor signal for scene movement
+     * (focus drift moves it without the scene actually changing).
+     *
+     * The counter semantics follow RPi libcamera: when any channel
+     * deviates from the snapshot beyond `retriggerRatio`, the
+     * snapshot is *replaced with the current values* and the counter
+     * resets to 1. While the scene is stable the counter ticks up;
+     * a sweep fires once it reaches `retriggerDelay`. The
+     * snapshot-on-detect refresh is the motion gate: panning the
+     * camera keeps replacing the snapshot every frame, so the
+     * counter never tops out and the controller stays idle until
+     * the user holds the camera still long enough for the
+     * retrigger-delay to elapse. The counter increments only after
+     * the first detect, so on a fully stable boot we don't sweep
+     * spuriously. */
+    float     mSceneSharpnessSnapshot;
+    float     mSceneRgbSnapshot[3];
     int32_t   mSceneChangeCount;
 };
 

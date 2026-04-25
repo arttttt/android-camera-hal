@@ -31,7 +31,9 @@
       "contrast_ratio": 0.75,
       "retrigger_ratio": 0.75,
       "retrigger_delay_frames": 10,
-      "pdaf_enabled": false
+      "pdaf_enabled": false,
+      "settle_frames_coarse": 2,
+      "settle_frames_fine": 1
     },
     "mwbCCT": {
       "cloudy": 7000,

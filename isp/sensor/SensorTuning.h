@@ -57,6 +57,20 @@ public:
          * future-work slot. Setting `pdafEnabled=true` without
          * matching kernel + sensor support is a no-op + warning. */
         bool  pdafEnabled;
+
+        /* Per-step VCM settle waits, in frames. The lens isn't a
+         * closed-loop motor — V4L2 just relays the position command
+         * and the driver has no feedback on when the lens actually
+         * arrives. So we wait by frame count instead, with separate
+         * values for coarse and fine steps because a 25-unit jump
+         * needs noticeably longer to physically settle than a
+         * 5-unit nudge. NVIDIA's tuning ships only `settle_time` in
+         * milliseconds (which always rounds to one frame at 30 fps)
+         * and doesn't distinguish step magnitudes; these knobs are
+         * HAL-side additions defaulted to working values when the
+         * JSON omits them. */
+        int settleFramesCoarse;
+        int settleFramesFine;
     };
 
     struct CcmSet {

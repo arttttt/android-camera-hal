@@ -49,11 +49,11 @@ void StatsProcessStage::process(PipelineContext &ctx) {
      * today's frame, not to the frame the stats came from. */
     DelayedControls::Batch batch = deps.ipa->processStats(statsSeq, stats, meta);
 
-    /* Feed the same per-patch sharpness grid into AF. The state
-     * machine no-ops outside an active sweep, so the unconditional
-     * call is the cheapest way to keep AF and IPA on the same hot
-     * stats path without per-stage gating. */
-    if (deps.af) deps.af->onSharpnessStats(stats.sharpness);
+    /* Feed the IPA stats grid into AF. The state machine no-ops
+     * outside an active sweep, so the unconditional call is the
+     * cheapest way to keep AF and IPA on the same hot stats path
+     * without per-stage gating. */
+    if (deps.af) deps.af->onStats(stats);
 
     /* Publish each set control at seq + its own silicon delay.
      * DelayedControls::push tags the whole batch with one sequence,
