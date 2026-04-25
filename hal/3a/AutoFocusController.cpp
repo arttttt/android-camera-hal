@@ -170,13 +170,6 @@ void AutoFocusController::beginCoarseFromCurrent() {
 
 void AutoFocusController::startSweep(uint8_t afMode) {
     mIsp->setAwbLock(true);
-    /* Lock AE for the duration of the sweep — without it, the IPA's
-     * exposure / gain controller crawls toward its setpoint while
-     * the lens is moving and the resulting brightness drift
-     * skews the sharpness scores Coarse → Fine → Settle compare
-     * against each other. The lock releases on commitSweep /
-     * cancelSweep / reset. */
-    mIsp->setAeLock(true);
     mSettleFrames      = 0;
     mSweepBestScore    = 0.f;
     mCoarseSampleCount = 0;
@@ -206,7 +199,6 @@ void AutoFocusController::startSweep(uint8_t afMode) {
 void AutoFocusController::cancelSweep() {
     if (mState == ScanState::Idle) return;
     mIsp->setAwbLock(false);
-    mIsp->setAeLock(false);
     mState = ScanState::Idle;
 }
 
@@ -365,7 +357,6 @@ void AutoFocusController::commitSweep(bool focused) {
     mDev->setFocusPosition(finalPos);
     mFocusPosition = finalPos;
     mIsp->setAwbLock(false);
-    mIsp->setAeLock(false);
     mSceneScoreSnapshot = mSweepBestScore;
     mSceneChangeCount   = 0;
     mState = ScanState::Idle;
@@ -483,10 +474,7 @@ void AutoFocusController::onSharpnessStats(
 }
 
 void AutoFocusController::reset() {
-    if (mState != ScanState::Idle) {
-        mIsp->setAwbLock(false);
-        mIsp->setAeLock(false);
-    }
+    if (mState != ScanState::Idle) mIsp->setAwbLock(false);
     mState              = ScanState::Idle;
     mAfMode             = ANDROID_CONTROL_AF_MODE_OFF;
     mSweepPos           = 0;
