@@ -26,11 +26,6 @@ struct IpaStats {
      * the shader's tree reduction (not here). */
     float rgbMean[PATCH_Y][PATCH_X][3];
 
-    /* Per-patch Tenengrad sharpness: sum over the patch of
-     * (Gx^2 + Gy^2) with 3x3 Sobel on luma. Peak-detect in the AF
-     * loop; values are not normalized to pixel count. */
-    float sharpness[PATCH_Y][PATCH_X];
-
     /* Per-patch focus metric, normalised against per-pixel signal
      * energy: `Σ(Gx² + Gy²) / Σ I²` over the green sub-lattice.
      * Both numerator and denominator scale as brightness², so the
@@ -38,8 +33,7 @@ struct IpaStats {
      * runs while AE is still adjusting still produces a comparable
      * score curve. Magnitude is dimensionless, typically ranging
      * from ~0.001 (out-of-focus or texture-less) to ~50 (sharp,
-     * high-frequency detail). The CDAF loop reads this in
-     * preference to `sharpness` when picking peaks. */
+     * high-frequency detail). Sole AF input. */
     float focusMetric[PATCH_Y][PATCH_X];
 };
 

@@ -322,18 +322,14 @@ void NeonStatsEncoder::finalize(const Partial &partial,
                                       : 0ull;
                 out->rgbMean[py][px][c] = (float)adj / (float)n * invMax;
             }
-            /* Cast u64 → float for the published IpaStats. Per-patch
-             * sum peaks around 1.3e11 on extreme high-frequency scenes,
-             * well inside float exponent range; relative precision is
-             * ~5 decimal digits at that magnitude — fine for AF peak
-             * detection, which only compares patches against each
-             * other. */
-            out->sharpness[py][px] = (float)partial.sharpSum[py][px];
-
             /* Exposure-invariant focus score: gradient² / pixel². The
              * 1.0f floor protects against the all-black patch where
              * greenSqSum is zero — we want a small finite score there,
-             * not a divide-by-zero. */
+             * not a divide-by-zero. Per-patch sharpSum peaks around
+             * 1.3e11 on extreme high-frequency scenes, well inside
+             * float exponent range; ~5 decimal digits of relative
+             * precision is fine for AF peak detection, which only
+             * compares patches against each other. */
             const uint64_t denomSq = partial.greenSqSum[py][px];
             out->focusMetric[py][px] = (float)partial.sharpSum[py][px]
                                      / (float)(denomSq > 0ull ? denomSq : 1ull);
