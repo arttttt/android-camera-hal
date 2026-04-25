@@ -114,10 +114,10 @@ AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
     , mSettleFrames(0)
     , mCoarsePhaseStart(0)
     , mFinePhaseStart(0)
-    , mCoarseReversed(false)
-    , mSceneFocusSnapshot(0.f)
+    , mCoarseReversed(false)    , mSceneFocusSnapshot(0.f)
     , mSceneRgbSnapshot{0.f, 0.f, 0.f}
     , mSceneChangeCount(0)
+    , mFramesSinceLastSweep(UINT32_MAX)
 {
     if (tuning && tuning->isLoaded() && tuning->hasAf()) {
         const SensorTuning::AfParams &af = tuning->af();
@@ -170,24 +170,41 @@ bool AutoFocusController::nearLimit(int32_t pos, int32_t limit) const {
     return diff <= 2 * mStepCoarse;
 }
 
-void AutoFocusController::beginCoarseFromCurrent() {
-    /* Decide where to start the sweep. RPi pattern: anchor at the
-     * current lens position when there's room on both sides; clamp
-     * to the nearer limit otherwise. */
-    if (nearLimit(mFocusPosition, mVcmInfinity)) {
-        mSweepPos  = mVcmInfinity;
-        mSweepStep = mStepCoarse;
-        mState     = ScanState::Coarse2;       /* forward only */
-        mCoarseReversed = true;                 /* no reversal allowed */
+void AutoFocusController::beginCoarseFromCurrent(uint8_t afMode) {
+    /* AUTO (and any non-continuous mode) always sweeps the full
+     * range from focusMin forward — no bidirectional logic, no
+     * Coarse1 → reverse → Coarse2 dance. The user explicitly tapped
+     * to focus, so we pay ~25-30 frames of latency in exchange for
+     * never picking the wrong direction. RPi libcamera ships the
+     * same `mode_ != AfModeContinuous → start at focusMin` clause.
+     *
+     * CONTINUOUS_PICTURE keeps the bidirectional logic: scene-change
+     * retriggers fire often enough that a full-range scan every
+     * time would be visibly disruptive, and the directional probe
+     * + reversal-on-failure handles the typical small-correction
+     * case quickly. */
+    const bool continuous =
+        afMode == ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE;
+
+    if (!continuous) {
+        mSweepPos       = mVcmInfinity;
+        mSweepStep      = mStepCoarse;
+        mState          = ScanState::Coarse2;
+        mCoarseReversed = true;
+    } else if (nearLimit(mFocusPosition, mVcmInfinity)) {
+        mSweepPos       = mVcmInfinity;
+        mSweepStep      = mStepCoarse;
+        mState          = ScanState::Coarse2;
+        mCoarseReversed = true;
     } else if (nearLimit(mFocusPosition, mVcmAutoEnd)) {
-        mSweepPos  = mVcmAutoEnd;
-        mSweepStep = -mStepCoarse;
-        mState     = ScanState::Coarse2;       /* backward only */
+        mSweepPos       = mVcmAutoEnd;
+        mSweepStep      = -mStepCoarse;
+        mState          = ScanState::Coarse2;
         mCoarseReversed = true;
     } else {
-        mSweepPos  = mFocusPosition;
-        mSweepStep = -mStepCoarse;             /* probe toward infinity */
-        mState     = ScanState::Coarse1;
+        mSweepPos       = mFocusPosition;
+        mSweepStep      = -mStepCoarse;
+        mState          = ScanState::Coarse1;
         mCoarseReversed = false;
     }
     mSweepPos = clampVcm(mSweepPos);
@@ -223,7 +240,7 @@ void AutoFocusController::startSweep(uint8_t afMode) {
         mCoarseReversed = true;
         mSweepBestPos   = mSweepPos;
     } else {
-        beginCoarseFromCurrent();
+        beginCoarseFromCurrent(afMode);
         mSweepBestPos   = mSweepPos;
     }
 
@@ -437,6 +454,7 @@ void AutoFocusController::commitSweep(bool focused) {
     mSceneRgbSnapshot[1]    = 0.f;
     mSceneRgbSnapshot[2]    = 0.f;
     mSceneChangeCount   = 0;
+    mFramesSinceLastSweep = 0;
     mState = ScanState::Idle;
 
     ALOGD("AF done: pos=%d (best=%d) score=%.0f result=%s",
@@ -487,6 +505,8 @@ void AutoFocusController::onStats(const IpaStats &stats) {
     const float score = sumCentreFocus(stats.focusMetric);
 
     if (mState == ScanState::Idle) {
+        if (mFramesSinceLastSweep < UINT32_MAX) mFramesSinceLastSweep++;
+
         /* Continuous-AF watches scene statistics for movement /
          * composition change. The snapshot-on-detect + count-while-
          * stable pattern is the natural motion gate: when the user
@@ -535,6 +555,16 @@ void AutoFocusController::onStats(const IpaStats &stats) {
             mSceneChangeCount++;
         }
 
+        /* Nuisance-scan rate limit. Even if the scene-change gate
+         * fires legitimately, refuse to start another sweep within
+         * `kMinFramesBetweenSweeps` of the last commit — keeps a
+         * jittery scene from chain-triggering sweep-after-sweep
+         * while AE / AWB keep readjusting and the controller never
+         * lands on a stable focus. ~1 second at 30 fps. */
+        constexpr uint32_t kMinFramesBetweenSweeps = 30u;
+        const bool sweepCooldownDone =
+            mFramesSinceLastSweep >= kMinFramesBetweenSweeps;
+
         /* Hold the retrigger off until AE has actually converged
          * on the new scene. Without this gate the AF re-fires while
          * the AE controller is still chasing — both stats inputs
@@ -545,7 +575,8 @@ void AutoFocusController::onStats(const IpaStats &stats) {
          * AE settles the scan launches immediately rather than
          * having to wait `retriggerDelay` again. */
         const bool aeReady = !mIpa || mIpa->isAeConverged();
-        if (mSceneChangeCount >= mRetriggerDelay && aeReady) {
+        if (mSceneChangeCount >= mRetriggerDelay && aeReady &&
+            sweepCooldownDone) {
             ALOGD("AF: scene stabilised after change, starting sweep "
                   "(snap_sh=%.0f cur_sh=%.0f)",
                   (double)mSceneFocusSnapshot, (double)score);
@@ -639,6 +670,7 @@ void AutoFocusController::reset() {
     mSceneRgbSnapshot[1]    = 0.f;
     mSceneRgbSnapshot[2]    = 0.f;
     mSceneChangeCount   = 0;
+    mFramesSinceLastSweep = UINT32_MAX;
     /* mFocusPosition kept — it reflects the physical VCM state,
      * not session state. */
 }

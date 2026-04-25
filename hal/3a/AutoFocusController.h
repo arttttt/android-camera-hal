@@ -110,7 +110,13 @@ private:
 
     void   startSweep(uint8_t afMode);
     void   cancelSweep();
-    void   beginCoarseFromCurrent();
+    /* AUTO / MACRO start a single-pass forward Coarse2 scan from
+     * focusMin every time — full range, no direction-selection
+     * mistakes possible. CONTINUOUS_PICTURE keeps the bidirectional
+     * logic (Coarse1 from current with Coarse2 reversal as fallback)
+     * because the cost of a full sweep on every retrigger would be
+     * visually disruptive. RPi libcamera makes the same split. */
+    void   beginCoarseFromCurrent(uint8_t afMode);
     void   advanceCoarse(float score);
     void   advanceFine(float score);
     void   commitSweep(bool focused);
@@ -200,6 +206,13 @@ private:
     float     mSceneFocusSnapshot;
     float     mSceneRgbSnapshot[3];
     int32_t   mSceneChangeCount;
+    /* Frames since the last sweep committed. Used as a nuisance-
+     * scan rate limiter — even if the scene-change gate fires
+     * legitimately, we don't run another sweep within
+     * `kMinFramesBetweenSweeps` of the previous one. Stops the
+     * controller from cycle-locking on a moving / jittering scene
+     * where each retrigger triggers the next. */
+    uint32_t  mFramesSinceLastSweep;
 };
 
 }; /* namespace android */
