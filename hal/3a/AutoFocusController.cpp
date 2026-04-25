@@ -563,12 +563,39 @@ void AutoFocusController::onStats(const IpaStats &stats) {
             advanceFine(score);
             break;
         case ScanState::Settle: {
-            /* The Settle frame measures sharpness at the committed
-             * peak position. If it holds the contrastRatio threshold
-             * relative to the running best, declare focus achieved;
-             * otherwise the curve was too flat / too noisy to trust. */
-            const bool focused =
-                score >= mContrastRatio * mSweepBestScore;
+            /* Two-condition focus gate (RPi libcamera pattern):
+             *
+             *   1. `score >= ratio × max`  — the Settle re-measure
+             *      at the committed lens position still holds the
+             *      peak the scan saw. Catches "the lens jumped
+             *      somewhere noisy at the very end."
+             *
+             *   2. `min <= ratio × max`    — the scan actually
+             *      *bracketed* a peak: at some point the score
+             *      dipped at least `ratio` below the discrete max.
+             *      Catches the flat-curve case where every sample
+             *      is within a few percent of every other and
+             *      "the highest one" is just sensor noise winning
+             *      a coin flip. Without this gate the controller
+             *      reports Focused on a curve that has no real
+             *      peak — which is exactly the textureless / dark
+             *      / occluded scene the algorithm should be
+             *      humble about. */
+            float scanMin = mSweepBestScore;
+            for (const ScanSample &s : mScanData) {
+                if (s.score < scanMin) scanMin = s.score;
+            }
+            const bool peakHolds =
+                score    >= mContrastRatio * mSweepBestScore;
+            const bool bracketed =
+                scanMin  <= mContrastRatio * mSweepBestScore;
+            const bool focused = peakHolds && bracketed;
+            ALOGD("AF settle: score=%.0f best=%.0f min=%.0f "
+                  "peakHolds=%d bracketed=%d → %s",
+                  (double)score, (double)mSweepBestScore,
+                  (double)scanMin,
+                  peakHolds ? 1 : 0, bracketed ? 1 : 0,
+                  focused ? "Focused" : "Failed");
             commitSweep(focused);
             return;
         }
