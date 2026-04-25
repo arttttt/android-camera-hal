@@ -40,8 +40,17 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mNextSlot(0)
     , mGrallocCache(mDeviceState)
     , mYuvEncoder(mDeviceState)
+    , mJpegRingW(0)
+    , mJpegRingH(0)
     , mTimeQuery(VK_NULL_HANDLE)
 {
+    for (size_t s = 0; s < SLOT_COUNT; s++) {
+        mJpegRing[s].buf    = VK_NULL_HANDLE;
+        mJpegRing[s].mem    = VK_NULL_HANDLE;
+        mJpegRing[s].mapped = NULL;
+        mJpegRing[s].size   = 0;
+        mJpegRing[s].inUse  = false;
+    }
     for (size_t s = 0; s < SLOT_COUNT; s++) {
         mDescSet[s]     = VK_NULL_HANDLE;
         mCmdBuf[s]      = VK_NULL_HANDLE;
@@ -208,14 +217,15 @@ void VulkanIspPipeline::recordDemosaicOpen(int slot, unsigned srcW, unsigned src
                                                mPipeLayout, 0, 1, &mDescSet[slot], 0, NULL);
     mDeviceState.pfn()->CmdDispatch(cb, (srcW + 15) / 16, (srcH + 15) / 16, 1);
 
-    /* scratch SHADER_WRITE → SHADER_READ — covers both fragment-stage
-     * blits to gralloc and compute-stage YUV encode that follow. */
+    /* scratch SHADER_WRITE → SHADER_READ + TRANSFER_READ — covers
+     * fragment-stage blits to gralloc, compute-stage YUV encode, and
+     * the transfer-stage CopyImageToBuffer used by blitToJpegCpu. */
     VkImageMemoryBarrier scratchB = {};
     scratchB.sType                       = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     scratchB.oldLayout                   = VK_IMAGE_LAYOUT_GENERAL;
     scratchB.newLayout                   = VK_IMAGE_LAYOUT_GENERAL;
     scratchB.srcAccessMask               = VK_ACCESS_SHADER_WRITE_BIT;
-    scratchB.dstAccessMask               = VK_ACCESS_SHADER_READ_BIT;
+    scratchB.dstAccessMask               = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
     scratchB.srcQueueFamilyIndex         = VK_QUEUE_FAMILY_IGNORED;
     scratchB.dstQueueFamilyIndex         = VK_QUEUE_FAMILY_IGNORED;
     scratchB.image                       = mScratchImg;
@@ -224,7 +234,8 @@ void VulkanIspPipeline::recordDemosaicOpen(int slot, unsigned srcW, unsigned src
     scratchB.subresourceRange.layerCount = 1;
     mDeviceState.pfn()->CmdPipelineBarrier(cb,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+            | VK_PIPELINE_STAGE_TRANSFER_BIT,
         0, 0, NULL, 0, NULL, 1, &scratchB);
 }
 
@@ -514,6 +525,120 @@ bool VulkanIspPipeline::endFrame(int *submitFenceOut) {
 
     mRec.reset();
     return true;
+}
+
+/* --- JPEG snapshot ring --- */
+
+bool VulkanIspPipeline::ensureJpegRing(unsigned w, unsigned h) {
+    if (w == mJpegRingW && h == mJpegRingH && mJpegRing[0].buf != VK_NULL_HANDLE)
+        return true;
+    /* Resize: drop existing buffers (none of them should be inUse if the
+     * caller is between frames, which it is at beginFrame time). */
+    releaseJpegRing();
+
+    const size_t sz = (size_t)w * h * 4;
+    for (size_t s = 0; s < SLOT_COUNT; s++) {
+        if (!mDeviceState.createBuffer(&mJpegRing[s].buf, &mJpegRing[s].mem,
+                                        sz,
+                                        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                        false)) {
+            ALOGE("ensureJpegRing: createBuffer failed at slot %zu", s);
+            releaseJpegRing();
+            return false;
+        }
+        if (mDeviceState.pfn()->MapMemory(mDeviceState.device(),
+                                           mJpegRing[s].mem, 0, sz, 0,
+                                           &mJpegRing[s].mapped) != VK_SUCCESS) {
+            ALOGE("ensureJpegRing: MapMemory failed at slot %zu", s);
+            releaseJpegRing();
+            return false;
+        }
+        mJpegRing[s].size  = sz;
+        mJpegRing[s].inUse = false;
+    }
+    mJpegRingW = w;
+    mJpegRingH = h;
+    return true;
+}
+
+void VulkanIspPipeline::releaseJpegRing() {
+    for (size_t s = 0; s < SLOT_COUNT; s++) {
+        if (mJpegRing[s].mapped) {
+            mDeviceState.pfn()->UnmapMemory(mDeviceState.device(), mJpegRing[s].mem);
+            mJpegRing[s].mapped = NULL;
+        }
+        mDeviceState.destroyBuffer(mJpegRing[s].buf, mJpegRing[s].mem);
+        mJpegRing[s].buf   = VK_NULL_HANDLE;
+        mJpegRing[s].mem   = VK_NULL_HANDLE;
+        mJpegRing[s].size  = 0;
+        mJpegRing[s].inUse = false;
+    }
+    mJpegRingW = 0;
+    mJpegRingH = 0;
+}
+
+bool VulkanIspPipeline::blitToJpegCpu(JpegSnapshot *out) {
+    if (out) {
+        out->rgba     = nullptr;
+        out->width    = 0;
+        out->height   = 0;
+        out->size     = 0;
+        out->ringSlot = -1;
+    }
+    if (!mRec.active) {
+        ALOGE("blitToJpegCpu called outside of an active beginFrame");
+        return false;
+    }
+    if (!ensureJpegRing(mRec.srcW, mRec.srcH))
+        return false;
+
+    int slot = -1;
+    for (size_t s = 0; s < SLOT_COUNT; s++) {
+        if (!mJpegRing[s].inUse) {
+            slot = (int)s;
+            break;
+        }
+    }
+    if (slot < 0) {
+        ALOGE("blitToJpegCpu: ring exhausted (all %zu slots inUse)", SLOT_COUNT);
+        return false;
+    }
+
+    VkBufferImageCopy region = {};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent.width           = mRec.srcW;
+    region.imageExtent.height          = mRec.srcH;
+    region.imageExtent.depth           = 1;
+    mDeviceState.pfn()->CmdCopyImageToBuffer(mCmdBuf[mRec.slot],
+        mScratchImg, VK_IMAGE_LAYOUT_GENERAL,
+        mJpegRing[slot].buf, 1, &region);
+
+    mJpegRing[slot].inUse = true;
+    if (out) {
+        out->rgba     = (const uint8_t *)mJpegRing[slot].mapped;
+        out->width    = mRec.srcW;
+        out->height   = mRec.srcH;
+        out->size     = mJpegRing[slot].size;
+        out->ringSlot = slot;
+    }
+    return true;
+}
+
+void VulkanIspPipeline::invalidateJpegSnapshot(const JpegSnapshot &snap) {
+    if (snap.ringSlot < 0 || snap.ringSlot >= (int)SLOT_COUNT)
+        return;
+    VkMappedMemoryRange r = {};
+    r.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    r.memory = mJpegRing[snap.ringSlot].mem;
+    r.size   = VK_WHOLE_SIZE;
+    mDeviceState.pfn()->InvalidateMappedMemoryRanges(mDeviceState.device(), 1, &r);
+}
+
+void VulkanIspPipeline::releaseJpegSnapshot(const JpegSnapshot &snap) {
+    if (snap.ringSlot < 0 || snap.ringSlot >= (int)SLOT_COUNT)
+        return;
+    mJpegRing[snap.ringSlot].inUse = false;
 }
 
 /* --- init / destroy --- */
@@ -929,6 +1054,8 @@ void VulkanIspPipeline::releaseScratchResources() {
         mDeviceState.pfn()->FreeMemory(mDeviceState.device(), mScratchMem, NULL);
         mScratchMem = VK_NULL_HANDLE;
     }
+    /* JPEG ring is sized to the scratch dimensions; rebuild on resize. */
+    releaseJpegRing();
 }
 
 bool VulkanIspPipeline::createOutBuffer(size_t size) {
@@ -1176,6 +1303,7 @@ void VulkanIspPipeline::destroy() {
         mGrallocCache.clear();
         mYuvEncoder.destroy();
         mInputRing.destroy();
+        releaseJpegRing();
 
         if (mTimeQuery) {
             mDeviceState.pfn()->DestroyQueryPool(mDeviceState.device(), mTimeQuery, NULL);

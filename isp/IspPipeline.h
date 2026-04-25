@@ -5,6 +5,7 @@
 #include <stddef.h>
 
 #include "CropRect.h"
+#include "JpegSnapshot.h"
 
 namespace android {
 
@@ -93,6 +94,34 @@ public:
         *releaseFenceOut = -1;
         return false;
     }
+
+    /* Record a vkCmdCopyImageToBuffer of the scratch image into a backend-
+     * owned host-mapped RGBA8 buffer, picked from a small ring so multiple
+     * BLOB requests can be in flight without overwriting each other.
+     * On success populates *out with the buffer's CPU pointer + dimensions
+     * + an opaque ringSlot handle. The pointer is valid for CPU read after
+     * endFrame's submit fence has signalled and invalidateJpegSnapshot has
+     * been called. Caller must invoke releaseJpegSnapshot once the data
+     * is no longer needed so the ring slot rotates back. */
+    virtual bool blitToJpegCpu(JpegSnapshot *out) {
+        if (out) {
+            out->rgba     = nullptr;
+            out->width    = 0;
+            out->height   = 0;
+            out->size     = 0;
+            out->ringSlot = -1;
+        }
+        return false;
+    }
+
+    /* Invalidate the CPU cache for the snapshot's buffer so a host read
+     * after the GPU write sees coherent data. Called by the consumer
+     * right before libjpeg reads. */
+    virtual void invalidateJpegSnapshot(const JpegSnapshot &snap) { (void)snap; }
+
+    /* Mark the snapshot's ring slot free for reuse by future blitToJpegCpu
+     * calls. Must be called exactly once per successful blitToJpegCpu. */
+    virtual void releaseJpegSnapshot(const JpegSnapshot &snap) { (void)snap; }
 
     /* Host-mapped NV12 buffer the most recent blitToYuv encoded into. Valid
      * only after endFrame's fence has been reaped and invalidateYuvForCpu()

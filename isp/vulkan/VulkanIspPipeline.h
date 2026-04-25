@@ -44,6 +44,9 @@ public:
                     const CropRect &crop,
                     int acquireFence,
                     int *releaseFenceOut) override;
+    bool blitToJpegCpu(JpegSnapshot *out) override;
+    void invalidateJpegSnapshot(const JpegSnapshot &snap) override;
+    void releaseJpegSnapshot(const JpegSnapshot &snap) override;
     bool endFrame(int *submitFenceOut) override;
 
     const uint8_t *yuvHostBuffer() const override { return mYuvEncoder.mappedBuffer(); }
@@ -196,6 +199,23 @@ private:
      * semaphores have already been consumed by the submit and are safe to
      * release. */
     std::vector<VkSemaphore> mSlotAcquireSemaphores[SLOT_COUNT];
+
+    /* Ring of host-mapped RGBA8 buffers for blitToJpegCpu. Sized to the
+     * current scratch dimensions; reallocated when ensureBuffers resizes
+     * the scratch. JpegWorker holds a snapshot for the duration of one
+     * libjpeg encode; blitToJpegCpu picks the first inUse=false slot. */
+    struct JpegRingEntry {
+        VkBuffer       buf;
+        VkDeviceMemory mem;
+        void          *mapped;
+        size_t         size;
+        bool           inUse;
+    };
+    JpegRingEntry mJpegRing[SLOT_COUNT];
+    unsigned      mJpegRingW, mJpegRingH;
+
+    bool ensureJpegRing(unsigned w, unsigned h);
+    void releaseJpegRing();
 
     /* Per-frame produce-once recording state. Active between beginFrame
      * and endFrame; reset on either path's failure. */
