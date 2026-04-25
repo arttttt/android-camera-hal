@@ -120,8 +120,6 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
             af.get("settle_frames_coarse", 2).asInt();
         mAf.settleFramesFine =
             af.get("settle_frames_fine", 1).asInt();
-        mAf.minFocusSignal =
-            af.get("min_focus_signal", 50.f).asFloat();
         mHasAf = true;
     }
 

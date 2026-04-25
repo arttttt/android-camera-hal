@@ -71,21 +71,6 @@ public:
          * JSON omits them. */
         int settleFramesCoarse;
         int settleFramesFine;
-
-        /* Floor on the focus-metric ROI sum below which the scene
-         * is treated as having no usable focus signal. Textureless
-         * walls / very dim scenes / occluded subjects all produce
-         * focus scores dominated by sensor noise rather than image
-         * content; running a sweep on that data wastes lens motion
-         * and parks somewhere noise-driven. The continuous-AF
-         * retrigger gate refuses to fire when the current frame is
-         * below this floor, and an in-sweep abort cuts Coarse short
-         * when the dynamic range across samples stays under
-         * `0.5 × minFocusSignal`. Tap-to-focus ignores the floor —
-         * the user explicitly asked for a sweep and gets one.
-         * Calibrated per sensor in JSON; default chosen against the
-         * IMX179 noise floor on raw 10-bit Bayer. */
-        float minFocusSignal;
     };
 
     struct CcmSet {

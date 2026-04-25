@@ -103,10 +103,8 @@ AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
     , mPdafEnabled(false)
     , mSettleFramesCoarse(2)
     , mSettleFramesFine(1)
-    , mMinFocusSignal(50.f)
     , mAfMode(ANDROID_CONTROL_AF_MODE_OFF)
     , mFocusPosition(0)
-    , mPreSweepFocusPosition(0)
     , mState(ScanState::Idle)
     , mSweepPos(0)
     , mSweepStep(0)
@@ -138,7 +136,6 @@ AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
         if (af.retriggerDelay     > 0)   mRetriggerDelay     = af.retriggerDelay;
         if (af.settleFramesCoarse > 0)   mSettleFramesCoarse = af.settleFramesCoarse;
         if (af.settleFramesFine   > 0)   mSettleFramesFine   = af.settleFramesFine;
-        if (af.minFocusSignal     > 0.f) mMinFocusSignal     = af.minFocusSignal;
         mPdafEnabled = af.pdafEnabled;
 
         ALOGD("AF tuning: cal=%d inf=%d macro=%d auto_end=%d "
@@ -172,28 +169,13 @@ bool AutoFocusController::nearLimit(int32_t pos, int32_t limit) const {
     return diff <= 2 * mStepCoarse;
 }
 
-void AutoFocusController::beginCoarseFromCurrent(uint8_t afMode) {
-    /* AUTO (and any non-continuous mode) always sweeps the full
-     * range from focusMin forward — no bidirectional logic, no
-     * Coarse1 → reverse → Coarse2 dance. The user explicitly tapped
-     * to focus, so we pay ~25-30 frames of latency in exchange for
-     * never picking the wrong direction. RPi libcamera ships the
-     * same `mode_ != AfModeContinuous → start at focusMin` clause.
-     *
-     * CONTINUOUS_PICTURE keeps the bidirectional logic: scene-change
-     * retriggers fire often enough that a full-range scan every
-     * time would be visibly disruptive, and the directional probe
-     * + reversal-on-failure handles the typical small-correction
-     * case quickly. */
-    const bool continuous =
-        afMode == ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE;
-
-    if (!continuous) {
-        mSweepPos       = mVcmInfinity;
-        mSweepStep      = mStepCoarse;
-        mState          = ScanState::Coarse2;
-        mCoarseReversed = true;
-    } else if (nearLimit(mFocusPosition, mVcmInfinity)) {
+void AutoFocusController::beginCoarseFromCurrent(uint8_t /*afMode*/) {
+    /* Anchor at the current lens position when there's room on
+     * both sides; clamp to the nearer limit otherwise. Same shape
+     * for AUTO and CONTINUOUS — the focusMin-only AUTO start was
+     * tested and added too much latency on tap-to-focus without
+     * an obvious accuracy win on this hardware. */
+    if (nearLimit(mFocusPosition, mVcmInfinity)) {
         mSweepPos       = mVcmInfinity;
         mSweepStep      = mStepCoarse;
         mState          = ScanState::Coarse2;
@@ -213,10 +195,6 @@ void AutoFocusController::beginCoarseFromCurrent(uint8_t afMode) {
 }
 
 void AutoFocusController::startSweep(uint8_t afMode) {
-    /* Snapshot the converged lens position so a Failed sweep can
-     * park the lens here instead of committing the noise argmax
-     * of a flat scan. */
-    mPreSweepFocusPosition = mFocusPosition;
     mIsp->setAwbLock(true);
     /* Hold the converged AE target across the sweep. The score is
      * already exposure-invariant by construction (focusMetric =
@@ -330,8 +308,7 @@ void AutoFocusController::advanceCoarse(float score) {
 
     const bool peakPassed =
         mSweepBestScore > 0.f &&
-        score < mContrastRatio * mSweepBestScore &&
-        (mState == ScanState::Coarse1 || phaseRising >= 2);
+        score < mContrastRatio * mSweepBestScore;
     const bool atLimit =
         (mSweepStep > 0 && mSweepPos >= mVcmAutoEnd) ||
         (mSweepStep < 0 && mSweepPos <= mVcmInfinity);
@@ -428,21 +405,18 @@ void AutoFocusController::setSettleForMove(int32_t fromPos, int32_t toPos) {
 }
 
 void AutoFocusController::commitSweep(bool focused) {
-    /* On Failed, park back at the position the lens was at before
-     * this sweep started — committing the noise-driven argmax of a
-     * flat scan actively *defocuses* the image relative to whatever
-     * the previous sweep had landed on. On Focused, drive to the
-     * Fine-interpolated peak (mSweepPos at this point — set by
-     * advanceFine to the parabolic vertex). Falls back to
+    /* Drive to the Fine-interpolated peak (mSweepPos at this point —
+     * set by advanceFine to the parabolic vertex). Falls back to
      * mSweepBestPos only if Fine never managed a fit, which happens
-     * when Coarse hit a range limit before bracketing the peak. */
-    int32_t finalPos;
-    if (!focused) {
-        finalPos = mPreSweepFocusPosition;
-    } else {
-        const size_t fineSamples = mScanData.size() - mFinePhaseStart;
-        finalPos = (fineSamples >= 3) ? mSweepPos : mSweepBestPos;
-    }
+     * when Coarse hit a range limit before bracketing the peak.
+     * `focused` flows through to the AfState report only — the lens
+     * commits to the computed peak regardless, so a noisy textureless
+     * scene stays at "wherever the algorithm landed" rather than
+     * jumping back to pre-sweep. */
+    const size_t fineSamples = mScanData.size() - mFinePhaseStart;
+    const int32_t finalPos = (fineSamples >= 3)
+                             ? mSweepPos
+                             : mSweepBestPos;
     mDev->setFocusPosition(finalPos);
     mFocusPosition = finalPos;
     mIsp->setAwbLock(false);
@@ -520,27 +494,6 @@ void AutoFocusController::onStats(const IpaStats &stats) {
          * persisted for `mRetriggerDelay` frames. */
         if (mAfMode != ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE)
             return;
-
-        /* Skip the retrigger only when *both* the live frame and the
-         * last-converged snapshot are below the no-signal floor —
-         * i.e. we've been on a textureless / very dim scene and
-         * nothing about the scene's focus quality has changed. A
-         * legitimately out-of-focus real subject (after the user
-         * moves the camera away from a macro target) drops the
-         * live score below the floor too, but the snapshot from
-         * the previous successful focus is high; that case must
-         * still launch a sweep, otherwise the lens stays parked
-         * on stale macro position while the new subject blurs.
-         *
-         * On the very first idle frame the snapshot is 0 (sentinel
-         * — captured next), so this gate doesn't apply yet.
-         * `mSceneFocusSnapshot > 0.f` keeps us out of the gate
-         * until we have a real comparison point. */
-        if (score < mMinFocusSignal &&
-            mSceneFocusSnapshot > 0.f &&
-            mSceneFocusSnapshot < mMinFocusSignal) {
-            return;
-        }
 
         float curRgb[3];
         sumCentreRgb(stats.rgbMean, curRgb);

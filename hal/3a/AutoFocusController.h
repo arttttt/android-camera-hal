@@ -149,23 +149,9 @@ private:
     bool     mPdafEnabled;
     int32_t  mSettleFramesCoarse;
     int32_t  mSettleFramesFine;
-    /* Below this absolute focus-metric ROI sum the scene has no
-     * usable focus signal — sensor noise dominates the score curve
-     * and any sweep would just commit somewhere noise-driven. The
-     * continuous-AF retrigger refuses to fire when the current
-     * frame is below this; an in-sweep abort cuts Coarse short
-     * when the dynamic range stays under half this floor. Tap-to-
-     * focus bypasses the gate (user explicitly asked). */
-    float    mMinFocusSignal;
 
     uint8_t  mAfMode;
     int32_t  mFocusPosition;
-    /* Lens position before the current sweep launched. Saved at
-     * startSweep so a `Failed` Settle gate can park the lens back
-     * where it was — committing the noise-driven argmax of a flat
-     * scan would actively *defocus* the image relative to whatever
-     * the previous sweep had landed on. */
-    int32_t  mPreSweepFocusPosition;
 
     /* Sweep state — only meaningful when mState != Idle. */
     ScanState mState;
