@@ -3,6 +3,8 @@
 #include <stdint.h>
 
 #include <system/camera_metadata.h>
+#include <utils/Log.h>
+#include <utils/Timers.h>
 
 #include "PipelineContext.h"
 #include "3a/AutoFocusController.h"
@@ -13,6 +15,8 @@
 #include "sensor/DelayedControls.h"
 #include "sensor/SensorConfig.h"
 
+#define LOG_TAG "Cam-StatsProcessStage"
+
 namespace android {
 
 StatsProcessStage::StatsProcessStage(const Deps &d) : deps(d) {}
@@ -21,9 +25,13 @@ void StatsProcessStage::process(PipelineContext &ctx) {
     if (!deps.ipa || !deps.delayedControls || !deps.sensorCfg
         || !deps.statsWorker) return;
 
+    const nsecs_t t0 = systemTime();
+
     IpaStats stats;
     uint32_t statsSeq = 0;
     if (!deps.statsWorker->peek(&stats, &statsSeq)) return;
+
+    const nsecs_t tPeek = systemTime();
 
     /* Carry the framework's per-frame 3A mode / lock flags into the
      * IPA. Missing keys default to "auto" in IpaFrameMeta's ctor,
@@ -49,11 +57,15 @@ void StatsProcessStage::process(PipelineContext &ctx) {
      * today's frame, not to the frame the stats came from. */
     DelayedControls::Batch batch = deps.ipa->processStats(statsSeq, stats, meta);
 
+    const nsecs_t tIpa = systemTime();
+
     /* Feed the IPA stats grid into AF. The state machine no-ops
      * outside an active sweep, so the unconditional call is the
      * cheapest way to keep AF and IPA on the same hot stats path
      * without per-stage gating. */
     if (deps.af) deps.af->onStats(stats);
+
+    const nsecs_t tAf = systemTime();
 
     /* Publish each set control at seq + its own silicon delay.
      * DelayedControls::push tags the whole batch with one sequence,
@@ -73,6 +85,15 @@ void StatsProcessStage::process(PipelineContext &ctx) {
                                    + (uint32_t)deps.sensorCfg->controlDelay[id];
         deps.delayedControls->push(effectSeq, one);
     }
+
+    const nsecs_t tEnd = systemTime();
+    ALOGD("PERF: peek=%lldus ipa=%lldus af=%lldus push=%lldus total=%lldus f=%u",
+          (long long)((tPeek - t0)    / 1000),
+          (long long)((tIpa  - tPeek) / 1000),
+          (long long)((tAf   - tIpa)  / 1000),
+          (long long)((tEnd  - tAf)   / 1000),
+          (long long)((tEnd  - t0)    / 1000),
+          ctx.request.frameNumber);
 }
 
 } /* namespace android */
