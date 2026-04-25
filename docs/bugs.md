@@ -109,6 +109,23 @@ effect on preview brightness.
 
 **Status:** Logged, no fix scheduled. Tier TBD.
 
+## Tap-to-focus ignored — AF_REGIONS not consumed
+
+**Symptom:** Tapping a non-centre region in the camera app does not
+move the AF ROI. The lens still sweeps based on the centre patches
+regardless of where the user tapped.
+
+**Cause:** `AutoFocusController` ignores
+`ANDROID_CONTROL_AF_REGIONS` from request settings. The AF ROI is
+hardcoded to the centre 8×8 patches via `kRoiPatchLo / kRoiPatchHi`
+in `hal/3a/AutoFocusController.cpp`. The default request template
+sets `AF_REGIONS` to the full sensor rectangle and no per-request
+value is read.
+
+**Status:** Logged, no fix scheduled. Tier TBD. When fixed, the
+encoder's spatial Sobel/greenSq ROI also needs to follow the
+dynamic AF region.
+
 ## Open Camera photos come out sideways (app-side, not HAL)
 
 **Symptom:** Photos taken with Open Camera (Mark Harman) come out
