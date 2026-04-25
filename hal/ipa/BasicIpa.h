@@ -126,14 +126,14 @@ private:
      * every processStats entry; a single ALOGD fires per N frames. */
     uint32_t frameCount;
 
-    /* AE-lock state. While `mAeLocked` is true, the controller
+    /* AE-lock state. While `aeLockHeld` is true, the controller
      * skips the proposal step entirely — DelayedControls keeps
      * publishing the last queued exposure / gain pair, the sensor
      * stays at the converged operating point, and on unlock we
      * resume from the same internal state without a discontinuity.
      * AF holds this on across a sweep so the score curve isn't
      * distorted by AE chasing brightness mid-sweep. */
-    bool     mAeLocked;
+    bool     aeLockHeld;
 
     /* Convergence tracker. Increments every frame the dead-band
      * branch keeps AE at setpoint; resets when AE leaves dead-band
@@ -141,7 +141,7 @@ private:
      * the count has held above `kAeConvergedFramesRequired` —
      * enough frames that we can trust the current operating point
      * to be stable rather than just one in-tolerance reading. */
-    int32_t  mAeConvergedFrames;
+    int32_t  aeConvergedFrames;
 };
 
 } /* namespace android */

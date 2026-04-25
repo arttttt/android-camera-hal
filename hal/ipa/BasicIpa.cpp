@@ -167,8 +167,8 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
       smoothedLuma(0.f),
       smoothedAeMult(1.0f),
       frameCount(0),
-      mAeLocked(false),
-      mAeConvergedFrames(0) {
+      aeLockHeld(false),
+      aeConvergedFrames(0) {
     const bool aeOK  = tuning && tuning->aeParams().loaded
                       && aeSetpoint > 0.f && aeDamping > 0.f
                       && aeRatioMin > 0.f && aeRatioMax > 0.f;
@@ -213,8 +213,8 @@ void BasicIpa::reset() {
     lastWbB        = wbBPrior;
     smoothedLuma   = 0.f;
     smoothedAeMult = 1.0f;
-    mAeLocked          = false;
-    mAeConvergedFrames = 0;
+    aeLockHeld          = false;
+    aeConvergedFrames = 0;
 
     /* Re-seed the shader with the priors so the next session starts
      * from the sensor's calibrated daylight anchor even if the first
@@ -391,7 +391,7 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
      * the framework's request-side exposure / gain to the sensor,
      * jumping the image off the converged operating point — which
      * is what an "AE lock" must not do. */
-    if (meta.aeLock == ANDROID_CONTROL_AE_LOCK_ON || mAeLocked) {
+    if (meta.aeLock == ANDROID_CONTROL_AE_LOCK_ON || aeLockHeld) {
         int32_t heldExposureUs, heldExtraGainQ8;
         sensorCfg.splitExposureGain((int32_t)(lastTotalUs + 0.5f),
                                      &heldExposureUs, &heldExtraGainQ8);
@@ -485,13 +485,13 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
             /* Each in-tolerance frame counts toward the convergence
              * report — once the count crosses the threshold,
              * isAeConverged() flips true. */
-            if (mAeConvergedFrames < INT32_MAX) mAeConvergedFrames++;
+            if (aeConvergedFrames < INT32_MAX) aeConvergedFrames++;
             return batch;
         }
     }
     /* Out of dead-band (or dead-band disabled): AE actively chasing,
      * so we're not stably at setpoint. */
-    mAeConvergedFrames = 0;
+    aeConvergedFrames = 0;
 
     /* Cascaded smoothing on the AE per-frame multiplier. The
      * first-order damped ratio is itself EMA'd (same ConvergeSpeed)
@@ -554,11 +554,11 @@ bool BasicIpa::isAeConverged() const {
      * settled, while still being short enough that AF doesn't wait
      * a noticeable beat after the first dead-band entry. */
     constexpr int32_t kRequired = 5;
-    return mAeConvergedFrames >= kRequired;
+    return aeConvergedFrames >= kRequired;
 }
 
 void BasicIpa::setAeLock(bool lock) {
-    mAeLocked = lock;
+    aeLockHeld = lock;
 }
 
 } /* namespace android */
