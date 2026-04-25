@@ -91,6 +91,70 @@ public:
         return false;
     }
 
+    /* Produce-once / sample-many API.
+     *
+     * Demosaic happens once per frame; the resulting RGBA scratch is then
+     * sampled / copied N times (one per output stream in the request).
+     *
+     * Lifecycle:
+     *   beginFrame(...)            -> records demosaic into scratch
+     *   blitToGralloc(...)         -> records sampler-blit into RGBA gralloc
+     *   blitToYuv(...)             -> records compute NV12 encode into NV12 gralloc
+     *   endFrame()                 -> submits the recorded cmd buffer; release
+     *                                 fences populated by blitTo* are valid
+     *                                 once endFrame returns true.
+     *
+     * Single submit per frame: every blitTo* shares the same VkSubmit, so all
+     * outputs of one frame complete on the GPU at the same time. Per-output
+     * release fences are dup()'d copies of the same signal. Acquire fences are
+     * imported as binary VkSemaphores so the submit waits on them GPU-side;
+     * the recording thread never blocks on framework backpressure.
+     *
+     * On error inside any blitTo*, the frame is aborted: recording state is
+     * reset, no submit is issued, and the caller must not invoke endFrame.
+     * Default base implementations return false / set releaseFence=-1, leaving
+     * production-impl-required behaviour at the override point. */
+
+    virtual bool beginFrame(unsigned srcW, unsigned srcH, uint32_t pixFmt,
+                             int srcInputSlot) {
+        (void)srcW; (void)srcH; (void)pixFmt; (void)srcInputSlot;
+        return false;
+    }
+
+    /* Record a sampler-blit of the scratch image into the gralloc nativeBuffer
+     * (RGBA8 stream). Identity dst==src uses texelFetch in the shader; otherwise
+     * hardware bilinear via sampler2D. acquireFence ownership transfers to the
+     * impl on success (closed/imported). */
+    virtual bool blitToGralloc(void *nativeBuffer,
+                                unsigned dstW, unsigned dstH,
+                                const CropRect &crop,
+                                int acquireFence,
+                                int *releaseFenceOut) {
+        (void)nativeBuffer; (void)dstW; (void)dstH; (void)crop;
+        (void)acquireFence;
+        *releaseFenceOut = -1;
+        return false;
+    }
+
+    /* Record a compute NV12 encode of the scratch image into the gralloc
+     * nativeBuffer (YCbCr_420_888 stream). Width must be a multiple of 4 and
+     * height a multiple of 2. acquireFence semantics match blitToGralloc. */
+    virtual bool blitToYuv(void *nativeBuffer,
+                            unsigned dstW, unsigned dstH,
+                            const CropRect &crop,
+                            int acquireFence,
+                            int *releaseFenceOut) {
+        (void)nativeBuffer; (void)dstW; (void)dstH; (void)crop;
+        (void)acquireFence;
+        *releaseFenceOut = -1;
+        return false;
+    }
+
+    /* Submit the recorded command buffer. Must be called once per matching
+     * beginFrame, after all blitTo* calls. Returns false on submit failure,
+     * leaving release fences from blitTo* invalid. */
+    virtual bool endFrame() { return false; }
+
     /* AWB gains (Q8: 256 = 1.0x) */
     void setWbGains(unsigned r, unsigned g, unsigned b) {
         mWbR = r; mWbG = g; mWbB = b;
