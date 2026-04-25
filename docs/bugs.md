@@ -93,6 +93,22 @@ propagates it.
 - **Soft cap on max gain** — interim mitigation; `gain<=32` loses
   one stop of low-light capability but likely removes the cast.
 
+## Auto AE cannot be turned off
+
+**Symptom:** Switching the camera app to manual AE (AE_MODE=OFF) does
+not actually disable auto AE — BasicIpa keeps driving exposure / gain
+regardless of the request mode.
+
+**Status:** Logged, no fix scheduled. Tier TBD.
+
+## Exposure compensation ignored while auto AE is on
+
+**Symptom:** With auto AE active, the framework's exposure-compensation
+control (ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION) has no visible
+effect on preview brightness.
+
+**Status:** Logged, no fix scheduled. Tier TBD.
+
 ## Open Camera photos come out sideways (app-side, not HAL)
 
 **Symptom:** Photos taken with Open Camera (Mark Harman) come out
