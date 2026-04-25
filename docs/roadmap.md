@@ -295,44 +295,54 @@ further rewrite.
    is never fought by the IPA. Dark-scene policy is FPS-priority:
    AE clamps at `kMaxExposureUs` inside the default
    `frame_length` rather than extending integration at the cost
-   of frame rate. AWB / AF are still `StubIpa`-equivalent
-   (next item).
+   of frame rate.
+9. **BasicIpa AWB + AF (post-PR-6.6 / 6.7 / 6.8).** Gray-world AWB
+   over `rgbMean[16][16][3]` with CCT estimation from ln(G/B) and
+   per-CCT CCM LERP across the tuning's `colorCorrection.Set[]`;
+   shader gets WB gains every frame (zero silicon delay) and a
+   shared Q10 CCM buffer. AF moved off the gralloc-RGBA Laplacian
+   onto the NEON-computed `IpaStats::focusMetric` —
+   `Σ(Gx²+Gy²)/Σ I²` per patch, exposure-invariant. Coarse-fine
+   state machine (`Idle → Coarse1 → [Coarse2] → Fine → Settle`)
+   with parabolic peak interpolation over a vector-backed scan
+   history; continuous AF retriggers via a multi-channel snapshot
+   (focusMetric + R / G / B mean over the centre 8×8 patches).
+   AE coordination through `Ipa::isAeConverged()` and
+   `Ipa::setAeLock(bool)` — the lock republishes the converged
+   exposure / gain every frame so DelayedControls keeps the sensor
+   put across a sweep. NEON kernel skips Sobel / greenSq outside
+   the focus ROI (the AF centre 8×8) to drop the stats cycle from
+   ~17 ms to ~12 ms on 720p; `IpaStats::sharpness` was a dead
+   field and got dropped along the way. Continuous retrigger on
+   target-distance changes is imperfect — accepted as
+   good-enough; tracked in
+   [bugs.md](bugs.md) and the AF-references memory.
+10. **Housekeeping — `V4L2DEVICE_OPEN_ONCE` removed.** The flag is
+    gone from `Android.mk`, `README`, and `docs/architecture.md`;
+    the V4l2Device ctor no longer auto-connects, `disconnect()`
+    always runs `cleanup()` so the fd closes at end of session,
+    and `cleanup()` invalidates the cached `mFormat` so the next
+    `connect()` re-runs `S_FMT` + `REQBUFS` against whichever
+    memory type the next session ends up using. Pre-open
+    enumeration still works because `availableResolutions()` /
+    `minFrameDurationNs()` open a temporary fd when `mFd < 0`.
+    Camera switching (front ↔ back close / reopen) verified on
+    device.
 
 **Pending**
 
-9. **Produce-once refactor** (`IspPipeline::beginFrame` / `blitTo*` /
-   `endFrame`) + `PostProcessor` / `JpegWorker`. **Multi-stream FPS
-   win** (preview+video 13 → ~28). This is the PR 7 slot.
-10. **BasicIpa AWB + AF** — gray-world AWB over
-    `rgbMean[16][16][3]`, and AF integration feeding
-    `sharpness[16][16]` to `AutoFocusController` instead of the
-    current gralloc `SW_READ_OFTEN` lock. No new threading; both
-    extend `BasicIpa::processStats`.
+11. **Produce-once refactor** (`IspPipeline::beginFrame` / `blitTo*` /
+    `endFrame`) + `PostProcessor` / `JpegWorker`. **Multi-stream FPS
+    win** (preview+video 13 → ~28). This is the PR 7 slot.
 
 Deferred but slot-reserved from PR 2: `Request::inputBuffer` for
 ZSL / reprocess; ZSL ring buffer and reprocess wiring happen in
 Tier 4 with no queue-type churn.
 
-### Housekeeping — drop `V4L2DEVICE_OPEN_ONCE` entirely (S)
+### Housekeeping — drop `V4L2DEVICE_OPEN_ONCE` entirely — done
 
-After PR 8 lands, remove the remaining `V4L2DEVICE_OPEN_ONCE`
-fast-paths from `v4l2/V4l2Device.cpp` (ctor auto-`connect()`,
-`disconnect()` guarded `cleanup()`) and from `Android.mk` /
-`README` / `docs/architecture.md`. The flag dates from an earlier
-attempt to avoid sensor reinit cost across close/reopen; the
-STREAMOFF half was already dropped when the stale-frame-across-
-sessions bug surfaced (mainline now does real STREAMOFF and
-re-queues every slot in `setStreaming(true)`). The fd-lifetime
-half kept an fd across `closeDevice`, which in turn forced the
-Camera ctor's implicit-connect assumption for early
-`staticCharacteristics()` queries. Clean-up plan:
-
-- V4l2Device ctor: no auto-`connect()`.
-- `disconnect()`: always `cleanup()`; fd closes at end of session.
-- Camera ctor: call `mDev->connect()` explicitly so pre-open
-  enumeration still works.
-- Verify reopen path re-negotiates pixel format on fresh fd.
-- Drop the `-DV4L2DEVICE_OPEN_ONCE` define and all its docs.
+Item 10 above. Captured here for the historical note on what the
+flag was and why it had to go.
 
 ## Tier 4 — aspirational (L, or rewrite)
 
@@ -361,13 +371,11 @@ imminent plan.
 1. **Tier 1.2** — short compliance PRs inside `CameraStaticMetadata`.
 2. **Tier 2** — done (drain-to-latest, `YUV_420_888` output, JSON
    tuning).
-3. **Tier 3 PR 1-8** — done (threading primitives, RequestThread,
-   CaptureThread, PipelineThread + fence-fd, IPA/DelayedControls
-   plumbing, NEON stats worker, BasicIpa AE + ApplySettings
-   AE-mode branch).
+3. **Tier 3 PR 1-9 + housekeeping** — done (threading primitives,
+   RequestThread, CaptureThread, PipelineThread + fence-fd,
+   IPA / DelayedControls plumbing, NEON stats worker, BasicIpa AE
+   + AWB + AF, focus-ROI spatial restrict, V4L2DEVICE_OPEN_ONCE
+   removal).
 4. **Tier 3 produce-once** — `IspPipeline::beginFrame` + `blitTo*` +
    `endFrame`, PostProcessor + JpegWorker. Multi-stream FPS win.
-5. **Tier 3 BasicIpa AWB + AF** — gray-world AWB, sharpness-grid
-   AF (removes the last `SW_READ_OFTEN` lock).
-6. **Housekeeping** — drop `V4L2DEVICE_OPEN_ONCE` fast paths.
-7. **Tier 4** — discretionary.
+5. **Tier 4** — discretionary.

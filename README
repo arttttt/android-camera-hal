@@ -29,13 +29,7 @@ of them might not always work.
 
   LOCAL_CFLAGS += -DV4L2DEVICE_BUF_COUNT=<NNN>
 
-  <NNN> is a positive integer (4 by default) - V4L2 buffers count.
-
-
-  LOCAL_CFLAGS += -DV4L2DEVICE_OPEN_ONCE
-
-  Opens and initializes /dev/video0 during boot time. Comment out to open/close
-  the device when a camera app is opened/closed.
+  <NNN> is a positive integer (8 by default) - V4L2 buffers count.
 
 
 
