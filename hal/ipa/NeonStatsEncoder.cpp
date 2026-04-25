@@ -203,8 +203,7 @@ void NeonStatsEncoder::computeRange(const void *bayer,
                         for (int i = 0; i < 8; ++i) {
                             uint32_t v = (uint32_t)gbuf[i];
                             v = (v > bl) ? (v - bl) : 0u;
-                            uint32_t bin = v >> histShift;
-                            if (bin > 127u) bin = 127u;
+                            const uint32_t bin = v >> histShift;
                             partial->lumaHist[bin] += 1u;
                         }
 
@@ -277,9 +276,8 @@ void NeonStatsEncoder::computeRange(const void *bayer,
                     partial->cntCh[py][px][chan] += 1u;
 
                     if (chan == 1u) {
-                        uint32_t vBin = (v > bl) ? (v - bl) : 0u;
-                        uint32_t bin = vBin >> histShift;
-                        if (bin > 127u) bin = 127u;
+                        const uint32_t vBin = (v > bl) ? (v - bl) : 0u;
+                        const uint32_t bin  = vBin >> histShift;
                         partial->lumaHist[bin] += 1u;
                         scalarSobelStep(p16, p8, wide,
                                         width, height, x, y,
