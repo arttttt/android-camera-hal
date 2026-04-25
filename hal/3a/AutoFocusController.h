@@ -78,6 +78,12 @@ private:
     int32_t  mSweepBestPos;
     float    mSweepBestScore;
     int32_t  mSettleFrames;
+    /* Consecutive frames whose score is far enough below the running
+     * peak that the sweep can be terminated early. The lens
+     * physically walks through every sampled position, so cutting
+     * the tail saves both time and the visible "racks all the way
+     * to macro then snaps back" lens travel. */
+    int32_t  mBelowPeakCount;
 };
 
 }; /* namespace android */

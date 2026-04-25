@@ -39,6 +39,18 @@ constexpr int32_t  kFramePeriodMsApprox       = 33; /* 30 fps preview */
 constexpr int kRoiPatchLo = 4;
 constexpr int kRoiPatchHi = 12;
 
+/* Early-termination knobs: drop out of the sweep once the score has
+ * stayed under `kBelowPeakRatio × bestSoFar` for `kBelowPeakRequired`
+ * consecutive samples. Multiplicative threshold rides out the
+ * ~100x absolute-score swings AE causes between sweeps; the consecutive
+ * requirement ignores the occasional VCM-settle bump (e.g. the
+ * pos=338 hump that shows up between two clean shoulder samples on
+ * some sweeps). With kBelowPeakRatio=0.5 + 3 consecutive on the
+ * captured logs, termination lands ~7 steps past the peak — well
+ * before the lens reaches the macro extreme. */
+constexpr float kBelowPeakRatio    = 0.5f;
+constexpr int   kBelowPeakRequired = 3;
+
 } /* namespace */
 
 AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
@@ -59,6 +71,7 @@ AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
     , mSweepBestPos(0)
     , mSweepBestScore(0)
     , mSettleFrames(0)
+    , mBelowPeakCount(0)
 {
     if (tuning && tuning->isLoaded() && tuning->hasAf()) {
         const SensorTuning::AfParams &af = tuning->af();
@@ -106,6 +119,7 @@ void AutoFocusController::startSweep(uint8_t afMode) {
     mSweepStep = kVcmSweepStep;
     mSweepBestPos = mSweepPos;
     mSweepBestScore = 0;
+    mBelowPeakCount = 0;
     ALOGD("AF sweep started (mode=%u, %d->%d step %d)",
           afMode, mSweepPos, mSweepEnd, mSweepStep);
 }
@@ -201,19 +215,27 @@ void AutoFocusController::onSharpnessStats(
     if (score > mSweepBestScore) {
         mSweepBestScore = score;
         mSweepBestPos = mSweepPos;
+        mBelowPeakCount = 0;
+    } else if (score < mSweepBestScore * kBelowPeakRatio) {
+        mBelowPeakCount++;
+    } else {
+        mBelowPeakCount = 0;
     }
-    ALOGD("AF: pos=%d score=%.0f best=%d/%.0f",
+    const bool peakConfirmed = mBelowPeakCount >= kBelowPeakRequired;
+    ALOGD("AF: pos=%d score=%.0f best=%d/%.0f below=%d",
           mSweepPos, (double)score,
-          mSweepBestPos, (double)mSweepBestScore);
+          mSweepBestPos, (double)mSweepBestScore,
+          mBelowPeakCount);
 
     mSweepPos += mSweepStep;
-    if (mSweepPos > mSweepEnd) {
+    if (peakConfirmed || mSweepPos > mSweepEnd) {
         mDev->setFocusPosition(mSweepBestPos);
         mFocusPosition = mSweepBestPos;
         mSweepActive = false;
         mIsp->setAwbLock(false);
-        ALOGD("AF done: best=%d score=%.0f", mSweepBestPos,
-              (double)mSweepBestScore);
+        ALOGD("AF done: best=%d score=%.0f reason=%s", mSweepBestPos,
+              (double)mSweepBestScore,
+              peakConfirmed ? "peak-confirmed" : "range-end");
         return;
     }
 
@@ -231,6 +253,7 @@ void AutoFocusController::reset() {
     mSweepBestPos   = mVcmInfinity;
     mSweepBestScore = 0;
     mSettleFrames   = 0;
+    mBelowPeakCount = 0;
     /* mFocusPosition kept — it reflects the physical VCM state,
      * not session state. */
 }
