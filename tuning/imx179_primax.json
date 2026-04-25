@@ -33,7 +33,8 @@
       "retrigger_delay_frames": 10,
       "pdaf_enabled": false,
       "settle_frames_coarse": 2,
-      "settle_frames_fine": 1
+      "settle_frames_fine": 1,
+      "min_focus_signal": 50
     },
     "mwbCCT": {
       "cloudy": 7000,

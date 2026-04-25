@@ -149,6 +149,14 @@ private:
     bool     mPdafEnabled;
     int32_t  mSettleFramesCoarse;
     int32_t  mSettleFramesFine;
+    /* Below this absolute focus-metric ROI sum the scene has no
+     * usable focus signal — sensor noise dominates the score curve
+     * and any sweep would just commit somewhere noise-driven. The
+     * continuous-AF retrigger refuses to fire when the current
+     * frame is below this; an in-sweep abort cuts Coarse short
+     * when the dynamic range stays under half this floor. Tap-to-
+     * focus bypasses the gate (user explicitly asked). */
+    float    mMinFocusSignal;
 
     uint8_t  mAfMode;
     int32_t  mFocusPosition;

@@ -4,6 +4,8 @@
 
 #include <math.h>
 
+#include <limits>
+
 #include <utils/Log.h>
 #include <system/camera_metadata.h>
 
@@ -103,6 +105,7 @@ AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
     , mPdafEnabled(false)
     , mSettleFramesCoarse(2)
     , mSettleFramesFine(1)
+    , mMinFocusSignal(50.f)
     , mAfMode(ANDROID_CONTROL_AF_MODE_OFF)
     , mFocusPosition(0)
     , mPreSweepFocusPosition(0)
@@ -137,6 +140,7 @@ AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
         if (af.retriggerDelay     > 0)   mRetriggerDelay     = af.retriggerDelay;
         if (af.settleFramesCoarse > 0)   mSettleFramesCoarse = af.settleFramesCoarse;
         if (af.settleFramesFine   > 0)   mSettleFramesFine   = af.settleFramesFine;
+        if (af.minFocusSignal     > 0.f) mMinFocusSignal     = af.minFocusSignal;
         mPdafEnabled = af.pdafEnabled;
 
         ALOGD("AF tuning: cal=%d inf=%d macro=%d auto_end=%d "
@@ -318,13 +322,33 @@ void AutoFocusController::advanceCoarse(float score) {
      * with-reset doesn't carry the stale Coarse1 ladder forward. */
     size_t phaseRising = 0;
     float  phaseMax    = 0.f;
+    float  phaseMin    = std::numeric_limits<float>::infinity();
     for (size_t i = mCoarsePhaseStart; i < mScanData.size(); ++i) {
-        if (mScanData[i].score > phaseMax) {
-            phaseMax = mScanData[i].score;
+        const float s = mScanData[i].score;
+        if (s > phaseMax) {
+            phaseMax = s;
             phaseRising++;
         }
+        if (s < phaseMin) phaseMin = s;
     }
     const size_t phaseSampleCount = mScanData.size() - mCoarsePhaseStart;
+
+    /* Flatness early-abort. After enough Coarse samples to call it
+     * — four within this phase — if the dynamic range stays under
+     * half the no-signal floor, the curve is flat to within sensor
+     * noise and the rest of the sweep would just walk to atLimit
+     * before a Failed Settle. Skip straight to commitSweep with
+     * focused=false; the lens parks back at pre-sweep position
+     * (no theatrical full-range walk) and the AfState honestly
+     * reports the result. */
+    if (phaseSampleCount >= 4 &&
+        (phaseMax - phaseMin) < 0.5f * mMinFocusSignal) {
+        ALOGD("AF: Coarse flat (range=%.0f < %.0f), abort early",
+              (double)(phaseMax - phaseMin),
+              (double)(0.5f * mMinFocusSignal));
+        commitSweep(false);
+        return;
+    }
 
     const bool peakPassed =
         mSweepBestScore > 0.f &&
@@ -518,6 +542,18 @@ void AutoFocusController::onStats(const IpaStats &stats) {
          * persisted for `mRetriggerDelay` frames. */
         if (mAfMode != ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE)
             return;
+
+        /* No usable focus signal in the current frame — textureless
+         * wall, very dim scene, occlusion. Retriggering on RGB
+         * change alone would launch a sweep that has no peak to
+         * find; better to stay idle and let the framework see a
+         * stable AfState. We also intentionally skip refreshing
+         * the snapshot so a transient blackout doesn't reset the
+         * scene-change baseline; once signal returns, the next
+         * frame compares against the last good snapshot and the
+         * normal retrigger logic can fire if the scene has
+         * actually moved. */
+        if (score < mMinFocusSignal) return;
 
         float curRgb[3];
         sumCentreRgb(stats.rgbMean, curRgb);
