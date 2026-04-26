@@ -15,23 +15,26 @@ namespace {
 
 constexpr const char *kTuningDir = "/vendor/etc/camera/tuning/";
 
-/* Build the filename by convention: `<lower(sensor)>_<lower(integrator)>.json`.
+/* Build the filename by convention: `<lower(sensor)>_<lower(integrator)><suffix>.json`.
  * Adding a new module to the HAL means dropping a JSON into the vendor dir —
  * no code change. To try a different tuning branch (e.g. lfi_v3.09 for
  * IMX179), overwrite the file; provenance lives inside the JSON's
- * `sensor.nvidia_version`. */
-std::string filenameFor(const char *sensor, const char *integrator) {
+ * `sensor.nvidia_version`. The `suffix` slot covers companion files like
+ * `_overrides` that share the same per-sensor naming. */
+std::string filenameFor(const char *sensor, const char *integrator,
+                        const char *suffix = "") {
     std::string s = sensor ? sensor : "";
     std::string i = integrator ? integrator : "";
     for (auto &c : s) c = (char)tolower((unsigned char)c);
     for (auto &c : i) c = (char)tolower((unsigned char)c);
-    return s + "_" + i + ".json";
+    return s + "_" + i + suffix + ".json";
 }
 
-bool readJson(const std::string &path, Json::Value *out) {
+bool readJson(const std::string &path, Json::Value *out, bool warnOnMissing = true) {
     std::ifstream ifs(path.c_str());
     if (!ifs.is_open()) {
-        ALOGW("tuning file not found: %s", path.c_str());
+        if (warnOnMissing)
+            ALOGW("tuning file not found: %s", path.c_str());
         return false;
     }
     Json::Reader reader;
@@ -41,6 +44,25 @@ bool readJson(const std::string &path, Json::Value *out) {
         return false;
     }
     return true;
+}
+
+/* Deep-merge `src` over `dst`. Recurse on object keys; replace
+ * everything else (arrays, scalars). Lets a partial overrides JSON
+ * sit on top of the regenerated-from-.isp base so HAL-side hand
+ * additions survive a full tuning regen. */
+void mergeJsonDeep(Json::Value &dst, const Json::Value &src) {
+    if (!src.isObject() || !dst.isObject()) {
+        dst = src;
+        return;
+    }
+    const Json::Value::Members keys = src.getMemberNames();
+    for (const std::string &key : keys) {
+        if (dst.isMember(key) && dst[key].isObject() && src[key].isObject()) {
+            mergeJsonDeep(dst[key], src[key]);
+        } else {
+            dst[key] = src[key];
+        }
+    }
 }
 
 } /* namespace */
@@ -64,6 +86,20 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
     Json::Value root;
     if (!readJson(std::string(kTuningDir) + fn, &root))
         return false;
+
+    /* Optional companion file with HAL-side hand additions
+     * (`active.*` knobs that NVIDIA's stock .isp doesn't carry, e.g.
+     * AF state-machine tunables). Merged before parsing so the rest
+     * of this function sees one combined tree. Absent file → no-op. */
+    {
+        const std::string overridesFn = filenameFor(sensor, integrator, "_overrides");
+        Json::Value overrides;
+        if (readJson(std::string(kTuningDir) + overridesFn, &overrides,
+                     /*warnOnMissing=*/false)) {
+            mergeJsonDeep(root, overrides);
+            ALOGI("tuning overrides applied: %s", overridesFn.c_str());
+        }
+    }
 
     if (root["schema_version"].asInt() != 1) {
         ALOGE("tuning schema version mismatch: expected 1, got %d",
