@@ -99,26 +99,33 @@ status_t StreamConfig::normalize(camera3_stream_configuration_t *streamList,
          * HW_TEXTURE for SurfaceTexture preview, HW_VIDEO_ENCODER
          * for the encoder's tiled input) and ours.
          *
-         * Overwriting consumer flags with SW_WRITE_OFTEN — what we
-         * used to do — silently downgraded gralloc to a linear,
-         * CPU-only layout. Apps still ran on HAL3.0 because the
-         * Camera1→Camera2 emulation layer fixed the surfaces up
-         * itself before our HAL path; on HAL3.2 native-Camera2 we
-         * are the final source of truth and the override breaks
-         * preview entirely. It also harms the Vulkan fragment-ROP
-         * write path which expects the HW-tiled layout the consumer
-         * flags imply.
+         * RGBA preview keeps consumer-only flags so SurfaceTexture
+         * gets a HW-sampleable tiled layout — overriding that broke
+         * preview entirely on native Camera2.
          *
-         * Preserve consumer flags. Add HAL-side flags only where the
-         * HAL touches the buffer with the CPU — only BLOB outputs
-         * today (libjpeg writes the encoded JPEG into the buffer);
-         * RGBA / YUV outputs are written via Vulkan ROP and don't
-         * need any extra usage bits.  Same logic for INPUT /
-         * BIDIRECTIONAL: ZSL reprocess (when it lands) reads via
-         * Vulkan, so SW flags only when the HAL actually CPU-reads. */
+         * For BLOB the HAL CPU-writes the encoded JPEG, so add
+         * SW_WRITE_OFTEN.
+         *
+         * For YCbCr_420_888 the consumer (MediaCodec / NVENC) sets
+         * HW_VIDEO_ENCODER, which on NVIDIA gralloc maps to a
+         * height-padded tiled NV12 (~12 MB per 1080p buffer instead
+         * of ~3 MB). Since the HAL writes YUV via the Vulkan ROP
+         * path — not the NVENC HW read path — the tiled layout is
+         * pure waste on us, and across `kMaxBuffersPerStream`
+         * buffers the surplus is enough to push framework gralloc
+         * allocations into nvmap-pool OOM during video record on
+         * Mocha. Adding SW_WRITE_OFTEN forces gralloc to pick a
+         * CPU-writable (= linear-or-near-linear) layout that still
+         * satisfies HW_VIDEO_ENCODER consumption; encoder reads from
+         * linear NV12 just fine, only marginal HW efficiency cost.
+         *
+         * Same SW-flag rationale for INPUT / BIDIRECTIONAL once ZSL
+         * reprocess lands: Vulkan reads the input, so SW flags only
+         * where the HAL itself CPU-touches the buffer. */
         const bool needsCpuWrite = (newStream->stream_type == CAMERA3_STREAM_OUTPUT
                                     || newStream->stream_type == CAMERA3_STREAM_BIDIRECTIONAL)
-                                && newStream->format == HAL_PIXEL_FORMAT_BLOB;
+                                && (newStream->format == HAL_PIXEL_FORMAT_BLOB
+                                    || newStream->format == HAL_PIXEL_FORMAT_YCbCr_420_888);
         if (needsCpuWrite) newStream->usage = origUsage | GRALLOC_USAGE_SW_WRITE_OFTEN;
         else               newStream->usage = origUsage;
         newStream->max_buffers = kMaxBuffersPerStream;
