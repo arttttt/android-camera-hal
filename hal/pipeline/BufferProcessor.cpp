@@ -189,19 +189,17 @@ void BufferProcessor::finalizeCpuOutputs(PipelineContext &ctx) {
     for (size_t i = 0; i < ctx.request.outputBuffers.size(); ++i) {
         const CaptureRequest::Buffer &ob = ctx.request.outputBuffers[i];
         if (ctx.outputStatuses[i] != CAMERA3_BUFFER_STATUS_OK) continue;
+        /* BLOB encode runs on JpegWorker — handled out of band. */
+        if (ob.stream->format == HAL_PIXEL_FORMAT_YCbCr_420_888)
+            finalizeYuvOutput(ob, ctx.request.frameNumber);
+    }
+}
 
-        switch (ob.stream->format) {
-            case HAL_PIXEL_FORMAT_YCbCr_420_888:
-                finalizeYuvOutput(ob, ctx.request.frameNumber);
-                break;
-            case HAL_PIXEL_FORMAT_BLOB:
-                if (i < ctx.outputJpegSnapshots.size())
-                    finalizeBlobOutput(ob, ctx.request.settings,
-                                        ctx.outputJpegSnapshots[i],
-                                        ctx.request.frameNumber);
-                break;
-            default:
-                break;
+void BufferProcessor::releaseJpegSnapshots(PipelineContext &ctx) {
+    for (size_t i = 0; i < ctx.outputJpegSnapshots.size(); ++i) {
+        if (ctx.outputJpegSnapshots[i].ringSlot >= 0) {
+            mDeps.isp->releaseJpegSnapshot(ctx.outputJpegSnapshots[i]);
+            ctx.outputJpegSnapshots[i].ringSlot = -1;
         }
     }
 }

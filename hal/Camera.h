@@ -20,6 +20,7 @@
 #include "3a/ExposureControl.h"
 #include "jpeg/JpegEncoder.h"
 #include "pipeline/BufferProcessor.h"
+#include "pipeline/JpegWorker.h"
 #include "pipeline/StreamConfig.h"
 #include "DbgUtils.h"
 
@@ -32,7 +33,9 @@ class InFlightTracker;
 class RequestThread;
 class PipelineThread;
 class ResultThread;
+class JpegWorker;
 class BayerSource;
+class EventFd;
 template <typename T> class EventQueue;
 
 class Camera: public camera3_device {
@@ -91,6 +94,8 @@ private:
     std::unique_ptr<EventQueue<PipelineContext*>> mRequestQueue;
     std::unique_ptr<EventQueue<PipelineContext*>> mPipelineQueue;
     std::unique_ptr<EventQueue<PipelineContext*>> mResultQueue;
+    std::unique_ptr<EventQueue<JpegWorker::Job>>  mJpegQueue;
+    std::unique_ptr<EventFd>                      mJpegCompletionWake;
     std::unique_ptr<Pipeline>                     mRequestPipeline;
     std::unique_ptr<PipelineStage>                mDemosaicBlitStage;
     std::unique_ptr<PipelineStage>                mStatsProcessStage;
@@ -98,6 +103,7 @@ private:
     std::unique_ptr<RequestThread>                mRequestThread;
     std::unique_ptr<PipelineThread>               mPipelineThread;
     std::unique_ptr<ResultThread>                 mResultThread;
+    std::unique_ptr<JpegWorker>                   mJpegWorker;
     std::unique_ptr<Ipa>                          mIpa;
     std::unique_ptr<DelayedControls>              mDelayedControls;
     std::unique_ptr<StatsWorker>                  mStatsWorker;

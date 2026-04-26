@@ -72,10 +72,27 @@ public:
                         JpegSnapshot *jpegSnapshot);
 
     /* Post-fence-reap CPU finalize for outputs whose GPU half ran into a
-     * host-mapped backend buffer (YUV NV12). Called by PipelineThread on
-     * a successfully completed frame, before stats and result dispatch.
-     * No-op when no YUV output is in the request. */
+     * host-mapped backend buffer. YUV outputs are libyuv-repacked here;
+     * BLOB outputs are encoded asynchronously by JpegWorker so this
+     * function does NOT touch them on the success path. Called by
+     * PipelineThread on a successfully completed frame, before stats
+     * and offload to ResultThread. No-op when no YUV output is in the
+     * request. */
     void finalizeCpuOutputs(PipelineContext &ctx);
+
+    /* Release every BLOB output's JpegSnapshot so the ISP ring rotates
+     * without an encode. Called by PipelineThread on the error path
+     * (where JPEG jobs are not posted to JpegWorker). */
+    void releaseJpegSnapshots(PipelineContext &ctx);
+
+    /* Lock the BLOB gralloc, libjpeg-encode from the snapshot, write the
+     * camera3_jpeg_blob trailer, unlock, release the snapshot. Called
+     * by JpegWorker on its own thread once the frame's submit fence has
+     * signalled. */
+    void finalizeBlobOutput(const CaptureRequest::Buffer &outBuf,
+                             const CameraMetadata &metadata,
+                             const JpegSnapshot &snap,
+                             uint32_t frameNumber);
 
 private:
     /* Block until the consumer releases srcBuf for writing. */
@@ -103,14 +120,6 @@ private:
     status_t recordBlobOutput(const camera3_stream_buffer &srcBuf,
                                uint32_t frameNumber,
                                JpegSnapshot *snapshotOut);
-
-    /* Lock the BLOB gralloc, libjpeg-encode from the snapshot, write the
-     * camera3_jpeg_blob trailer, unlock, release the snapshot. Called
-     * from finalizeCpuOutputs once the frame's submit fence has signalled. */
-    void     finalizeBlobOutput(const CaptureRequest::Buffer &outBuf,
-                                 const CameraMetadata &metadata,
-                                 const JpegSnapshot &snap,
-                                 uint32_t frameNumber);
 
     /* Record a GPU NV12 encode dispatch on the open ISP recording. CPU
      * wait on srcBuf.acquire_fence happens here so the subsequent

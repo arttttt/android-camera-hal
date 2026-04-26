@@ -4,6 +4,8 @@
 #include <poll.h>
 #include <unistd.h>
 
+#include <atomic>
+
 #include <hardware/camera3.h>
 #include <utils/Log.h>
 
@@ -57,11 +59,10 @@ void PipelineThread::drainFences(PipelineContext *ctx, int timeoutMs) {
 }
 
 void PipelineThread::completeCtx(PipelineContext *ctx) {
-    /* CPU finalize for outputs whose GPU half ran into a host-mapped
-     * backend buffer (YUV NV12, BLOB JPEG snapshot). Locks the gralloc,
-     * encodes / repacks, unlocks. Runs here so ResultDispatch on the
-     * downstream thread can hand the frame to the framework as soon as
-     * the gralloc is filled. */
+    /* CPU finalize for YUV outputs (libyuv repack into the gralloc).
+     * BLOB outputs are NOT finalised here — they go to JpegWorker
+     * below so libjpeg encode runs in parallel with the next frame's
+     * GPU work instead of blocking PipelineThread admission. */
     if (deps.bufferProcessor)
         deps.bufferProcessor->finalizeCpuOutputs(*ctx);
 
@@ -73,12 +74,48 @@ void PipelineThread::completeCtx(PipelineContext *ctx) {
     if (deps.statsProcess && !ctx->errorCode)
         deps.statsProcess->process(*ctx);
 
-    /* Hand the ctx off to ResultThread which owns ResultDispatchStage,
-     * BayerSource flushPendingReleases, and the InFlightTracker
-     * removeBySequence that destroys the ctx. The queue is sized to
-     * absorb any plausible burst from PipelineThread; on overflow we
-     * log fatal because that means the upstream ordering invariant is
-     * broken. */
+    /* Count BLOB outputs whose snapshot was successfully captured.
+     * On the error path no jobs are posted; release the snapshots so
+     * the ISP ring rotates. */
+    int blobCount = 0;
+    if (ctx->errorCode) {
+        if (deps.bufferProcessor)
+            deps.bufferProcessor->releaseJpegSnapshots(*ctx);
+    } else {
+        for (size_t i = 0; i < ctx->request.outputBuffers.size(); ++i) {
+            const CaptureRequest::Buffer &ob = ctx->request.outputBuffers[i];
+            if (ob.stream->format == HAL_PIXEL_FORMAT_BLOB &&
+                i < ctx->outputJpegSnapshots.size() &&
+                ctx->outputJpegSnapshots[i].ringSlot >= 0) {
+                ++blobCount;
+            }
+        }
+    }
+    /* Set the readiness counter BEFORE queueing the jobs — JpegWorker
+     * decrements as it completes; queueing-before-set would let it race
+     * to zero while ctx still has work pending. */
+    ctx->jpegPending.store(blobCount, std::memory_order_release);
+
+    if (blobCount && deps.jpegQueue) {
+        for (size_t i = 0; i < ctx->request.outputBuffers.size(); ++i) {
+            const CaptureRequest::Buffer &ob = ctx->request.outputBuffers[i];
+            if (ob.stream->format == HAL_PIXEL_FORMAT_BLOB &&
+                ctx->outputJpegSnapshots[i].ringSlot >= 0) {
+                JpegWorker::Job job{ctx, i};
+                if (!deps.jpegQueue->push(job)) {
+                    ALOGE("JpegQueue push failed for frame %u output %zu",
+                          ctx->request.frameNumber, i);
+                    /* Treat as an immediate completion so ResultThread
+                     * won't park forever waiting for this BLOB. */
+                    ctx->jpegPending.fetch_sub(1, std::memory_order_acq_rel);
+                }
+            }
+        }
+    }
+
+    /* Hand the ctx off to ResultThread. The result queue is sized to
+     * absorb a plausible burst; on overflow we log because that means
+     * the dispatch side has wedged. */
     if (!deps.resultQueue->push(ctx)) {
         ALOGE("ResultQueue push failed for frame %u — ctx leaked",
               ctx->request.frameNumber);

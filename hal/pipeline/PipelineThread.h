@@ -7,6 +7,7 @@
 #include "ThreadBase.h"
 #include "EventQueue.h"
 #include "PipelineContext.h"
+#include "JpegWorker.h"
 
 namespace android {
 
@@ -29,12 +30,13 @@ class BufferProcessor;
 class PipelineThread : public ThreadBase {
 public:
     struct Deps {
-        EventQueue<PipelineContext*> *queue;          /* upstream — RequestThread */
-        EventQueue<PipelineContext*> *resultQueue;    /* downstream — ResultThread */
-        PipelineStage                *demosaicBlit;
-        PipelineStage                *statsProcess;    /* may be null */
-        BufferProcessor              *bufferProcessor; /* CPU finalize for YUV outputs */
-        std::size_t                   maxInFlight;
+        EventQueue<PipelineContext*>   *queue;          /* upstream — RequestThread */
+        EventQueue<PipelineContext*>   *resultQueue;    /* downstream — ResultThread */
+        EventQueue<JpegWorker::Job>    *jpegQueue;      /* downstream — JpegWorker */
+        PipelineStage                  *demosaicBlit;
+        PipelineStage                  *statsProcess;    /* may be null */
+        BufferProcessor                *bufferProcessor; /* CPU finalize for YUV outputs */
+        std::size_t                     maxInFlight;
     };
 
     explicit PipelineThread(const Deps &deps);

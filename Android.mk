@@ -83,6 +83,7 @@ LOCAL_SRC_FILES += \
     hal/pipeline/PipelineThread.cpp \
     hal/pipeline/RequestThread.cpp \
     hal/pipeline/ResultThread.cpp \
+    hal/pipeline/JpegWorker.cpp \
     hal/pipeline/StreamConfig.cpp \
     hal/pipeline/stages/ApplySettingsStage.cpp \
     hal/pipeline/stages/CaptureStage.cpp \

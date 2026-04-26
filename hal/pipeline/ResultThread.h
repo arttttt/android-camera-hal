@@ -2,9 +2,11 @@
 #define HAL_PIPELINE_RESULT_THREAD_H
 
 #include <cstddef>
+#include <deque>
 
 #include "ThreadBase.h"
 #include "EventQueue.h"
+#include "EventFd.h"
 #include "PipelineContext.h"
 
 namespace android {
@@ -30,6 +32,7 @@ class ResultThread : public ThreadBase {
 public:
     struct Deps {
         EventQueue<PipelineContext*> *queue;
+        EventFd                      *jpegCompletionWake;  /* JpegWorker → us */
         PipelineStage                *resultDispatch;
         BayerSource                  *bayerSource;
         InFlightTracker              *tracker;
@@ -43,8 +46,16 @@ protected:
 
 private:
     void completeCtx(PipelineContext *ctx);
+    bool isCtxReady(const PipelineContext *ctx) const;
+    void drainQueueIntoPending();
+    void dispatchReadyPrefix();
 
     Deps deps;
+
+    /* Internal FIFO that holds ctxs received from PipelineThread but
+     * not yet dispatched. Held here (not in resultQueue) so we can
+     * peek the head's readiness without popping. */
+    std::deque<PipelineContext*> pending;
 };
 
 } /* namespace android */

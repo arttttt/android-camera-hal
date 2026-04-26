@@ -1,6 +1,7 @@
 #ifndef HAL_PIPELINE_PIPELINE_CONTEXT_H
 #define HAL_PIPELINE_PIPELINE_CONTEXT_H
 
+#include <atomic>
 #include <stdint.h>
 #include <vector>
 
@@ -68,13 +69,28 @@ struct PipelineContext {
      * slot reuse and, once the vector drains, ResultDispatch. */
     std::vector<int> pendingFenceFds;
 
+    /* Per-ctx readiness flags consumed by ResultThread.
+     *
+     * jpegPending: count of BLOB outputs whose libjpeg encode has not
+     *              finished yet. PipelineThread sets the count to the
+     *              number of BLOBs in the request just before posting
+     *              jobs; JpegWorker decrements on each completion.
+     *              ResultThread refuses to dispatch the ctx until it
+     *              hits 0.
+     *
+     * Loaded by ResultThread, stored by PipelineThread + JpegWorker —
+     * std::atomic guarantees the reader sees a coherent value without
+     * locking. seq_cst is fine; updates are rare. */
+    std::atomic<int> jpegPending;
+
     PipelineContext()
         : sequence(0),
           bayerFrame(nullptr),
           cropX(0), cropY(0), cropW(0), cropH(0),
           appliedExposureUs(0), appliedGain(0),
           tAccepted(0), tShutter(0), tBayerDq(0), tResultSent(0),
-          errorCode(0) {}
+          errorCode(0),
+          jpegPending(0) {}
 
     PipelineContext(PipelineContext&&) = default;
     PipelineContext& operator=(PipelineContext&&) = default;

@@ -56,6 +56,7 @@
 #include "pipeline/RequestThread.h"
 #include "pipeline/PipelineThread.h"
 #include "pipeline/ResultThread.h"
+#include "pipeline/JpegWorker.h"
 #include "pipeline/stages/ApplySettingsStage.h"
 #include "pipeline/stages/ShutterNotifyStage.h"
 #include "pipeline/stages/CaptureStage.h"
@@ -102,6 +103,11 @@ constexpr size_t PIPELINE_QUEUE_CAPACITY = 1;
  * BLOB-bearing frames). 16 matches the design budget in
  * docs/tier3_architecture.md. */
 constexpr size_t RESULT_QUEUE_CAPACITY = 16;
+
+/* JPEG job queue: one entry per BLOB output across all in-flight
+ * frames. With PIPELINE_MAX_IN_FLIGHT=1 and rare BLOB requests, 8 is
+ * comfortably oversized. */
+constexpr size_t JPEG_QUEUE_CAPACITY = 8;
 } /* namespace */
 
 namespace android {
@@ -589,6 +595,8 @@ void Camera::buildInfrastructure() {
     mRequestQueue.reset(new EventQueue<PipelineContext*>(REQUEST_QUEUE_CAPACITY));
     mPipelineQueue.reset(new EventQueue<PipelineContext*>(PIPELINE_QUEUE_CAPACITY));
     mResultQueue.reset(new EventQueue<PipelineContext*>(RESULT_QUEUE_CAPACITY));
+    mJpegQueue.reset(new EventQueue<JpegWorker::Job>(JPEG_QUEUE_CAPACITY));
+    mJpegCompletionWake.reset(new EventFd());
     mRequestPipeline.reset(new Pipeline());
     mStatsWorker.reset(new StatsWorker());
     if (mTuning.isLoaded())
@@ -678,6 +686,7 @@ void Camera::buildInfrastructure() {
         PipelineThread::Deps d;
         d.queue           = mPipelineQueue.get();
         d.resultQueue     = mResultQueue.get();
+        d.jpegQueue       = mJpegQueue.get();
         d.demosaicBlit    = mDemosaicBlitStage.get();
         d.statsProcess    = mStatsProcessStage.get();
         d.bufferProcessor = mBufferProcessor;
@@ -687,11 +696,20 @@ void Camera::buildInfrastructure() {
 
     {
         ResultThread::Deps d;
-        d.queue          = mResultQueue.get();
-        d.resultDispatch = mResultDispatchStage.get();
-        d.bayerSource    = mBayerSource.get();
-        d.tracker        = mTracker.get();
+        d.queue              = mResultQueue.get();
+        d.jpegCompletionWake = mJpegCompletionWake.get();
+        d.resultDispatch     = mResultDispatchStage.get();
+        d.bayerSource        = mBayerSource.get();
+        d.tracker            = mTracker.get();
         mResultThread.reset(new ResultThread(d));
+    }
+
+    {
+        JpegWorker::Deps d;
+        d.queue           = mJpegQueue.get();
+        d.bufferProcessor = mBufferProcessor;
+        d.completionWake  = mJpegCompletionWake.get();
+        mJpegWorker.reset(new JpegWorker(d));
     }
 
     mInfrastructureBuilt = true;
@@ -699,6 +717,7 @@ void Camera::buildInfrastructure() {
 
 void Camera::destroyInfrastructure() {
     mPipelineThread.reset();
+    mJpegWorker.reset();
     mResultThread.reset();
     mRequestThread.reset();
     mResultDispatchStage.reset();
@@ -709,6 +728,8 @@ void Camera::destroyInfrastructure() {
     mDelayedControls.reset();
     mIpa.reset();
     mTracker.reset();
+    mJpegQueue.reset();
+    mJpegCompletionWake.reset();
     mResultQueue.reset();
     mPipelineQueue.reset();
     mRequestQueue.reset();
@@ -744,11 +765,18 @@ void Camera::stopWorkers() {
      *    loop, then join. The ctx it was holding (if any) stays in
      *    the tracker for closeDevice's drainAll.
      * 4. PipelineThread join: stopFd wakes the poll; threadLoop's
-     *    tail drains in-flight contexts and pushes them to the
-     *    ResultThread queue (with errorCode set on stop-drained ctxs).
-     * 5. ResultThread join: drains its queue and runs ResultDispatch
-     *    + tracker removeBySequence on each so framework buffers
-     *    return cleanly.
+     *    tail drains in-flight contexts and pushes JPEG jobs to
+     *    JpegWorker + ctxs to ResultThread (with errorCode set on
+     *    stop-drained ctxs).
+     * 5. JpegWorker join: drains its queue, encodes any remaining
+     *    BLOBs, decrements jpegPending so ResultThread can release
+     *    them. Stopping after PipelineThread guarantees no new jobs
+     *    arrive after this point.
+     * 6. ResultThread join: drains its pending deque and runs
+     *    ResultDispatch + tracker removeBySequence on each so
+     *    framework buffers return cleanly. Stopping last guarantees
+     *    every ctx that JpegWorker decremented to ready state has a
+     *    chance to dispatch.
      *
      * GPU drain lives inside PipelineThread's stop path — no
      * waitForPreviousFrame at this layer. */
@@ -761,6 +789,7 @@ void Camera::stopWorkers() {
      * worker is quiesced. */
     if (mStatsWorker)    mStatsWorker->stop();
     if (mPipelineThread) mPipelineThread->stop();
+    if (mJpegWorker)     mJpegWorker->stop();
     if (mResultThread)   mResultThread->stop();
 }
 
@@ -786,14 +815,25 @@ void Camera::startWorkers() {
             return;
         }
     }
-    /* ResultThread before PipelineThread: PipelineThread offloads
-     * dispatch via mResultQueue and would lose ctxs (and leak buffers)
-     * if its consumer wasn't live. */
+    /* ResultThread before JpegWorker before PipelineThread: each
+     * downstream consumer must be live before its producer starts
+     * pushing. ResultThread reads from JpegWorker's completion eventfd
+     * (so it has to be polling first), and PipelineThread pushes to
+     * both JpegWorker (BLOB jobs) and ResultThread (every ctx). */
     if (mResultThread && !mResultThread->isRunning()) {
         if (!mResultThread->start("CamResult")) {
             ALOGE("ResultThread start failed, unwinding StatsWorker + BayerSource");
             if (mStatsWorker) mStatsWorker->stop();
             if (mBayerSource) mBayerSource->stop();
+            return;
+        }
+    }
+    if (mJpegWorker && !mJpegWorker->isRunning()) {
+        if (!mJpegWorker->start("CamJpeg")) {
+            ALOGE("JpegWorker start failed, unwinding ResultThread + StatsWorker + BayerSource");
+            if (mResultThread) mResultThread->stop();
+            if (mStatsWorker)  mStatsWorker->stop();
+            if (mBayerSource)  mBayerSource->stop();
             return;
         }
     }
@@ -803,7 +843,8 @@ void Camera::startWorkers() {
      * forever. */
     if (mPipelineThread && !mPipelineThread->isRunning()) {
         if (!mPipelineThread->start("CamPipeline")) {
-            ALOGE("PipelineThread start failed, unwinding ResultThread + StatsWorker + BayerSource");
+            ALOGE("PipelineThread start failed, unwinding workers");
+            if (mJpegWorker)   mJpegWorker->stop();
             if (mResultThread) mResultThread->stop();
             if (mStatsWorker)  mStatsWorker->stop();
             if (mBayerSource)  mBayerSource->stop();
@@ -814,6 +855,7 @@ void Camera::startWorkers() {
         if (!mRequestThread->start("CamRequest")) {
             ALOGE("RequestThread start failed, unwinding workers");
             if (mPipelineThread) mPipelineThread->stop();
+            if (mJpegWorker)     mJpegWorker->stop();
             if (mResultThread)   mResultThread->stop();
             if (mStatsWorker)    mStatsWorker->stop();
             if (mBayerSource)    mBayerSource->stop();
