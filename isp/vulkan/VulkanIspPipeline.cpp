@@ -39,7 +39,7 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mJpegRingW(0)
     , mJpegRingH(0)
 {
-    for (size_t s = 0; s < SLOT_COUNT; s++) {
+    for (size_t s = 0; s < JPEG_RING_DEPTH; s++) {
         mJpegRing[s].buf    = VK_NULL_HANDLE;
         mJpegRing[s].mem    = VK_NULL_HANDLE;
         mJpegRing[s].mapped = NULL;
@@ -502,7 +502,7 @@ bool VulkanIspPipeline::ensureJpegRing(unsigned w, unsigned h) {
     releaseJpegRing();
 
     const size_t sz = (size_t)w * h * 4;
-    for (size_t s = 0; s < SLOT_COUNT; s++) {
+    for (size_t s = 0; s < JPEG_RING_DEPTH; s++) {
         if (!mDeviceState.createBuffer(&mJpegRing[s].buf, &mJpegRing[s].mem,
                                         sz,
                                         VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -527,7 +527,7 @@ bool VulkanIspPipeline::ensureJpegRing(unsigned w, unsigned h) {
 }
 
 void VulkanIspPipeline::releaseJpegRing() {
-    for (size_t s = 0; s < SLOT_COUNT; s++) {
+    for (size_t s = 0; s < JPEG_RING_DEPTH; s++) {
         if (mJpegRing[s].mapped) {
             mDeviceState.pfn()->UnmapMemory(mDeviceState.device(), mJpegRing[s].mem);
             mJpegRing[s].mapped = NULL;
@@ -558,14 +558,14 @@ bool VulkanIspPipeline::blitToJpegCpu(JpegSnapshot *out) {
         return false;
 
     int slot = -1;
-    for (size_t s = 0; s < SLOT_COUNT; s++) {
+    for (size_t s = 0; s < JPEG_RING_DEPTH; s++) {
         if (!mJpegRing[s].inUse) {
             slot = (int)s;
             break;
         }
     }
     if (slot < 0) {
-        ALOGE("blitToJpegCpu: ring exhausted (all %zu slots inUse)", SLOT_COUNT);
+        ALOGE("blitToJpegCpu: ring exhausted (all %zu slots inUse)", JPEG_RING_DEPTH);
         return false;
     }
 
@@ -591,7 +591,7 @@ bool VulkanIspPipeline::blitToJpegCpu(JpegSnapshot *out) {
 }
 
 void VulkanIspPipeline::invalidateJpegSnapshot(const JpegSnapshot &snap) {
-    if (snap.ringSlot < 0 || snap.ringSlot >= (int)SLOT_COUNT)
+    if (snap.ringSlot < 0 || snap.ringSlot >= (int)JPEG_RING_DEPTH)
         return;
     VkMappedMemoryRange r = {};
     r.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
@@ -601,7 +601,7 @@ void VulkanIspPipeline::invalidateJpegSnapshot(const JpegSnapshot &snap) {
 }
 
 void VulkanIspPipeline::releaseJpegSnapshot(const JpegSnapshot &snap) {
-    if (snap.ringSlot < 0 || snap.ringSlot >= (int)SLOT_COUNT)
+    if (snap.ringSlot < 0 || snap.ringSlot >= (int)JPEG_RING_DEPTH)
         return;
     mJpegRing[snap.ringSlot].inUse = false;
 }

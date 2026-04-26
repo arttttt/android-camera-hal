@@ -125,6 +125,18 @@ private:
      * ring buys CPU↔GPU overlap, not parallel GPU execution. */
     static constexpr size_t SLOT_COUNT = 4;
 
+    /* JPEG snapshot ring depth — sized for the in-flight BLOB encode
+     * pipeline, not the per-submit slot ring. JpegWorker holds one
+     * snapshot during the libjpeg encode (~150 ms at 1080p);
+     * PipelineThread can stage the next snapshot in parallel. Two
+     * slots cover that producer/consumer overlap. Larger only matters
+     * if the framework starts queuing multiple BLOB requests
+     * back-to-back at >1 / encode-period — not how Camera3 actually
+     * uses BLOB. Each slot is a host-mapped scratch-sized RGBA8 buffer
+     * (~8 MB at 1080p) carved out of the shared nvmap pool, so depth
+     * matters for memory pressure on Tegra K1. */
+    static constexpr size_t JPEG_RING_DEPTH = 2;
+
     VulkanDeviceState mDeviceState;
     VulkanInputRing   mInputRing;
 
@@ -196,7 +208,7 @@ private:
         size_t         size;
         bool           inUse;
     };
-    JpegRingEntry mJpegRing[SLOT_COUNT];
+    JpegRingEntry mJpegRing[JPEG_RING_DEPTH];
     unsigned      mJpegRingW, mJpegRingH;
 
     bool ensureJpegRing(unsigned w, unsigned h);
