@@ -12,6 +12,7 @@
 #include <utils/misc.h>
 
 #include "V4l2Device.h"
+#include "OutputResolutionCap.h"
 #include "sensor/SensorTuning.h"
 
 namespace android {
@@ -88,10 +89,24 @@ void writeSensorInfo(CameraMetadata &cm, V4l2Device *dev,
 
 /* Resolution × format tables + per-mode durations. This is the bulk of
  * the characteristics — every supported (format, width, height) pair
- * needs to be enumerated here so CameraX / Camera2 can pick a stream. */
+ * needs to be enumerated here so CameraX / Camera2 can pick a stream.
+ *
+ * Filtered against `OutputResolutionCap` — V4L2 enumerates every native
+ * sensor mode (incl. 8 MP / 5 MP for IMX179 / OV5693) but we advertise
+ * only what the SW ISP can sustain at frame rate, so apps' photo /
+ * video resolution pickers stay honest about what the pipeline
+ * actually delivers fast. */
 void writeScalerConfigs(CameraMetadata &cm, V4l2Device *dev) {
-    auto &resolutions = dev->availableResolutions();
-    auto &previewResolutions = resolutions;
+    Vector<Resolution> resolutions;
+    {
+        const auto &all = dev->availableResolutions();
+        for (size_t i = 0; i < all.size(); ++i) {
+            const auto &r = all[i];
+            if (OutputResolutionCap::accepts((int32_t)r.width, (int32_t)r.height))
+                resolutions.add(r);
+        }
+    }
+    const auto &previewResolutions = resolutions;
 
     static const int32_t scalerAvailableFormats[] = {
         HAL_PIXEL_FORMAT_RGBA_8888,
