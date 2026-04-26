@@ -53,6 +53,12 @@ public:
         unsigned    height;
         uint32_t    pixFmt;
         uint32_t    sequence;
+
+        /* Patch-grid window the NEON kernel restricts Sobel /
+         * greenSq accumulation to. Producer reads it from
+         * AutoFocusController::currentFocusRoi() at submit time so
+         * the worker doesn't have to chase AF state across threads. */
+        NeonStatsEncoder::FocusRoi focusRoi;
     };
 
     /* Number of submits a full IpaStats cycle spans. Each computeRange

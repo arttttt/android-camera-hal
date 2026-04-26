@@ -647,6 +647,7 @@ void Camera::buildInfrastructure() {
         d.isp         = mIsp;
         d.statsWorker = mStatsWorker.get();
         d.bayerSource = mBayerSource.get();
+        d.af          = mAf;
         mRequestPipeline->appendStage(
             std::unique_ptr<PipelineStage>(new StatsDispatchStage(d)));
     }

@@ -100,14 +100,13 @@ void StatsWorker::threadLoop() {
                                     ? IpaStats::PATCH_Y
                                     : (phase + 1) * rowsPerPhase;
 
-        /* Centre 8×8 of the patch grid — same rectangle the AF
-         * controller integrates over. Tap-to-focus, when wired up,
-         * will publish a different rectangle per frame; until then
-         * the IpaStats compile-time defaults are the single source. */
-        const NeonStatsEncoder::FocusRoi focusRoi = {
-            IpaStats::FOCUS_ROI_PY_LO, IpaStats::FOCUS_ROI_PY_HI,
-            IpaStats::FOCUS_ROI_PX_LO, IpaStats::FOCUS_ROI_PX_HI,
-        };
+        /* Patch-grid focus rectangle — comes from the producer via
+         * the cycle's currentJob, fed by AutoFocusController so
+         * tap-to-focus can shift the AF stats window per frame. The
+         * value is captured at cycle start (phase 0) and reused
+         * across all phases of the cycle so the partial accumulator
+         * sees one consistent ROI. */
+        const NeonStatsEncoder::FocusRoi &focusRoi = currentJob.focusRoi;
 
         const nsecs_t tNeon0 = systemTime();
         encoder.computeRange(currentJob.bayer,

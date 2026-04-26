@@ -5,6 +5,7 @@
 
 namespace android {
 
+class AutoFocusController;
 class BayerSource;
 class IspPipeline;
 class StatsWorker;
@@ -21,9 +22,10 @@ class StatsWorker;
 class StatsDispatchStage : public PipelineStage {
 public:
     struct Deps {
-        IspPipeline *isp;
-        StatsWorker *statsWorker;
-        BayerSource *bayerSource;
+        IspPipeline         *isp;
+        StatsWorker         *statsWorker;
+        BayerSource         *bayerSource;
+        AutoFocusController *af;          /* may be null; falls back to centre ROI */
     };
 
     explicit StatsDispatchStage(const Deps &deps);

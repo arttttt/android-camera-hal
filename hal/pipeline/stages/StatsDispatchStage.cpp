@@ -1,9 +1,11 @@
 #include "StatsDispatchStage.h"
 
+#include "3a/AutoFocusController.h"
 #include "BayerSource.h"
 #include "IspPipeline.h"
 #include "PipelineContext.h"
 #include "Resolution.h"
+#include "ipa/IpaStats.h"
 #include "ipa/StatsWorker.h"
 
 namespace android {
@@ -32,6 +34,24 @@ void StatsDispatchStage::process(PipelineContext &ctx) {
     job.height   = res.height;
     job.pixFmt   = ctx.bayerFrame->pixFmt;
     job.sequence = ctx.sequence;
+
+    /* Pull the latest AF region (set by AutoFocusController::onSettings
+     * from ANDROID_CONTROL_AF_REGIONS) into the job. Fallback when AF
+     * is null: the compile-time centre rectangle, identical to what
+     * the worker used pre-wiring. */
+    if (deps.af) {
+        const AutoFocusController::FocusRoi roi = deps.af->currentFocusRoi();
+        job.focusRoi.pyLo = roi.pyLo;
+        job.focusRoi.pyHi = roi.pyHi;
+        job.focusRoi.pxLo = roi.pxLo;
+        job.focusRoi.pxHi = roi.pxHi;
+    } else {
+        job.focusRoi.pyLo = IpaStats::FOCUS_ROI_PY_LO;
+        job.focusRoi.pyHi = IpaStats::FOCUS_ROI_PY_HI;
+        job.focusRoi.pxLo = IpaStats::FOCUS_ROI_PX_LO;
+        job.focusRoi.pxHi = IpaStats::FOCUS_ROI_PX_HI;
+    }
+
     deps.statsWorker->submit(job);
 }
 
