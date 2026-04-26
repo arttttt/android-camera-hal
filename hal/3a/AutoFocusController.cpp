@@ -37,6 +37,16 @@ constexpr float   kDefContrastRatio  = 0.75f;
 constexpr float   kDefRetriggerRatio = 0.75f;
 constexpr int32_t kDefRetriggerDelay = 10;
 
+/* Minimum AF region size in patches per axis. Camera apps frequently
+ * ship narrow tap regions (Open Camera + native have both been
+ * observed sending ~5% of frame width), which collapses to one
+ * patch on the 16×16 grid. One patch is ~1/64 of the centre default's
+ * Sobel signal — too noisy for the contrast-detect peak search to
+ * lock on. Expanding around the tap centre to 5×5 (≈10% of frame
+ * area, RPi libcamera convention) keeps the tap location's intent
+ * while restoring enough Sobel signal for stable peak detection. */
+constexpr int kMinFocusRoiPatches = 5;
+
 float sumFocusInRoi(
     const float metric[IpaStats::PATCH_Y][IpaStats::PATCH_X],
     const AutoFocusController::FocusRoi &roi) {
@@ -76,6 +86,32 @@ int32_t clampVcm(int32_t pos) {
     if (pos < kVcmMin) return kVcmMin;
     if (pos > kVcmMax) return kVcmMax;
     return pos;
+}
+
+/* Expand a parsed FocusRoi so each axis spans at least `minSpan`
+ * patches, growing around the rectangle's current centre. Clamped
+ * to [0, gridLimit]; if the requested expansion would push past
+ * an edge, slide the rectangle inward so the full minSpan still
+ * fits when there's room (only narrows below minSpan when the grid
+ * itself is smaller, which can't happen for the IpaStats 16×16
+ * grid + minSpan ≤ 16). */
+void growToMin(int *lo, int *hi, int gridLimit, int minSpan) {
+    int span = *hi - *lo;
+    if (span >= minSpan) return;
+    const int centre = (*lo + *hi) / 2;
+    int newLo = centre - minSpan / 2;
+    int newHi = newLo + minSpan;
+    if (newLo < 0) {
+        newHi -= newLo;
+        newLo = 0;
+    }
+    if (newHi > gridLimit) {
+        newLo -= newHi - gridLimit;
+        newHi  = gridLimit;
+        if (newLo < 0) newLo = 0;
+    }
+    *lo = newLo;
+    *hi = newHi;
 }
 
 } /* namespace */
@@ -499,6 +535,15 @@ void AutoFocusController::onSettings(const CameraMetadata &cm,
                     if (pxHi > IpaStats::PATCH_X) pxHi = IpaStats::PATCH_X;
                     if (pyHi > IpaStats::PATCH_Y) pyHi = IpaStats::PATCH_Y;
                     if (pxHi > pxLo && pyHi > pyLo) {
+                        /* Enforce a minimum 5×5 footprint around the
+                         * tap centre. Apps routinely send narrow
+                         * regions that collapse to one patch on the
+                         * 16×16 grid; the AF metric needs a wider
+                         * Sobel sum to find a stable peak. */
+                        growToMin(&pxLo, &pxHi, IpaStats::PATCH_X,
+                                   kMinFocusRoiPatches);
+                        growToMin(&pyLo, &pyHi, IpaStats::PATCH_Y,
+                                   kMinFocusRoiPatches);
                         roi.pxLo = pxLo; roi.pxHi = pxHi;
                         roi.pyLo = pyLo; roi.pyHi = pyHi;
                         ALOGD("AF_REGIONS sensor=(%d,%d-%d,%d) -> patches "
