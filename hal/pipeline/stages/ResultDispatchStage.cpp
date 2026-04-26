@@ -85,7 +85,12 @@ void ResultDispatchStage::process(PipelineContext &ctx) {
         cr.num_output_buffers = buffers.size();
         cr.output_buffers     = buffers.array();
         cr.input_buffer       = nullptr;
-        cr.partial_result     = 0;
+        /* `1` because we advertise PARTIAL_RESULT_COUNT=1: every
+         * result is a single full delivery. `0` is the "more
+         * partials coming" sentinel and is invalid for HALs that
+         * don't advertise partial-result support — framework
+         * rejects with "Result is malformed". */
+        cr.partial_result     = 1;
         ops->process_capture_result(ops, &cr);
     }
     ctx.request.settings.unlock(result);

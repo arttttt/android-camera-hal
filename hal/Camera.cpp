@@ -889,7 +889,12 @@ void Camera::processCaptureResult(uint32_t frameNumber, const camera_metadata_t 
     captureResult.num_output_buffers = buffers.size();
     captureResult.output_buffers = buffers.array();
     captureResult.input_buffer = NULL;
-    captureResult.partial_result = 0;
+    /* `1` is the only legal value when PARTIAL_RESULT_COUNT == 1 —
+     * each result is a single full delivery. `0` means "metadata
+     * isn't done yet, more partials coming"; the framework rejects
+     * results that claim that on a HAL that didn't advertise
+     * partial-result support. */
+    captureResult.partial_result = 1;
 
     mCallbackOps->process_capture_result(mCallbackOps, &captureResult);
 }
