@@ -358,27 +358,57 @@ Tier 4 with no queue-type churn.
 Item 10 above. Captured here for the historical note on what the
 flag was and why it had to go.
 
-## Tier 4 — aspirational (L, or rewrite)
+### Camera2 / HAL3.4 compliance pass — done
 
-### Move sensor / ISP access to media-controller + v4l2-subdev
+Brought `device_version` from 3.0 up to 3.4 incrementally and closed
+the Camera2 contract gaps that were keeping app paths broken:
 
-Today `/dev/video0` is the only node we touch (plus the focuser
-subdev). Multi-stage ISP pipelines require addressing the subdevs
-directly: select sensor modes via `VIDIOC_SUBDEV_S_FMT`, route
-statistics through a separate capture node, etc.
+- Static metadata: `AVAILABLE_REQUEST/RESULT/CHARACTERISTICS_KEYS`,
+  `REQUEST_AVAILABLE_CAPABILITIES = [BACKWARD_COMPATIBLE]`,
+  `MAX_NUM_OUTPUT_STREAMS` (or the API-26+ split), `SYNC_MAX_LATENCY`,
+  per-stage `EDGE / HOT_PIXEL / NOISE_REDUCTION / SHADING /
+  TONEMAP / COLOR_CORRECTION_ABERRATION /
+  LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION / SENSOR_AVAILABLE_TEST_PATTERN /
+  STATISTICS_INFO_AVAILABLE_FACE_DETECT / HOT_PIXEL_MAP /
+  LENS_SHADING_MAP` AVAILABLE arrays, `LENS_INFO_HYPERFOCAL_DISTANCE`,
+  `LENS_INFO_FOCUS_DISTANCE_CALIBRATION`, `LENS_INFO_AVAILABLE_APERTURES /
+  FILTER_DENSITIES`, `SENSOR_INFO_TIMESTAMP_SOURCE`,
+  `SENSOR_INFO_COLOR_FILTER_ARRANGEMENT`, `CONTROL_AVAILABLE_MODES`.
+- Honest `REQUEST_PIPELINE_MAX_DEPTH = 4`.
+- HAL3.2 ABI: NULL'd deprecated `register_stream_buffers` and
+  `get_metadata_vendor_tag_ops`; emit `partial_result = 1`;
+  preserve consumer gralloc usage flags in `StreamConfig::normalize`
+  (only add SW_WRITE_OFTEN for BLOB outputs that libjpeg fills
+  CPU-side).
+- HAL3.3 ABI: validate
+  `camera3_stream_configuration_t::operation_mode` (NORMAL only),
+  `camera3_stream_t::rotation` (0 only), reject DEPTH `data_space`.
+- AE contract: report `ANDROID_CONTROL_AE_STATE` from BasicIpa
+  convergence + AE_LOCK; honour `AE_EXPOSURE_COMPENSATION` on the
+  auto path and as an additive offset through AE_LOCK with EMA
+  smoothing to avoid the rolling-shutter readout split on big
+  steps.
+- AF contract: `ANDROID_CONTROL_MAX_REGIONS = {0, 0, 1}`,
+  `AF_REGIONS` parsed in `AutoFocusController::onSettings` into a
+  patch-grid `FocusRoi` (5×5-patch minimum around tap centre,
+  thread-safe getter), wired through `StatsWorker::Job` so the
+  NEON encoder restricts Sobel / greenSq to the same window the
+  state machine sums.
+- AutoFocusController hardcode-to-tuning: VCM range / settle
+  frames / step / contrast / retrigger ratios all from
+  `SensorTuning`, no compile-time fallbacks; `mVcmPerDiopter`
+  derived from calibrated VCM range and module's
+  `min_focus_distance_diopters`; `clampVcm` bounds to
+  `[mVcmInfinity, mVcmMacroEnd]` so manual-focus sliders past
+  MIN_FOCUS_DISTANCE rest at macro instead of driving the
+  actuator into a hardware stop.
+- `module.sensor_orientation_degrees` per-module in tuning JSON
+  instead of a `(facing == FRONT) ? 270 : 90` ternary.
 
-Path to eventually adopting libcamera as the backing layer, or at
-minimum to supporting Tegra variants with different topologies without
-rewriting the HAL.
-
-### Replace bespoke HAL with libcamera's Android shim
-
-libcamera ships `src/android/` — a Camera3 HAL backed by libcamera.
-If a Tegra pipeline handler existed upstream (none does today), we
-could retire this HAL entirely. Writing that pipeline handler is
-realistically a months-long project and ties us to libcamera's
-release cadence; noted here for completeness rather than as an
-imminent plan.
+After this, the HAL claims 3.4 and apps that gate on hardware
+level / device version see the freshest contract from us; no new
+features behind the bumps but the surface that's there matches
+what the framework expects.
 
 ## Suggested sequencing
 
@@ -390,4 +420,9 @@ imminent plan.
    IPA / DelayedControls plumbing, NEON stats worker, BasicIpa AE
    + AWB + AF, focus-ROI spatial restrict, V4L2DEVICE_OPEN_ONCE
    removal, PR 7 produce-once + JpegWorker + ResultThread split).
-4. **Tier 4** — discretionary.
+4. **HAL3.4 / Camera2 compliance** — done (see above).
+5. **ZSL + reprocess** — open. The slot reserved in PR 2
+   (`Request::inputBuffer`, `MAX_NUM_INPUT_STREAMS = 0` placeholder
+   in static metadata) is the natural next major feature: ring of
+   N most-recent frames + reprocess wiring through Camera3's input
+   stream contract. Discretionary.
