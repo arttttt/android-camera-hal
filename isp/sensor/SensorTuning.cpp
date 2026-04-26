@@ -320,9 +320,70 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
             mAeParams.maxFstopDeltaNeg = ae["MaxFstopDeltaNeg"].asFloat();
     }
 
-    ALOGD("tuning loaded: %s (%s/%s) — %zu CCM sets, AF=%d, BL=(%d,%d,%d,%d)",
+    const Json::Value &ls = active["lensShading"];
+    if (ls.isObject()) {
+        mLscData.moduleCalEnable    = ls["module_cal_enable"].asInt() != 0;
+        mLscData.imageWidth         = ls["imageWidth"].asInt();
+        mLscData.imageHeight        = ls["imageHeight"].asInt();
+        mLscData.ctrlPointsCount    = ls["ctrlPointsCount"].asInt();
+        mLscData.falloffPointsCount = ls["falloff_PointsCount"].asInt();
+        mLscData.leftPatchFactor    = ls["leftPatchFactor"].asFloat();
+        mLscData.centerPatchFactor  = ls["centerPatchFactor"].asFloat();
+        mLscData.topPatchFactor     = ls["topPatchFactor"].asFloat();
+        mLscData.middlePatchFactor  = ls["middlePatchFactor"].asFloat();
+
+        auto readChannel = [](const Json::Value &arr,
+                              float out[LscControlPoint::kProfileSamples]) {
+            if (!arr.isArray()) return;
+            int n = (int)arr.size();
+            if (n > LscControlPoint::kProfileSamples)
+                n = LscControlPoint::kProfileSamples;
+            for (int i = 0; i < n; ++i) out[i] = arr[i].asFloat();
+        };
+
+        const Json::Value &cps = ls["ctrlPoints"];
+        if (cps.isArray()) {
+            for (Json::ArrayIndex i = 0; i < cps.size(); ++i) {
+                const Json::Value &cp = cps[i];
+                LscControlPoint pt{};
+                pt.cctK        = cp["cct"].asInt();
+                pt.lightFamily = cp.get("light_family", 0).asInt();
+                readChannel(cp["controlPointR"],  pt.controlPointR);
+                readChannel(cp["controlPointGR"], pt.controlPointGR);
+                readChannel(cp["controlPointGB"], pt.controlPointGB);
+                readChannel(cp["controlPointB"],  pt.controlPointB);
+                mLscData.ctrlPoints.push_back(pt);
+            }
+        }
+
+        auto readFalloff = [](const Json::Value &arr,
+                              std::vector<LscFalloffPoint> *out) {
+            if (!arr.isArray()) return;
+            for (Json::ArrayIndex i = 0; i < arr.size(); ++i) {
+                const Json::Value &row = arr[i];
+                if (!row.isArray() || row.size() < 2) continue;
+                LscFalloffPoint p;
+                p.gain        = row[0].asFloat();
+                p.fadePercent = row[1].asFloat();
+                out->push_back(p);
+            }
+        };
+
+        const Json::Value &fo = ls["falloff"];
+        if (fo.isObject()) {
+            readFalloff(fo["Preview"], &mLscData.falloffPreview);
+            readFalloff(fo["Still"],   &mLscData.falloffStill);
+            readFalloff(fo["Video"],   &mLscData.falloffVideo);
+        }
+
+        mLscData.loaded = true;
+    }
+
+    ALOGD("tuning loaded: %s (%s/%s) — %zu CCM sets, AF=%d, BL=(%d,%d,%d,%d), LSC=%d (image=%dx%d)",
           fn.c_str(), sensor, integrator, mCcmSets.size(), mHasAf,
-          mOpticalBlack.r, mOpticalBlack.gr, mOpticalBlack.gb, mOpticalBlack.b);
+          mOpticalBlack.r, mOpticalBlack.gr, mOpticalBlack.gb, mOpticalBlack.b,
+          mLscData.loaded ? mLscData.ctrlPointsCount : 0,
+          mLscData.imageWidth, mLscData.imageHeight);
 
     mLoaded = true;
     return true;

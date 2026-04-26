@@ -217,6 +217,57 @@ public:
               maxFstopDeltaPos(0.f), maxFstopDeltaNeg(0.f) {}
     };
 
+    /* Lens-shading correction tuning. Each ctrlPoint carries 10
+     * samples per channel (R / GR / GB / B) calibrated at one
+     * illuminant CCT. The spatial mapping of those 10 samples (1D
+     * edge-to-edge scan, radial profile, or separable X / Y) is the
+     * consumer's interpretation — this struct is faithful storage of
+     * NVIDIA's layout, not a decoded 2D map. Falloff attenuates the
+     * correction strength at high analog gain so noise floor in the
+     * corners doesn't get amplified along with the signal. Patch
+     * factors are exposed for AE / AWB consumers that may weight
+     * patches differently after LSC; not consumed by the shader. */
+    struct LscControlPoint {
+        static constexpr int kProfileSamples = 10;
+        int   cctK;
+        int   lightFamily;
+        float controlPointR [kProfileSamples];
+        float controlPointGR[kProfileSamples];
+        float controlPointGB[kProfileSamples];
+        float controlPointB [kProfileSamples];
+    };
+
+    struct LscFalloffPoint {
+        float gain;
+        float fadePercent;
+    };
+
+    struct LscData {
+        bool  loaded;
+        bool  moduleCalEnable;
+        int   imageWidth;
+        int   imageHeight;
+        int   ctrlPointsCount;
+        std::vector<LscControlPoint> ctrlPoints;
+
+        int   falloffPointsCount;
+        std::vector<LscFalloffPoint> falloffPreview;
+        std::vector<LscFalloffPoint> falloffStill;
+        std::vector<LscFalloffPoint> falloffVideo;
+
+        float leftPatchFactor;
+        float centerPatchFactor;
+        float topPatchFactor;
+        float middlePatchFactor;
+
+        LscData()
+            : loaded(false), moduleCalEnable(false),
+              imageWidth(0), imageHeight(0), ctrlPointsCount(0),
+              falloffPointsCount(0),
+              leftPatchFactor(0.f), centerPatchFactor(0.f),
+              topPatchFactor(0.f), middlePatchFactor(0.f) {}
+    };
+
     const ModuleInfo&           module()        const { return mModule; }
     const AfParams&             af()            const { return mAf; }
     const std::vector<CcmSet>&  ccmSets()       const { return mCcmSets; }
@@ -224,6 +275,7 @@ public:
     const AwbRefs&              awbRefs()       const { return mAwbRefs; }
     const AwbParams&            awbParams()     const { return mAwbParams; }
     const AeParams&             aeParams()      const { return mAeParams; }
+    const LscData&              lscData()       const { return mLscData; }
 
     /* Fill `out` (9 entries, row-major 3x3) with the Q10 fixed-point CCM
      * closest to `cctK`. Uses nearest-CCT from ccmSets(); if the tuning
@@ -305,6 +357,7 @@ private:
     AwbRefs      mAwbRefs;
     AwbParams    mAwbParams;
     AeParams     mAeParams;
+    LscData      mLscData;
     std::string  mBayerPattern;
 };
 
