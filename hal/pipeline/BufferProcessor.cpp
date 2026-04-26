@@ -220,6 +220,9 @@ status_t BufferProcessor::recordBlobOutput(const camera3_stream_buffer &srcBuf,
               srcBuf.buffer, frameNumber);
         return NO_INIT;
     }
+    ALOGD("BLOB record: frame=%u ringSlot=%d %ux%u",
+          frameNumber, snapshotOut->ringSlot,
+          snapshotOut->width, snapshotOut->height);
     return NO_ERROR;
 }
 
@@ -251,15 +254,16 @@ void BufferProcessor::finalizeBlobOutput(const CaptureRequest::Buffer &outBuf,
 
     mDeps.isp->invalidateJpegSnapshot(snap);
     size_t written = 0;
-    bool ok = false;
-    BENCHMARK_SECTION("RGBA->JPEG") {
-        ok = mDeps.jpeg->process(snap, dst, maxImageSize, metadata, &written);
-    }
+    int64_t t0 = systemTime();
+    bool ok = mDeps.jpeg->process(snap, dst, maxImageSize, metadata, &written);
+    int64_t encMs = (systemTime() - t0) / 1000000;
     if (ok) {
         camera3_jpeg_blob *blob =
             reinterpret_cast<camera3_jpeg_blob *>(dst + maxImageSize);
         blob->jpeg_blob_id = CAMERA3_JPEG_BLOB_ID;
         blob->jpeg_size    = (uint32_t)written;
+        ALOGD("BLOB finalize: frame=%u ringSlot=%d encode=%lldms size=%zu",
+              frameNumber, snap.ringSlot, (long long)encMs, written);
     } else {
         ALOGE("buffer %p  frame %-4u  JPEG encode failed", outBuf.buffer, frameNumber);
     }
