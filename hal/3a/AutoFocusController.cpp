@@ -16,26 +16,13 @@ namespace android {
 
 namespace {
 
-/* VCM positions are raw units exposed by the focuser subdev. The map
- * to diopters is linear within the usable range; 50 units per diopter.
- * Values outside [kVcmMin, kVcmMax] are rejected by the driver. The
- * inf / macro / settle-frames values come from SensorTuning when
- * present; these are fallbacks for tuning-less builds. */
-constexpr int32_t kVcmInfinityFallback = 140;
-constexpr int32_t kVcmMacroEndFallback = 650;
-constexpr int32_t kVcmAutoEndFallback  = 640;
-constexpr int32_t kVcmMin              = 0;
-constexpr int32_t kVcmMax              = 1023;
-constexpr float   kVcmPerDiopter       = 50.0f;
-
-/* Compile-time CDAF defaults — used only when the tuning is missing
- * the matching `active.af.*` keys. Same magnitudes the JSON ships
- * for the IMX179 module. */
-constexpr int32_t kDefStepCoarse     = 25;
-constexpr int32_t kDefStepFine       = 5;
-constexpr float   kDefContrastRatio  = 0.75f;
-constexpr float   kDefRetriggerRatio = 0.75f;
-constexpr int32_t kDefRetriggerDelay = 10;
+/* VCM positions are raw units exposed by the focuser subdev. The
+ * inf / macro positions, the diopter scale, the CDAF tunables and
+ * the settle-frames counts all come from SensorTuning at construction.
+ * No compile-time fallbacks: per the project's "no silent fallbacks
+ * for 3A tuning knobs" rule, missing tuning keys leave the matching
+ * member at zero and the AF state machine self-disables (mHasAf
+ * stays false on the SensorTuning side, AfMode stays OFF here). */
 
 /* Minimum AF region size in patches per axis. Camera apps frequently
  * ship narrow tap regions (Open Camera + native have both been
@@ -82,12 +69,6 @@ bool outsideRatio(float a, float b, float ratio) {
     return (a + 1.f) < ratio * b || (b + 1.f) < ratio * a;
 }
 
-int32_t clampVcm(int32_t pos) {
-    if (pos < kVcmMin) return kVcmMin;
-    if (pos > kVcmMax) return kVcmMax;
-    return pos;
-}
-
 /* Expand a parsed FocusRoi so each axis spans at least `minSpan`
  * patches, growing around the rectangle's current centre. Clamped
  * to [0, gridLimit]; if the requested expansion would push past
@@ -122,18 +103,19 @@ AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
     : mDev(dev)
     , mIsp(isp)
     , mIpa(ipa)
-    , mVcmInfinity(kVcmInfinityFallback)
+    , mVcmInfinity(0)
     , mVcmMacroStart(0)
-    , mVcmMacroEnd(kVcmMacroEndFallback)
-    , mVcmAutoEnd(kVcmAutoEndFallback)
-    , mStepCoarse(kDefStepCoarse)
-    , mStepFine(kDefStepFine)
-    , mContrastRatio(kDefContrastRatio)
-    , mRetriggerRatio(kDefRetriggerRatio)
-    , mRetriggerDelay(kDefRetriggerDelay)
+    , mVcmMacroEnd(0)
+    , mVcmAutoEnd(0)
+    , mStepCoarse(0)
+    , mStepFine(0)
+    , mContrastRatio(0.f)
+    , mRetriggerRatio(0.f)
+    , mRetriggerDelay(0)
     , mPdafEnabled(false)
-    , mSettleFramesCoarse(2)
-    , mSettleFramesFine(1)
+    , mSettleFramesCoarse(0)
+    , mSettleFramesFine(0)
+    , mVcmPerDiopter(0.f)
     , mAfMode(ANDROID_CONTROL_AF_MODE_OFF)
     , mFocusPosition(0)
     , mState(ScanState::Idle)
@@ -165,25 +147,41 @@ AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
             mVcmInfinity = af.infPos;
             mVcmMacroEnd = af.macroPos;
         }
-        mVcmAutoEnd = af.macroPos;
+        mVcmAutoEnd         = af.macroPos;
 
-        if (af.stepCoarse         > 0)   mStepCoarse         = af.stepCoarse;
-        if (af.stepFine           > 0)   mStepFine           = af.stepFine;
-        if (af.contrastRatio      > 0.f) mContrastRatio      = af.contrastRatio;
-        if (af.retriggerRatio     > 0.f) mRetriggerRatio     = af.retriggerRatio;
-        if (af.retriggerDelay     > 0)   mRetriggerDelay     = af.retriggerDelay;
-        if (af.settleFramesCoarse > 0)   mSettleFramesCoarse = af.settleFramesCoarse;
-        if (af.settleFramesFine   > 0)   mSettleFramesFine   = af.settleFramesFine;
-        mPdafEnabled = af.pdafEnabled;
+        mStepCoarse         = af.stepCoarse;
+        mStepFine           = af.stepFine;
+        mContrastRatio      = af.contrastRatio;
+        mRetriggerRatio     = af.retriggerRatio;
+        mRetriggerDelay     = af.retriggerDelay;
+        mSettleFramesCoarse = af.settleFramesCoarse;
+        mSettleFramesFine   = af.settleFramesFine;
+        mPdafEnabled        = af.pdafEnabled;
+
+        /* VCM units per diopter are derived from the calibrated VCM
+         * range and the module's min focus distance. Doing it from
+         * tuning instead of a fixed compile-time scale keeps the
+         * manual-focus slider's full travel mapped onto the actual
+         * actuator range — slider at MIN_FOCUS_DISTANCE lands at
+         * mVcmMacroEnd exactly, no dead zone past it. Falls to 0
+         * when the module declares fixed focus
+         * (min_focus_distance_diopters == 0); manual-focus diopter
+         * conversion then keeps the lens parked at infinity. */
+        const float minFocusDist = tuning->module().minFocusDistanceDiopters;
+        if (minFocusDist > 0.f && mVcmMacroEnd > mVcmInfinity) {
+            mVcmPerDiopter = (float)(mVcmMacroEnd - mVcmInfinity) / minFocusDist;
+        }
 
         ALOGD("AF tuning: cal=%d inf=%d macro=%d auto_end=%d "
-              "step=%d/%d settle=%d/%d ratios=%.2f/%.2f delay=%d pdaf=%d",
+              "step=%d/%d settle=%d/%d ratios=%.2f/%.2f delay=%d pdaf=%d "
+              "vcm_per_diopter=%.2f",
               af.moduleCalEnable ? 1 : 0,
               mVcmInfinity, mVcmMacroEnd, mVcmAutoEnd,
               mStepCoarse, mStepFine,
               mSettleFramesCoarse, mSettleFramesFine,
               (double)mContrastRatio, (double)mRetriggerRatio, mRetriggerDelay,
-              mPdafEnabled ? 1 : 0);
+              mPdafEnabled ? 1 : 0,
+              (double)mVcmPerDiopter);
 
         if (mPdafEnabled) {
             ALOGW("AF: pdaf_enabled=true but no PDAF state-machine wired; "
@@ -195,6 +193,12 @@ AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
 
     mFocusPosition = mVcmInfinity;
     mSweepBestPos  = mVcmInfinity;
+}
+
+int32_t AutoFocusController::clampVcm(int32_t pos) const {
+    if (pos < mVcmInfinity) return mVcmInfinity;
+    if (pos > mVcmMacroEnd) return mVcmMacroEnd;
+    return pos;
 }
 
 bool AutoFocusController::nearLimit(int32_t pos, int32_t limit) const {
@@ -490,7 +494,7 @@ void AutoFocusController::onSettings(const CameraMetadata &cm,
     if (afMode == ANDROID_CONTROL_AF_MODE_OFF &&
         cm.exists(ANDROID_LENS_FOCUS_DISTANCE)) {
         float diopter = *cm.find(ANDROID_LENS_FOCUS_DISTANCE).data.f;
-        int32_t pos = mVcmInfinity + (int32_t)(diopter * kVcmPerDiopter);
+        int32_t pos = mVcmInfinity + (int32_t)(diopter * mVcmPerDiopter);
         pos = clampVcm(pos);
         mDev->setFocusPosition(pos);
         mFocusPosition = pos;
@@ -763,7 +767,9 @@ AutoFocusController::Report AutoFocusController::report() const {
     r.afState = (mState != ScanState::Idle)
         ? ANDROID_CONTROL_AF_STATE_ACTIVE_SCAN
         : ANDROID_CONTROL_AF_STATE_FOCUSED_LOCKED;
-    float diopter = (mFocusPosition - mVcmInfinity) / kVcmPerDiopter;
+    float diopter = (mVcmPerDiopter > 0.f)
+                  ? (mFocusPosition - mVcmInfinity) / mVcmPerDiopter
+                  : 0.f;
     if (diopter < 0)
         diopter = 0;
     r.focusDiopter = diopter;

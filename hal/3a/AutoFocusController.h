@@ -150,6 +150,14 @@ private:
     bool   nearLimit(int32_t pos, int32_t limit) const;
     void   setSettleForMove(int32_t fromPos, int32_t toPos);
 
+    /* Clamp `pos` to the calibrated VCM range
+     * [mVcmInfinity, mVcmMacroEnd] — sweep / manual-focus / etc.
+     * never push the lens past the points the tuning calibrated, so
+     * a slider beyond MIN_FOCUS_DISTANCE just rests at the macro
+     * extreme instead of driving the actuator into the hardware
+     * stop where it stops responding. */
+    int32_t clampVcm(int32_t pos) const;
+
     V4l2Device  *mDev;
     IspPipeline *mIsp;
     Ipa         *mIpa;
@@ -170,6 +178,13 @@ private:
     bool     mPdafEnabled;
     int32_t  mSettleFramesCoarse;
     int32_t  mSettleFramesFine;
+
+    /* VCM units per diopter, derived at construction from the
+     * calibrated VCM range and SensorTuning's
+     * module.min_focus_distance_diopters. Zero on fixed-focus or
+     * tuning-less sensors — manual-focus diopter conversion then
+     * keeps the lens at infinity. */
+    float    mVcmPerDiopter;
 
     uint8_t  mAfMode;
     int32_t  mFocusPosition;
