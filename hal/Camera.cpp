@@ -951,10 +951,17 @@ int Camera::sFlush(const camera3_device *device) {
 camera3_device_ops_t Camera::sOps = {
     .initialize                         = Camera::sInitialize,
     .configure_streams                  = Camera::sConfigureStreams,
-    .register_stream_buffers            = Camera::sRegisterStreamBuffers,
+    /* Deprecated since HAL3.2 — the framework now hands gralloc
+     * buffers to process_capture_request directly without a
+     * pre-registration phase. Setting these non-NULL on a 3.2+
+     * device causes Camera3Stream::finishConfiguration to bail
+     * with -ENOSYS, which surfaces as
+     * "configureStreamsLocked: Can't finish configuring output
+     * stream" and leaves the session unable to start preview. */
+    .register_stream_buffers            = NULL,
     .construct_default_request_settings = Camera::sConstructDefaultRequestSettings,
     .process_capture_request            = Camera::sProcessCaptureRequest,
-    .get_metadata_vendor_tag_ops        = Camera::sGetMetadataVendorTagOps,
+    .get_metadata_vendor_tag_ops        = NULL,
     .dump                               = Camera::sDump,
     .flush                              = Camera::sFlush,
     .reserved = {0}
