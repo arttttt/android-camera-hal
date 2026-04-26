@@ -339,6 +339,64 @@ void writeHalInfo(CameraMetadata &cm) {
 
     cm.update(ANDROID_REQUEST_PIPELINE_MAX_DEPTH,   &kPipelineMaxDepth,   1);
     cm.update(ANDROID_REQUEST_PARTIAL_RESULT_COUNT, &kPartialResultCount, 1);
+
+    /* Capability sets the HAL implements. BACKWARD_COMPATIBLE is the
+     * minimum required for any non-LEGACY hardware level — its
+     * absence makes Camera2 service treat the HAL as LEGACY
+     * regardless of SUPPORTED_HARDWARE_LEVEL, which is what kept
+     * apps like Open Camera from offering the Camera2 toggle.
+     * MANUAL_SENSOR / RAW / BURST are not yet claimed: real manual
+     * exposure path needs a pre-capture-trigger contract we don't
+     * implement, RAW is Phase 3 of B1, and BURST has no targeted
+     * timing guarantees. */
+    static const uint8_t requestCaps[] = {
+        ANDROID_REQUEST_AVAILABLE_CAPABILITIES_BACKWARD_COMPATIBLE,
+    };
+    cm.update(ANDROID_REQUEST_AVAILABLE_CAPABILITIES,
+              requestCaps, NELEM(requestCaps));
+
+    /* Concurrent output stream caps. Produce-once landed in Tier 3 PR 7
+     * so RGBA preview + YUV video are both non-stalling on the GPU side,
+     * and the BLOB encode runs on JpegWorker concurrently with
+     * pipeline submits — counts as one stalling stream because libjpeg
+     * holds the JPEG snapshot ring slot until done. RAW and reprocess
+     * are unimplemented; both set to 0 so apps don't try.
+     *
+     * Android 7.1.2 carries a single 3-element MAX_NUM_OUTPUT_STREAMS
+     * array indexed [RAW, PROCESSED, PROCESSED_STALLING]. API 26+
+     * split the same data into three scalar tags. Detect the split
+     * by symbol presence so the same TU compiles against either. */
+#ifdef ANDROID_REQUEST_MAX_NUM_OUTPUT_RAW
+    static const int32_t maxOutputRaw      = 0;
+    static const int32_t maxOutputProc     = 2;
+    static const int32_t maxOutputStalling = 1;
+    cm.update(ANDROID_REQUEST_MAX_NUM_OUTPUT_RAW,
+              &maxOutputRaw,      1);
+    cm.update(ANDROID_REQUEST_MAX_NUM_OUTPUT_PROC,
+              &maxOutputProc,     1);
+    cm.update(ANDROID_REQUEST_MAX_NUM_OUTPUT_PROC_STALLING,
+              &maxOutputStalling, 1);
+#else
+    static const int32_t maxOutputStreams[] = {
+        0, /* RAW                  */
+        2, /* PROCESSED             */
+        1, /* PROCESSED_STALLING    */
+    };
+    cm.update(ANDROID_REQUEST_MAX_NUM_OUTPUT_STREAMS,
+              maxOutputStreams, NELEM(maxOutputStreams));
+#endif
+
+    static const int32_t maxInputStreams = 0;
+    cm.update(ANDROID_REQUEST_MAX_NUM_INPUT_STREAMS,
+              &maxInputStreams, 1);
+
+    /* Frames between a request landing and its result reflecting the
+     * applied controls. Exposure / gain go through DelayedControls
+     * (2 frames on IMX179 + OV5693) but other controls (AE_MODE, AF
+     * trigger) latch immediately. UNKNOWN advertises the worst case
+     * without lying about per-frame controls. */
+    static const int32_t syncMaxLatency = ANDROID_SYNC_MAX_LATENCY_UNKNOWN;
+    cm.update(ANDROID_SYNC_MAX_LATENCY, &syncMaxLatency, 1);
 }
 
 /* Per-tag enumeration the framework / CameraX feature probes expect.
@@ -455,9 +513,18 @@ void writeAvailableKeys(CameraMetadata &cm) {
         ANDROID_LENS_FACING,
         ANDROID_LENS_INFO_AVAILABLE_FOCAL_LENGTHS,
         ANDROID_LENS_INFO_MINIMUM_FOCUS_DISTANCE,
+        ANDROID_REQUEST_AVAILABLE_CAPABILITIES,
         ANDROID_REQUEST_AVAILABLE_CHARACTERISTICS_KEYS,
         ANDROID_REQUEST_AVAILABLE_REQUEST_KEYS,
         ANDROID_REQUEST_AVAILABLE_RESULT_KEYS,
+        ANDROID_REQUEST_MAX_NUM_INPUT_STREAMS,
+#ifdef ANDROID_REQUEST_MAX_NUM_OUTPUT_RAW
+        ANDROID_REQUEST_MAX_NUM_OUTPUT_PROC,
+        ANDROID_REQUEST_MAX_NUM_OUTPUT_PROC_STALLING,
+        ANDROID_REQUEST_MAX_NUM_OUTPUT_RAW,
+#else
+        ANDROID_REQUEST_MAX_NUM_OUTPUT_STREAMS,
+#endif
         ANDROID_REQUEST_PARTIAL_RESULT_COUNT,
         ANDROID_REQUEST_PIPELINE_MAX_DEPTH,
         ANDROID_SCALER_AVAILABLE_FORMATS,
@@ -477,6 +544,7 @@ void writeAvailableKeys(CameraMetadata &cm) {
         ANDROID_SENSOR_MAX_ANALOG_SENSITIVITY,
         ANDROID_SENSOR_ORIENTATION,
         ANDROID_STATISTICS_INFO_MAX_FACE_COUNT,
+        ANDROID_SYNC_MAX_LATENCY,
     };
     cm.update(ANDROID_REQUEST_AVAILABLE_CHARACTERISTICS_KEYS,
               characteristicsKeys, NELEM(characteristicsKeys));
