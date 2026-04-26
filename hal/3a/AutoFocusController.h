@@ -2,6 +2,7 @@
 #define HAL_3A_AUTO_FOCUS_CONTROLLER_H
 
 #include <stdint.h>
+#include <mutex>
 #include <vector>
 
 #include <camera/CameraMetadata.h>
@@ -46,6 +47,17 @@ public:
         float   focusDiopter;  /* 0 .. ~10, for ANDROID_LENS_FOCUS_DISTANCE */
     };
 
+    /* AF region of interest in IpaStats patch grid coordinates.
+     * Matches the half-open shape of the FOCUS_ROI_* compile-time
+     * constants and NeonStatsEncoder::FocusRoi: pyLo/pxLo inclusive,
+     * pyHi/pxHi exclusive, both in [0, IpaStats::PATCH_*]. */
+    struct FocusRoi {
+        int pyLo;
+        int pyHi;
+        int pxLo;
+        int pxHi;
+    };
+
     /* `tuning` is optional — pass nullptr or a !isLoaded() instance and
      * the controller falls back to compile-time VCM defaults. When the
      * tuning provides AF data we consume it (inf/macro positions,
@@ -83,6 +95,15 @@ public:
 
     Report report() const;
     bool   isSweeping() const { return mState != ScanState::Idle; }
+
+    /* Snapshot the AF region the StatsWorker should restrict its
+     * Sobel / greenSq accumulation to. Updated from the framework's
+     * ANDROID_CONTROL_AF_REGIONS in onSettings; defaults to the
+     * compile-time FOCUS_ROI_* centre rectangle when no app sets a
+     * region (or when the region is the default full-frame one).
+     * Thread-safe — onSettings runs on RequestThread, this getter is
+     * called from StatsWorker each cycle. */
+    FocusRoi currentFocusRoi() const;
 
     /* Reset the state-machine to the initial post-construction
      * state. Used at camera close so a stale sweep doesn't leak
@@ -207,6 +228,13 @@ private:
      * controller from cycle-locking on a moving / jittering scene
      * where each retrigger triggers the next. */
     uint32_t  mFramesSinceLastSweep;
+
+    /* AF region of interest in patch coordinates, written by
+     * onSettings on the RequestThread and read by StatsWorker on
+     * its own thread. Default (full-frame request settings) maps to
+     * the centre 8×8 patches via FOCUS_ROI_* constants. */
+    mutable std::mutex mFocusRoiMutex;
+    FocusRoi  mFocusRoi;
 };
 
 }; /* namespace android */

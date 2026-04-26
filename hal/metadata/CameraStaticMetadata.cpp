@@ -286,7 +286,7 @@ void writeControlInfo(CameraMetadata &cm, int facing) {
     static const int32_t controlMaxRegions[] = {
         0, /* AE */
         0, /* AWB */
-        0  /* AF */
+        1  /* AF — single region for tap-to-focus */
     };
     cm.update(ANDROID_CONTROL_MAX_REGIONS, controlMaxRegions, NELEM(controlMaxRegions));
 

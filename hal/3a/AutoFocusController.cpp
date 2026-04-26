@@ -110,6 +110,8 @@ AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
     , mSceneRgbSnapshot{0.f, 0.f, 0.f}
     , mSceneChangeCount(0)
     , mFramesSinceLastSweep(UINT32_MAX)
+    , mFocusRoi{IpaStats::FOCUS_ROI_PY_LO, IpaStats::FOCUS_ROI_PY_HI,
+                IpaStats::FOCUS_ROI_PX_LO, IpaStats::FOCUS_ROI_PX_HI}
 {
     /* A full Coarse1 + Coarse2 + Fine + Settle sweep produces around
      * 30-50 samples; reserving 64 covers the typical case without a
@@ -456,6 +458,59 @@ void AutoFocusController::onSettings(const CameraMetadata &cm,
         mFocusPosition = pos;
     }
 
+    /* Tap-to-focus / zonal AF. Camera2 ships AF_REGIONS as 5 ints
+     * (xMin, yMin, xMax, yMax, weight) in active-array coordinates
+     * (== sensor capture resolution for our HAL). The default request
+     * template fills the whole sensor rect; treat that as "no region,
+     * use centre defaults". A real region from a tap shrinks the
+     * stats integration window so AF locks onto whatever the user
+     * pointed at instead of the centre. Single region only —
+     * MAX_REGIONS advertises 1 in static metadata. */
+    {
+        FocusRoi roi{IpaStats::FOCUS_ROI_PY_LO, IpaStats::FOCUS_ROI_PY_HI,
+                     IpaStats::FOCUS_ROI_PX_LO, IpaStats::FOCUS_ROI_PX_HI};
+        if (cm.exists(ANDROID_CONTROL_AF_REGIONS)) {
+            const camera_metadata_ro_entry e = cm.find(ANDROID_CONTROL_AF_REGIONS);
+            if (e.count >= 4) {
+                const int32_t xMin = e.data.i32[0];
+                const int32_t yMin = e.data.i32[1];
+                const int32_t xMax = e.data.i32[2];
+                const int32_t yMax = e.data.i32[3];
+                const auto sensorRes = mDev->sensorResolution();
+                const int sw = (int)sensorRes.width;
+                const int sh = (int)sensorRes.height;
+                const bool isFullFrame =
+                    (xMin <= 0 && yMin <= 0 && xMax >= sw && yMax >= sh);
+                if (sw > 0 && sh > 0 && !isFullFrame
+                    && xMax > xMin && yMax > yMin) {
+                    /* Sensor coords → patch grid (16×16). Floor on Lo,
+                     * ceil on Hi so a tiny tap still spans at least one
+                     * patch column / row. */
+                    const float wPerPatch = (float)sw / IpaStats::PATCH_X;
+                    const float hPerPatch = (float)sh / IpaStats::PATCH_Y;
+                    int pxLo = (int)((float)xMin / wPerPatch);
+                    int pyLo = (int)((float)yMin / hPerPatch);
+                    int pxHi = (int)((float)xMax / wPerPatch + 0.999f);
+                    int pyHi = (int)((float)yMax / hPerPatch + 0.999f);
+                    if (pxLo < 0) pxLo = 0;
+                    if (pyLo < 0) pyLo = 0;
+                    if (pxHi > IpaStats::PATCH_X) pxHi = IpaStats::PATCH_X;
+                    if (pyHi > IpaStats::PATCH_Y) pyHi = IpaStats::PATCH_Y;
+                    if (pxHi > pxLo && pyHi > pyLo) {
+                        roi.pxLo = pxLo; roi.pxHi = pxHi;
+                        roi.pyLo = pyLo; roi.pyHi = pyHi;
+                        ALOGD("AF_REGIONS sensor=(%d,%d-%d,%d) -> patches "
+                              "py[%d,%d) px[%d,%d)",
+                              xMin, yMin, xMax, yMax,
+                              roi.pyLo, roi.pyHi, roi.pxLo, roi.pxHi);
+                    }
+                }
+            }
+        }
+        std::lock_guard<std::mutex> lock(mFocusRoiMutex);
+        mFocusRoi = roi;
+    }
+
     /* AF_TRIGGER_START kicks off a sweep. Only valid when AF_MODE
      * is AUTO / MACRO / CONTINUOUS_PICTURE. */
     if (cm.exists(ANDROID_CONTROL_AF_TRIGGER)) {
@@ -660,6 +715,11 @@ AutoFocusController::Report AutoFocusController::report() const {
         diopter = 0;
     r.focusDiopter = diopter;
     return r;
+}
+
+AutoFocusController::FocusRoi AutoFocusController::currentFocusRoi() const {
+    std::lock_guard<std::mutex> lock(mFocusRoiMutex);
+    return mFocusRoi;
 }
 
 }; /* namespace android */
