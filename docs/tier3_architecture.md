@@ -657,10 +657,9 @@ so what started as seven landings became nine. Each one isolates a
 single concern so that review stays focused and FPS regressions /
 gains are cleanly attributable via `git bisect`.
 
-**Status:** PR 1-6 + NEON stats (PR 6.5) + BasicIpa AE + ApplySettings
-AE-mode branch (PR 6.6) shipped — see roadmap.md for the landing
-summary and memory note `project_tier3_progress.md` for the
-lifecycle / streaming invariants that future PRs must preserve.
+**Status:** all PRs shipped — see roadmap.md for the landing summary
+and memory note `project_tier3_progress.md` for the lifecycle /
+streaming invariants that future work must preserve.
 
 ### PR 1 — Threading primitives (infra only) — SHIPPED
 
@@ -781,20 +780,55 @@ open.
   ahead of `ApplySettingsStage` in the wiring order since
   ApplySettings now depends on it in both branches.
 
-### PR 7 — Produce-once + JpegWorker
+### PR 7 — Produce-once + JpegWorker + ResultThread split — SHIPPED
 
-- `IspPipeline` grows `beginFrame(bayer)` / `blitToGralloc` /
-  `blitToYuv` / `blitToJpegCpu` / `endFrame`.
-- `VulkanIspPipeline` demosaics once per frame into
-  `scratchImage`; per-output ops only blit / encode / copy.
-- `BufferProcessor` loop deduplicates — N-stream requests no longer
-  mean N demosaics.
-- `PostProcessor` interface + `JpegEncoder` implementation;
-  `JpegWorker` spawned for JPEG work off `PipelineThread`.
-- Dedicated `ResultThread` lands with this PR (see PR 5 note) so
-  JpegWorker completion doesn't compete with preview dispatch.
-- Measurable: **preview + video multi-stream 13 → 28 fps**; JPEG
-  encode doesn't stall preview.
+- `IspPipeline` grew `beginFrame` / `blitToGralloc` / `blitToYuv` /
+  `blitToJpegCpu` / `endFrame`. `VulkanIspPipeline` records demosaic
+  once into `mScratchImg` per frame and each output blits / encodes /
+  copies from there inside a single `vkQueueSubmit`. Framework
+  acquire_fence sync_fds get imported as binary `VkSemaphore`s via
+  `VK_KHR_external_semaphore_fd` (probed + enabled at instance + device
+  level) so the recording thread never blocks on framework backpressure.
+  Per-output `release_fence`s come from `vkQueueSignalReleaseImageANDROID`,
+  one call per gralloc image, sharing the post-submit queue ordering.
+- `BufferProcessor::processOne` switched to the blit-only API; YUV path
+  records the GPU NV12 encode at record time and defers the libyuv
+  repack into the gralloc to `finalizeCpuOutputs` on PipelineThread
+  after fence reap. BLOB path records `vkCmdCopyImageToBuffer(scratch →
+  jpeg ring slot)` and stashes a `JpegSnapshot` (handle into a
+  SLOT_COUNT-deep host-mapped RGBA8 ring) in the ctx.
+- New `PostProcessor` abstract under `hal/pipeline/`. `JpegEncoder`
+  implements it (libjpeg + EXIF Orientation marker); the IspPipeline
+  dependency dropped along the way since `JpegSnapshot` is the only
+  producer-side input now.
+- Dispatch side splits in two:
+  - `ResultThread` (`ThreadBase`) owns `ResultDispatchStage`,
+    `BayerSource::flushPendingReleases`, and
+    `InFlightTracker::removeBySequence`. Single consumer of
+    `mResultQueue`. Maintains an internal pending FIFO so it can peek
+    head readiness without popping; only dispatches the ready prefix
+    (errored OR `jpegPending == 0`).
+  - `JpegWorker` (`ThreadBase`) pulls per-output `JpegWorker::Job` from
+    `mJpegQueue`, calls `BufferProcessor::finalizeBlobOutput`, and on
+    the last-decrement of `ctx->jpegPending` notifies a shared
+    `EventFd` that `ResultThread` polls.
+- `PipelineContext` grew a `std::atomic<int> jpegPending` set by
+  PipelineThread before queueing JPEG jobs. Camera3 monotonic-ordering
+  invariant preserved by ResultThread's serial single-thread design.
+- Lifecycle: ResultThread → JpegWorker → PipelineThread → RequestThread
+  (start order); reverse for stop, with JpegWorker draining its queue
+  between PipelineThread and ResultThread so any ctxs parked on
+  `jpegPending` get released before dispatch shuts down.
+- Legacy `processToGralloc` / `processToYuv420` / `processToCpu` and
+  their helpers (`recordGrallocBlit`, `submitWithReleaseFence`,
+  `recordDemosaicAndYuvEncode`, `recordAndSubmit`, `mOutBuf`) deleted
+  once no consumer remained.
+- Measurable on device: BLOB encode (~120 ms at 1080p) runs on
+  JpegWorker; PipelineThread keeps admitting ctxs through the
+  encode window so sensor frames are not dropped (verified via
+  f=N+1 `wait=0ms` immediately after the BLOB frame). ResultThread's
+  FIFO gate means subsequent preview dispatches still wait for the
+  BLOB frame's encode — that's the inherent Camera3 ordering cost.
 
 Each PR: commit → `git pull github master` on build server →
 `mmm hardware/camera` → scp `.so` → mocha-remote deploy → smoke-test

@@ -328,12 +328,26 @@ further rewrite.
     `minFrameDurationNs()` open a temporary fd when `mFd < 0`.
     Camera switching (front ↔ back close / reopen) verified on
     device.
-
-**Pending**
-
-11. **Produce-once refactor** (`IspPipeline::beginFrame` / `blitTo*` /
-    `endFrame`) + `PostProcessor` / `JpegWorker`. **Multi-stream FPS
-    win** (preview+video 13 → ~28). This is the PR 7 slot.
+11. **PR 7 — Produce-once + JpegWorker + ResultThread split.**
+    `IspPipeline` grows `beginFrame` / `blitToGralloc` / `blitToYuv`
+    / `blitToJpegCpu` / `endFrame`; the demosaic runs once per frame
+    into `mScratchImg` and each output blits / encodes / copies from
+    that scratch in a single Vulkan submit. Framework acquire_fence
+    sync_fds are imported as binary `VkSemaphore`s
+    (`VK_KHR_external_semaphore_fd`) so the recording thread never
+    blocks on framework backpressure; per-output `release_fence`s
+    fan out through `vkQueueSignalReleaseImageANDROID`. `PostProcessor`
+    abstracts BLOB encoding; `JpegEncoder` is the only impl today
+    (libjpeg + EXIF Orientation marker). The dispatch side splits in
+    two: `ResultThread` owns `ResultDispatchStage` + Bayer flush +
+    `InFlightTracker::removeBySequence`, and `JpegWorker` runs libjpeg
+    on its own thread. Per-ctx `std::atomic<int> jpegPending` gates
+    `ResultThread`'s dispatch so Camera3's monotonic frame_number
+    ordering is preserved while sensor frames keep flowing on
+    `PipelineThread` during JPEG encode. Legacy `processToGralloc` /
+    `processToYuv420` / `processToCpu` removed alongside their
+    helpers (`recordGrallocBlit`, `submitWithReleaseFence`,
+    `recordDemosaicAndYuvEncode`, `recordAndSubmit`, `mOutBuf`).
 
 Deferred but slot-reserved from PR 2: `Request::inputBuffer` for
 ZSL / reprocess; ZSL ring buffer and reprocess wiring happen in
@@ -371,11 +385,9 @@ imminent plan.
 1. **Tier 1.2** — short compliance PRs inside `CameraStaticMetadata`.
 2. **Tier 2** — done (drain-to-latest, `YUV_420_888` output, JSON
    tuning).
-3. **Tier 3 PR 1-9 + housekeeping** — done (threading primitives,
+3. **Tier 3 PR 1-11 + housekeeping** — done (threading primitives,
    RequestThread, CaptureThread, PipelineThread + fence-fd,
    IPA / DelayedControls plumbing, NEON stats worker, BasicIpa AE
    + AWB + AF, focus-ROI spatial restrict, V4L2DEVICE_OPEN_ONCE
-   removal).
-4. **Tier 3 produce-once** — `IspPipeline::beginFrame` + `blitTo*` +
-   `endFrame`, PostProcessor + JpegWorker. Multi-stream FPS win.
-5. **Tier 4** — discretionary.
+   removal, PR 7 produce-once + JpegWorker + ResultThread split).
+4. **Tier 4** — discretionary.
