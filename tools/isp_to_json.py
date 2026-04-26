@@ -89,6 +89,17 @@ ACTIVE_PREFIXES = (
     "ae.MeanAlg.ToleranceOut",
     "ae.MaxFstopDeltaPos",
     "ae.MaxFstopDeltaNeg",
+    # Lens-shading correction. Per-CCT control points (controlPointR /
+    # GR / GB / B, ten radial samples each, sampled around the four
+    # tuned illuminants) are applied on raw Bayer before WB / CCM /
+    # gamma. The falloff.{Preview,Still,Video} (gain, fadePercent)
+    # curve attenuates correction at high analog gain so we don't
+    # amplify noise in the corners. Module-cal-enable + ctrlPointsCount
+    # / falloff_PointsCount / imageWidth / imageHeight / per-patch
+    # factors are the surrounding metadata the consumer needs to
+    # interpret the grids. Promoting all of `lensShading.` since the
+    # block is small and the sub-fields are not independently useful.
+    "lensShading.",
 )
 
 # Line that starts a new assignment: `<path> = ...`. Path may contain
