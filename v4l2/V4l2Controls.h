@@ -15,14 +15,15 @@
 
 namespace android {
 
-/* Small batch of V4L2 controls for a single VIDIOC_S_EXT_CTRLS call.
- * Plain data — owner is the call-site (ApplySettingsStage builds it
- * per frame, V4l2Device::setControls drains it into the driver).
+/* Small batch of V4L2 controls drained by V4l2Device::setControls.
+ * Plain data — owner is the call-site (ApplySettingsStage / 3A build
+ * it per frame).
  *
- * The batch is expected to carry controls from a single V4L2 control
- * class per call (driver rejects mixed-class batches unless
- * ctrl_class == 0, which older kernels don't accept). Today every
- * consumer uses V4L2_CTRL_CLASS_USER (exposure, gain). */
+ * Mixed-class batches are fine: setControls groups by
+ * V4L2_CTRL_ID2CLASS and issues one VIDIOC_S_EXT_CTRLS per class
+ * (CAMERA before USER, so frame_length grows before exposure tries
+ * to fit). Per-class atomicity is preserved; cross-class ordering
+ * is the controlled side-effect. */
 struct V4l2Controls {
     static const int MAX_ENTRIES = 8;
 

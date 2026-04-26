@@ -754,23 +754,41 @@ bool V4l2Device::setControls(const V4l2Controls &controls) {
     if (controls.count <= 0) return true;
     if (mFd < 0) return false;
 
-    struct v4l2_ext_control entries[V4l2Controls::MAX_ENTRIES];
-    memset(entries, 0, sizeof(entries));
-    for (int i = 0; i < controls.count; ++i) {
-        entries[i].id    = controls.ids[i];
-        entries[i].value = controls.values[i];
-    }
+    /* VIDIOC_S_EXT_CTRLS rejects mixed-class batches on the kernels we
+     * target (ctrl_class == 0 isn't honoured pre-3.something). Group
+     * the entries by V4L2_CTRL_ID2CLASS and issue one ioctl per class.
+     * Order matters per Tegra sensor write window: CAMERA-class first
+     * (frame_length grows the envelope) so USER-class exposure / gain
+     * land into the already-grown frame instead of being clamped into
+     * the previous one. */
+    static const uint32_t classOrder[] = {
+        V4L2_CTRL_CLASS_CAMERA,
+        V4L2_CTRL_CLASS_USER,
+    };
 
-    struct v4l2_ext_controls batch;
-    memset(&batch, 0, sizeof(batch));
-    batch.ctrl_class = V4L2_CTRL_CLASS_USER;
-    batch.count      = controls.count;
-    batch.controls   = entries;
+    for (uint32_t cls : classOrder) {
+        struct v4l2_ext_control entries[V4l2Controls::MAX_ENTRIES];
+        memset(entries, 0, sizeof(entries));
+        int n = 0;
+        for (int i = 0; i < controls.count; ++i) {
+            if (V4L2_CTRL_ID2CLASS(controls.ids[i]) != cls) continue;
+            entries[n].id    = controls.ids[i];
+            entries[n].value = controls.values[i];
+            ++n;
+        }
+        if (n == 0) continue;
 
-    if (ioctl(mFd, VIDIOC_S_EXT_CTRLS, &batch) < 0) {
-        ALOGE("setControls(count=%d) FAILED at %u: %s (%d)",
-              controls.count, batch.error_idx, strerror(errno), errno);
-        return false;
+        struct v4l2_ext_controls batch;
+        memset(&batch, 0, sizeof(batch));
+        batch.ctrl_class = cls;
+        batch.count      = n;
+        batch.controls   = entries;
+
+        if (ioctl(mFd, VIDIOC_S_EXT_CTRLS, &batch) < 0) {
+            ALOGE("setControls(class=0x%x count=%d) FAILED at %u: %s (%d)",
+                  cls, n, batch.error_idx, strerror(errno), errno);
+            return false;
+        }
     }
     return true;
 }
