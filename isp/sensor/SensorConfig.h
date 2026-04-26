@@ -38,12 +38,15 @@ struct SensorConfig {
      * later join with a different encoding fill this per-sensor. */
     int32_t gainUnit;
 
-    /* Driver-queried — V4L2_CID_GAIN def/max. */
+    /* Driver-queried — V4L2_CID_GAIN min/def/max (Q `gainUnit`). */
+    int32_t gainMin;
     int32_t gainDefault;
     int32_t gainMax;
 
-    /* Driver-queried — V4L2_CID_EXPOSURE def (µs). */
+    /* Driver-queried — V4L2_CID_EXPOSURE min/def/max (µs). */
+    int32_t exposureMin;
     int32_t exposureDefault;
+    int32_t exposureMax;
 
     /* Silicon property — number of frames between writing a sensor
      * control and the resulting frame being exposed. Not tunable per
@@ -115,9 +118,12 @@ struct SensorConfig {
             .lineTimeUs      = 13,
             .maxCoarseDiff   = 6,
             .gainUnit        = 256,
+            .gainMin         = 0,
             .gainDefault     = 0,
             .gainMax         = 0,
+            .exposureMin     = 0,
             .exposureDefault = 0,
+            .exposureMax     = 0,
             .controlDelay    = { 2, 2 },
         };
     }
@@ -129,9 +135,12 @@ struct SensorConfig {
             .lineTimeUs      = 17,
             .maxCoarseDiff   = 6,
             .gainUnit        = 256,
+            .gainMin         = 0,
             .gainDefault     = 0,
             .gainMax         = 0,
+            .exposureMin     = 0,
             .exposureDefault = 0,
+            .exposureMax     = 0,
             .controlDelay    = { 2, 2 },
         };
     }

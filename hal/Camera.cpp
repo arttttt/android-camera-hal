@@ -211,12 +211,15 @@ void Camera::populateSensorConfigFromDriver() {
     }
     int32_t gMin, gMax, gDef;
     if (mDev->queryControl(V4L2_CID_GAIN, &gMin, &gMax, &gDef)) {
+        mSensorCfg.gainMin     = gMin;
         mSensorCfg.gainMax     = gMax;
         mSensorCfg.gainDefault = gDef;
         ALOGD("Gain: min=%d max=%d def=%d", gMin, gMax, gDef);
     }
     int32_t eMin, eMax, eDef;
     if (mDev->queryControl(V4L2_CID_EXPOSURE, &eMin, &eMax, &eDef)) {
+        mSensorCfg.exposureMin     = eMin;
+        mSensorCfg.exposureMax     = eMax;
         mSensorCfg.exposureDefault = eDef;
         ALOGD("Exposure: min=%d max=%d def=%d (us)", eMin, eMax, eDef);
     }

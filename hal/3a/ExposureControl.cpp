@@ -16,12 +16,6 @@ namespace android {
 
 namespace {
 
-/* Accept exposures within this envelope after EV compensation. The
- * sensor typically supports longer, but long exposures stall the
- * preview pipeline. */
-constexpr int32_t kMinExposureUs = 100;
-constexpr int32_t kMaxExposureUs = 200000;
-
 /* EV compensation step: each stop scales exposure by 5/4 up or 4/5
  * down. Matches the ANDROID_CONTROL_AE_COMPENSATION_STEP = 1/3
  * advertised in static characteristics (three 5/4 steps ≈ √2 factor,
@@ -31,8 +25,22 @@ constexpr int32_t kEvStepUpDenom   = 4;
 constexpr int32_t kEvStepDownNum   = 4;
 constexpr int32_t kEvStepDownDenom = 5;
 
-/* 1.0x in the gain * extraGainQ8 calculation. */
-constexpr int32_t kGainUnityQ8 = 256;
+inline int32_t applyEvComp(int32_t exposureUs, int32_t evComp) {
+    if (evComp > 0) {
+        for (int i = 0; i < evComp; i++)
+            exposureUs = exposureUs * kEvStepUpNum / kEvStepUpDenom;
+    } else {
+        for (int i = 0; i < -evComp; i++)
+            exposureUs = exposureUs * kEvStepDownNum / kEvStepDownDenom;
+    }
+    return exposureUs;
+}
+
+inline int32_t clampInt(int32_t v, int32_t lo, int32_t hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
 
 } /* namespace */
 
@@ -60,39 +68,55 @@ void ExposureControl::onSettings(const CameraMetadata &cm) {
     /* EV compensation applied on top of the requested exposure. */
     if (cm.exists(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION)) {
         int32_t evComp = *cm.find(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION).data.i32;
-        if (evComp > 0) {
-            for (int i = 0; i < evComp; i++)
-                exposureUs = exposureUs * kEvStepUpNum / kEvStepUpDenom;
-        } else {
-            for (int i = 0; i < -evComp; i++)
-                exposureUs = exposureUs * kEvStepDownNum / kEvStepDownDenom;
-        }
+        exposureUs = applyEvComp(exposureUs, evComp);
     }
 
-    if (exposureUs < kMinExposureUs) exposureUs = kMinExposureUs;
-    if (exposureUs > kMaxExposureUs) exposureUs = kMaxExposureUs;
+    /* Driver-queried envelope; populateSensorConfigFromDriver fills
+     * exposureMin / exposureMax from V4L2_CID_EXPOSURE QUERYCTRL. */
+    exposureUs = clampInt(exposureUs, mCfg.exposureMin, mCfg.exposureMax);
 
-    /* Split target exposure into (actual exposure, extra gain) so a
-     * long exposure doesn't drop FPS below the current envelope. */
-    int32_t actualExposure;
-    int32_t extraGainQ8;
-    mCfg.splitExposureGain(exposureUs, &actualExposure, &extraGainQ8);
-    mDev->setControl(V4L2_CID_EXPOSURE, actualExposure);
+    uint8_t aeMode = ANDROID_CONTROL_AE_MODE_ON;
+    if (cm.exists(ANDROID_CONTROL_AE_MODE))
+        aeMode = *cm.find(ANDROID_CONTROL_AE_MODE).data.u8;
 
-    int32_t gain = mCfg.gainUnit; /* 1x baseline */
+    int32_t gain = mCfg.gainUnit;  /* 1.0x baseline */
     if (cm.exists(ANDROID_SENSOR_SENSITIVITY))
         gain = mCfg.isoToGain(*cm.find(ANDROID_SENSOR_SENSITIVITY).data.i32);
-    gain = (int32_t)((int64_t)gain * extraGainQ8 / kGainUnityQ8);
-    if (gain < 1)            gain = 1;
-    if (gain > mCfg.gainMax) gain = mCfg.gainMax;
-    mDev->setControl(V4L2_CID_GAIN, gain);
 
-    /* V4L2_CID_EXPOSURE is fed microseconds directly (splitExposureGain
-     * outputs outExposureUs in µs); the report just echoes the value
-     * that went to the driver. Earlier revisions multiplied by
-     * lineTimeUs which was a bug — applyDefaults stored the raw µs
-     * value, so this path now matches. */
-    mAppliedExposureUs = actualExposure;
+    int32_t actualExposureUs;
+    int32_t frameLen;
+
+    if (aeMode == ANDROID_CONTROL_AE_MODE_OFF) {
+        /* Manual AE: app told us exactly what to do. Honour the
+         * requested exposure verbatim; if it doesn't fit the default
+         * frame_length, grow frame_length so it does (FPS drops
+         * accordingly — that's the user's choice when they set
+         * a 1 s shutter). No splitExposureGain, no fps preservation. */
+        actualExposureUs = exposureUs;
+        frameLen         = mCfg.frameLenForExposure(exposureUs);
+    } else {
+        /* Auto AE cold-start fallback (IPA hasn't pushed yet). Hold
+         * fps at the default frame_length and trade overflow exposure
+         * for extra gain so preview cadence stays smooth. */
+        int32_t extraGainQ8;
+        mCfg.splitExposureGain(exposureUs, &actualExposureUs, &extraGainQ8);
+        gain = (int32_t)((int64_t)gain * extraGainQ8 / mCfg.gainUnit);
+        frameLen = mCfg.frameLenDefault;
+    }
+
+    gain = clampInt(gain, mCfg.gainMin, mCfg.gainMax);
+
+    /* Single VIDIOC_S_EXT_CTRLS — frame_length must reach the sensor
+     * before / together with the exposure that needs it, otherwise the
+     * driver clamps the exposure into the old (smaller) frame and the
+     * user sees nothing change. */
+    V4l2Controls ctrls;
+    ctrls.add(V4L2_CID_FRAME_LENGTH, frameLen);
+    ctrls.add(V4L2_CID_EXPOSURE,     actualExposureUs);
+    ctrls.add(V4L2_CID_GAIN,         gain);
+    mDev->setControls(ctrls);
+
+    mAppliedExposureUs = actualExposureUs;
     mAppliedGain       = gain;
 }
 

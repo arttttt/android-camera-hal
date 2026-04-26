@@ -2,6 +2,16 @@
 #define V4L2_CONTROLS_H
 
 #include <stdint.h>
+#include <linux/videodev2.h>
+
+/* Tegra camera vendor CID — the kernel sensor drivers expose
+ * frame_length (= sensor lines per frame, dictating both FPS and the
+ * max exposure that fits in one frame) as 0x009a2000. Not in mainline
+ * V4L2 headers; defined here so every consumer sharing this batch
+ * struct can write to it without re-declaring. */
+#ifndef V4L2_CID_FRAME_LENGTH
+#define V4L2_CID_FRAME_LENGTH   (V4L2_CTRL_CLASS_CAMERA | 0x2000)
+#endif
 
 namespace android {
 
