@@ -128,22 +128,6 @@ propagates it.
 - **Soft cap on max gain** — interim mitigation; `gain<=32` loses
   one stop of low-light capability but likely removes the cast.
 
-## Auto AE cannot be turned off
-
-**Symptom:** Switching the camera app to manual AE (AE_MODE=OFF) does
-not actually disable auto AE — BasicIpa keeps driving exposure / gain
-regardless of the request mode.
-
-**Status:** Logged, no fix scheduled. Tier TBD.
-
-## Exposure compensation ignored while auto AE is on
-
-**Symptom:** With auto AE active, the framework's exposure-compensation
-control (ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION) has no visible
-effect on preview brightness.
-
-**Status:** Logged, no fix scheduled. Tier TBD.
-
 ## V4L2 fd reopened on every camera open — should only reopen on stream config change
 
 **Symptom:** After dropping `V4L2DEVICE_OPEN_ONCE` the V4L2 fd now closes
@@ -163,23 +147,6 @@ fresh.
 
 **Status:** Logged, no fix scheduled. Tier TBD. Removing the original
 flag was the right move; the replacement just over-cleans.
-
-## Tap-to-focus ignored — AF_REGIONS not consumed
-
-**Symptom:** Tapping a non-centre region in the camera app does not
-move the AF ROI. The lens still sweeps based on the centre patches
-regardless of where the user tapped.
-
-**Cause:** `AutoFocusController` ignores
-`ANDROID_CONTROL_AF_REGIONS` from request settings. The AF ROI is
-hardcoded to the centre 8×8 patches via `kRoiPatchLo / kRoiPatchHi`
-in `hal/3a/AutoFocusController.cpp`. The default request template
-sets `AF_REGIONS` to the full sensor rectangle and no per-request
-value is read.
-
-**Status:** Logged, no fix scheduled. Tier TBD. When fixed, the
-encoder's spatial Sobel/greenSq ROI also needs to follow the
-dynamic AF region.
 
 ## Open Camera photos come out sideways (app-side, not HAL)
 
