@@ -4,25 +4,6 @@ Bugs found during testing that aren't being fixed right now. Each entry
 should name the symptom, where it lives, what's known about the cause,
 and when it's expected to get fixed (tier in `roadmap.md`, or "TBD").
 
-## Video recording — pending verification after YUV_420_888 landed
-
-**Pre-fix symptom:** Video record failed (exact mode unknown — never
-observed). Root cause: `StreamConfig::normalize` was remapping
-`HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED` → `RGBA_8888`
-indiscriminately, but video-encoder streams
-(`GRALLOC_USAGE_HW_VIDEO_ENCODER`) expect NV12 / YV12.
-
-**State after Tier 2 YUV_420_888:** `StreamConfig` now resolves
-`IMPLEMENTATION_DEFINED` with `HW_VIDEO_ENCODER` usage to
-`YCbCr_420_888`, and `BufferProcessor` produces NV12 via GPU →
-layout-appropriate repack into gralloc. The known root cause is gone.
-
-**Still to verify on-device:** open a video-recording app (camera
-default), record, confirm playback. If NV21 is what the Tegra
-encoder requests, we'll see `YUV layout not supported` in logcat —
-that's the NV21 path tracked in
-[open-questions.md](open-questions.md).
-
 ## Persistent vertical seam at low exposures
 
 **Symptom:** When AE drives exposure to a short value (bright scene
