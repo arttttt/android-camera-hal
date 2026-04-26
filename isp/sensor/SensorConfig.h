@@ -72,10 +72,23 @@ struct SensorConfig {
         return fl;
     }
 
+    /* Camera2 spec convention: ISO sensitivity scale is anchored at
+     * unity sensor gain → ISO `kIsoAtUnityGain`. The framework rounds
+     * SENSOR_SENSITIVITY values relative to this anchor; advertise the
+     * same anchor in characteristics so the slider numbers match what
+     * the per-frame result reports. */
+    static constexpr int32_t kIsoAtUnityGain = 100;
+
     /* Convert ISO (100-based) to sensor gain units */
     int32_t isoToGain(int32_t iso) const {
-        int32_t g = (iso / 100) * gainUnit;
+        int32_t g = (iso / kIsoAtUnityGain) * gainUnit;
         return (g < 1) ? 1 : g;
+    }
+
+    /* Convert sensor gain units to ISO (100-based, anchored at unity). */
+    int32_t gainToIso(int32_t gain) const {
+        if (gainUnit <= 0) return 0;
+        return (gain * kIsoAtUnityGain) / gainUnit;
     }
 
     /* Split target exposure into actual exposure + extra gain (Q8).

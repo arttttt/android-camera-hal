@@ -14,6 +14,7 @@
 
 #include "V4l2Device.h"
 #include "OutputResolutionCap.h"
+#include "sensor/SensorConfig.h"
 #include "sensor/SensorTuning.h"
 
 namespace android {
@@ -222,40 +223,45 @@ void writeJpegInfo(CameraMetadata &cm, V4l2Device *dev, size_t *jpegBufferSize) 
 }
 
 /* Declared sensor operating ranges — exposure time + ISO sensitivity,
- * pulled from the V4L2 driver's queryctrl so the slider apps offer
- * matches what the sensor will actually accept (was hardcoded at
- * 0.1–200 ms / ISO 100–3200, which clipped IMX179's 1 µs–1 s exposure
- * range and its 64× analog gain ceiling). Falls back to the historical
- * conservative defaults if queryctrl fails. */
-void writeSensorRanges(CameraMetadata &cm, V4l2Device *dev) {
-    /* V4L2_CID_EXPOSURE returns microseconds; metadata wants ns. */
-    int64_t expMinNs = 100000LL;
-    int64_t expMaxNs = 200000000LL;
-    {
-        int32_t expMinUs, expMaxUs, expDefUs;
-        if (dev->queryControl(V4L2_CID_EXPOSURE, &expMinUs, &expMaxUs, &expDefUs)) {
-            expMinNs = (int64_t)expMinUs * 1000LL;
-            expMaxNs = (int64_t)expMaxUs * 1000LL;
-        }
+ * sourced from the V4L2 driver's queryctrl. No fallback constants:
+ * if the driver can't answer the sensor ranges then nothing else in
+ * this HAL works, and a wrong value advertised here would just lie to
+ * apps about what the slider should offer. Both keys get skipped and
+ * the framework will reject the HAL — that's the right outcome,
+ * surface the breakage instead of papering over it.
+ *
+ * Gain↔ISO conversion goes through SensorConfig::gainToIso so the
+ * sensor's gainUnit (Q8 today, could differ on a future module) and
+ * the Camera2 ISO-at-unity anchor live in one place. */
+void writeSensorRanges(CameraMetadata &cm, V4l2Device *dev,
+                        const SensorConfig &cfg) {
+    int32_t expMinUs = 0, expMaxUs = 0, expDefUs = 0;
+    if (!dev->queryControl(V4L2_CID_EXPOSURE, &expMinUs, &expMaxUs, &expDefUs)) {
+        ALOGE("writeSensorRanges: V4L2_CID_EXPOSURE query failed — "
+              "EXPOSURE_TIME_RANGE will be missing from characteristics");
+        return;
     }
-    const int64_t sensorExposureTimeRange[] = { expMinNs, expMaxNs };
+
+    int32_t gMin = 0, gMax = 0, gDef = 0;
+    if (!dev->queryControl(V4L2_CID_GAIN, &gMin, &gMax, &gDef)) {
+        ALOGE("writeSensorRanges: V4L2_CID_GAIN query failed — "
+              "SENSITIVITY_RANGE will be missing from characteristics");
+        return;
+    }
+
+    /* V4L2_CID_EXPOSURE returns microseconds; metadata wants ns. */
+    const int64_t sensorExposureTimeRange[] = {
+        (int64_t)expMinUs * 1000LL,
+        (int64_t)expMaxUs * 1000LL,
+    };
     cm.update(ANDROID_SENSOR_INFO_EXPOSURE_TIME_RANGE,
               sensorExposureTimeRange, NELEM(sensorExposureTimeRange));
 
-    /* V4L2_CID_GAIN is Q8.8 analog gain (256 = 1.0×). ISO = gain × 100
-     * / 256 — same conversion ResultMetadataBuilder uses for per-frame
-     * SENSOR_SENSITIVITY. The driver-reported max represents pure
-     * analog gain on these sensors; advertise it as MAX_ANALOG too. */
-    int32_t isoMin = 100;
-    int32_t isoMax = 3200;
-    {
-        int32_t gMin, gMax, gDef;
-        if (dev->queryControl(V4L2_CID_GAIN, &gMin, &gMax, &gDef)) {
-            isoMin = (gMin * 100) / 256;
-            isoMax = (gMax * 100) / 256;
-            if (isoMin < 1) isoMin = 1;
-        }
-    }
+    /* V4L2_CID_GAIN on these sensors is pure analog gain — advertise
+     * the driver-reported max as MAX_ANALOG too. */
+    int32_t isoMin = cfg.gainToIso(gMin);
+    int32_t isoMax = cfg.gainToIso(gMax);
+    if (isoMin < 1) isoMin = 1;
     const int32_t sensorSensitivityRange[] = { isoMin, isoMax };
     cm.update(ANDROID_SENSOR_INFO_SENSITIVITY_RANGE,
               sensorSensitivityRange, NELEM(sensorSensitivityRange));
@@ -782,12 +788,13 @@ void writeAvailableKeys(CameraMetadata &cm) {
 
 camera_metadata_t *CameraStaticMetadata::build(V4l2Device *dev, int facing,
                                                 const SensorTuning *tuning,
+                                                const SensorConfig &sensorCfg,
                                                 size_t *jpegBufferSize) {
     CameraMetadata cm;
     writeSensorInfo         (cm, dev, tuning, facing);
     writeScalerConfigs      (cm, dev);
     writeJpegInfo           (cm, dev, jpegBufferSize);
-    writeSensorRanges       (cm, dev);
+    writeSensorRanges       (cm, dev, sensorCfg);
     writeAvailableFpsRanges (cm, dev);
     writeControlInfo        (cm, facing);
     writeStageAvailableModes(cm);

@@ -41,7 +41,7 @@ void writeAfReport(CameraMetadata &cm, const FrameState &fs) {
 void writeExposureReport(CameraMetadata &cm, const FrameState &fs,
                           const SensorConfig &cfg) {
     int64_t reportExposureNs    = (int64_t)fs.appliedExposureUs * 1000LL;
-    int32_t reportSensitivity   = (fs.appliedGain * 100) / cfg.gainUnit;
+    int32_t reportSensitivity   = cfg.gainToIso(fs.appliedGain);
     int64_t reportFrameDuration = (int64_t)cfg.frameLenDefault
                                 * cfg.lineTimeUs * 1000LL;
     cm.update(ANDROID_SENSOR_EXPOSURE_TIME,  &reportExposureNs,    1);

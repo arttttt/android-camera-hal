@@ -286,6 +286,7 @@ camera_metadata_t *Camera::staticCharacteristics() {
     if(mStaticCharacteristics)
         return mStaticCharacteristics;
     mStaticCharacteristics = CameraStaticMetadata::build(mDev, mFacing, &mTuning,
+                                                          mSensorCfg,
                                                           &mJpegBufferSize);
     return mStaticCharacteristics;
 }
