@@ -24,6 +24,7 @@ public:
         int32_t                     appliedExposureUs;
         int32_t                     appliedGain;
         AutoFocusController::Report af;
+        bool                        aeConverged;
     };
 
     static void build(CameraMetadata &cm, const FrameState &fs,

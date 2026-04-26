@@ -70,6 +70,7 @@ void ResultDispatchStage::process(PipelineContext &ctx) {
     fs.frameNumber       = ctx.request.frameNumber;
     fs.appliedExposureUs = ctx.appliedExposureUs;
     fs.appliedGain       = ctx.appliedGain;
+    fs.aeConverged       = ctx.aeConverged;
     fs.af.afMode       = ANDROID_CONTROL_AF_MODE_OFF;
     fs.af.afState      = ANDROID_CONTROL_AF_STATE_INACTIVE;
     fs.af.focusDiopter = 0.0f;

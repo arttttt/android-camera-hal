@@ -51,8 +51,8 @@ void writeExposureReport(CameraMetadata &cm, const FrameState &fs,
 
 /* AE/AWB mode echoes and their derived states.
  *
- * AE: only AE_MODE_OFF is advertised, so there is no loop to converge
- *     or lock — state is always INACTIVE. Revisit when real AE lands.
+ * AE: OFF → INACTIVE; LOCK_ON or aeConverged → LOCKED / CONVERGED
+ *     respectively; otherwise SEARCHING.
  *
  * AWB: OFF → INACTIVE; AUTO → LOCKED when the request set AWB_LOCK or
  *      an AF sweep is holding the lock internally, CONVERGED otherwise. */
@@ -67,7 +67,20 @@ void writeAeAwbState(CameraMetadata &cm, const FrameState &fs) {
         reportAwbMode = *cm.find(ANDROID_CONTROL_AWB_MODE).data.u8;
     cm.update(ANDROID_CONTROL_AWB_MODE, &reportAwbMode, 1);
 
+    uint8_t aeLock = ANDROID_CONTROL_AE_LOCK_OFF;
+    if (cm.exists(ANDROID_CONTROL_AE_LOCK))
+        aeLock = *cm.find(ANDROID_CONTROL_AE_LOCK).data.u8;
+
     uint8_t reportAeState = ANDROID_CONTROL_AE_STATE_INACTIVE;
+    if (reportAeMode != ANDROID_CONTROL_AE_MODE_OFF) {
+        if (aeLock == ANDROID_CONTROL_AE_LOCK_ON) {
+            reportAeState = ANDROID_CONTROL_AE_STATE_LOCKED;
+        } else if (fs.aeConverged) {
+            reportAeState = ANDROID_CONTROL_AE_STATE_CONVERGED;
+        } else {
+            reportAeState = ANDROID_CONTROL_AE_STATE_SEARCHING;
+        }
+    }
     cm.update(ANDROID_CONTROL_AE_STATE, &reportAeState, 1);
 
     uint8_t reportAwbState = ANDROID_CONTROL_AWB_STATE_INACTIVE;
@@ -80,6 +93,16 @@ void writeAeAwbState(CameraMetadata &cm, const FrameState &fs) {
                                    : ANDROID_CONTROL_AWB_STATE_CONVERGED;
     }
     cm.update(ANDROID_CONTROL_AWB_STATE, &reportAwbState, 1);
+
+    /* Throttled diag — every 32 frames. Lets on-device verification
+     * see AE_STATE transitions without needing a Camera2 app that
+     * surfaces them. Remove once the contract is confirmed. */
+    if ((fs.frameNumber & 0x1f) == 0u) {
+        ALOGD("AE/AWB: frame=%u aeMode=%u aeLock=%u aeConverged=%d aeState=%u "
+              "awbMode=%u awbState=%u",
+              fs.frameNumber, reportAeMode, aeLock, fs.aeConverged ? 1 : 0,
+              reportAeState, reportAwbMode, reportAwbState);
+    }
 }
 
 /* CAPTURE_INTENT echoed from the request; lens aperture / focal length

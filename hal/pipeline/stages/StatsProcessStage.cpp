@@ -56,6 +56,7 @@ void StatsProcessStage::process(PipelineContext &ctx) {
      * for effect timing — the control goes into effect relative to
      * today's frame, not to the frame the stats came from. */
     DelayedControls::Batch batch = deps.ipa->processStats(statsSeq, stats, meta);
+    ctx.aeConverged = deps.ipa->isAeConverged();
 
     const nsecs_t tIpa = systemTime();
 

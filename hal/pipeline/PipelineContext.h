@@ -51,6 +51,7 @@ struct PipelineContext {
     /* Echoed back in result metadata. */
     int32_t appliedExposureUs;
     int32_t appliedGain;
+    bool    aeConverged;
 
     /* Timestamps for PERF diagnostics. */
     int64_t tAccepted;
@@ -88,6 +89,7 @@ struct PipelineContext {
           bayerFrame(nullptr),
           cropX(0), cropY(0), cropW(0), cropH(0),
           appliedExposureUs(0), appliedGain(0),
+          aeConverged(false),
           tAccepted(0), tShutter(0), tBayerDq(0), tResultSent(0),
           errorCode(0),
           jpegPending(0) {}
