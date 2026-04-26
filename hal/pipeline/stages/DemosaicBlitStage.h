@@ -23,7 +23,6 @@ public:
         BufferProcessor *bufferProcessor;
         BayerSource     *bayerSource;   /* for resolution() */
         IspPipeline     *isp;
-        const size_t    *jpegBufferSize;
     };
 
     explicit DemosaicBlitStage(const Deps &deps);

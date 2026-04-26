@@ -7,6 +7,7 @@
 #include <camera/CameraMetadata.h>
 
 #include "CaptureRequest.h"
+#include "JpegSnapshot.h"
 #include "V4l2Device.h"
 
 namespace android {
@@ -39,6 +40,12 @@ struct PipelineContext {
     std::vector<int>  outputReleaseFences;
     std::vector<int>  outputStatuses;
     std::vector<bool> outputNeedsFinalUnlock;
+
+    /* JPEG snapshots for BLOB outputs — only populated for output indices
+     * whose stream format is HAL_PIXEL_FORMAT_BLOB. ringSlot < 0 means
+     * "not a BLOB output" or "blitToJpegCpu failed". finalizeCpuOutputs
+     * encodes + releases. */
+    std::vector<JpegSnapshot> outputJpegSnapshots;
 
     /* Echoed back in result metadata. */
     int32_t appliedExposureUs;

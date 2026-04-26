@@ -33,12 +33,12 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
     fctx.cropY          = ctx.cropY;
     fctx.cropW          = ctx.cropW;
     fctx.cropH          = ctx.cropH;
-    fctx.jpegBufferSize = *deps.jpegBufferSize;
 
     size_t n = ctx.request.outputBuffers.size();
     ctx.outputReleaseFences.assign(n, -1);
     ctx.outputStatuses.assign(n, CAMERA3_BUFFER_STATUS_OK);
     ctx.outputNeedsFinalUnlock.assign(n, true);
+    ctx.outputJpegSnapshots.assign(n, JpegSnapshot{nullptr, 0, 0, 0, -1});
 
     /* Open the ISP recording for this frame — demosaic gets recorded once;
      * each blitTo* call inside the loop appends a per-output operation to
@@ -64,7 +64,8 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
         status_t e = deps.bufferProcessor->processOne(sb, fctx, ctx.request.settings,
                                                      ctx.request.frameNumber,
                                                      &state,
-                                                     &ctx.outputReleaseFences[i]);
+                                                     &ctx.outputReleaseFences[i],
+                                                     &ctx.outputJpegSnapshots[i]);
         if (e != NO_ERROR) {
             ALOGE("processOne failed at output %zu for frame %u: %d",
                   i, ctx.request.frameNumber, (int)e);

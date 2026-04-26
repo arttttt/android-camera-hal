@@ -5,15 +5,12 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <linux/videodev2.h>
 
 #include <jpeglib.h>
 
 #include <hardware/camera3.h>
 #include <system/camera_metadata.h>
 #include <utils/Log.h>
-
-#include "IspPipeline.h"
 
 namespace android {
 
@@ -37,15 +34,15 @@ uint16_t exifOrientationFromAndroid(int32_t androidOrientation) {
     }
 }
 
-/* Encode RGBA (tightly packed, row stride = width*4) into a JPEG BLOB
- * at `dst`, injecting an EXIF Orientation APP1 marker so viewers
+/* Encode RGBA (tightly packed, row stride = width*4) into a JPEG byte
+ * stream at `dst`, injecting an EXIF Orientation APP1 marker so viewers
  * rotate on display instead of us rotating pixels in HAL.
  *
- * Returns pointer past the last written byte on success, or `dst` on
- * failure (output exceeded `dstLen`). */
-uint8_t *encodeRgbaToJpeg(const uint8_t *rgba, uint8_t *dst, size_t dstLen,
-                           unsigned width, unsigned height,
-                           uint8_t quality, int32_t androidOrientation) {
+ * Returns the number of bytes written, or 0 on failure (output exceeded
+ * `dstLen`). */
+size_t encodeRgbaToJpeg(const uint8_t *rgba, uint8_t *dst, size_t dstLen,
+                         unsigned width, unsigned height,
+                         uint8_t quality, int32_t androidOrientation) {
     struct jpeg_compress_struct cinfo;
     struct jpeg_error_mgr jerr;
 
@@ -65,24 +62,16 @@ uint8_t *encodeRgbaToJpeg(const uint8_t *rgba, uint8_t *dst, size_t dstLen,
 
     jpeg_start_compress(&cinfo, TRUE);
 
-    /* EXIF APP1 segment: just the Orientation tag. Viewers that honour
-     * EXIF (every modern gallery app) will apply the rotation on
-     * display, so the HAL never rotates pixels. */
     uint16_t exifOri = exifOrientationFromAndroid(androidOrientation);
     const uint8_t exifApp1[] = {
-        /* "Exif\0\0" APP1 identifier */
         'E','x','i','f', 0x00, 0x00,
-        /* TIFF header — little-endian, first IFD at offset 8 */
         'I','I', 0x2A, 0x00,
         0x08, 0x00, 0x00, 0x00,
-        /* IFD0: 1 entry, followed by next-IFD pointer */
         0x01, 0x00,
-        /* Orientation entry: tag 0x0112, SHORT (type 3), count 1 */
         0x12, 0x01,
         0x03, 0x00,
         0x01, 0x00, 0x00, 0x00,
         (uint8_t)(exifOri & 0xFF), (uint8_t)(exifOri >> 8), 0x00, 0x00,
-        /* Next IFD = 0 (none) */
         0x00, 0x00, 0x00, 0x00,
     };
     jpeg_write_marker(&cinfo, JPEG_APP0 + 1, exifApp1, sizeof(exifApp1));
@@ -112,58 +101,39 @@ uint8_t *encodeRgbaToJpeg(const uint8_t *rgba, uint8_t *dst, size_t dstLen,
         } else {
             ALOGE("JPEG output %lu > buffer %zu", outSize, dstLen);
             free(outBuf);
-            return dst;
+            return 0;
         }
         free(outBuf);
     }
 
-    return dst + outSize;
+    return outSize;
 }
 
 } /* namespace */
 
-JpegEncoder::JpegEncoder(IspPipeline *isp)
-    : mIsp(isp) {
-}
-
-bool JpegEncoder::encode(uint8_t *dst, size_t bufferSize,
-                         const JpegSource &src,
-                         const CameraMetadata &cm) const {
-    const size_t maxImageSize = bufferSize - sizeof(camera3_jpeg_blob);
+bool JpegEncoder::process(const JpegSnapshot &src,
+                           uint8_t *dst, size_t dstCapacity,
+                           const CameraMetadata &metadata,
+                           size_t *bytesWritten) {
+    if (bytesWritten) *bytesWritten = 0;
+    if (!src.rgba || !dst || !bytesWritten) return false;
 
     uint8_t jpegQuality = kDefaultJpegQuality;
-    if (cm.exists(ANDROID_JPEG_QUALITY))
-        jpegQuality = *cm.find(ANDROID_JPEG_QUALITY).data.u8;
-    ALOGD("JPEG quality = %u", jpegQuality);
-
-    /* GPU demosaic straight into the ISP's CPU-mapped buffer, no
-     * intermediate RGBA copy. libjpeg reads from that buffer and
-     * writes JPEG into `dst`. Orientation is encoded in the EXIF APP1
-     * marker — no pixel rotation in HAL. */
-    const uint8_t *rgba = mIsp->processToCpu(src.frameBuf,
-                                              src.width, src.height,
-                                              src.pixFmt, src.srcInputSlot);
-    if (!rgba) {
-        ALOGE("processToCpu failed");
-        return false;
-    }
+    if (metadata.exists(ANDROID_JPEG_QUALITY))
+        jpegQuality = *metadata.find(ANDROID_JPEG_QUALITY).data.u8;
 
     int32_t jpegOri = 0;
-    if (cm.exists(ANDROID_JPEG_ORIENTATION))
-        jpegOri = *cm.find(ANDROID_JPEG_ORIENTATION).data.i32;
+    if (metadata.exists(ANDROID_JPEG_ORIENTATION))
+        jpegOri = *metadata.find(ANDROID_JPEG_ORIENTATION).data.i32;
 
-    uint8_t *bufEnd = encodeRgbaToJpeg(rgba, dst, maxImageSize,
+    size_t written = encodeRgbaToJpeg(src.rgba, dst, dstCapacity,
                                         src.width, src.height,
                                         jpegQuality, jpegOri);
-
-    if (bufEnd == dst) {
-        ALOGE("JPEG image too big!");
+    if (written == 0) {
+        ALOGE("JPEG image too big for %zu byte buffer", dstCapacity);
         return false;
     }
-
-    camera3_jpeg_blob *jpegBlob = reinterpret_cast<camera3_jpeg_blob *>(dst + maxImageSize);
-    jpegBlob->jpeg_blob_id = CAMERA3_JPEG_BLOB_ID;
-    jpegBlob->jpeg_size    = (uint32_t)(bufEnd - dst);
+    *bytesWritten = written;
     return true;
 }
 

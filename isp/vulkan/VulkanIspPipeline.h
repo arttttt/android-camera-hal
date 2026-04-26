@@ -25,11 +25,6 @@ public:
     bool init() override;
     void destroy() override;
 
-    const uint8_t *processToCpu(const uint8_t *src,
-                                 unsigned width, unsigned height,
-                                 uint32_t pixFmt,
-                                 int srcInputSlot) override;
-
     void prewarm(unsigned width, unsigned height, uint32_t pixFmt) override;
 
     bool beginFrame(unsigned srcW, unsigned srcH, uint32_t pixFmt,

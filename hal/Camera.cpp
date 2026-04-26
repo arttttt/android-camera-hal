@@ -569,11 +569,12 @@ void Camera::buildInfrastructure() {
         mAf       = new AutoFocusController(mDev, mIsp, mIpa.get(), &mTuning);
     }
 
-    mJpeg = new JpegEncoder(mIsp);
+    mJpeg = new JpegEncoder();
 
     BufferProcessor::Deps bpDeps;
-    bpDeps.isp  = mIsp;
-    bpDeps.jpeg = mJpeg;
+    bpDeps.isp            = mIsp;
+    bpDeps.jpeg           = mJpeg;
+    bpDeps.jpegBufferSize = &mJpegBufferSize;
     mBufferProcessor = new BufferProcessor(bpDeps);
 
     mBayerSource.reset(new V4l2Source(mDev));
@@ -639,7 +640,6 @@ void Camera::buildInfrastructure() {
         d.bufferProcessor = mBufferProcessor;
         d.bayerSource     = mBayerSource.get();
         d.isp             = mIsp;
-        d.jpegBufferSize  = &mJpegBufferSize;
         mDemosaicBlitStage.reset(new DemosaicBlitStage(d));
     }
 

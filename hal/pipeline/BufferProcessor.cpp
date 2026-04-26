@@ -16,7 +16,7 @@
 #include <libyuv.h>
 
 #include "IspPipeline.h"
-#include "jpeg/JpegEncoder.h"
+#include "PostProcessor.h"
 #include "PipelineContext.h"
 #include "DbgUtils.h"
 
@@ -188,23 +188,84 @@ void BufferProcessor::finalizeCpuOutputs(PipelineContext &ctx) {
     if (ctx.errorCode) return;
     for (size_t i = 0; i < ctx.request.outputBuffers.size(); ++i) {
         const CaptureRequest::Buffer &ob = ctx.request.outputBuffers[i];
-        if (ob.stream->format != HAL_PIXEL_FORMAT_YCbCr_420_888) continue;
         if (ctx.outputStatuses[i] != CAMERA3_BUFFER_STATUS_OK) continue;
-        finalizeYuvOutput(ob, ctx.request.frameNumber);
+
+        switch (ob.stream->format) {
+            case HAL_PIXEL_FORMAT_YCbCr_420_888:
+                finalizeYuvOutput(ob, ctx.request.frameNumber);
+                break;
+            case HAL_PIXEL_FORMAT_BLOB:
+                if (i < ctx.outputJpegSnapshots.size())
+                    finalizeBlobOutput(ob, ctx.request.settings,
+                                        ctx.outputJpegSnapshots[i],
+                                        ctx.request.frameNumber);
+                break;
+            default:
+                break;
+        }
     }
 }
 
-void BufferProcessor::processBlobOutput(uint8_t *buf, const FrameContext &ctx,
-                                         const CameraMetadata &cm) {
-    BENCHMARK_SECTION("YUV->JPEG") {
-        JpegSource jsrc;
-        jsrc.frameBuf     = ctx.frameBuf;
-        jsrc.srcInputSlot = ctx.frameSlotIdx;
-        jsrc.pixFmt       = ctx.pixFmt;
-        jsrc.width        = ctx.resW;
-        jsrc.height       = ctx.resH;
-        mDeps.jpeg->encode(buf, ctx.jpegBufferSize, jsrc, cm);
+status_t BufferProcessor::recordBlobOutput(const camera3_stream_buffer &srcBuf,
+                                            uint32_t frameNumber,
+                                            JpegSnapshot *snapshotOut) {
+    /* CPU-wait acquire_fence here so finalizeBlobOutput's lockSwWrite
+     * runs without blocking. Same pattern as YUV. */
+    status_t e = waitAcquireFence(srcBuf, frameNumber);
+    if (e != NO_ERROR)
+        return e;
+
+    if (!mDeps.isp->blitToJpegCpu(snapshotOut)) {
+        ALOGE("buffer %p  frame %-4u  blitToJpegCpu failed",
+              srcBuf.buffer, frameNumber);
+        return NO_INIT;
     }
+    return NO_ERROR;
+}
+
+void BufferProcessor::finalizeBlobOutput(const CaptureRequest::Buffer &outBuf,
+                                          const CameraMetadata &metadata,
+                                          const JpegSnapshot &snap,
+                                          uint32_t frameNumber) {
+    if (snap.ringSlot < 0) return;
+    const size_t blobCapacity = mDeps.jpegBufferSize ? *mDeps.jpegBufferSize : 0;
+    if (blobCapacity <= sizeof(camera3_jpeg_blob)) {
+        ALOGE("buffer %p  frame %-4u  BLOB capacity %zu too small",
+              outBuf.buffer, frameNumber, blobCapacity);
+        mDeps.isp->releaseJpegSnapshot(snap);
+        return;
+    }
+    const size_t maxImageSize = blobCapacity - sizeof(camera3_jpeg_blob);
+
+    unsigned w = outBuf.stream->width;
+    unsigned h = outBuf.stream->height;
+    const Rect rect((int)w, (int)h);
+    uint8_t *dst = NULL;
+    status_t e = GraphicBufferMapper::get().lock(*outBuf.buffer,
+        GRALLOC_USAGE_SW_WRITE_OFTEN, rect, (void **)&dst);
+    if (e != NO_ERROR) {
+        ALOGE("buffer %p  frame %-4u  BLOB lock failed", outBuf.buffer, frameNumber);
+        mDeps.isp->releaseJpegSnapshot(snap);
+        return;
+    }
+
+    mDeps.isp->invalidateJpegSnapshot(snap);
+    size_t written = 0;
+    bool ok = false;
+    BENCHMARK_SECTION("RGBA->JPEG") {
+        ok = mDeps.jpeg->process(snap, dst, maxImageSize, metadata, &written);
+    }
+    if (ok) {
+        camera3_jpeg_blob *blob =
+            reinterpret_cast<camera3_jpeg_blob *>(dst + maxImageSize);
+        blob->jpeg_blob_id = CAMERA3_JPEG_BLOB_ID;
+        blob->jpeg_size    = (uint32_t)written;
+    } else {
+        ALOGE("buffer %p  frame %-4u  JPEG encode failed", outBuf.buffer, frameNumber);
+    }
+
+    GraphicBufferMapper::get().unlock(*outBuf.buffer);
+    mDeps.isp->releaseJpegSnapshot(snap);
 }
 
 status_t BufferProcessor::processOne(const camera3_stream_buffer &srcBuf,
@@ -212,9 +273,18 @@ status_t BufferProcessor::processOne(const camera3_stream_buffer &srcBuf,
                                       const CameraMetadata &cm,
                                       uint32_t frameNumber,
                                       OutputState *state,
-                                      int *releaseFenceOut) {
+                                      int *releaseFenceOut,
+                                      JpegSnapshot *jpegSnapshot) {
+    (void)cm;
     state->needsFinalUnlock = true;
     if (releaseFenceOut) *releaseFenceOut = -1;
+    if (jpegSnapshot) {
+        jpegSnapshot->rgba     = nullptr;
+        jpegSnapshot->width    = 0;
+        jpegSnapshot->height   = 0;
+        jpegSnapshot->size     = 0;
+        jpegSnapshot->ringSlot = -1;
+    }
 
     switch (srcBuf.stream->format) {
         case HAL_PIXEL_FORMAT_RGBA_8888:
@@ -241,18 +311,13 @@ status_t BufferProcessor::processOne(const camera3_stream_buffer &srcBuf,
             return NO_ERROR;
         }
         case HAL_PIXEL_FORMAT_BLOB: {
-            /* JPEG legacy path until the JpegWorker split lands. CPU-wait
-             * acquire_fence then run libjpeg synchronously inside
-             * processBlobOutput. Demosaic happens via the legacy
-             * processToCpu — separate submit from the produce-once one,
-             * but harmless: both overwrite the same scratch with the same
-             * Bayer + params. */
-            status_t e = waitAcquireFence(srcBuf, frameNumber);
+            /* GPU records vkCmdCopyImageToBuffer(scratch -> jpeg ring slot)
+             * now; libjpeg encode runs in finalizeCpuOutputs after the
+             * frame's fence is reaped. needsFinalUnlock=false — finalize
+             * does its own lock/unlock. */
+            status_t e = recordBlobOutput(srcBuf, frameNumber, jpegSnapshot);
             if (e != NO_ERROR) return e;
-            uint8_t *buf = NULL;
-            e = lockSwWrite(srcBuf, frameNumber, &buf);
-            if (e != NO_ERROR) return e;
-            processBlobOutput(buf, ctx, cm);
+            state->needsFinalUnlock = false;
             return NO_ERROR;
         }
         default:

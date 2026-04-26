@@ -9,11 +9,12 @@
 #include <camera/CameraMetadata.h>
 
 #include "CaptureRequest.h"
+#include "JpegSnapshot.h"
 
 namespace android {
 
 class IspPipeline;
-class JpegEncoder;
+class PostProcessor;
 struct PipelineContext;
 
 /* Per-output-buffer processing. Takes a just-dequeued V4L2 Bayer
@@ -25,8 +26,9 @@ struct PipelineContext;
 class BufferProcessor {
 public:
     struct Deps {
-        IspPipeline *isp;
-        JpegEncoder *jpeg;
+        IspPipeline   *isp;
+        PostProcessor *jpeg;
+        const size_t  *jpegBufferSize;  /* single value per session, set at configureStreams */
     };
 
     struct FrameContext {
@@ -39,7 +41,6 @@ public:
         int            cropY;
         int            cropW;
         int            cropH;
-        size_t         jpegBufferSize;
     };
 
     struct OutputState {
@@ -57,13 +58,18 @@ public:
      *                  this output. RGBA outputs stash the address inside
      *                  the ISP and endFrame writes the per-output sync_fd
      *                  there. YUV / BLOB leave it -1 (CPU finalize is
-     *                  synchronous in the consumer thread). */
+     *                  synchronous in the consumer thread).
+     * jpegSnapshot:    [out, may be NULL] address where this output's
+     *                  JpegSnapshot lands, populated for BLOB outputs
+     *                  via blitToJpegCpu. Other formats leave it
+     *                  default-initialised (ringSlot == -1). */
     status_t processOne(const camera3_stream_buffer &srcBuf,
                         const FrameContext &ctx,
                         const CameraMetadata &cm,
                         uint32_t frameNumber,
                         OutputState *state,
-                        int *releaseFenceOut);
+                        int *releaseFenceOut,
+                        JpegSnapshot *jpegSnapshot);
 
     /* Post-fence-reap CPU finalize for outputs whose GPU half ran into a
      * host-mapped backend buffer (YUV NV12). Called by PipelineThread on
@@ -91,10 +97,20 @@ private:
                          uint32_t frameNumber,
                          uint8_t **outBuf);
 
-    /* JPEG BLOB output — delegates to JpegEncoder. */
-    void     processBlobOutput(uint8_t *buf,
-                               const FrameContext &ctx,
-                               const CameraMetadata &cm);
+    /* Record a vkCmdCopyImageToBuffer from the ISP scratch into a JPEG
+     * ring slot. The actual encode runs in finalizeBlobOutput after the
+     * fence reaps. */
+    status_t recordBlobOutput(const camera3_stream_buffer &srcBuf,
+                               uint32_t frameNumber,
+                               JpegSnapshot *snapshotOut);
+
+    /* Lock the BLOB gralloc, libjpeg-encode from the snapshot, write the
+     * camera3_jpeg_blob trailer, unlock, release the snapshot. Called
+     * from finalizeCpuOutputs once the frame's submit fence has signalled. */
+    void     finalizeBlobOutput(const CaptureRequest::Buffer &outBuf,
+                                 const CameraMetadata &metadata,
+                                 const JpegSnapshot &snap,
+                                 uint32_t frameNumber);
 
     /* Record a GPU NV12 encode dispatch on the open ISP recording. CPU
      * wait on srcBuf.acquire_fence happens here so the subsequent

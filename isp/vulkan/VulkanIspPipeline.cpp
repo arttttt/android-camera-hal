@@ -1219,41 +1219,6 @@ void VulkanIspPipeline::writeStaticDescriptors() {
 
 /* --- main processing paths --- */
 
-const uint8_t *VulkanIspPipeline::processToCpu(const uint8_t *src,
-                                                 unsigned width, unsigned height,
-                                                 uint32_t pixFmt,
-                                                 int srcInputSlot) {
-    (void)src;
-    if (!mReady) return NULL;
-    if (srcInputSlot < 0 || srcInputSlot >= mInputRing.slotCount())
-        return NULL;
-
-    bool is16 = (pixFmt == V4L2_PIX_FMT_SRGGB10 || pixFmt == V4L2_PIX_FMT_SGRBG10 ||
-                 pixFmt == V4L2_PIX_FMT_SGBRG10 || pixFmt == V4L2_PIX_FMT_SBGGR10);
-    if (!ensureBuffers(width, height, is16))
-        return NULL;
-
-    int slot = acquireSlot();
-    mInputRing.invalidateFromGpu(srcInputSlot);
-
-    IspParams params;
-    fillParams(&params, width, height, is16, pixFmt);
-    uploadParams(slot, params);
-    rebindInputDescriptor(slot, srcInputSlot);
-
-    recordAndSubmit(slot, width, height, true);
-    mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1,
-                                       &mFence[slot], VK_TRUE, UINT64_MAX);
-    mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[slot]);
-
-    VkMappedMemoryRange outRange = {};
-    outRange.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    outRange.memory = mOutMem;
-    outRange.size   = VK_WHOLE_SIZE;
-    mDeviceState.pfn()->InvalidateMappedMemoryRanges(mDeviceState.device(), 1, &outRange);
-    return (const uint8_t *)mOutMap;
-}
-
 void VulkanIspPipeline::prewarm(unsigned width, unsigned height, uint32_t pixFmt) {
     if (!mReady) return;
 
