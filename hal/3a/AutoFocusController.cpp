@@ -37,23 +37,25 @@ constexpr float   kDefContrastRatio  = 0.75f;
 constexpr float   kDefRetriggerRatio = 0.75f;
 constexpr int32_t kDefRetriggerDelay = 10;
 
-float sumCentreFocus(
-    const float metric[IpaStats::PATCH_Y][IpaStats::PATCH_X]) {
+float sumFocusInRoi(
+    const float metric[IpaStats::PATCH_Y][IpaStats::PATCH_X],
+    const AutoFocusController::FocusRoi &roi) {
     float s = 0.f;
-    for (int py = IpaStats::FOCUS_ROI_PY_LO; py < IpaStats::FOCUS_ROI_PY_HI; ++py) {
-        for (int px = IpaStats::FOCUS_ROI_PX_LO; px < IpaStats::FOCUS_ROI_PX_HI; ++px) {
+    for (int py = roi.pyLo; py < roi.pyHi; ++py) {
+        for (int px = roi.pxLo; px < roi.pxHi; ++px) {
             s += metric[py][px];
         }
     }
     return s;
 }
 
-void sumCentreRgb(
+void sumRgbInRoi(
     const float rgbMean[IpaStats::PATCH_Y][IpaStats::PATCH_X][3],
+    const AutoFocusController::FocusRoi &roi,
     float out[3]) {
     out[0] = out[1] = out[2] = 0.f;
-    for (int py = IpaStats::FOCUS_ROI_PY_LO; py < IpaStats::FOCUS_ROI_PY_HI; ++py) {
-        for (int px = IpaStats::FOCUS_ROI_PX_LO; px < IpaStats::FOCUS_ROI_PX_HI; ++px) {
+    for (int py = roi.pyLo; py < roi.pyHi; ++py) {
+        for (int px = roi.pxLo; px < roi.pxHi; ++px) {
             out[0] += rgbMean[py][px][0];
             out[1] += rgbMean[py][px][1];
             out[2] += rgbMean[py][px][2];
@@ -531,7 +533,13 @@ void AutoFocusController::onFrameStart() {
 }
 
 void AutoFocusController::onStats(const IpaStats &stats) {
-    const float score = sumCentreFocus(stats.focusMetric);
+    /* Snapshot the AF region once for the whole tick so all sums and
+     * the scene-change snapshot agree. Must match the rectangle the
+     * NEON encoder restricted Sobel / greenSq to (see StatsWorker /
+     * StatsDispatchStage), otherwise the focus metric reads zeros
+     * for patches the encoder skipped. */
+    const FocusRoi roi = currentFocusRoi();
+    const float score = sumFocusInRoi(stats.focusMetric, roi);
 
     if (mState == ScanState::Idle) {
         if (mFramesSinceLastSweep < UINT32_MAX) mFramesSinceLastSweep++;
@@ -549,7 +557,7 @@ void AutoFocusController::onStats(const IpaStats &stats) {
             return;
 
         float curRgb[3];
-        sumCentreRgb(stats.rgbMean, curRgb);
+        sumRgbInRoi(stats.rgbMean, roi, curRgb);
 
         /* First idle frame after a sweep — capture snapshot and
          * skip change detection. mSceneFocusSnapshot==0 is the
