@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/user.h>
+#include <linux/videodev2.h>
 
 #include <hardware/camera3.h>
 #include <hardware/camera_common.h>
@@ -220,20 +221,48 @@ void writeJpegInfo(CameraMetadata &cm, V4l2Device *dev, size_t *jpegBufferSize) 
     cm.update(ANDROID_JPEG_AVAILABLE_THUMBNAIL_SIZES, jpegAvailableThumbnailSizes, NELEM(jpegAvailableThumbnailSizes));
 }
 
-/* Declared sensor operating ranges — exposure time, ISO, analog gain
- * ceiling. Fixed ranges for now; per-sensor tuning (Tier 2) will pull
- * these from JSON. */
-void writeSensorRanges(CameraMetadata &cm) {
-    /* Exposure time: 0.1ms to 200ms */
-    static const int64_t sensorExposureTimeRange[] = { 100000LL, 200000000LL };
-    cm.update(ANDROID_SENSOR_INFO_EXPOSURE_TIME_RANGE, sensorExposureTimeRange, NELEM(sensorExposureTimeRange));
+/* Declared sensor operating ranges — exposure time + ISO sensitivity,
+ * pulled from the V4L2 driver's queryctrl so the slider apps offer
+ * matches what the sensor will actually accept (was hardcoded at
+ * 0.1–200 ms / ISO 100–3200, which clipped IMX179's 1 µs–1 s exposure
+ * range and its 64× analog gain ceiling). Falls back to the historical
+ * conservative defaults if queryctrl fails. */
+void writeSensorRanges(CameraMetadata &cm, V4l2Device *dev) {
+    /* V4L2_CID_EXPOSURE returns microseconds; metadata wants ns. */
+    int64_t expMinNs = 100000LL;
+    int64_t expMaxNs = 200000000LL;
+    {
+        int32_t expMinUs, expMaxUs, expDefUs;
+        if (dev->queryControl(V4L2_CID_EXPOSURE, &expMinUs, &expMaxUs, &expDefUs)) {
+            expMinNs = (int64_t)expMinUs * 1000LL;
+            expMaxNs = (int64_t)expMaxUs * 1000LL;
+        }
+    }
+    const int64_t sensorExposureTimeRange[] = { expMinNs, expMaxNs };
+    cm.update(ANDROID_SENSOR_INFO_EXPOSURE_TIME_RANGE,
+              sensorExposureTimeRange, NELEM(sensorExposureTimeRange));
 
-    /* ISO sensitivity: 100 to 3200 */
-    static const int32_t sensorSensitivityRange[] = { 100, 3200 };
-    cm.update(ANDROID_SENSOR_INFO_SENSITIVITY_RANGE, sensorSensitivityRange, NELEM(sensorSensitivityRange));
+    /* V4L2_CID_GAIN is Q8.8 analog gain (256 = 1.0×). ISO = gain × 100
+     * / 256 — same conversion ResultMetadataBuilder uses for per-frame
+     * SENSOR_SENSITIVITY. The driver-reported max represents pure
+     * analog gain on these sensors; advertise it as MAX_ANALOG too. */
+    int32_t isoMin = 100;
+    int32_t isoMax = 3200;
+    {
+        int32_t gMin, gMax, gDef;
+        if (dev->queryControl(V4L2_CID_GAIN, &gMin, &gMax, &gDef)) {
+            isoMin = (gMin * 100) / 256;
+            isoMax = (gMax * 100) / 256;
+            if (isoMin < 1) isoMin = 1;
+        }
+    }
+    const int32_t sensorSensitivityRange[] = { isoMin, isoMax };
+    cm.update(ANDROID_SENSOR_INFO_SENSITIVITY_RANGE,
+              sensorSensitivityRange, NELEM(sensorSensitivityRange));
 
-    static const int32_t sensorMaxAnalogSensitivity = 1600;
-    cm.update(ANDROID_SENSOR_MAX_ANALOG_SENSITIVITY, &sensorMaxAnalogSensitivity, 1);
+    const int32_t sensorMaxAnalogSensitivity = isoMax;
+    cm.update(ANDROID_SENSOR_MAX_ANALOG_SENSITIVITY,
+              &sensorMaxAnalogSensitivity, 1);
 }
 
 /* AE_AVAILABLE_TARGET_FPS_RANGES from VIDIOC_ENUM_FRAMEINTERVALS.
@@ -758,7 +787,7 @@ camera_metadata_t *CameraStaticMetadata::build(V4l2Device *dev, int facing,
     writeSensorInfo         (cm, dev, tuning, facing);
     writeScalerConfigs      (cm, dev);
     writeJpegInfo           (cm, dev, jpegBufferSize);
-    writeSensorRanges       (cm);
+    writeSensorRanges       (cm, dev);
     writeAvailableFpsRanges (cm, dev);
     writeControlInfo        (cm, facing);
     writeStageAvailableModes(cm);

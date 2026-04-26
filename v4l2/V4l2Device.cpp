@@ -776,21 +776,34 @@ bool V4l2Device::setControls(const V4l2Controls &controls) {
 }
 
 bool V4l2Device::queryControl(uint32_t id, int32_t *min, int32_t *max, int32_t *def) {
-    if (mFd < 0)
-        return false;
+    /* Allow query before connect() — staticCharacteristics() runs from
+     * the framework's cameraInfo() probe which precedes openDevice, but
+     * we want driver-reported exposure / gain ranges advertised in the
+     * metadata. Open a temporary fd if the persistent one isn't there
+     * yet (same pattern as availableResolutions). */
+    int fd = mFd;
+    bool fdNeedsClose = false;
+    if (fd < 0) {
+        fd = openFd(mDevNode);
+        if (fd < 0)
+            return false;
+        fdNeedsClose = true;
+    }
 
     struct v4l2_queryctrl qc;
     memset(&qc, 0, sizeof(qc));
     qc.id = id;
-    if (ioctl(mFd, VIDIOC_QUERYCTRL, &qc) < 0) {
+    bool ok = (ioctl(fd, VIDIOC_QUERYCTRL, &qc) == 0);
+    if (!ok) {
         ALOGW("queryControl(0x%x) FAILED: %s", id, strerror(errno));
-        return false;
+    } else {
+        if (min) *min = qc.minimum;
+        if (max) *max = qc.maximum;
+        if (def) *def = qc.default_value;
+        ALOGD("queryControl(0x%x): min=%d max=%d def=%d", id, qc.minimum, qc.maximum, qc.default_value);
     }
-    if (min) *min = qc.minimum;
-    if (max) *max = qc.maximum;
-    if (def) *def = qc.default_value;
-    ALOGD("queryControl(0x%x): min=%d max=%d def=%d", id, qc.minimum, qc.maximum, qc.default_value);
-    return true;
+    if (fdNeedsClose) ::close(fd);
+    return ok;
 }
 
 bool V4l2Device::iocStreamOff() {
