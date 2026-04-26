@@ -100,6 +100,17 @@ private:
      * the lock — biased = lastTotalUs × factor(current) / factor(lastEvComp). */
     int32_t  lastEvComp;
 
+    /* Smoothed version of the EV-biased held exposure. Without it,
+     * a hard EV step on a locked AE produces a one-frame jump in
+     * the exposure value sent to V4L2 — at low exposure that lands
+     * mid-rolling-shutter and the resulting frame stitches the old
+     * top half with the new bottom half (visible as an apparent
+     * left-right shift with a band of the previous frame). The
+     * member is EMA'd toward the per-call biased target with the
+     * same aeDamping used elsewhere; sentinel <= 0 means "reset on
+     * the next lock entry, seed from target instead of EMA". */
+    float    lockedBiasedTotalUs;
+
     /* AWB state. R / B gain multipliers relative to G (G pinned at
      * unity on the shader side). The prior values come from the
      * sensor's tuned wbGain at its daylight CcmSet (the hottest-CCT

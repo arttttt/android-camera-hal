@@ -162,6 +162,7 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
       lastTotalUs((float)cfg.exposureDefault * (float)cfg.gainDefault
                   / (float)cfg.gainUnit),
       lastEvComp(0),
+      lockedBiasedTotalUs(0.f),
       /* Normalise the R / B priors against G so the shader-side WB
        * (which keeps G at unity) stays consistent. Guard against a
        * zero G entry with the same floor the per-frame AWB uses — a
@@ -219,6 +220,7 @@ void BasicIpa::reset() {
                    * (float)sensorCfg.gainDefault
                    / (float)sensorCfg.gainUnit;
     lastEvComp     = 0;
+    lockedBiasedTotalUs = 0.f;
     lastWbR        = wbRPrior;
     lastWbB        = wbBPrior;
     smoothedLuma   = 0.f;
@@ -390,6 +392,7 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
      * is frozen at its last auto decision — convergence resumes from
      * there on switch-back. */
     if (meta.aeMode == ANDROID_CONTROL_AE_MODE_OFF) {
+        lockedBiasedTotalUs = 0.f;
         return batch;
     }
 
@@ -413,9 +416,23 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
     if (meta.aeLock == ANDROID_CONTROL_AE_LOCK_ON || aeLockHeld) {
         const float lockedFactor  = aeCompFactor(lastEvComp);
         const float currentFactor = aeCompFactor(meta.aeExposureCompensation);
-        const float biasedTotalUs = lastTotalUs * (currentFactor / lockedFactor);
+        const float biasedTarget  = lastTotalUs * (currentFactor / lockedFactor);
+
+        /* EMA toward the new biased target. First locked frame
+         * after unlock (sentinel <= 0) seeds without smoothing so
+         * locking from a static auto state is instant; subsequent
+         * EV moves get aeDamping × delta per frame, matching the
+         * cascade the auto path applies and avoiding a one-frame
+         * exposure step that mid-frame readout would slice apart. */
+        if (lockedBiasedTotalUs <= 0.f) {
+            lockedBiasedTotalUs = biasedTarget;
+        } else {
+            lockedBiasedTotalUs = aeDamping * biasedTarget
+                                + (1.0f - aeDamping) * lockedBiasedTotalUs;
+        }
+
         int32_t heldExposureUs, heldExtraGainQ8;
-        sensorCfg.splitExposureGain((int32_t)(biasedTotalUs + 0.5f),
+        sensorCfg.splitExposureGain((int32_t)(lockedBiasedTotalUs + 0.5f),
                                      &heldExposureUs, &heldExtraGainQ8);
         int32_t heldGain = (int32_t)(((int64_t)sensorCfg.gainUnit
                                      * heldExtraGainQ8 + 128) / 256);
@@ -427,6 +444,11 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
         batch.val[DelayedControls::GAIN]     = heldGain;
         return batch;
     }
+
+    /* Falling through means lock isn't active on this frame —
+     * drop the locked-bias EMA so the next lock entry seeds from
+     * a fresh target rather than ramping from a stale value. */
+    lockedBiasedTotalUs = 0.f;
 
     /* Mean bin index of the green-channel histogram over all bins.
      * Dropping the saturated (127) and black (0) bins was tempting to
