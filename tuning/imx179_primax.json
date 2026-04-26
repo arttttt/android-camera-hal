@@ -18,6 +18,19 @@
     "bayer_pattern": "RGGB"
   },
   "active": {
+    "ae": {
+      "MeanAlg": {
+        "HigherTarget": 110,
+        "LowerTarget": 120,
+        "HigherBrightness": 10000,
+        "LowerBrightness": 5000,
+        "ConvergeSpeed": 0.2,
+        "ToleranceIn": 0.4,
+        "ToleranceOut": 0.8
+      },
+      "MaxFstopDeltaPos": 0.5,
+      "MaxFstopDeltaNeg": 0.5
+    },
     "af": {
       "module_cal_enable": 1,
       "settle_time": 15,
@@ -25,21 +38,178 @@
       "macro": 640,
       "inf_offset": -82,
       "macro_offset": 58,
-      "macro_max": 100,
-      "step_coarse": 25,
-      "step_fine": 5,
-      "contrast_ratio": 0.75,
-      "retrigger_ratio": 0.75,
-      "retrigger_delay_frames": 10,
-      "pdaf_enabled": false,
-      "settle_frames_coarse": 2,
-      "settle_frames_fine": 1
+      "macro_max": 100
     },
     "mwbCCT": {
       "cloudy": 7000,
       "shade": 6550,
       "incandescent": 2800,
       "fluorescent": 4300
+    },
+    "awb": {
+      "v4": {
+        "NumGrayLineSoftClampPoints": 10,
+        "GrayLineSoftClamp": [
+          [
+            0.6056,
+            0.6506,
+            0.005
+          ],
+          [
+            0.7532,
+            0.8132,
+            0.007
+          ],
+          [
+            0.8785,
+            0.8985,
+            0.005
+          ],
+          [
+            1.0631,
+            1.0781,
+            0.005
+          ],
+          [
+            1.1491,
+            1.1991,
+            0.01
+          ],
+          [
+            1.2061,
+            1.2461,
+            0.005
+          ],
+          [
+            1.3731,
+            1.3931,
+            0.003
+          ],
+          [
+            1.4011,
+            1.4211,
+            0.003
+          ],
+          [
+            1.4721,
+            1.4821,
+            0.003
+          ],
+          [
+            1.5175,
+            1.5175,
+            0.0
+          ],
+          [
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0
+          ]
+        ],
+        "GrayLineSoftClampSlopeBeforeFirstPoint": 0.0,
+        "GrayLineSoftClampSlopeAfterLastPoint": 0.0,
+        "HighU": 1.5214,
+        "LowU": 0.5718,
+        "UtoCCT": [
+          5878.934591269852,
+          -1798.081326135574
+        ],
+        "CCTtoU": [
+          0.000170098848,
+          0.305851561745
+        ],
+        "FusionLights": [
+          [
+            861,
+            896,
+            896,
+            288
+          ],
+          [
+            730,
+            898,
+            898,
+            336
+          ],
+          [
+            646,
+            898,
+            898,
+            381
+          ],
+          [
+            525,
+            892,
+            892,
+            426
+          ],
+          [
+            473,
+            902,
+            902,
+            435
+          ],
+          [
+            483,
+            899,
+            899,
+            508
+          ],
+          [
+            423,
+            898,
+            898,
+            593
+          ],
+          [
+            399,
+            894,
+            894,
+            574
+          ],
+          [
+            393,
+            898,
+            898,
+            654
+          ],
+          [
+            379,
+            898,
+            898,
+            684
+          ],
+          [
+            683,
+            900,
+            900,
+            253
+          ]
+        ],
+        "FusionInitLight": 5,
+        "CStatsDarkThreshold": 0.006,
+        "CStatsMinThreshold": 0.02,
+        "SmoothingWpTrackingFraction": 0.1
+      }
     },
     "colorCorrection": {
       "srgbMatrix": [
@@ -168,206 +338,19 @@
       "manualBiasGR": 64,
       "manualBiasGB": 64,
       "manualBiasB": 64
-    },
-    "awb": {
-      "v4": {
-        "UtoCCT": [
-          5878.934591269852,
-          -1798.081326135574
-        ],
-        "CCTtoU": [
-          0.000170098848,
-          0.305851561745
-        ],
-        "LowU": 0.5718,
-        "HighU": 1.5214,
-        "CStatsMinThreshold": 0.02,
-        "CStatsDarkThreshold": 0.006,
-        "SmoothingWpTrackingFraction": 0.1,
-        "FusionLights": [
-          [
-            861,
-            896,
-            896,
-            288
-          ],
-          [
-            730,
-            898,
-            898,
-            336
-          ],
-          [
-            646,
-            898,
-            898,
-            381
-          ],
-          [
-            525,
-            892,
-            892,
-            426
-          ],
-          [
-            473,
-            902,
-            902,
-            435
-          ],
-          [
-            483,
-            899,
-            899,
-            508
-          ],
-          [
-            423,
-            898,
-            898,
-            593
-          ],
-          [
-            399,
-            894,
-            894,
-            574
-          ],
-          [
-            393,
-            898,
-            898,
-            654
-          ],
-          [
-            379,
-            898,
-            898,
-            684
-          ],
-          [
-            683,
-            900,
-            900,
-            253
-          ]
-        ],
-        "FusionInitLight": 5,
-        "GrayLineSoftClamp": [
-          [
-            0.6056,
-            0.6506,
-            0.005
-          ],
-          [
-            0.7532,
-            0.8132,
-            0.007
-          ],
-          [
-            0.8785,
-            0.8985,
-            0.005
-          ],
-          [
-            1.0631,
-            1.0781,
-            0.005
-          ],
-          [
-            1.1491,
-            1.1991,
-            0.01
-          ],
-          [
-            1.2061,
-            1.2461,
-            0.005
-          ],
-          [
-            1.3731,
-            1.3931,
-            0.003
-          ],
-          [
-            1.4011,
-            1.4211,
-            0.003
-          ],
-          [
-            1.4721,
-            1.4821,
-            0.003
-          ],
-          [
-            1.5175,
-            1.5175,
-            0.0
-          ],
-          [
-            0.0,
-            0.0
-          ],
-          [
-            0.0,
-            0.0
-          ],
-          [
-            0.0,
-            0.0
-          ],
-          [
-            0.0,
-            0.0
-          ],
-          [
-            0.0,
-            0.0
-          ],
-          [
-            0.0,
-            0.0
-          ]
-        ],
-        "NumGrayLineSoftClampPoints": 10,
-        "GrayLineSoftClampSlopeBeforeFirstPoint": 0.0,
-        "GrayLineSoftClampSlopeAfterLastPoint": 0.0
-      }
-    },
-    "ae": {
-      "MeanAlg": {
-        "HigherTarget": 110,
-        "LowerTarget": 120,
-        "HigherBrightness": 10000,
-        "LowerBrightness": 5000,
-        "ConvergeSpeed": 0.2,
-        "ToleranceIn": 0.4,
-        "ToleranceOut": 0.8
-      },
-      "MaxFstopDeltaPos": 0.5,
-      "MaxFstopDeltaNeg": 0.5
     }
   },
-  "_note": "`active` \u2014 consumed by the current HAL; hardcodes in code are replaced with reads from here. `reserved` \u2014 preserved verbatim from the stock NVIDIA .isp, not consumed yet; keys migrate to `active` as the corresponding shader stages ship.",
+  "_note": "`active` — consumed by the current HAL; hardcodes in code are replaced with reads from here. `reserved` — preserved verbatim from the stock NVIDIA .isp, not consumed yet; keys migrate to `active` as the corresponding shader stages ship.",
   "reserved": {
     "ae": {
       "AeGroupHoldQuirk": true,
       "MeanAlg": {
-        "HigherTarget": 110,
-        "LowerTarget": 120,
-        "HigherBrightness": 10000,
-        "LowerBrightness": 5000,
         "SlopFactor": 0.3,
         "MinTailMass": 0.001,
         "CriticalMass": 0.015,
-        "ConvergeSpeed": 0.2,
-        "ToleranceIn": 0.4,
-        "ToleranceOut": 0.8,
         "MinRGBtoYMix": 0.5,
         "MaxRGBtoYMix": 0.7
       },
-      "MaxFstopDeltaPos": 0.5,
-      "MaxFstopDeltaNeg": 0.5,
       "VFRTable": {
         "Preview": [
           "(1.0667, 15.0}",
@@ -6726,88 +6709,7 @@
       "HighU": 1.5214,
       "LowU": 0.5718,
       "v4": {
-        "NumGrayLineSoftClampPoints": 10,
-        "GrayLineSoftClamp": [
-          [
-            0.6056,
-            0.6506,
-            0.005
-          ],
-          [
-            0.7532,
-            0.8132,
-            0.007
-          ],
-          [
-            0.8785,
-            0.8985,
-            0.005
-          ],
-          [
-            1.0631,
-            1.0781,
-            0.005
-          ],
-          [
-            1.1491,
-            1.1991,
-            0.01
-          ],
-          [
-            1.2061,
-            1.2461,
-            0.005
-          ],
-          [
-            1.3731,
-            1.3931,
-            0.003
-          ],
-          [
-            1.4011,
-            1.4211,
-            0.003
-          ],
-          [
-            1.4721,
-            1.4821,
-            0.003
-          ],
-          [
-            1.5175,
-            1.5175,
-            0.0
-          ],
-          [
-            0.0,
-            0.0
-          ],
-          [
-            0.0,
-            0.0
-          ],
-          [
-            0.0,
-            0.0
-          ],
-          [
-            0.0,
-            0.0
-          ],
-          [
-            0.0,
-            0.0
-          ],
-          [
-            0.0,
-            0.0
-          ]
-        ],
-        "GrayLineSoftClampSlopeBeforeFirstPoint": 0.0,
-        "GrayLineSoftClampSlopeAfterLastPoint": 0.0,
         "GrayLineThickness": 0.3,
-        "HighU": 1.5214,
-        "LowU": 0.5718,
         "Method": 3,
         "FusionUseGray": 1,
         "FusionUseGprob": 1,
@@ -6823,89 +6725,10 @@
           -0.00300775254,
           1.831363966399
         ],
-        "UtoCCT": [
-          5878.934591269852,
-          -1798.081326135574
-        ],
-        "CCTtoU": [
-          0.000170098848,
-          0.305851561745
-        ],
         "FusionNumLights": 11,
-        "FusionLights": [
-          [
-            861,
-            896,
-            896,
-            288
-          ],
-          [
-            730,
-            898,
-            898,
-            336
-          ],
-          [
-            646,
-            898,
-            898,
-            381
-          ],
-          [
-            525,
-            892,
-            892,
-            426
-          ],
-          [
-            473,
-            902,
-            902,
-            435
-          ],
-          [
-            483,
-            899,
-            899,
-            508
-          ],
-          [
-            423,
-            898,
-            898,
-            593
-          ],
-          [
-            399,
-            894,
-            894,
-            574
-          ],
-          [
-            393,
-            898,
-            898,
-            654
-          ],
-          [
-            379,
-            898,
-            898,
-            684
-          ],
-          [
-            683,
-            900,
-            900,
-            253
-          ]
-        ],
-        "FusionInitLight": 5,
         "VideoThrottle": 0.125,
         "PreviewThrottle": 0.125,
         "CStatsSaturationThreshold": 0.3,
-        "CStatsDarkThreshold": 0.006,
-        "CStatsMinThreshold": 0.02,
         "GrayROI": [
           0.04,
           0.055,
@@ -7024,8 +6847,7 @@
         "HistoryAccumDeltaMiredLimit": 1000.0,
         "HistoryDeltaMiredThreshold": 25.0,
         "HistoryADMConfidenceThreshold": 0.2,
-        "HistoryADMAttritionFraction": 0.003,
-        "SmoothingWpTrackingFraction": 0.1
+        "HistoryADMAttritionFraction": 0.003
       },
       "GrayLineSlope": -1.0753,
       "GrayLineIntercept": 2.4559,

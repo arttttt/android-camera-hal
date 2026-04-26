@@ -1,0 +1,15 @@
+{
+  "_note": "HAL-side hand additions overlaid on imx179_primax.json at SensorTuning::load. Keys NVIDIA's stock .isp doesn't carry — defaulted in code, tuned per-sensor here. Survives full re-runs of tools/isp_to_json.py.",
+  "active": {
+    "af": {
+      "step_coarse": 25,
+      "step_fine": 5,
+      "contrast_ratio": 0.75,
+      "retrigger_ratio": 0.75,
+      "retrigger_delay_frames": 10,
+      "pdaf_enabled": false,
+      "settle_frames_coarse": 2,
+      "settle_frames_fine": 1
+    }
+  }
+}

@@ -125,6 +125,14 @@ LOCAL_MODULE_PATH  := $(TARGET_OUT_VENDOR_ETC)/camera/tuning
 include $(BUILD_PREBUILT)
 
 include $(CLEAR_VARS)
+LOCAL_MODULE       := imx179_primax_overrides.json
+LOCAL_MODULE_CLASS := ETC
+LOCAL_MODULE_TAGS  := optional
+LOCAL_SRC_FILES    := tuning/imx179_primax_overrides.json
+LOCAL_MODULE_PATH  := $(TARGET_OUT_VENDOR_ETC)/camera/tuning
+include $(BUILD_PREBUILT)
+
+include $(CLEAR_VARS)
 LOCAL_MODULE       := ov5693_sunny.json
 LOCAL_MODULE_CLASS := ETC
 LOCAL_MODULE_TAGS  := optional
