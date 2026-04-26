@@ -23,6 +23,41 @@ encoder requests, we'll see `YUV layout not supported` in logcat —
 that's the NV21 path tracked in
 [open-questions.md](open-questions.md).
 
+## Persistent vertical seam at low exposures
+
+**Symptom:** When AE drives exposure to a short value (bright scene
+in auto mode, or lock + negative AE_EXPOSURE_COMPENSATION on a
+darker scene), the preview shows a steady vertical seam roughly
+1/3 from the left of the display. The narrower left strip carries
+content from a previous frame at the previous exposure (visibly
+brighter / saturated / different colour cast); the wider right
+portion is the current short-exposure frame. The seam stays put
+indefinitely as long as exposure remains low — not a rolling-shutter
+transition that smooths out after a moment.
+
+**Repro:**
+
+1. Open the camera, point at a bright source so auto AE drops
+   exposure to a short value — seam appears. OR:
+2. Lock AE on a normally-exposed scene, then dial EV negative
+   to force a short held exposure — same seam.
+
+**Notes:**
+
+- The phone display is 90° rotated from the sensor's native
+  landscape, so the display's vertical seam corresponds to a
+  horizontal scanline boundary on the sensor (top vs bottom rows).
+  Some readout-time effect in that domain is the most likely
+  origin.
+- Pre-existing — confirmed reproducing in plain auto AE without
+  any EV / lock interaction.
+- The IPA-side EV-on-lock smoothing (commit `4e6c2ee`) was added
+  speculating this might be a transition artifact; it isn't, the
+  smoothing reduces unrelated EV-transient ripple but doesn't
+  affect this seam.
+
+**Status:** Logged, no fix scheduled. Tier TBD.
+
 ## AE over-brightens preview (both cameras, IMX179 noticeable more)
 
 **Symptom:** With 3A auto, preview is consistently ~1/2 stop brighter
