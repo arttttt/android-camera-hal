@@ -54,6 +54,23 @@ void StatsProcessStage::process(PipelineContext &ctx) {
         meta.aeExposureCompensation =
             *s.find(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION).data.i32;
 
+    /* Manual WB: only honour the request's gains when AWB_MODE == OFF.
+     * In AUTO mode the framework still rounds-trips the last-published
+     * gains into the next request, so reading them in AUTO would freeze
+     * AWB at the IPA's first publish. Camera2 layout is [R, Geven, Godd, B];
+     * collapse the two greens (calibrated equal on this sensor). */
+    if (meta.awbMode == ANDROID_CONTROL_AWB_MODE_OFF
+        && s.exists(ANDROID_COLOR_CORRECTION_GAINS)) {
+        camera_metadata_ro_entry_t e =
+            s.find(ANDROID_COLOR_CORRECTION_GAINS);
+        if (e.count == 4) {
+            meta.manualWbValid = true;
+            meta.manualWbR = e.data.f[0];
+            meta.manualWbG = 0.5f * (e.data.f[1] + e.data.f[2]);
+            meta.manualWbB = e.data.f[3];
+        }
+    }
+
     /* Pass the frame-of-stats sequence to the IPA so it can correlate
      * with its own history. DelayedControls::push still uses ctx.sequence
      * for effect timing — the control goes into effect relative to

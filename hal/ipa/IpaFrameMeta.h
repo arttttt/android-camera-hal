@@ -40,12 +40,26 @@ struct IpaFrameMeta {
      * ExposureControl::onSettings and is unaffected. */
     int32_t aeExposureCompensation;
 
+    /* ANDROID_COLOR_CORRECTION_GAINS, decoded as the per-channel
+     * multipliers the IPA pushes into the demosaic shader. Camera2
+     * orders the array as (R, Geven, Godd, B); IpaFrameMeta collapses
+     * the two greens into one (they're calibrated equal). manualWbValid
+     * gates the path: the field is set only when the request actually
+     * carries the key AND awbMode == OFF, so AUTO frames keep the IPA's
+     * gray-world output unchanged. */
+    bool  manualWbValid;
+    float manualWbR;
+    float manualWbG;
+    float manualWbB;
+
     IpaFrameMeta()
         : aeMode(ANDROID_CONTROL_AE_MODE_ON),
           aeLock(ANDROID_CONTROL_AE_LOCK_OFF),
           awbMode(ANDROID_CONTROL_AWB_MODE_AUTO),
           awbLock(ANDROID_CONTROL_AWB_LOCK_OFF),
-          aeExposureCompensation(0) {}
+          aeExposureCompensation(0),
+          manualWbValid(false),
+          manualWbR(1.0f), manualWbG(1.0f), manualWbB(1.0f) {}
 };
 
 } /* namespace android */

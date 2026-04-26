@@ -274,6 +274,24 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
                      && !isp->awbLocked()
                      && (sceneLuma >= awbSceneLightFloor);
 
+    /* Manual AWB short-circuit. AWB_MODE == OFF + COLOR_CORRECTION_GAINS
+     * in the request → push the user-provided gains straight into the
+     * shader and stash them as the new last-known so a subsequent return
+     * to AUTO continues from where the user left off. CCM stays
+     * unchanged (we don't yet honour COLOR_CORRECTION_TRANSFORM); apps
+     * that want fully-manual colour set MODE=TRANSFORM_MATRIX which we
+     * don't claim, so they fall back to FAST/HIGH_QUALITY where the
+     * HAL keeps the current per-CCT CCM. */
+    if (meta.awbMode == ANDROID_CONTROL_AWB_MODE_OFF
+        && meta.manualWbValid && isp != nullptr) {
+        const float gNorm = meta.manualWbG > 1e-3f ? meta.manualWbG : 1.0f;
+        const float r = meta.manualWbR / gNorm;
+        const float b = meta.manualWbB / gNorm;
+        lastWbR = r;
+        lastWbB = b;
+        isp->setWbGains(toQ8(r), wbGainUnityQ8, toQ8(b));
+    }
+
     /* Throttled diagnostic. Logs the scene-luma, AWB gate status,
      * live gains + Q8 values that end up in IspPipeline, and the
      * derived CCT. Temporary while we reconcile steady-state colour
