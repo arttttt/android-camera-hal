@@ -3,6 +3,7 @@
 #include "CameraStaticMetadata.h"
 
 #include <stdint.h>
+#include <string.h>
 #include <sys/user.h>
 
 #include <hardware/camera3.h>
@@ -268,10 +269,25 @@ void writeControlInfo(CameraMetadata &cm, int facing) {
     static const uint8_t statisticsFaceDetectModes[] = {
         ANDROID_STATISTICS_FACE_DETECT_MODE_OFF
     };
-    cm.update(ANDROID_STATISTICS_FACE_DETECT_MODE, statisticsFaceDetectModes, NELEM(statisticsFaceDetectModes));
+    cm.update(ANDROID_STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES,
+              statisticsFaceDetectModes, NELEM(statisticsFaceDetectModes));
 
     static const int32_t statisticsInfoMaxFaceCount = 0;
     cm.update(ANDROID_STATISTICS_INFO_MAX_FACE_COUNT, &statisticsInfoMaxFaceCount, 1);
+
+    static const uint8_t statisticsAvailableHotPixelMapModes[] = {
+        ANDROID_STATISTICS_HOT_PIXEL_MAP_MODE_OFF
+    };
+    cm.update(ANDROID_STATISTICS_INFO_AVAILABLE_HOT_PIXEL_MAP_MODES,
+              statisticsAvailableHotPixelMapModes,
+              NELEM(statisticsAvailableHotPixelMapModes));
+
+    static const uint8_t statisticsAvailableLensShadingMapModes[] = {
+        ANDROID_STATISTICS_LENS_SHADING_MAP_MODE_OFF
+    };
+    cm.update(ANDROID_STATISTICS_INFO_AVAILABLE_LENS_SHADING_MAP_MODES,
+              statisticsAvailableLensShadingMapModes,
+              NELEM(statisticsAvailableLensShadingMapModes));
 
     static const uint8_t controlAvailableSceneModes[] = {
         ANDROID_CONTROL_SCENE_MODE_DISABLED
@@ -329,6 +345,124 @@ void writeControlInfo(CameraMetadata &cm, int facing) {
             ANDROID_CONTROL_VIDEO_STABILIZATION_MODE_OFF
     };
     cm.update(ANDROID_CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES, controlAvailableVideoStabilizationModes, NELEM(controlAvailableVideoStabilizationModes));
+
+    /* High-level CONTROL_MODE values. AUTO drives the per-3A-mode
+     * pipeline (AE / AWB / AF mode each consulted independently); OFF
+     * gives the framework full manual control of the 3A pipeline.
+     * USE_SCENE_MODE is advertised since some apps gate on it even
+     * when the only available scene is DISABLED. */
+    static const uint8_t controlAvailableModes[] = {
+        ANDROID_CONTROL_MODE_OFF,
+        ANDROID_CONTROL_MODE_AUTO,
+        ANDROID_CONTROL_MODE_USE_SCENE_MODE,
+    };
+    cm.update(ANDROID_CONTROL_AVAILABLE_MODES,
+              controlAvailableModes, NELEM(controlAvailableModes));
+}
+
+/* Per-pipeline-stage AVAILABLE_*_MODES arrays. The framework /
+ * camera apps query these to know which mode values can legally
+ * appear in a request; an absent key returns null on the app side
+ * and apps that do `.length` on it crash with NullPointerException
+ * (caught Open Camera 1.55 doing this on
+ * STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES — line 2804 of its
+ * CameraController2.java). All advertise OFF only since we don't
+ * yet implement per-stage shader work for any of them; tonemap
+ * advertises FAST as well because TONEMAP_MODE_OFF requires manual
+ * tonemap support which we don't claim. */
+void writeStageAvailableModes(CameraMetadata &cm) {
+    static const uint8_t edgeAvailableModes[] = {
+        ANDROID_EDGE_MODE_OFF,
+    };
+    cm.update(ANDROID_EDGE_AVAILABLE_EDGE_MODES,
+              edgeAvailableModes, NELEM(edgeAvailableModes));
+
+    static const uint8_t hotPixelAvailableModes[] = {
+        ANDROID_HOT_PIXEL_MODE_OFF,
+    };
+    cm.update(ANDROID_HOT_PIXEL_AVAILABLE_HOT_PIXEL_MODES,
+              hotPixelAvailableModes, NELEM(hotPixelAvailableModes));
+
+    static const uint8_t noiseReductionAvailableModes[] = {
+        ANDROID_NOISE_REDUCTION_MODE_OFF,
+    };
+    cm.update(ANDROID_NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES,
+              noiseReductionAvailableModes, NELEM(noiseReductionAvailableModes));
+
+    static const uint8_t shadingAvailableModes[] = {
+        ANDROID_SHADING_MODE_OFF,
+    };
+    cm.update(ANDROID_SHADING_AVAILABLE_MODES,
+              shadingAvailableModes, NELEM(shadingAvailableModes));
+
+    static const uint8_t tonemapAvailableModes[] = {
+        ANDROID_TONEMAP_MODE_FAST,
+    };
+    cm.update(ANDROID_TONEMAP_AVAILABLE_TONE_MAP_MODES,
+              tonemapAvailableModes, NELEM(tonemapAvailableModes));
+
+    static const uint8_t colorCorrectionAberrationModes[] = {
+        ANDROID_COLOR_CORRECTION_ABERRATION_MODE_OFF,
+    };
+    cm.update(ANDROID_COLOR_CORRECTION_AVAILABLE_ABERRATION_MODES,
+              colorCorrectionAberrationModes,
+              NELEM(colorCorrectionAberrationModes));
+
+    static const uint8_t lensOpticalStabModes[] = {
+        ANDROID_LENS_OPTICAL_STABILIZATION_MODE_OFF,
+    };
+    cm.update(ANDROID_LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION,
+              lensOpticalStabModes, NELEM(lensOpticalStabModes));
+
+    static const int32_t sensorAvailableTestPatternModes[] = {
+        ANDROID_SENSOR_TEST_PATTERN_MODE_OFF,
+    };
+    cm.update(ANDROID_SENSOR_AVAILABLE_TEST_PATTERN_MODES,
+              sensorAvailableTestPatternModes,
+              NELEM(sensorAvailableTestPatternModes));
+}
+
+/* Lens calibration scalars + per-sensor sensor-info bits the
+ * framework expects on a non-LEGACY HAL. Hyperfocal is left at 0
+ * (== "unknown / treat as infinity") since we have no per-module
+ * calibration; FOCUS_DISTANCE_CALIBRATION is UNCALIBRATED for the
+ * same reason. APERTURE / FILTER_DENSITIES are single-element
+ * arrays with sensible defaults — apps iterate length so empty
+ * arrays would crash. */
+void writeLensCalibration(CameraMetadata &cm, const SensorTuning *tuning) {
+    static const float lensInfoHyperfocalDistance = 0.0f;
+    cm.update(ANDROID_LENS_INFO_HYPERFOCAL_DISTANCE,
+              &lensInfoHyperfocalDistance, 1);
+
+    static const uint8_t lensInfoFocusDistanceCalibration =
+        ANDROID_LENS_INFO_FOCUS_DISTANCE_CALIBRATION_UNCALIBRATED;
+    cm.update(ANDROID_LENS_INFO_FOCUS_DISTANCE_CALIBRATION,
+              &lensInfoFocusDistanceCalibration, 1);
+
+    static const float lensInfoAvailableApertures[] = { 2.0f };
+    cm.update(ANDROID_LENS_INFO_AVAILABLE_APERTURES,
+              lensInfoAvailableApertures, NELEM(lensInfoAvailableApertures));
+
+    static const float lensInfoAvailableFilterDensities[] = { 0.0f };
+    cm.update(ANDROID_LENS_INFO_AVAILABLE_FILTER_DENSITIES,
+              lensInfoAvailableFilterDensities,
+              NELEM(lensInfoAvailableFilterDensities));
+
+    static const uint8_t sensorInfoTimestampSource =
+        ANDROID_SENSOR_INFO_TIMESTAMP_SOURCE_UNKNOWN;
+    cm.update(ANDROID_SENSOR_INFO_TIMESTAMP_SOURCE,
+              &sensorInfoTimestampSource, 1);
+
+    /* Map the tuning's bayer_pattern string to the camera2 enum. */
+    uint8_t cfa = ANDROID_SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_RGGB;
+    if (tuning && tuning->isLoaded()) {
+        const char *p = tuning->bayerPattern();
+        if      (strcmp(p, "RGGB") == 0) cfa = ANDROID_SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_RGGB;
+        else if (strcmp(p, "GRBG") == 0) cfa = ANDROID_SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_GRBG;
+        else if (strcmp(p, "GBRG") == 0) cfa = ANDROID_SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_GBRG;
+        else if (strcmp(p, "BGGR") == 0) cfa = ANDROID_SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_BGGR;
+    }
+    cm.update(ANDROID_SENSOR_INFO_COLOR_FILTER_ARRANGEMENT, &cfa, 1);
 }
 
 /* HAL capability level + request-pipeline shape. Both constants go up
@@ -408,6 +542,8 @@ void writeHalInfo(CameraMetadata &cm) {
  * themselves (Camera2 contract requires self-listing). */
 void writeAvailableKeys(CameraMetadata &cm) {
     static const int32_t requestKeys[] = {
+        ANDROID_BLACK_LEVEL_LOCK,
+        ANDROID_COLOR_CORRECTION_ABERRATION_MODE,
         ANDROID_CONTROL_AE_ANTIBANDING_MODE,
         ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION,
         ANDROID_CONTROL_AE_LOCK,
@@ -425,6 +561,8 @@ void writeAvailableKeys(CameraMetadata &cm) {
         ANDROID_CONTROL_MODE,
         ANDROID_CONTROL_SCENE_MODE,
         ANDROID_CONTROL_VIDEO_STABILIZATION_MODE,
+        ANDROID_EDGE_MODE,
+        ANDROID_HOT_PIXEL_MODE,
         ANDROID_JPEG_GPS_COORDINATES,
         ANDROID_JPEG_GPS_PROCESSING_METHOD,
         ANDROID_JPEG_GPS_TIMESTAMP,
@@ -433,13 +571,20 @@ void writeAvailableKeys(CameraMetadata &cm) {
         ANDROID_JPEG_THUMBNAIL_QUALITY,
         ANDROID_JPEG_THUMBNAIL_SIZE,
         ANDROID_LENS_FOCUS_DISTANCE,
+        ANDROID_LENS_OPTICAL_STABILIZATION_MODE,
+        ANDROID_NOISE_REDUCTION_MODE,
         ANDROID_REQUEST_ID,
         ANDROID_SCALER_CROP_REGION,
         ANDROID_SENSOR_EXPOSURE_TIME,
         ANDROID_SENSOR_SENSITIVITY,
+        ANDROID_SENSOR_TEST_PATTERN_MODE,
+        ANDROID_SHADING_MODE,
         ANDROID_STATISTICS_FACE_DETECT_MODE,
         ANDROID_STATISTICS_HISTOGRAM_MODE,
+        ANDROID_STATISTICS_HOT_PIXEL_MAP_MODE,
+        ANDROID_STATISTICS_LENS_SHADING_MAP_MODE,
         ANDROID_STATISTICS_SHARPNESS_MAP_MODE,
+        ANDROID_TONEMAP_MODE,
     };
     cm.update(ANDROID_REQUEST_AVAILABLE_REQUEST_KEYS,
               requestKeys, NELEM(requestKeys));
@@ -449,6 +594,8 @@ void writeAvailableKeys(CameraMetadata &cm) {
      * ResultMetadataBuilder writes per frame. */
     static const int32_t resultKeys[] = {
         /* Round-tripped request side */
+        ANDROID_BLACK_LEVEL_LOCK,
+        ANDROID_COLOR_CORRECTION_ABERRATION_MODE,
         ANDROID_CONTROL_AE_ANTIBANDING_MODE,
         ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION,
         ANDROID_CONTROL_AE_LOCK,
@@ -466,6 +613,8 @@ void writeAvailableKeys(CameraMetadata &cm) {
         ANDROID_CONTROL_MODE,
         ANDROID_CONTROL_SCENE_MODE,
         ANDROID_CONTROL_VIDEO_STABILIZATION_MODE,
+        ANDROID_EDGE_MODE,
+        ANDROID_HOT_PIXEL_MODE,
         ANDROID_JPEG_GPS_COORDINATES,
         ANDROID_JPEG_GPS_PROCESSING_METHOD,
         ANDROID_JPEG_GPS_TIMESTAMP,
@@ -473,11 +622,18 @@ void writeAvailableKeys(CameraMetadata &cm) {
         ANDROID_JPEG_QUALITY,
         ANDROID_JPEG_THUMBNAIL_QUALITY,
         ANDROID_JPEG_THUMBNAIL_SIZE,
+        ANDROID_LENS_OPTICAL_STABILIZATION_MODE,
+        ANDROID_NOISE_REDUCTION_MODE,
         ANDROID_REQUEST_ID,
         ANDROID_SCALER_CROP_REGION,
+        ANDROID_SENSOR_TEST_PATTERN_MODE,
+        ANDROID_SHADING_MODE,
         ANDROID_STATISTICS_FACE_DETECT_MODE,
         ANDROID_STATISTICS_HISTOGRAM_MODE,
+        ANDROID_STATISTICS_HOT_PIXEL_MAP_MODE,
+        ANDROID_STATISTICS_LENS_SHADING_MAP_MODE,
         ANDROID_STATISTICS_SHARPNESS_MAP_MODE,
+        ANDROID_TONEMAP_MODE,
         /* Result-only — written per-frame by ResultMetadataBuilder */
         ANDROID_CONTROL_AE_STATE,
         ANDROID_CONTROL_AF_STATE,
@@ -495,6 +651,7 @@ void writeAvailableKeys(CameraMetadata &cm) {
               resultKeys, NELEM(resultKeys));
 
     static const int32_t characteristicsKeys[] = {
+        ANDROID_COLOR_CORRECTION_AVAILABLE_ABERRATION_MODES,
         ANDROID_CONTROL_AE_AVAILABLE_ANTIBANDING_MODES,
         ANDROID_CONTROL_AE_AVAILABLE_MODES,
         ANDROID_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES,
@@ -502,17 +659,26 @@ void writeAvailableKeys(CameraMetadata &cm) {
         ANDROID_CONTROL_AE_COMPENSATION_STEP,
         ANDROID_CONTROL_AF_AVAILABLE_MODES,
         ANDROID_CONTROL_AVAILABLE_EFFECTS,
+        ANDROID_CONTROL_AVAILABLE_MODES,
         ANDROID_CONTROL_AVAILABLE_SCENE_MODES,
         ANDROID_CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES,
         ANDROID_CONTROL_AWB_AVAILABLE_MODES,
         ANDROID_CONTROL_MAX_REGIONS,
+        ANDROID_EDGE_AVAILABLE_EDGE_MODES,
         ANDROID_FLASH_INFO_AVAILABLE,
+        ANDROID_HOT_PIXEL_AVAILABLE_HOT_PIXEL_MODES,
         ANDROID_INFO_SUPPORTED_HARDWARE_LEVEL,
         ANDROID_JPEG_AVAILABLE_THUMBNAIL_SIZES,
         ANDROID_JPEG_MAX_SIZE,
         ANDROID_LENS_FACING,
+        ANDROID_LENS_INFO_AVAILABLE_APERTURES,
+        ANDROID_LENS_INFO_AVAILABLE_FILTER_DENSITIES,
         ANDROID_LENS_INFO_AVAILABLE_FOCAL_LENGTHS,
+        ANDROID_LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION,
+        ANDROID_LENS_INFO_FOCUS_DISTANCE_CALIBRATION,
+        ANDROID_LENS_INFO_HYPERFOCAL_DISTANCE,
         ANDROID_LENS_INFO_MINIMUM_FOCUS_DISTANCE,
+        ANDROID_NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES,
         ANDROID_REQUEST_AVAILABLE_CAPABILITIES,
         ANDROID_REQUEST_AVAILABLE_CHARACTERISTICS_KEYS,
         ANDROID_REQUEST_AVAILABLE_REQUEST_KEYS,
@@ -536,15 +702,23 @@ void writeAvailableKeys(CameraMetadata &cm) {
         ANDROID_SCALER_AVAILABLE_PROCESSED_SIZES,
         ANDROID_SCALER_AVAILABLE_STALL_DURATIONS,
         ANDROID_SCALER_AVAILABLE_STREAM_CONFIGURATIONS,
+        ANDROID_SENSOR_AVAILABLE_TEST_PATTERN_MODES,
         ANDROID_SENSOR_INFO_ACTIVE_ARRAY_SIZE,
+        ANDROID_SENSOR_INFO_COLOR_FILTER_ARRANGEMENT,
         ANDROID_SENSOR_INFO_EXPOSURE_TIME_RANGE,
         ANDROID_SENSOR_INFO_PHYSICAL_SIZE,
         ANDROID_SENSOR_INFO_PIXEL_ARRAY_SIZE,
         ANDROID_SENSOR_INFO_SENSITIVITY_RANGE,
+        ANDROID_SENSOR_INFO_TIMESTAMP_SOURCE,
         ANDROID_SENSOR_MAX_ANALOG_SENSITIVITY,
         ANDROID_SENSOR_ORIENTATION,
+        ANDROID_SHADING_AVAILABLE_MODES,
+        ANDROID_STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES,
+        ANDROID_STATISTICS_INFO_AVAILABLE_HOT_PIXEL_MAP_MODES,
+        ANDROID_STATISTICS_INFO_AVAILABLE_LENS_SHADING_MAP_MODES,
         ANDROID_STATISTICS_INFO_MAX_FACE_COUNT,
         ANDROID_SYNC_MAX_LATENCY,
+        ANDROID_TONEMAP_AVAILABLE_TONE_MAP_MODES,
     };
     cm.update(ANDROID_REQUEST_AVAILABLE_CHARACTERISTICS_KEYS,
               characteristicsKeys, NELEM(characteristicsKeys));
@@ -562,6 +736,8 @@ camera_metadata_t *CameraStaticMetadata::build(V4l2Device *dev, int facing,
     writeSensorRanges       (cm);
     writeAvailableFpsRanges (cm, dev);
     writeControlInfo        (cm, facing);
+    writeStageAvailableModes(cm);
+    writeLensCalibration    (cm, tuning);
     writeHalInfo            (cm);
     writeAvailableKeys      (cm);
     return cm.release();
