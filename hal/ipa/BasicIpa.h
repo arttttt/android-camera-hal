@@ -94,6 +94,12 @@ private:
      * gain are derived at write-time via SensorConfig::splitExposureGain. */
     float   lastTotalUs;
 
+    /* The exposure-compensation value (1/3-stop units) that was in
+     * effect at the last lastTotalUs update. Lets the AE-lock branch
+     * scale the held exposure when the framework changes EV during
+     * the lock — biased = lastTotalUs × factor(current) / factor(lastEvComp). */
+    int32_t  lastEvComp;
+
     /* AWB state. R / B gain multipliers relative to G (G pinned at
      * unity on the shader side). The prior values come from the
      * sensor's tuned wbGain at its daylight CcmSet (the hottest-CCT
