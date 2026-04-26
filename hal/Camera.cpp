@@ -55,6 +55,7 @@
 #include "pipeline/InFlightTracker.h"
 #include "pipeline/RequestThread.h"
 #include "pipeline/PipelineThread.h"
+#include "pipeline/ResultThread.h"
 #include "pipeline/stages/ApplySettingsStage.h"
 #include "pipeline/stages/ShutterNotifyStage.h"
 #include "pipeline/stages/CaptureStage.h"
@@ -95,6 +96,12 @@ constexpr size_t PIPELINE_MAX_IN_FLIGHT = 1;
  * for the sensor. Larger queue caps only buy one-sided bursts at the
  * cost of sensor starvation. */
 constexpr size_t PIPELINE_QUEUE_CAPACITY = 1;
+
+/* Sized to absorb a small burst of completed ctxs that PipelineThread
+ * pushes when the dispatch side is briefly slower (e.g. JPEG encode in
+ * BLOB-bearing frames). 16 matches the design budget in
+ * docs/tier3_architecture.md. */
+constexpr size_t RESULT_QUEUE_CAPACITY = 16;
 } /* namespace */
 
 namespace android {
@@ -581,6 +588,7 @@ void Camera::buildInfrastructure() {
     mTracker.reset(new InFlightTracker());
     mRequestQueue.reset(new EventQueue<PipelineContext*>(REQUEST_QUEUE_CAPACITY));
     mPipelineQueue.reset(new EventQueue<PipelineContext*>(PIPELINE_QUEUE_CAPACITY));
+    mResultQueue.reset(new EventQueue<PipelineContext*>(RESULT_QUEUE_CAPACITY));
     mRequestPipeline.reset(new Pipeline());
     mStatsWorker.reset(new StatsWorker());
     if (mTuning.isLoaded())
@@ -669,14 +677,21 @@ void Camera::buildInfrastructure() {
     {
         PipelineThread::Deps d;
         d.queue           = mPipelineQueue.get();
+        d.resultQueue     = mResultQueue.get();
         d.demosaicBlit    = mDemosaicBlitStage.get();
         d.statsProcess    = mStatsProcessStage.get();
-        d.resultDispatch  = mResultDispatchStage.get();
-        d.bayerSource     = mBayerSource.get();
         d.bufferProcessor = mBufferProcessor;
-        d.tracker         = mTracker.get();
         d.maxInFlight     = PIPELINE_MAX_IN_FLIGHT;
         mPipelineThread.reset(new PipelineThread(d));
+    }
+
+    {
+        ResultThread::Deps d;
+        d.queue          = mResultQueue.get();
+        d.resultDispatch = mResultDispatchStage.get();
+        d.bayerSource    = mBayerSource.get();
+        d.tracker        = mTracker.get();
+        mResultThread.reset(new ResultThread(d));
     }
 
     mInfrastructureBuilt = true;
@@ -684,6 +699,7 @@ void Camera::buildInfrastructure() {
 
 void Camera::destroyInfrastructure() {
     mPipelineThread.reset();
+    mResultThread.reset();
     mRequestThread.reset();
     mResultDispatchStage.reset();
     mStatsProcessStage.reset();
@@ -693,6 +709,7 @@ void Camera::destroyInfrastructure() {
     mDelayedControls.reset();
     mIpa.reset();
     mTracker.reset();
+    mResultQueue.reset();
     mPipelineQueue.reset();
     mRequestQueue.reset();
     mBayerSource.reset();
@@ -727,11 +744,13 @@ void Camera::stopWorkers() {
      *    loop, then join. The ctx it was holding (if any) stays in
      *    the tracker for closeDevice's drainAll.
      * 4. PipelineThread join: stopFd wakes the poll; threadLoop's
-     *    tail drains all remaining in-flight contexts — blocking
-     *    WaitForFences with a per-fence timeout — and runs
-     *    ResultDispatch on each so framework buffers return cleanly.
+     *    tail drains in-flight contexts and pushes them to the
+     *    ResultThread queue (with errorCode set on stop-drained ctxs).
+     * 5. ResultThread join: drains its queue and runs ResultDispatch
+     *    + tracker removeBySequence on each so framework buffers
+     *    return cleanly.
      *
-     * GPU drain now lives inside PipelineThread's stop path — no more
+     * GPU drain lives inside PipelineThread's stop path — no
      * waitForPreviousFrame at this layer. */
     if (mBayerSource)    mBayerSource->stop();
     if (mPipelineQueue)  mPipelineQueue->requestStop();
@@ -742,6 +761,7 @@ void Camera::stopWorkers() {
      * worker is quiesced. */
     if (mStatsWorker)    mStatsWorker->stop();
     if (mPipelineThread) mPipelineThread->stop();
+    if (mResultThread)   mResultThread->stop();
 }
 
 void Camera::startWorkers() {
@@ -766,22 +786,35 @@ void Camera::startWorkers() {
             return;
         }
     }
+    /* ResultThread before PipelineThread: PipelineThread offloads
+     * dispatch via mResultQueue and would lose ctxs (and leak buffers)
+     * if its consumer wasn't live. */
+    if (mResultThread && !mResultThread->isRunning()) {
+        if (!mResultThread->start("CamResult")) {
+            ALOGE("ResultThread start failed, unwinding StatsWorker + BayerSource");
+            if (mStatsWorker) mStatsWorker->stop();
+            if (mBayerSource) mBayerSource->stop();
+            return;
+        }
+    }
     /* PipelineThread before RequestThread: the downstream consumer
      * must be live before RequestThread starts pushing to pipelineQueue.
      * Swapping the order would have RequestThread block on pushBlocking
      * forever. */
     if (mPipelineThread && !mPipelineThread->isRunning()) {
         if (!mPipelineThread->start("CamPipeline")) {
-            ALOGE("PipelineThread start failed, unwinding StatsWorker + BayerSource");
-            if (mStatsWorker) mStatsWorker->stop();
-            if (mBayerSource) mBayerSource->stop();
+            ALOGE("PipelineThread start failed, unwinding ResultThread + StatsWorker + BayerSource");
+            if (mResultThread) mResultThread->stop();
+            if (mStatsWorker)  mStatsWorker->stop();
+            if (mBayerSource)  mBayerSource->stop();
             return;
         }
     }
     if (mRequestThread && !mRequestThread->isRunning()) {
         if (!mRequestThread->start("CamRequest")) {
-            ALOGE("RequestThread start failed, unwinding PipelineThread + StatsWorker + BayerSource");
+            ALOGE("RequestThread start failed, unwinding workers");
             if (mPipelineThread) mPipelineThread->stop();
+            if (mResultThread)   mResultThread->stop();
             if (mStatsWorker)    mStatsWorker->stop();
             if (mBayerSource)    mBayerSource->stop();
             return;

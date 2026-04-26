@@ -8,8 +8,6 @@
 #include <utils/Log.h>
 
 #include "PipelineStage.h"
-#include "InFlightTracker.h"
-#include "BayerSource.h"
 #include "BufferProcessor.h"
 
 #define LOG_TAG "Cam-PipelineThread"
@@ -60,11 +58,10 @@ void PipelineThread::drainFences(PipelineContext *ctx, int timeoutMs) {
 
 void PipelineThread::completeCtx(PipelineContext *ctx) {
     /* CPU finalize for outputs whose GPU half ran into a host-mapped
-     * backend buffer (YUV NV12). Locks the gralloc, libyuv-repacks from
-     * the ISP host buffer, unlocks. Must run before stats and dispatch:
-     * the framework's release_fence for these outputs is -1 (no GPU
-     * fence), so the gralloc must be fully populated by the time
-     * ResultDispatch sends the result. */
+     * backend buffer (YUV NV12, BLOB JPEG snapshot). Locks the gralloc,
+     * encodes / repacks, unlocks. Runs here so ResultDispatch on the
+     * downstream thread can hand the frame to the framework as soon as
+     * the gralloc is filled. */
     if (deps.bufferProcessor)
         deps.bufferProcessor->finalizeCpuOutputs(*ctx);
 
@@ -76,15 +73,16 @@ void PipelineThread::completeCtx(PipelineContext *ctx) {
     if (deps.statsProcess && !ctx->errorCode)
         deps.statsProcess->process(*ctx);
 
-    deps.resultDispatch->process(*ctx);
-    /* Post-dispatch Bayer releases got pended into the BayerSource's
-     * deferred list; flush now that fences have signalled so V4L2's
-     * ring gets the slot back before the sensor runs dry. */
-    if (deps.bayerSource) deps.bayerSource->flushPendingReleases();
-
-    std::unique_ptr<PipelineContext> owned =
-        deps.tracker->removeBySequence(ctx->sequence);
-    (void)owned;
+    /* Hand the ctx off to ResultThread which owns ResultDispatchStage,
+     * BayerSource flushPendingReleases, and the InFlightTracker
+     * removeBySequence that destroys the ctx. The queue is sized to
+     * absorb any plausible burst from PipelineThread; on overflow we
+     * log fatal because that means the upstream ordering invariant is
+     * broken. */
+    if (!deps.resultQueue->push(ctx)) {
+        ALOGE("ResultQueue push failed for frame %u — ctx leaked",
+              ctx->request.frameNumber);
+    }
 }
 
 void PipelineThread::threadLoop() {

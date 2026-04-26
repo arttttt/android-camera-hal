@@ -11,9 +11,7 @@
 namespace android {
 
 class PipelineStage;
-class BayerSource;
 class BufferProcessor;
-class InFlightTracker;
 
 /* GPU-submit side of the async pipeline.
  *
@@ -31,13 +29,11 @@ class InFlightTracker;
 class PipelineThread : public ThreadBase {
 public:
     struct Deps {
-        EventQueue<PipelineContext*> *queue;
+        EventQueue<PipelineContext*> *queue;          /* upstream — RequestThread */
+        EventQueue<PipelineContext*> *resultQueue;    /* downstream — ResultThread */
         PipelineStage                *demosaicBlit;
         PipelineStage                *statsProcess;    /* may be null */
-        PipelineStage                *resultDispatch;
-        BayerSource                  *bayerSource;
         BufferProcessor              *bufferProcessor; /* CPU finalize for YUV outputs */
-        InFlightTracker              *tracker;
         std::size_t                   maxInFlight;
     };
 

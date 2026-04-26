@@ -31,6 +31,7 @@ class PipelineStage;
 class InFlightTracker;
 class RequestThread;
 class PipelineThread;
+class ResultThread;
 class BayerSource;
 template <typename T> class EventQueue;
 
@@ -89,12 +90,14 @@ private:
     std::unique_ptr<InFlightTracker>              mTracker;
     std::unique_ptr<EventQueue<PipelineContext*>> mRequestQueue;
     std::unique_ptr<EventQueue<PipelineContext*>> mPipelineQueue;
+    std::unique_ptr<EventQueue<PipelineContext*>> mResultQueue;
     std::unique_ptr<Pipeline>                     mRequestPipeline;
     std::unique_ptr<PipelineStage>                mDemosaicBlitStage;
     std::unique_ptr<PipelineStage>                mStatsProcessStage;
     std::unique_ptr<PipelineStage>                mResultDispatchStage;
     std::unique_ptr<RequestThread>                mRequestThread;
     std::unique_ptr<PipelineThread>               mPipelineThread;
+    std::unique_ptr<ResultThread>                 mResultThread;
     std::unique_ptr<Ipa>                          mIpa;
     std::unique_ptr<DelayedControls>              mDelayedControls;
     std::unique_ptr<StatsWorker>                  mStatsWorker;
