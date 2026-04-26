@@ -18,11 +18,13 @@ namespace android {
 
 namespace {
 
-/* Single-buffered synchronous pipeline: processCaptureRequest holds
- * the camera mutex end-to-end and emits one result per call. Raise
- * both once the request-queue refactor (Tier 3) introduces real
- * pipelining. */
-constexpr uint8_t  kPipelineMaxDepth   = 1;
+/* Pipeline depth advertised to the framework so it can size its
+ * own backpressure / scheduler windows. After Tier 3 PR 4 we run a
+ * fence-fd ring of depth 4 between RequestThread and PipelineThread
+ * (PipelineContext.SLOT_COUNT in the Vulkan ISP, GPU-submit ring of
+ * the same size). PartialResultCount stays at 1 — every result is
+ * a single full delivery (see ResultDispatchStage). */
+constexpr uint8_t  kPipelineMaxDepth   = 4;
 constexpr int32_t  kPartialResultCount = 1;
 
 /* Conservative 30 fps cap when the driver does not report a framerate
