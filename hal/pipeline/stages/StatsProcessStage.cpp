@@ -50,6 +50,9 @@ void StatsProcessStage::process(PipelineContext &ctx) {
         meta.awbMode = *s.find(ANDROID_CONTROL_AWB_MODE).data.u8;
     if (s.exists(ANDROID_CONTROL_AWB_LOCK))
         meta.awbLock = *s.find(ANDROID_CONTROL_AWB_LOCK).data.u8;
+    if (s.exists(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION))
+        meta.aeExposureCompensation =
+            *s.find(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION).data.i32;
 
     /* Pass the frame-of-stats sequence to the IPA so it can correlate
      * with its own history. DelayedControls::push still uses ctx.sequence

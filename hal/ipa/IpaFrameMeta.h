@@ -33,11 +33,19 @@ struct IpaFrameMeta {
      * WB gains. */
     uint8_t awbLock;
 
+    /* ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION — signed step count in
+     * units of ANDROID_CONTROL_AE_COMPENSATION_STEP (1/3 stop in our
+     * static metadata). The IPA scales its target by 2^(value/3)
+     * before driving the AE controller; the manual path lives in
+     * ExposureControl::onSettings and is unaffected. */
+    int32_t aeExposureCompensation;
+
     IpaFrameMeta()
         : aeMode(ANDROID_CONTROL_AE_MODE_ON),
           aeLock(ANDROID_CONTROL_AE_LOCK_OFF),
           awbMode(ANDROID_CONTROL_AWB_MODE_AUTO),
-          awbLock(ANDROID_CONTROL_AWB_LOCK_OFF) {}
+          awbLock(ANDROID_CONTROL_AWB_LOCK_OFF),
+          aeExposureCompensation(0) {}
 };
 
 } /* namespace android */

@@ -362,13 +362,15 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
                                           : (diagGain < 1 ? 1 : diagGain);
         ALOGD("3A: frame=%u luma=%.3f nValid=%d awbRun=%d "
               "lastWb=(%.3f,%.3f) wbPrior=(%.3f,%.3f) "
-              "Q8=(%u,%u) estCct=%d totalUs=%.0f exp=%d gain=%d gainClamp=%d",
+              "Q8=(%u,%u) estCct=%d totalUs=%.0f exp=%d gain=%d gainClamp=%d "
+              "evComp=%d",
               frameCount, (double)sceneLuma, diagNValid, awbRun ? 1 : 0,
               (double)lastWbR, (double)lastWbB,
               (double)wbRPrior, (double)wbBPrior,
               toQ8(lastWbR), toQ8(lastWbB),
               diagEstCct, (double)lastTotalUs, diagExp,
-              diagGain, diagGainClamped);
+              diagGain, diagGainClamped,
+              meta.aeExposureCompensation);
     }
 
     /* Manual AE hands exposure / gain authority to the framework.
@@ -442,6 +444,16 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
                                            + (1.0f - aeDamping) * smoothedLuma;
     meanLuma = smoothedLuma;
 
+    /* Apply the framework's exposure compensation (1/3-stop units) by
+     * shifting the AE target. evComp == 0 → factor 1.0 → identical to
+     * the unbiased setpoint. AE then chases the shifted target via the
+     * existing controller; convergence behaviour stays the same. */
+    const float evCompFactor =
+        (meta.aeExposureCompensation == 0)
+            ? 1.0f
+            : powf(2.0f, (float)meta.aeExposureCompensation / 3.0f);
+    const float effectiveSetpoint = aeSetpoint * evCompFactor;
+
     /* P-controller toward the setpoint, hard-clamped and EMA-damped.
      * Dead-band the adjustment when luma is already within
      * aeToleranceInStops (from tuning's ae.MeanAlg.ToleranceIn) of
@@ -452,7 +464,7 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
      * against it (ratio=1.414 → 0.5 stops, ratio=0.707 → -0.5
      * stops). toleranceIn==0 (tuning missing) disables the gate so
      * BasicIpa behaves as before. */
-    float ratio = aeSetpoint / meanLuma;
+    float ratio = effectiveSetpoint / meanLuma;
     if (ratio < aeRatioMin) ratio = aeRatioMin;
     if (ratio > aeRatioMax) ratio = aeRatioMax;
 
