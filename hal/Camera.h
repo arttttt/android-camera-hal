@@ -55,7 +55,6 @@ protected:
     virtual int initialize(const camera3_callback_ops_t *callbackOps);
     virtual int configureStreams(camera3_stream_configuration_t *streamList);
     virtual const camera_metadata_t * constructDefaultRequestSettings(int type);
-    virtual int registerStreamBuffers(const camera3_stream_buffer_set_t *bufferSet);
     virtual int processCaptureRequest(camera3_capture_request_t *request);
 
     /* HELPERS/SUBPROCEDURES */
@@ -142,10 +141,8 @@ private:
     static int sClose(hw_device_t *device);
     static int sInitialize(const struct camera3_device *device, const camera3_callback_ops_t *callback_ops);
     static int sConfigureStreams(const struct camera3_device *device, camera3_stream_configuration_t *stream_list);
-    static int sRegisterStreamBuffers(const struct camera3_device *device, const camera3_stream_buffer_set_t *buffer_set);
     static const camera_metadata_t * sConstructDefaultRequestSettings(const struct camera3_device *device, int type);
     static int sProcessCaptureRequest(const struct camera3_device *device, camera3_capture_request_t *request);
-    static void sGetMetadataVendorTagOps(const struct camera3_device *device, vendor_tag_query_ops_t* ops);
     static void sDump(const struct camera3_device *device, int fd);
     static int sFlush(const struct camera3_device *device);
 

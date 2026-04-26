@@ -425,20 +425,6 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
     return NO_ERROR;
 }
 
-int Camera::registerStreamBuffers(const camera3_stream_buffer_set_t *bufferSet) {
-    DBGUTILS_AUTOLOGCALL(__func__);
-    Mutex::Autolock lock(mMutex);
-    ALOGV("+-------------------------------------------------------------------------------");
-    ALOGV("| BUFFERS FOR STREAM %p", bufferSet->stream);
-    ALOGV("+-------------------------------------------------------------------------------");
-    for (size_t i = 0; i < bufferSet->num_buffers; ++i) {
-        ALOGV("| p=%p", bufferSet->buffers[i]);
-    }
-    ALOGV("+-------------------------------------------------------------------------------");
-
-    return OK;
-}
-
 int Camera::processCaptureRequest(camera3_capture_request_t *request) {
     assert(request != NULL);
 
@@ -921,12 +907,6 @@ int Camera::sConfigureStreams(const camera3_device *device, camera3_stream_confi
     return thiz->configureStreams(stream_list);
 }
 
-int Camera::sRegisterStreamBuffers(const camera3_device *device, const camera3_stream_buffer_set_t *buffer_set) {
-    /* TODO: check pointers */
-    Camera *thiz = static_cast<Camera *>(const_cast<camera3_device *>(device));
-    return thiz->registerStreamBuffers(buffer_set);
-}
-
 const camera_metadata_t * Camera::sConstructDefaultRequestSettings(const camera3_device *device, int type) {
     /* TODO: check pointers */
     Camera *thiz = static_cast<Camera *>(const_cast<camera3_device *>(device));
@@ -937,11 +917,6 @@ int Camera::sProcessCaptureRequest(const camera3_device *device, camera3_capture
     /* TODO: check pointers */
     Camera *thiz = static_cast<Camera *>(const_cast<camera3_device *>(device));
     return thiz->processCaptureRequest(request);
-}
-
-void Camera::sGetMetadataVendorTagOps(const camera3_device *device, vendor_tag_query_ops_t *ops) {
-    /* TODO: implement */
-    ALOGD("%s: IMPLEMENT ME!", __FUNCTION__);
 }
 
 void Camera::sDump(const camera3_device *device, int fd) {
