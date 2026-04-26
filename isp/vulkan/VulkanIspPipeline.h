@@ -71,7 +71,6 @@ private:
 
     /* ensureBuffers sub-steps. */
     void releaseScratchResources();
-    bool createOutBuffer(size_t size);
     bool createScratchImage(unsigned width, unsigned height);
     void writeStaticDescriptors();
 
@@ -93,12 +92,9 @@ private:
     void rebindInputDescriptor(int slot, int inputSlot);
 
     /* Record the slot's cmd buffer with pipeline+descriptor bind and a
-     * single compute dispatch sized for (width, height); optionally
-     * append an image→buffer copy of mScratchImg into mOutBuf so CPU
-     * can read the result via mOutMap. Submits on mFence[slot]. Used by
-     * the legacy CPU-readback (BLOB) and prewarm paths. */
-    void recordAndSubmit(int slot, unsigned width, unsigned height,
-                          bool copyToOutBuf);
+     * single demosaic compute dispatch sized for (width, height); end
+     * the cmd buffer and submit on mFence[slot]. Used by prewarm. */
+    void recordAndSubmit(int slot, unsigned width, unsigned height);
 
     /* Open the slot's cmd buffer and record demosaic compute + scratch
      * write→read barrier. Buffer stays open for blit append calls. */
@@ -149,18 +145,14 @@ private:
     VkCommandPool mCmdPool;
     VkCommandBuffer mCmdBuf[SLOT_COUNT];
 
-    VkBuffer       mOutBuf;
-    VkDeviceMemory mOutMem;
-    size_t         mOutSize;
-    void          *mOutMap;
-
     /* One param buffer per slot — the compute shader dispatches of two
      * in-flight submits must see independent IspParams content. */
     VkBuffer       mParamBuf[SLOT_COUNT];
     VkDeviceMemory mParamMem[SLOT_COUNT];
     void          *mParamMap[SLOT_COUNT];
 
-    /* Shader output image for CPU-readback paths; copied to mOutBuf after dispatch. */
+    /* Shader output image — sampled by the produce-once blits and
+     * read by vkCmdCopyImageToBuffer for the JPEG ring. */
     VkImage        mScratchImg;
     VkDeviceMemory mScratchMem;
     VkImageView    mScratchView;
@@ -169,11 +161,9 @@ private:
     /* sync_fd exported from the slot's fence via vkGetFenceFdKHR; -1
      * when the slot has no pending async submit. vkGetFenceFdKHR with
      * SYNC_FD implicitly resets the fence, so the reused fence goes
-     * back to unsignalled state ready for the next submit — our
-     * "slot still in flight?" signal is the poll-readability of this
-     * fd, not the fence. Only the async gralloc path populates it;
-     * sync paths (processToCpu / Yuv / prewarm) drain in-line via
-     * WaitForFences and leave the slot's sync_fd at -1. */
+     * back to unsignalled state ready for the next submit. The
+     * produce-once endFrame populates this; prewarm drains in-line
+     * via WaitForFences and leaves the slot's sync_fd at -1. */
     int mSlotSyncFd[SLOT_COUNT];
     size_t mNextSlot;
 
@@ -236,13 +226,6 @@ private:
         }
     };
     FrameRecording mRec;
-
-    /* Per-slot GPU-side timestamp pool. 3 queries per slot, allocated
-     * by createCommandObjects when the driver reports a non-zero
-     * timestampValidBits. Currently no consumer in the produce-once
-     * path; kept allocated for future PERF instrumentation. */
-    VkQueryPool        mTimeQuery;
-    static constexpr size_t TIMESTAMPS_PER_SLOT = 3;
 };
 
 }; /* namespace android */

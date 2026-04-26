@@ -32,17 +32,12 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mDescPool(VK_NULL_HANDLE)
     , mScratchSampler(VK_NULL_HANDLE)
     , mCmdPool(VK_NULL_HANDLE)
-    , mOutBuf(VK_NULL_HANDLE)
-    , mOutMem(VK_NULL_HANDLE)
-    , mOutSize(0)
-    , mOutMap(NULL)
     , mScratchImg(VK_NULL_HANDLE), mScratchMem(VK_NULL_HANDLE), mScratchView(VK_NULL_HANDLE)
     , mNextSlot(0)
     , mGrallocCache(mDeviceState)
     , mYuvEncoder(mDeviceState)
     , mJpegRingW(0)
     , mJpegRingH(0)
-    , mTimeQuery(VK_NULL_HANDLE)
 {
     for (size_t s = 0; s < SLOT_COUNT; s++) {
         mJpegRing[s].buf    = VK_NULL_HANDLE;
@@ -149,8 +144,7 @@ void VulkanIspPipeline::rebindInputDescriptor(int slot, int inputSlot) {
     mDeviceState.pfn()->UpdateDescriptorSets(mDeviceState.device(), 1, &inWrite, 0, NULL);
 }
 
-void VulkanIspPipeline::recordAndSubmit(int slot, unsigned width, unsigned height,
-                                         bool copyToOutBuf) {
+void VulkanIspPipeline::recordAndSubmit(int slot, unsigned width, unsigned height) {
     VkCommandBuffer cb = mCmdBuf[slot];
     VkCommandBufferBeginInfo beginInfo = {};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -162,35 +156,6 @@ void VulkanIspPipeline::recordAndSubmit(int slot, unsigned width, unsigned heigh
     mDeviceState.pfn()->CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 mPipeLayout, 0, 1, &mDescSet[slot], 0, NULL);
     mDeviceState.pfn()->CmdDispatch(cb, (width + 15) / 16, (height + 15) / 16, 1);
-
-    if (copyToOutBuf) {
-        VkImageMemoryBarrier imb = {};
-        imb.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        imb.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-        imb.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        imb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        imb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        imb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        imb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        imb.image = mScratchImg;
-        imb.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        imb.subresourceRange.levelCount = 1;
-        imb.subresourceRange.layerCount = 1;
-
-        mDeviceState.pfn()->CmdPipelineBarrier(cb,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            0, 0, NULL, 0, NULL, 1, &imb);
-
-        VkBufferImageCopy region = {};
-        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        region.imageSubresource.layerCount = 1;
-        region.imageExtent.width = width;
-        region.imageExtent.height = height;
-        region.imageExtent.depth = 1;
-        mDeviceState.pfn()->CmdCopyImageToBuffer(cb, mScratchImg, VK_IMAGE_LAYOUT_GENERAL,
-                                    mOutBuf, 1, &region);
-    }
 
     mDeviceState.pfn()->EndCommandBuffer(cb);
 
@@ -977,35 +942,15 @@ bool VulkanIspPipeline::createCommandObjects() {
         }
     }
 
-    /* GPU timestamp pool — TIMESTAMPS_PER_SLOT queries per slot, so
-     * every in-flight submit owns its own offset and results stay
-     * independent even if the ring is wrapped before the CPU has
-     * read the previous slot. Skipped when the driver reports
-     * timestampValidBits == 0 on the compute queue (timestamps
-     * would always read as zero). */
-    if (mDeviceState.timestampValidBits() > 0) {
-        VkQueryPoolCreateInfo qpci = {};
-        qpci.sType      = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
-        qpci.queryType  = VK_QUERY_TYPE_TIMESTAMP;
-        qpci.queryCount = SLOT_COUNT * TIMESTAMPS_PER_SLOT;
-        if (mDeviceState.pfn()->CreateQueryPool(mDeviceState.device(), &qpci, NULL,
-                                                 &mTimeQuery) != VK_SUCCESS) {
-            ALOGW("CreateQueryPool failed — GPU timing disabled");
-            mTimeQuery = VK_NULL_HANDLE;
-        }
-    } else {
-        ALOGW("Queue reports timestampValidBits=0 — GPU timing disabled");
-    }
     return true;
 }
 
 /* --- per-frame buffer management --- */
 
 bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16bit) {
-    size_t inSize  = width * height * (is16bit ? 2 : 1);
-    size_t outSize = width * height * 4;
+    size_t inSize = width * height * (is16bit ? 2 : 1);
 
-    bool recreate = (mInputRing.slotSize() < inSize || mOutSize < outSize ||
+    bool recreate = (mInputRing.slotSize() < inSize ||
                      mBufWidth != width || mBufHeight != height);
     if (!recreate) return true;
 
@@ -1023,25 +968,15 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
               inSize, width, height);
         return false;
     }
-    if (!createOutBuffer(outSize))             return false;
     if (!createScratchImage(width, height))    return false;
     writeStaticDescriptors();
 
-    mOutSize   = outSize;
     mBufWidth  = width;
     mBufHeight = height;
     return true;
 }
 
 void VulkanIspPipeline::releaseScratchResources() {
-    if (mOutMap) {
-        mDeviceState.pfn()->UnmapMemory(mDeviceState.device(), mOutMem);
-        mOutMap = NULL;
-    }
-    mDeviceState.destroyBuffer(mOutBuf, mOutMem);
-    mOutBuf = VK_NULL_HANDLE;
-    mOutMem = VK_NULL_HANDLE;
-
     if (mScratchView) {
         mDeviceState.pfn()->DestroyImageView(mDeviceState.device(), mScratchView, NULL);
         mScratchView = VK_NULL_HANDLE;
@@ -1056,16 +991,6 @@ void VulkanIspPipeline::releaseScratchResources() {
     }
     /* JPEG ring is sized to the scratch dimensions; rebuild on resize. */
     releaseJpegRing();
-}
-
-bool VulkanIspPipeline::createOutBuffer(size_t size) {
-    if (!mDeviceState.createBuffer(&mOutBuf, &mOutMem, size,
-            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT)) {
-        ALOGE("Failed to allocate Vulkan output buffer (%zu bytes)", size);
-        return false;
-    }
-    mDeviceState.pfn()->MapMemory(mDeviceState.device(), mOutMem, 0, size, 0, &mOutMap);
-    return true;
 }
 
 bool VulkanIspPipeline::createScratchImage(unsigned width, unsigned height) {
@@ -1240,7 +1165,7 @@ void VulkanIspPipeline::prewarm(unsigned width, unsigned height, uint32_t pixFmt
     uploadParams(slot, params);
 
     int64_t start = nowMs();
-    recordAndSubmit(slot, width, height, false);
+    recordAndSubmit(slot, width, height);
     mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1,
                                        &mFence[slot], VK_TRUE, UINT64_MAX);
     mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[slot]);
@@ -1254,10 +1179,6 @@ void VulkanIspPipeline::destroy() {
     if (mDeviceState.isReady() && mDeviceState.pfn()->DeviceWaitIdle) {
         mDeviceState.pfn()->DeviceWaitIdle(mDeviceState.device());
 
-        if (mOutMap) {
-            mDeviceState.pfn()->UnmapMemory(mDeviceState.device(), mOutMem);
-            mOutMap = NULL;
-        }
         for (size_t s = 0; s < SLOT_COUNT; s++) {
             if (mParamMap[s]) {
                 mDeviceState.pfn()->UnmapMemory(mDeviceState.device(), mParamMem[s]);
@@ -1269,11 +1190,6 @@ void VulkanIspPipeline::destroy() {
         mYuvEncoder.destroy();
         mInputRing.destroy();
         releaseJpegRing();
-
-        if (mTimeQuery) {
-            mDeviceState.pfn()->DestroyQueryPool(mDeviceState.device(), mTimeQuery, NULL);
-            mTimeQuery = VK_NULL_HANDLE;
-        }
 
         if (mScratchView) {
             mDeviceState.pfn()->DestroyImageView(mDeviceState.device(), mScratchView, NULL);
@@ -1288,9 +1204,6 @@ void VulkanIspPipeline::destroy() {
             mScratchMem = VK_NULL_HANDLE;
         }
 
-        mDeviceState.destroyBuffer(mOutBuf, mOutMem);
-        mOutBuf = VK_NULL_HANDLE;
-        mOutMem = VK_NULL_HANDLE;
         for (size_t s = 0; s < SLOT_COUNT; s++) {
             mDeviceState.destroyBuffer(mParamBuf[s], mParamMem[s]);
             mParamBuf[s] = VK_NULL_HANDLE;
@@ -1367,7 +1280,6 @@ void VulkanIspPipeline::destroy() {
     mDeviceState.destroy();
 
     mReady = false;
-    mOutSize = 0;
     mBufWidth = 0;
     mBufHeight = 0;
     for (size_t s = 0; s < SLOT_COUNT; s++) {
