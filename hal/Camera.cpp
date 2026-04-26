@@ -187,7 +187,10 @@ status_t Camera::cameraInfo(struct camera_info *info) {
     DBGUTILS_AUTOLOGCALL(__func__);
     Mutex::Autolock lock(mMutex);
     info->facing = mFacing;
-    info->orientation = (mFacing == CAMERA_FACING_FRONT) ? 270 : 90;
+    /* Source of truth is the per-module tuning (`module.sensor_orientation_degrees`).
+     * Falls to 0 if the tuning didn't load — wrong but not crashing,
+     * and "tuning didn't load" already means the HAL is degraded. */
+    info->orientation = mTuning.module().sensorOrientationDegrees;
     info->device_version = CAMERA_DEVICE_API_VERSION_3_4;
     info->static_camera_characteristics = staticCharacteristics();
 

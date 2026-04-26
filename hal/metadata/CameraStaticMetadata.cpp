@@ -78,7 +78,11 @@ void writeSensorInfo(CameraMetadata &cm, V4l2Device *dev,
     };
     cm.update(ANDROID_SENSOR_INFO_ACTIVE_ARRAY_SIZE, sensorInfoActiveArraySize, NELEM(sensorInfoActiveArraySize));
 
-    const int32_t sensorOrientation = (facing == CAMERA_FACING_FRONT) ? 270 : 90;
+    /* From per-module tuning (`module.sensor_orientation_degrees`).
+     * Camera2 spec mandates one of {0, 90, 180, 270}; the static
+     * characteristics version of the same value Camera::cameraInfo
+     * already reports as camera_info::orientation. */
+    const int32_t sensorOrientation = tuning ? tuning->module().sensorOrientationDegrees : 0;
     cm.update(ANDROID_SENSOR_ORIENTATION, &sensorOrientation, 1);
 }
 

@@ -24,6 +24,15 @@ public:
         float physicalSizeMm[2];         /* {width, height} */
         float focalLengthMm;
         float minFocusDistanceDiopters;  /* 0 for fixed-focus cameras */
+
+        /* Sensor's natural orientation relative to the device's natural
+         * orientation, clockwise. Reported back to the framework as
+         * camera_info::orientation and ANDROID_SENSOR_ORIENTATION. Per
+         * Camera2 spec, must be 0 / 90 / 180 / 270; the framework uses
+         * it to figure out how display rotation maps to sensor rotation.
+         * Mocha back IMX179 = 90 (landscape sensor mounted in a portrait
+         * device), front OV5693 = 270 (mirrored mount). */
+        int   sensorOrientationDegrees;
     };
 
     struct AfParams {

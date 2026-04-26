@@ -48,7 +48,7 @@ bool readJson(const std::string &path, Json::Value *out) {
 SensorTuning::SensorTuning()
     : mLoaded(false)
     , mHasAf(false)
-    , mModule{{0.0f, 0.0f}, 0.0f, 0.0f}
+    , mModule{{0.0f, 0.0f}, 0.0f, 0.0f, 0}
     , mAf{0, 0, 0, 0, 0, 0, false}
     , mOpticalBlack{0, 0, 0, 0}
     , mAwbRefs{0, 0, 0, 0} {}
@@ -83,6 +83,7 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
     }
     mModule.focalLengthMm          = mod["focal_length_mm"].asFloat();
     mModule.minFocusDistanceDiopters = mod["min_focus_distance_diopters"].asFloat();
+    mModule.sensorOrientationDegrees = mod["sensor_orientation_degrees"].asInt();
     mBayerPattern = mod["bayer_pattern"].asString();
 
     const Json::Value &active = root["active"];

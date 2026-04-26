@@ -3,5 +3,6 @@
   "sensor_physical_size_mm": [4.570, 3.428],
   "focal_length_mm": 3.36,
   "min_focus_distance_diopters": 10.0,
-  "bayer_pattern": "RGGB"
+  "bayer_pattern": "RGGB",
+  "sensor_orientation_degrees": 90
 }
