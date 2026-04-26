@@ -60,18 +60,36 @@ status_t StreamConfig::normalize(camera3_stream_configuration_t *streamList,
         ALOGD("Stream[%zu]: %ux%u fmt=0x%x usage=0x%x", i,
               newStream->width, newStream->height, newStream->format, origUsage);
 
-        switch (newStream->stream_type) {
-            case CAMERA3_STREAM_OUTPUT:
-                newStream->usage = GRALLOC_USAGE_SW_WRITE_OFTEN;
-                break;
-            case CAMERA3_STREAM_INPUT:
-                newStream->usage = GRALLOC_USAGE_SW_READ_OFTEN;
-                break;
-            case CAMERA3_STREAM_BIDIRECTIONAL:
-                newStream->usage = GRALLOC_USAGE_SW_WRITE_OFTEN
-                                 | GRALLOC_USAGE_SW_READ_OFTEN;
-                break;
-        }
+        /* Per camera3.h, HAL writes the final usage flags into the
+         * stream descriptor. The framework then forwards them to the
+         * consumer-side gralloc allocator (see Camera3OutputStream's
+         * setConsumerUsageBits) so the buffer is allocated with a
+         * memory layout that satisfies BOTH consumer's needs (e.g.
+         * HW_TEXTURE for SurfaceTexture preview, HW_VIDEO_ENCODER
+         * for the encoder's tiled input) and ours.
+         *
+         * Overwriting consumer flags with SW_WRITE_OFTEN — what we
+         * used to do — silently downgraded gralloc to a linear,
+         * CPU-only layout. Apps still ran on HAL3.0 because the
+         * Camera1→Camera2 emulation layer fixed the surfaces up
+         * itself before our HAL path; on HAL3.2 native-Camera2 we
+         * are the final source of truth and the override breaks
+         * preview entirely. It also harms the Vulkan fragment-ROP
+         * write path which expects the HW-tiled layout the consumer
+         * flags imply.
+         *
+         * Preserve consumer flags. Add HAL-side flags only where the
+         * HAL touches the buffer with the CPU — only BLOB outputs
+         * today (libjpeg writes the encoded JPEG into the buffer);
+         * RGBA / YUV outputs are written via Vulkan ROP and don't
+         * need any extra usage bits.  Same logic for INPUT /
+         * BIDIRECTIONAL: ZSL reprocess (when it lands) reads via
+         * Vulkan, so SW flags only when the HAL actually CPU-reads. */
+        const bool needsCpuWrite = (newStream->stream_type == CAMERA3_STREAM_OUTPUT
+                                    || newStream->stream_type == CAMERA3_STREAM_BIDIRECTIONAL)
+                                && newStream->format == HAL_PIXEL_FORMAT_BLOB;
+        if (needsCpuWrite) newStream->usage = origUsage | GRALLOC_USAGE_SW_WRITE_OFTEN;
+        else               newStream->usage = origUsage;
         newStream->max_buffers = kMaxBuffersPerStream;
 
         /* V4L2 resolution selection:
