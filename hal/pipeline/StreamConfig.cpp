@@ -21,12 +21,43 @@ constexpr uint32_t kMaxBuffersPerStream = 4;
 
 status_t StreamConfig::normalize(camera3_stream_configuration_t *streamList,
                                   unsigned *v4l2Width, unsigned *v4l2Height) {
+    /* HAL3.3 introduced the operation_mode field. We only do the
+     * standard pipeline; CONSTRAINED_HIGH_SPEED requires a high-fps
+     * sensor mode and a relaxed-metadata path we haven't built. */
+    if (streamList->operation_mode != CAMERA3_STREAM_CONFIGURATION_NORMAL_MODE) {
+        ALOGE("Unsupported stream-config operation_mode: %u",
+              streamList->operation_mode);
+        return BAD_VALUE;
+    }
+
     camera3_stream_t *inStream = NULL;
     unsigned width  = 0;
     unsigned height = 0;
 
     for (size_t i = 0; i < streamList->num_streams; ++i) {
         camera3_stream_t *newStream = streamList->streams[i];
+
+        /* HAL3.3 contract: HAL must inspect rotation and reject what
+         * it can't perform. Our blit / encode path doesn't rotate, so
+         * everything except 0° is rejected — apps that need rotation
+         * apply it themselves at the surface level (or via the JPEG
+         * EXIF Orientation tag for stills, which is what Camera3
+         * already does for stills today). */
+        if (newStream->rotation != CAMERA3_STREAM_ROTATION_0) {
+            ALOGE("Stream[%zu]: rotation %d not supported (only ROTATION_0)",
+                  i, newStream->rotation);
+            return BAD_VALUE;
+        }
+
+        /* HAL3.3 data_space: framework sets a colour-space hint per
+         * stream (SRGB, JFIF, BT_601_625, …). We produce sRGB-derived
+         * RGBA preview, JFIF JPEG and BT.601-limited NV12; depth
+         * streams have no sensor backing them and would be silently
+         * black, which is worse than a clean rejection. */
+        if (newStream->data_space == HAL_DATASPACE_DEPTH) {
+            ALOGE("Stream[%zu]: depth dataspace not supported", i);
+            return BAD_VALUE;
+        }
 
         if (newStream->stream_type == CAMERA3_STREAM_INPUT ||
             newStream->stream_type == CAMERA3_STREAM_BIDIRECTIONAL) {

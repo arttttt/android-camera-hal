@@ -133,7 +133,7 @@ Camera::Camera(const char *devNode, int facing)
     }
 
     common.tag      = HARDWARE_DEVICE_TAG;
-    common.version  = CAMERA_DEVICE_API_VERSION_3_2;
+    common.version  = CAMERA_DEVICE_API_VERSION_3_3;
     common.module   = &HAL_MODULE_INFO_SYM.common;
     common.close    = Camera::sClose;
     ops             = &sOps;
@@ -188,7 +188,7 @@ status_t Camera::cameraInfo(struct camera_info *info) {
     Mutex::Autolock lock(mMutex);
     info->facing = mFacing;
     info->orientation = (mFacing == CAMERA_FACING_FRONT) ? 270 : 90;
-    info->device_version = CAMERA_DEVICE_API_VERSION_3_2;
+    info->device_version = CAMERA_DEVICE_API_VERSION_3_3;
     info->static_camera_characteristics = staticCharacteristics();
 
     return NO_ERROR;
