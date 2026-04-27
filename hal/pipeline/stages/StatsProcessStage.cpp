@@ -54,6 +54,19 @@ void StatsProcessStage::process(PipelineContext &ctx) {
         meta.aeExposureCompensation =
             *s.find(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION).data.i32;
 
+    /* Pull the live AF region into meta so AE / AWB metering follow
+     * the user's tap instead of always centring on the frame middle.
+     * No tap → AutoFocusController's default rectangle is the same
+     * centre 8×8 IpaFrameMeta initialises with, so the metric is
+     * unchanged from the centre-weighted default. */
+    if (deps.af) {
+        const AutoFocusController::FocusRoi roi = deps.af->currentFocusRoi();
+        meta.focusRoiPyLo = roi.pyLo;
+        meta.focusRoiPyHi = roi.pyHi;
+        meta.focusRoiPxLo = roi.pxLo;
+        meta.focusRoiPxHi = roi.pxHi;
+    }
+
     /* Manual WB: only honour the request's gains when AWB_MODE == OFF.
      * In AUTO mode the framework still rounds-trips the last-published
      * gains into the next request, so reading them in AUTO would freeze

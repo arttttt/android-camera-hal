@@ -123,33 +123,34 @@ float aeCompFactor(int32_t evCompUnits) {
     return powf(2.0f, (float)evCompUnits / 3.0f);
 }
 
-/* Centre-weighted mean of the per-patch green channel from
- * IpaStats::rgbMean. Same linear pre-WB / pre-CCM domain as the AE
- * setpoint, so the controller compares like with like. The weight
- * mask gives the centre 8×8 patches twice the influence of the outer
- * ring: dark corners (lens vignette + sensor falloff) can no longer
- * drag the metric below the subject's true brightness, which was the
- * mechanism behind the AE-overbright bug on IMX179.
+/* Region-weighted mean of the per-patch green channel from
+ * IpaStats::rgbMean, biased toward the active focus ROI. Same linear
+ * pre-WB / pre-CCM domain as the AE setpoint, so the controller
+ * compares like with like.
+ *
+ * Patches inside meta.focusRoi* (half-open rectangle in patch grid
+ * coordinates) carry twice the influence of patches outside it. With
+ * no tap-to-focus the meta defaults to the project's centre 8×8
+ * (IpaStats::FOCUS_ROI_*) so the metric is centre-weighted as before.
+ * On a tap the rectangle moves to the user's chosen subject and the
+ * metric — and through it AE — follows.
  *
  * One helper, two consumers (AE controller and the AWB-gate light
  * floor) so the gate is calibrated against the same number AE
  * actually optimises. */
-float meanLumaCentreWeighted(const IpaStats &stats) {
-    /* Centre half on each axis matches the focus-ROI band the rest
-     * of the project already singles out in IpaStats — keeps the
-     * "what counts as centre" boundary in one mental place. */
-    constexpr int CENTRE_LO = 4;
-    constexpr int CENTRE_HI = 12;
-    constexpr float W_CENTRE = 2.0f;
-    constexpr float W_EDGE   = 1.0f;
+float meanLumaWeighted(const IpaStats &stats, const IpaFrameMeta &meta) {
+    constexpr float W_INSIDE  = 2.0f;
+    constexpr float W_OUTSIDE = 1.0f;
 
     float weightedSum = 0.f;
     float weightTotal = 0.f;
     for (int py = 0; py < IpaStats::PATCH_Y; ++py) {
+        const bool inY = (py >= meta.focusRoiPyLo && py < meta.focusRoiPyHi);
         for (int px = 0; px < IpaStats::PATCH_X; ++px) {
-            const bool centre = (py >= CENTRE_LO && py < CENTRE_HI
-                              && px >= CENTRE_LO && px < CENTRE_HI);
-            const float w = centre ? W_CENTRE : W_EDGE;
+            const bool inside = inY
+                              && px >= meta.focusRoiPxLo
+                              && px < meta.focusRoiPxHi;
+            const float w = inside ? W_INSIDE : W_OUTSIDE;
             weightedSum += w * stats.rgbMean[py][px][1];
             weightTotal += w;
         }
@@ -287,7 +288,7 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
      * noise-dominated; computing gains and CCT from them would pump
      * the CCM between CcmSet brackets and show up as a hue swing.
      * Holding last-known-good is the right behaviour there. */
-    const float sceneLuma = meanLumaCentreWeighted(stats);
+    const float sceneLuma = meanLumaWeighted(stats, meta);
     const bool awbRun = (meta.awbMode == ANDROID_CONTROL_AWB_MODE_AUTO)
                      && (meta.awbLock == ANDROID_CONTROL_AWB_LOCK_OFF)
                      && (isp != nullptr)
@@ -488,14 +489,14 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
      * a fresh target rather than ramping from a stale value. */
     lockedBiasedTotalUs = 0.f;
 
-    /* Centre-weighted patch mean over rgbMean.G — see
-     * meanLumaCentreWeighted(). Saturated patches still pull the
-     * metric toward 1.0 (and AE backs off) via their own clipped
-     * patch mean; black patches still pull toward 0 via the same
-     * mechanism. The centre weight makes the metric track the
-     * subject region in the typical "subject in frame centre" case
-     * and stops vignette-darkened corners from inflating exposure. */
-    float meanLuma = meanLumaCentreWeighted(stats);
+    /* Region-weighted patch mean over rgbMean.G — see
+     * meanLumaWeighted(). Saturated patches still pull the metric
+     * toward 1.0 (and AE backs off) via their own clipped patch mean;
+     * black patches still pull toward 0 via the same mechanism. The
+     * weight bias inside meta.focusRoi* makes the metric track the
+     * user's tap-to-focus region — without a tap the meta defaults to
+     * the centre 8×8 and the metric is centre-weighted as before. */
+    float meanLuma = meanLumaWeighted(stats, meta);
     /* Re-use the AWB per-channel floor as the AE noise floor — same
      * semantic (sensor noise prevents reliable readings below this),
      * so both loops share a single tuning knob. */

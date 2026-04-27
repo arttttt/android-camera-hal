@@ -5,6 +5,8 @@
 
 #include <system/camera_metadata.h>
 
+#include "IpaStats.h"
+
 namespace android {
 
 /* Per-frame framework control state the IPA needs to decide what to
@@ -52,6 +54,20 @@ struct IpaFrameMeta {
     float manualWbG;
     float manualWbB;
 
+    /* AF region of interest in IpaStats patch-grid coordinates,
+     * half-open on each axis. Defaults to the centre 8×8 patches —
+     * same rectangle the AutoFocusController publishes when no
+     * tap-to-focus has shifted it.
+     *
+     * AE / AWB use this rectangle to weight the luma metric and the
+     * scene-light gate so metering follows the user's focus tap.
+     * Without a tap the rectangle stays centre-default and the
+     * pipeline behaves like a plain centre-weighted metric. */
+    int focusRoiPyLo;
+    int focusRoiPyHi;
+    int focusRoiPxLo;
+    int focusRoiPxHi;
+
     IpaFrameMeta()
         : aeMode(ANDROID_CONTROL_AE_MODE_ON),
           aeLock(ANDROID_CONTROL_AE_LOCK_OFF),
@@ -59,7 +75,11 @@ struct IpaFrameMeta {
           awbLock(ANDROID_CONTROL_AWB_LOCK_OFF),
           aeExposureCompensation(0),
           manualWbValid(false),
-          manualWbR(1.0f), manualWbG(1.0f), manualWbB(1.0f) {}
+          manualWbR(1.0f), manualWbG(1.0f), manualWbB(1.0f),
+          focusRoiPyLo(IpaStats::FOCUS_ROI_PY_LO),
+          focusRoiPyHi(IpaStats::FOCUS_ROI_PY_HI),
+          focusRoiPxLo(IpaStats::FOCUS_ROI_PX_LO),
+          focusRoiPxHi(IpaStats::FOCUS_ROI_PX_HI) {}
 };
 
 } /* namespace android */
