@@ -380,6 +380,22 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
              * colour in ~20 frames with no single-frame pops. */
             lastWbR = awbDamping * rGain + (1.0f - awbDamping) * lastWbR;
             lastWbB = awbDamping * bGain + (1.0f - awbDamping) * lastWbB;
+        } else {
+            /* Below the confidence gate: relax back toward the
+             * calibrated daylight prior at the same damping the
+             * forward path uses. Without this branch, a brief moment
+             * of sufficient valid-patch coverage would land lastWb at
+             * a possibly-biased gray-world reading and that bias
+             * would freeze in place once the patch count fell back
+             * below the gate — a "stuck cast" the user reported.
+             * Symmetric pull-to-prior makes the controller treat
+             * gate-failure scenes as low-confidence: trust the
+             * sensor's calibrated neutral over a stale gray-world
+             * estimate. Convergence time matches the forward path
+             * (~20 frames) so transient dips don't nudge the gain
+             * visibly. */
+            lastWbR = awbDamping * wbRPrior + (1.0f - awbDamping) * lastWbR;
+            lastWbB = awbDamping * wbBPrior + (1.0f - awbDamping) * lastWbB;
         }
 
         /* Publish even when no update happened, so lock → unlock
