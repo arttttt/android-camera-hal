@@ -1,211 +1,157 @@
-# Camera3 compliance gaps
+# Camera3 / Camera2 contract surface
 
-This HAL declares `ANDROID_INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED`
-and is missing several metadata keys and behaviours that `LIMITED`
-implementations are expected to provide. This document enumerates the
-gaps, ordered by how badly they break real applications.
+The HAL claims `CAMERA_DEVICE_API_VERSION_3_4` /
+`CAMERA_MODULE_API_VERSION_2_3` /
+`ANDROID_INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED` /
+`ANDROID_REQUEST_AVAILABLE_CAPABILITIES = [BACKWARD_COMPATIBLE]`.
+The full Camera2 contract surface that flows from those declarations
+is documented in the `project_hal34_compliance` developer note;
+this doc covers what's **not** claimed and what each missing
+capability would unlock.
 
-**Status (2026-04-20):** most P0 items below are already fixed —
-request-echo metadata, AE/AWB state reporting, `notifyError` wiring,
-honest `PIPELINE_MAX_DEPTH` / `PARTIAL_RESULT_COUNT`, per-mode
-`min_frame_duration`, **`YUV_420_888` output**. See the Done section of
-[roadmap.md](roadmap.md) for what landed. Outstanding items
-(`AVAILABLE_*_KEYS` arrays, sensor calibration keys, NV21 target
-support) are tracked in Tier 1.2 / Tier 2 /
-[open-questions.md](open-questions.md). Line references below may be
-stale after the Tier 1.1 splits — paths still name the right concept.
+## Capabilities not claimed and what each would mandate
 
-## Severity legend
+### `RAW`
 
-- **P0 — Breaks basic apps.** Framework or CameraX/Camera2 client will
-  visibly fail, hang, or render garbage.
-- **P1 — Breaks specific features.** The app works in the golden path
-  but specific features (DNG, ML analysis, precapture metering) don't.
-- **P2 — CTS / quality.** Needed for CTS compliance or subjectively
-  better image quality, but apps function without it.
+Would require `BLACK_LEVEL_PATTERN`, `WHITE_LEVEL`,
+`COLOR_TRANSFORM_{1,2}`, `FORWARD_MATRIX_{1,2}`,
+`CALIBRATION_TRANSFORM_{1,2}`, `REFERENCE_ILLUMINANT{1,2}`,
+`NOISE_PROFILE`, plus a RAW16 (or RAW_OPAQUE) stream producer
+that bypasses demosaic.
 
-## P0 — Must fix for broadly usable HAL
+**Why we don't claim it:** Mi Pad 1 use case has no DNG workflow.
+The calibration data (forward / calibration matrices, noise
+profile) isn't in the stock NVIDIA `.isp` files — would require a
+manual calibration session on the target hardware.
 
-### AE/AWB state never reported in result metadata
+### `MANUAL_SENSOR`
 
-Nothing writes `ANDROID_CONTROL_AE_STATE`, `ANDROID_CONTROL_AWB_STATE`,
-or `ANDROID_CONTROL_AF_STATE` transitions beyond the AF sweep case.
-CameraX's ImageCapture flow waits on `AE_STATE == CONVERGED` before
-taking a still — with no state reported, it will hang or time out.
+Would require precapture-trigger handling, per-frame sensor
+settings round-trip with strict timing guarantees,
+`SENSOR_INFO_EXPOSURE_TIME_RANGE` / `SENSITIVITY_RANGE` honoured
+without remap, and `MAX_NUM_OUTPUT_RAW > 0` (entangled with `RAW`
+capability).
 
-**Fix:** even a trivially correct `AE_STATE = INACTIVE` / `AWB_STATE =
-INACTIVE` (when modes are OFF) is better than nothing. For `AWB_MODE_AUTO`
-report `LOCKED` if the framework set `AWB_LOCK`, else `CONVERGED`.
+**Why we don't claim it:** the strict precapture-trigger semantics
++ no-remap timing guarantees are more than `BasicIpa` provides.
+Manual exposure / gain via `SENSOR_EXPOSURE_TIME` /
+`SENSOR_SENSITIVITY` in the AE_MODE=OFF path is honoured on a
+best-effort basis through `ExposureControl`, but the strict
+`MANUAL_SENSOR` contract isn't promised.
 
-### Requested controls not echoed in result metadata
+### `MANUAL_POST_PROCESSING`
 
-The result built around `hal/Camera.cpp:1132+` is missing:
+Would require `COLOR_CORRECTION_TRANSFORM` / `GAINS` honoured
+per-frame (we honour `GAINS` in AWB_OFF mode but ignore
+`TRANSFORM`), `TONEMAP_CURVE_*` (we report `TONEMAP_MODE = FAST`
+only), `EDGE_MODE` / `NOISE_REDUCTION_MODE` actually doing
+something (we advertise OFF-only).
 
-- `ANDROID_SENSOR_EXPOSURE_TIME`
-- `ANDROID_SENSOR_SENSITIVITY`
-- `ANDROID_SENSOR_FRAME_DURATION`
-- `ANDROID_CONTROL_AE_MODE`
-- `ANDROID_CONTROL_AWB_MODE`
-- `ANDROID_CONTROL_AF_MODE`
-- `ANDROID_CONTROL_CAPTURE_INTENT`
-- `ANDROID_LENS_APERTURE` / `ANDROID_LENS_FOCAL_LENGTH`
-- `ANDROID_JPEG_ORIENTATION` / `ANDROID_JPEG_QUALITY`
+**Why we don't claim it:** post-processing knobs the HAL doesn't
+implement. Tone curves, edge enhancement, NR all live in
+`reserved.*` of the per-module tuning JSON; no shader stage
+consumes them yet.
 
-**Fix:** echo what the request asked for. Apps compare request vs result
-to know what actually applied — if a key is absent, Camera2 throws.
+### `BURST_CAPTURE`
 
-### `ANDROID_REQUEST_AVAILABLE_*_KEYS` missing
+Would require declared min frame durations met across rapid
+sequences of stills, `SYNC_MAX_LATENCY = PER_FRAME_CONTROL` (we
+report `UNKNOWN`).
 
-- `ANDROID_REQUEST_AVAILABLE_REQUEST_KEYS`
-- `ANDROID_REQUEST_AVAILABLE_RESULT_KEYS`
-- `ANDROID_REQUEST_AVAILABLE_CHARACTERISTICS_KEYS`
+**Why we don't claim it:** no targeted timing guarantees on the
+JPEG path. JpegWorker is async but libjpeg encode is ~100-150 ms
+per 8 MP shot on the Cortex-A15, far above frame_period — bursting
+through the BLOB FIFO gate would back up.
 
-The framework validates requests and results against these lists.
-Absence means "we support nothing", which the framework may interpret as
-"no settings are honoured" and reject the device for some features.
+### `READ_SENSOR_SETTINGS`
 
-**Fix:** build the three arrays with every key the HAL actually
-reads / writes. This is tedious but mechanical.
+Would require advertising the actually-applied
+`SENSOR_EXPOSURE_TIME` / `SENSITIVITY` / `FRAME_DURATION` /
+`ROLLING_SHUTTER_SKEW` / `TIMESTAMP_SOURCE = REALTIME` per frame.
 
-### `YUV_420_888` output not supported
+**Why we don't claim it:** `TIMESTAMP_SOURCE` is `UNKNOWN`,
+rolling-shutter skew not measured. Exposure / sensitivity round-
+tripping through `DelayedControls` is honest but the rest of the
+contract isn't.
 
-Only `RGBA_8888` and `BLOB` are offered
-(`ANDROID_SCALER_AVAILABLE_STREAM_CONFIGURATIONS` in `hal/Camera.cpp` around
-line 220). `YUV_420_888` is mandatory for `LIMITED` and is the format
-CameraX's `ImageAnalysis`, ML Kit, and most third-party video pipelines
-consume. Without it, CameraX falls back to unusable paths or refuses to
-open the camera.
+### `PRIVATE_REPROCESSING` / `YUV_REPROCESSING`
 
-**Fix:** add a `processToYuv420()` path on `IspPipeline` (Vulkan/GLES
-already output in RGBA; converting to NV12/YV12 is a short extra shader
-pass or a libyuv call). Expose the format in the stream config array.
+Would require `MAX_NUM_INPUT_STREAMS >= 1`,
+`SCALER_AVAILABLE_INPUT_OUTPUT_FORMATS_MAP` populated,
+`Request::inputBuffer` honoured by routing through ISP.
 
-### `notifyError` path not wired up
+**Why we don't claim it:** the inputBuffer slot is reserved in
+`PipelineContext` but unwired. ZSL ring + reprocess pipeline is a
+deliberate future feature, not blocked on infrastructure.
 
-`grep notifyError` returns zero uses. Any V4L2 read failure
-(`readLock()` returning `NULL`, `hal/Camera.cpp:866`) returns
-`NOT_ENOUGH_DATA` silently. Framework expects `CAMERA3_MSG_ERROR_REQUEST`
-or `CAMERA3_MSG_ERROR_BUFFER` on such failures, otherwise it waits
-indefinitely for the result.
+### `CONSTRAINED_HIGH_SPEED_VIDEO`
 
-**Fix:** wrap a `notifyError(frame_number, stream, type)` helper and call
-it on every early-return path in `processCaptureRequest`.
+Would require a high-fps sensor mode (≥ 120 fps, no manual
+controls) and `operation_mode = CONSTRAINED_HIGH_SPEED_MODE`
+handling on `configureStreams`.
 
-## P1 — Breaks specific features
+**Why we don't claim it:** the sensors don't expose a high-fps
+mode the V4L2 driver has surfaced; the `StreamConfig::normalize`
+path explicitly rejects the non-NORMAL operation mode.
 
-### Sensor calibration metadata absent
+### `DEPTH_OUTPUT`
 
-Missing keys prevent DngCreator from producing valid DNGs and prevent
-colour-critical apps from doing their own correction:
+Would require `DEPTH16` / `DEPTH_POINT_CLOUD` / `Y16` stream
+configurations + per-pixel depth backing (real depth, not a
+synthetic stand-in — apps assume the values are calibrated mm).
 
-- `ANDROID_SENSOR_INFO_COLOR_FILTER_ARRANGEMENT`
-- `ANDROID_SENSOR_BLACK_LEVEL_PATTERN`
-- `ANDROID_SENSOR_INFO_WHITE_LEVEL`
-- `ANDROID_SENSOR_CALIBRATION_TRANSFORM{1,2}`
-- `ANDROID_SENSOR_COLOR_TRANSFORM{1,2}`
-- `ANDROID_SENSOR_FORWARD_MATRIX{1,2}`
-- `ANDROID_SENSOR_REFERENCE_ILLUMINANT{1,2}`
-- `ANDROID_SENSOR_NOISE_PROFILE`
+**Why we don't claim it:** no depth hardware. Mocha is monocular
+RGB; no stereo pair, no time-of-flight sensor, no IR projector
+for structured light. Software depth-from-monocular (NN-based or
+focus-stack-based) wouldn't satisfy the contract's accuracy
+expectation, and lying about the format would mislead apps.
 
-**Fix:** the calibration matrices are per-sensor data. Collect them from
-the sensor datasheet (or from `libnvisp_v3`'s tuning binary if it
-exposes them) and store per-sensor in a tuning struct. `BLACK_LEVEL` and
-`CFA` are cheap and purely sensor-dependent.
+## Closed gaps (kept as a historical reference)
 
-### `ANDROID_REQUEST_PIPELINE_MAX_DEPTH` / `PARTIAL_RESULT_COUNT` absent
+The following items used to be open and were closed during the
+HAL3.4 / Camera2 compliance pass (commit `f34d870` and around):
 
-Without `PIPELINE_MAX_DEPTH` the framework assumes a depth of 1 and will
-not pre-queue requests. This interacts badly with the frame-latency
-problem in [latency-and-buffers.md](latency-and-buffers.md).
+- **AE / AWB / AF state in result metadata** — `BasicIpa` reports
+  honest `INACTIVE / SEARCHING / CONVERGED / LOCKED` on AE,
+  `INACTIVE / CONVERGED / LOCKED` on AWB; AF lifecycle is owned
+  by `AutoFocusController` and reported per-frame.
+- **Requested controls echoed in result metadata** — every key
+  in `ANDROID_REQUEST_AVAILABLE_REQUEST_KEYS` round-trips through
+  `ResultMetadataBuilder`.
+- **`ANDROID_REQUEST_AVAILABLE_*_KEYS` arrays** — populated for
+  request / result / characteristics; CameraX feature-availability
+  probes pass.
+- **`YUV_420_888` output** — produced by `VulkanYuvEncoder` (RGBA
+  → NV12 compute), repacked into the gralloc layout `lockYCbCr`
+  asks for via libyuv (NV12 / I420 / YV12; NV21 returns `NO_INIT`).
+- **Per-mode `min_frame_duration`** — derived from
+  `VIDIOC_ENUM_FRAMEINTERVALS`, fallback to 30 fps when the driver
+  doesn't advertise.
+- **`partial_result = 1`** on every result; `PARTIAL_RESULT_COUNT
+  = 1` advertised.
+- **HAL3.2 ABI** — `register_stream_buffers` and
+  `get_metadata_vendor_tag_ops` set to NULL (deprecated form);
+  consumer gralloc usage flags preserved.
+- **HAL3.3 ABI** — `camera3_stream_configuration_t::operation_mode
+  == NORMAL_MODE`, `camera3_stream_t::rotation == ROTATION_0`,
+  `data_space != DEPTH` validated and rejected with `BAD_VALUE`
+  when out of contract.
+- **AE_LOCK + EV-comp** — EV compensation honoured on both auto
+  and locked paths, EMA-smoothed across the lock so big EV steps
+  don't mid-rolling-shutter-tear.
+- **AF_REGIONS** — parsed into a patch-grid `FocusRoi` (5×5
+  minimum around tap centre); the same ROI feeds AF metric
+  computation, AE spot-meter region, and the NEON encoder's Sobel
+  / greenSq window.
+- **Sensor calibration** — physical size, focal length, min focus
+  distance, sensor orientation, bayer pattern from per-module
+  tuning JSON. VCM range from the focuser subdev's
+  `VIDIOC_QUERYCTRL`.
+- **`SENSOR_INFO_EXPOSURE_TIME_RANGE` / `SENSITIVITY_RANGE`** —
+  queried from V4L2 driver, no compile-time hardcodes.
 
-**Fix:** report the real in-flight request depth your HAL guarantees.
-For the current single-threaded implementation that's `1` (honest). After
-introducing a request queue (see [roadmap.md](roadmap.md)) bump to `3`–`4`.
-
-### `AE_PRECAPTURE_TRIGGER` ignored
-
-`ANDROID_CONTROL_AE_PRECAPTURE_TRIGGER` is never read. CameraX's
-ImageCapture sets this on still capture to force AE to converge before
-the shot. We silently ignore it, so still capture happens mid-metering
-and comes out misexposed.
-
-**Fix:** wire it into an AE state machine (currently there is no real AE
-loop, so this is really "implement AE first").
-
-### Metering regions unsupported
-
-`ANDROID_CONTROL_MAX_REGIONS = {0, 0, 0}` (line ~318). All tap-to-focus /
-tap-to-expose UIs in third-party apps become no-ops.
-
-**Fix:** after introducing a real AE / AF region handler, bump the AF
-region count to `1`. AE / AWB regions can remain 0 until the
-corresponding algorithms exist.
-
-### Face detection disabled
-
-`STATISTICS_INFO_MAX_FACE_COUNT = 0`, `STATISTICS_FACE_DETECT_MODE_OFF`.
-This is fine for a bare-bones HAL; flagging it so the roadmap is honest.
-
-### ZSL and reprocessing rejected
-
-Input streams are accepted and ignored (`hal/Camera.cpp:762-765`); ZSL-flagged
-streams are rejected outright (`hal/Camera.cpp:570-571`). Both are optional
-for `LIMITED` but useful for still-capture latency.
-
-### HFR / constrained high-speed missing
-
-No `ANDROID_CONTROL_AVAILABLE_HIGH_SPEED_VIDEO_CONFIGURATIONS`.
-
-## P2 — CTS and polish
-
-### Sensor characteristics are partially faked
-
-`hal/Camera.cpp:160-180` uses hardcoded constants: 5×5 mm physical sensor
-area (scaled by aspect ratio), 3.3 mm focal length, fixed minimum focus
-distance. Good enough for preview; wrong for apps using physical
-parameters (depth estimation, augmented reality, focal plane metadata
-for post-processing).
-
-**Fix:** pull real values from a per-sensor tuning file. See
-[open-source-references.md](open-source-references.md) on how RPi / Intel
-structure these.
-
-### Tonemap keys absent
-
-`ANDROID_TONEMAP_*` — tonemap mode, available tonemap modes, curve
-points. Apps that want linear response (HDR capture pipelines) cannot
-disable the built-in tonemap.
-
-### Hot pixel / edge / noise reduction keys absent
-
-`ANDROID_HOT_PIXEL_*`, `ANDROID_EDGE_*`, `ANDROID_NOISE_REDUCTION_*`.
-Most apps don't touch these but CTS checks the keys exist with at least
-one supported mode.
-
-### Stream-configuration min frame durations assume 60 fps
-
-`hal/Camera.cpp:229, 253` — hardcoded `1_000_000_000 / 60`. On sensors that
-can't actually do 60 fps at full resolution, framework will request
-impossible frame rates.
-
-**Fix:** query the sensor for supported `frame_length` → derive real
-`min_frame_duration` per resolution.
-
-## Summary table
-
-| Category            | Coverage |
-|---------------------|----------|
-| Static metadata     | ~50% of LIMITED expected keys |
-| Request acceptance  | ~70% (templates & basic controls OK, precapture missing) |
-| Result metadata     | ~30% (timestamp, AF state; nothing else) |
-| Streams             | ~60% (RGBA + BLOB; no YUV_420_888, no ZSL) |
-| 3A algorithms       | ~20% (AF sweep works, AE/AWB stubbed) |
-| Error callbacks     | 0% (`notifyError` unused) |
-| Threading model     | Single-threaded, pipeline depth = 1 |
-
-Honest hardware-level claim given the above: between `EXTERNAL` and
-`LIMITED`. Reaching real `LIMITED` takes most of the P0 + P1 list.
-`FULL` / `LEVEL_3` require manual-mode guarantees (precise exposure /
-sensitivity / frame duration latency) that V4L2 + Tegra VI cannot
-trivially provide without `DelayedControls`-style tracking — see
-[latency-and-buffers.md](latency-and-buffers.md).
+The full enumerator of advertised keys + capabilities lives in
+`hal/metadata/CameraStaticMetadata.cpp`; the request keys that
+round-trip into result metadata are in
+`hal/metadata/RequestTemplateBuilder.cpp` and
+`hal/metadata/ResultMetadataBuilder.cpp`.
