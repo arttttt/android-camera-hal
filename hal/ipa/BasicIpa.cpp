@@ -39,12 +39,22 @@ namespace {
 constexpr float awbMaxChannel = 0.95f;
 
 /* Minimum valid-patch count required to update the gains. With 256
- * patches a low-contrast scene easily gives > 200 valid; this
- * guard protects the first few frames where the ISP is warming up
- * and pathological all-dark / all-saturated frames where a fresh
- * estimate would just pump the gains. Below the threshold we hold
- * the previous EMA-damped state. */
-constexpr int awbMinValidPatches = 32;
+ * patches a well-lit scene easily passes — only patches that are
+ * neither saturated (maxCh > 0.95) nor at the noise floor
+ * (minCh < awbMinChannel) count. Setting the floor at 96 (37.5 %
+ * of the grid) keeps gray-world running on scenes that genuinely
+ * have a representative neutral spread, but lets a dim shot — where
+ * only a handful of patches escape the noise floor and those few
+ * are typically a single bright object that is *not* gray —
+ * fall through and hold the calibrated daylight prior. Without this
+ * gate the few-patches-but-still-≥32 path produced strong off-prior
+ * cast whenever the dark scene's bright objects happened to be
+ * non-neutral (laptop screen, lit fluorescent bulb, lampshade), and
+ * the EMA at SmoothingWpTrackingFraction = 0.1 took dozens of
+ * frames to drift back when the scene brightened. Holding the
+ * prior in dim conditions degrades to "looks like daylight" rather
+ * than to "looks cyan/magenta" — strictly the better fallback. */
+constexpr int awbMinValidPatches = 96;
 
 /* Final clamp on the gain multipliers, relative to unity (G = 1.0).
  * Matches the [128, 1024] Q8 range the previous estimator used —
