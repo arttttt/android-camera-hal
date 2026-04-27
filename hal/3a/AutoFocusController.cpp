@@ -521,8 +521,20 @@ void AutoFocusController::onSettings(const CameraMetadata &cm,
                 const auto sensorRes = mDev->sensorResolution();
                 const int sw = (int)sensorRes.width;
                 const int sh = (int)sensorRes.height;
+                /* Apps routinely send "no specific subject" as a near-
+                 * full-frame rectangle (Camera2's `Camera.Region` weight
+                 * doesn't map cleanly onto our patch grid, so the
+                 * convention is to either set zero regions or hand back
+                 * almost the whole frame). The exact-full check (xMax >=
+                 * sw) misses the off-by-one variants apps use — (sw-1)
+                 * is common — and would parse them as a real region
+                 * spanning the full 16×16 grid, neutralising both the
+                 * AF spatial restrict and the AE / AWB region weighting.
+                 * Treat anything within one pixel of the sensor edges as
+                 * full-frame. */
                 const bool isFullFrame =
-                    (xMin <= 0 && yMin <= 0 && xMax >= sw && yMax >= sh);
+                    (xMin <= 1 && yMin <= 1
+                     && xMax >= sw - 1 && yMax >= sh - 1);
                 if (sw > 0 && sh > 0 && !isFullFrame
                     && xMax > xMin && yMax > yMin) {
                     /* Sensor coords → patch grid (16×16). Floor on Lo,
