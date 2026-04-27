@@ -1,0 +1,331 @@
+# Tegra K1 / Mi Pad 1 Camera HAL
+
+V4L2-based Android Camera HAL for **Xiaomi Mi Pad 1** (codename
+`mocha`, Tegra K1, single-SMX Kepler GK20A) running LineageOS 14.1 /
+Android 7.1.2. Software ISP runs on the GPU via Vulkan compute +
+fragment, 3A statistics on ARMv7 NEON. No closed NVIDIA blob (no
+`libnvodm_imager` / `libnvcamerautils`); all processing is ours from
+the raw Bayer pixel onward.
+
+## Status
+
+| Property | Value |
+|----------|-------|
+| HAL device API | `CAMERA_DEVICE_API_VERSION_3_4` |
+| Module API | `CAMERA_MODULE_API_VERSION_2_3` |
+| Camera2 hardware level | `LIMITED` |
+| Capabilities | `BACKWARD_COMPATIBLE` |
+| Cameras | IMX179 rear (8 MP RGGB), OV5693 front (5 MP BGGR) |
+| Output formats | RGBA_8888, YCbCr_420_888 (NV12), BLOB (JPEG) |
+| Output cap | 16:9 ≤ 1920×1080 (per stream) |
+| Live throughput | ~30 fps preview at 1080p with full 3A active |
+
+The HAL implements the Camera2 contract well enough that Open Camera,
+the stock LineageOS camera and Libre Camera all run under Camera2 API
+(not the legacy Camera1 emulation path). Photo, video record, and
+preview are all working.
+
+## Features
+
+### Pipeline
+
+- **Zero-copy V4L2 → Vulkan capture.** V4L2 in `V4L2_MEMORY_DMABUF`
+  mode writes directly into Vulkan-allocated input ring buffers
+  (4-slot, exported via `vkGetMemoryFdKHR` / `OPAQUE_FD`). No CPU
+  memcpy on the input side.
+- **GPU demosaic + blit.** Compute shader (Malvar-He-Cutler) with a
+  20×20 cooperative shared-memory Bayer tile demosaics into a per-slot
+  RGBA scratch image. Fragment shader samples the scratch via a
+  `sampler2D` and writes the gralloc framebuffer through fragment ROP
+  (the only Tegra K1 path that produces tiler-correct output to a
+  `VK_ANDROID_native_buffer` image — compute-store goes through a
+  swizzle and produces garbage).
+- **Multi-stream produce-once.** One demosaic per frame; per-output
+  blits / encodes / copies share a single `vkQueueSubmit`. Per-output
+  release fences come from `vkQueueSignalReleaseImageANDROID`.
+- **Asynchronous request pipeline.** Six worker threads per camera:
+  - `RequestThread` — drains the framework's `processCaptureRequest`
+    queue, deep-copies settings into a `PipelineContext`. Returns
+    in < 1 ms.
+  - `CaptureThread` (V4L2) — DQBUF off the V4L2 queue, drain-to-latest
+    so preview never reaches into a stale frame.
+  - `PipelineThread` — owns the GPU submit ring; fence-fd polled for
+    completion (no `vkWaitForFences` on the hot path).
+  - `ResultThread` — `process_capture_result` dispatch + Bayer flush
+    + in-flight tracker remove; gates BLOB-bearing requests so
+    Camera3's monotonic frame_number ordering survives async JPEG.
+  - `JpegWorker` — libjpeg encode off the hot path, snapshot ring of
+    host-mapped Vulkan buffers feeds it.
+  - `StatsWorker` — NEON 3A statistics over the raw Bayer slot,
+    progressive across `phaseCount` submits to keep peak CPU low.
+- **Framework `acquire_fence` honoured** as a binary `VkSemaphore`
+  via `VK_KHR_external_semaphore_fd` — the GPU submit waits on the
+  framework's producer fence instead of blocking the recording
+  thread on it.
+
+### 3A
+
+- **AE** — proportional controller toward a tuning-derived setpoint
+  (NVIDIA `MeanAlg.{Higher,Lower}Target` midpoint, gamma-decoded into
+  the linear-luma domain the metric lives in). Spot mean of the green
+  channel inside the active focus ROI; default ROI = centre 8×8
+  patches, tap-to-focus moves it to the user's chosen subject. EMA
+  damping, hard ratio clamps, dead-band from `MeanAlg.ToleranceIn`,
+  EV compensation as an additive offset, AE_LOCK with cascade EMA so
+  EV steps under lock don't tear mid-rolling-shutter. Exposure /
+  gain split via `SensorConfig::splitExposureGain` (prefers exposure
+  up to default frame_length, then gain).
+- **AWB** — gray-world over a 16×16 patch grid (rgbMean from NEON
+  stats), saturated / near-black patches filtered. **96-valid-patch
+  confidence gate**: below it, lastWb EMA-relaxes back to the
+  per-CCT-calibrated daylight prior — gate is "trust the calibrated
+  neutral over a stale gray-world reading on a noise / non-neutral
+  subset". CCT estimated via NVIDIA's `awb.v4` U → CCT polynomial,
+  CCM LERP'd across calibrated brackets.
+- **AF** — CDAF state machine (`Idle → Coarse1 → [Coarse2] → Fine
+  → Settle`). Score is `Σ(Gx² + Gy²) / Σ I²` (exposure-invariant
+  Tenengrad ratio) computed in NEON over the focus ROI. Continuous
+  AF retriggers on a multi-channel scene snapshot (focusMetric +
+  RGB-mean over centre 8×8). Tap-to-focus parses
+  `ANDROID_CONTROL_AF_REGIONS`, expands to a 5×5-patch minimum.
+  AF holds AE+AWB lock across a sweep so the score curve isn't
+  distorted by chasing brightness mid-scan.
+
+### Camera2 contract
+
+- `AVAILABLE_REQUEST_KEYS` / `AVAILABLE_RESULT_KEYS` /
+  `AVAILABLE_CHARACTERISTICS_KEYS` populated.
+- `REQUEST_AVAILABLE_CAPABILITIES = [BACKWARD_COMPATIBLE]`.
+- `MAX_NUM_OUTPUT_STREAMS = {RAW=0, PROCESSED=2, STALLING=1}`
+  (API 25 single-array form + API 26+ split scalars under one
+  `#ifdef`).
+- `SYNC_MAX_LATENCY = UNKNOWN`.
+- Per-stage `AVAILABLE_*_MODES` for EDGE / HOT_PIXEL /
+  NOISE_REDUCTION / SHADING / TONEMAP / COLOR_CORRECTION_ABERRATION /
+  LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION /
+  SENSOR_AVAILABLE_TEST_PATTERN / STATISTICS_INFO_AVAILABLE_*.
+- HAL3.3 contract validates `camera3_stream_configuration_t::
+  operation_mode == NORMAL_MODE`, `camera3_stream_t::rotation == 0`,
+  rejects `data_space == DEPTH`.
+- HAL3.2 contract: `register_stream_buffers` and
+  `get_metadata_vendor_tag_ops` are NULL'd; `partial_result = 1`
+  on every result.
+- AE / AWB / AF state reported per-frame in result metadata.
+
+### Tuning
+
+- Per-module JSON at `/vendor/etc/camera/tuning/<sensor>_<integrator>.json`.
+- Source: stock NVIDIA `.isp` files (Mi Pad 1 vendor blob) converted
+  by `tools/isp_to_json.py`, split into an `active` section (paths
+  the HAL consumes) and a `reserved` section (preserved verbatim for
+  future stages). Hardware facts (physical size, focal length, min
+  focus distance, bayer pattern, sensor orientation) live in
+  `tuning/_module_<sensor>_<integrator>.json` and are merged at
+  conversion time.
+- HAL-side overrides under `tuning/<sensor>_<integrator>_overrides.json`
+  deep-merge on top of the converted profile (currently AF
+  state-machine knobs for IMX179: step, contrast / retrigger ratios,
+  settle frames).
+- Live consumers: `AutoFocusController`, `SensorTuning::ccmForCctQ10`,
+  `DemosaicCompute` shader (optical-black bias), `BasicIpa` AE+AWB,
+  `CameraStaticMetadata` (per-module geometry).
+- Reserved (not yet consumed): lens shading, full AE VFRTable, full
+  AWB CCT LUT, noise reduction sets, tone curves, sharpness filters.
+
+### Output formats and stream sizing
+
+- Advertised resolution set is filtered to **16:9 with a 1920×1080
+  ceiling** — the ceiling tracks what the SW ISP can sustain at
+  frame rate on this GPU. Below the ceiling every V4L2-supported
+  16:9 mode is exposed.
+- Auxiliary streams the framework configures at non-advertised sizes
+  (e.g. MediaRecorder 320×240 thumbnail callback, face-detect
+  inputs) are accepted up to the same dimension cap regardless of
+  aspect.
+- `IMPLEMENTATION_DEFINED` resolves by usage flags:
+  `HW_VIDEO_ENCODER` → `YCbCr_420_888`, everything else →
+  `RGBA_8888`. NV12 / I420 / YV12 chroma layouts are repacked from
+  the NV12 the GPU produces; NV21 returns `NO_INIT`.
+
+## Architecture (high level)
+
+```
+                        Android camera framework
+                                  │ Camera3 ops
+                          ┌───────▼───────┐
+                          │     Camera    │
+                          └───┬───────┬───┘
+                              │       │
+            ┌─────────────────┘       └─────────────┐
+            ▼                                       ▼
+    RequestThread                          per-camera helpers
+    ↳ PipelineContext queue                AutoFocusController
+            │                              ExposureControl
+            ▼                              JpegEncoder
+    PipelineThread                         BufferProcessor
+    ↳ acquireSlot, demosaic compute,
+      per-output blits, single submit
+            │
+            │     ┌──────── DMABUF / OPAQUE_FD ────────┐
+            ▼     ▼                                    │
+    VulkanIspPipeline                    CaptureThread / V4l2Source
+    ┌─────────────────────────┐                  │
+    │ compute: Bayer→scratch  │←──────  DQBUF, drain-to-latest
+    │ fragment: scratch→gralloc│                 │
+    │ release_fence per output│       /dev/video0 + /dev/v4l-subdev*
+    └─────────┬──────┬────────┘
+              │      │
+              ▼      ▼
+        gralloc    JpegSnapshot (host-mapped)
+                          │
+                          ▼
+                    JpegWorker (libjpeg async, EXIF orientation)
+                          │
+                          ▼
+                    ResultThread → process_capture_result
+
+    StatsWorker (NEON, parallel to GPU): rgbMean[16×16] +
+        focusMetric[ROI] → IPA (BasicIpa) → DelayedControls
+```
+
+Per-frame control writes (exposure, gain) round-trip through
+`DelayedControls` so they land at `frameNumber + controlDelay[id]`
+where the silicon actually applies them. WB gains and CCM apply in
+the demosaic shader (zero silicon delay).
+
+The full prose architecture used to live in
+[`docs/architecture.md`](docs/architecture.md), but parts of that
+document predate the Tier 3 async-pipeline rewrite and the HAL3.4
+contract pass. For current shape consult
+[`docs/tier3_architecture.md`](docs/tier3_architecture.md) and the
+section above.
+
+## Source layout
+
+```
+hal/
+  Camera.cpp / .h            Camera3 device, top-level lifecycle
+  HalModule.cpp              camera_module_t entry points
+  3a/                        AutoFocusController, ExposureControl
+  metadata/                  static / per-template / per-frame builders
+  jpeg/                      JpegEncoder (libjpeg + EXIF)
+  pipeline/                  StreamConfig, BufferProcessor,
+                             PipelineThread + stages
+  ipa/                       BasicIpa (3A), NeonStatsEncoder, StatsWorker
+isp/
+  IspPipeline.{h,cpp}        backend abstraction
+  IspParams.{h,cpp}          per-frame param SSBO layout
+  sensor/                    SensorConfig, SensorTuning, DelayedControls
+  vulkan/                    VulkanIspPipeline + sub-packages:
+    runtime/                 device state, Vulkan loader / PFN dispatch
+    io/                      input ring (DMABUF), gralloc cache
+    encode/                  YUV encoder (RGBA→NV12 compute)
+    shaders/                 GLSL headers (demosaic, blit, NV12)
+v4l2/
+  V4l2Device.{h,cpp}         /dev/video0 wrapper
+  Resolution.h
+util/                        AutoLogCall, FpsCounter, Benchmark
+tools/
+  isp_to_json.py             stock .isp → tuning JSON converter
+tuning/                      per-module tuning JSON (installed as prebuilt)
+docs/                        developer docs (some sections predate Tier 3)
+```
+
+## Build & deploy
+
+The HAL is a standard AOSP module. From an AOSP 7.1 / LineageOS 14.1
+tree:
+
+```bash
+# Add to your device makefile
+PRODUCT_PACKAGES += camera.$(TARGET_BOARD_PLATFORM)
+PRODUCT_PACKAGES += media_profiles.xml
+
+# Build (JDK 8 needed for the AOSP 7.1 host tools)
+mmm hardware/camera
+```
+
+Outputs:
+- `out/.../system/lib/hw/camera.tegra.so` — the HAL.
+- `out/.../system/vendor/etc/camera/tuning/<sensor>_<integrator>.json`
+  — tuning data, installed via `BUILD_PREBUILT`.
+
+Both must land on the device under `/system/lib/hw/` and
+`/system/vendor/etc/camera/tuning/` respectively, then `cameraserver`
+needs a restart.
+
+The project's specific Mi Pad 1 deploy workflow (no adb on this
+device — push over LAN with a custom HTTP tool) is documented in
+the development notes; for a generic AOSP tree any standard
+`adb push` + `pkill cameraserver` works.
+
+## Documentation index
+
+| Document | What's inside |
+|----------|---------------|
+| [docs/architecture.md](docs/architecture.md) | Component-by-component overview (parts predate Tier 3 — historical) |
+| [docs/tier3_architecture.md](docs/tier3_architecture.md) | Async pipeline architecture (current shape) |
+| [docs/isp-pipeline.md](docs/isp-pipeline.md) | Vulkan ISP detail — compute demosaic, fragment blit, Tegra K1 quirks |
+| [docs/camera3-compliance.md](docs/camera3-compliance.md) | Camera3 contract gap analysis (mostly closed after the HAL3.4 pass) |
+| [docs/latency-and-buffers.md](docs/latency-and-buffers.md) | V4L2 buffer-queue latency analysis |
+| [docs/neon-stats-review.md](docs/neon-stats-review.md) | NEON statistics kernel review |
+| [docs/roadmap.md](docs/roadmap.md) | Done items + open work + effort estimates |
+| [docs/bugs.md](docs/bugs.md) | Known bugs (deferred or won't-fix), each with location and likely cause |
+| [docs/open-questions.md](docs/open-questions.md) | Open architecture questions |
+| [docs/open-source-references.md](docs/open-source-references.md) | What libcamera / RkISP1 / RPi do differently |
+
+## What's not implemented
+
+- **RAW / DNG output** — adding `RAW16` / `RAW_OPAQUE` would mandate
+  `BLACK_LEVEL_PATTERN`, `WHITE_LEVEL`, `COLOR_TRANSFORM_*`,
+  `FORWARD_MATRIX_*`, `CALIBRATION_TRANSFORM_*`, `NOISE_PROFILE`,
+  plus a RAW16 stream producer. Not pursued — the Mi Pad 1 use case
+  doesn't need DNG.
+- **Reprocessing / ZSL** (`PRIVATE_REPROCESSING`,
+  `YUV_REPROCESSING`). The `Request::inputBuffer` slot is reserved
+  but not wired.
+- **`MANUAL_SENSOR`** — would need pre-capture-trigger contract +
+  per-frame sensor settings round-trip we don't implement (manual
+  exposure / gain via `SENSOR_EXPOSURE_TIME` / `SENSOR_SENSITIVITY`
+  in non-OFF AE mode is honoured opportunistically through
+  `BasicIpa`'s pull, but the strict MANUAL_SENSOR contract isn't
+  claimed).
+- **`CONSTRAINED_HIGH_SPEED_VIDEO`** — would need a high-fps sensor
+  mode and a relaxed-metadata path the HAL doesn't have.
+- **`DEPTH_OUTPUT`** — no depth backing.
+- Output above 1920×1080 — SW ISP can't sustain the rate.
+- Packed-YUV sensors (UYVY / YUY2) — Bayer-only.
+
+## Hardware quirks the code is built around
+
+- **Tegra K1 single-queue Vulkan** — submits serialise on the GPU
+  side. The cmd-buffer / fence / scratch ring of depth 2 is sized
+  for CPU↔GPU overlap, not parallel GPU execution.
+- **Compute-store to a `VK_ANDROID_native_buffer` image produces
+  swizzled garbage on this driver.** Fragment ROP is the only
+  correct write path. `vkCmdCopyImage` / `CopyBufferToImage`
+  targeting a gralloc image likewise miss the tiler.
+- **`VK_ANDROID_native_buffer` is filtered out by `libvulkan.so` for
+  app-level callers** but exposed to HAL processes. We bypass
+  `libvulkan.so` and dispatch through a HAL-direct PFN table loaded
+  from `libglcore.so` so the extension is reachable.
+- **`vkGetMemoryFdPropertiesKHR` on external gralloc fds returns
+  `VK_ERROR_INITIALIZATION_FAILED` with `typeBits=0`.** Gralloc
+  zero-copy import as a Vulkan image is impossible — the round trip
+  through fragment ROP is mandatory.
+- **Mi Pad 1 has no adb** — deploy goes over a custom HTTP tool on
+  the LAN.
+- **Mi Pad 1's rotation sensors are broken** on the unit this HAL
+  was developed against. EXIF orientation comes from the request's
+  `ANDROID_JPEG_ORIENTATION`; apps that compute orientation from
+  device rotation sensors (e.g. Open Camera) end up with a fixed
+  `orientation = 0` regardless of how the tablet is held — that's
+  an app + device problem, not a HAL bug.
+
+## Origin
+
+Forked from Antmicro's V4L2-based Android Camera HAL3 reference. The
+top-level Camera3 ops table and V4L2 wiring trace back to that fork;
+everything that runs after the V4L2 buffer is dequeued — ISP, 3A,
+async pipeline, multi-stream, JPEG, Camera2 metadata surface — has
+been written from scratch.
