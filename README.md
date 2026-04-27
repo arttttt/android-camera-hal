@@ -222,11 +222,6 @@ Both must land on the device under `/system/lib/hw/` and
 `/system/vendor/etc/camera/tuning/` respectively, then `cameraserver`
 needs a restart.
 
-The project's specific Mi Pad 1 deploy workflow (no adb on this
-device — push over LAN with a custom HTTP tool) is documented in
-the development notes; for a generic AOSP tree any standard
-`adb push` + `pkill cameraserver` works.
-
 ## What's not implemented
 
 - **RAW / DNG output** — adding `RAW16` / `RAW_OPAQUE` would mandate
@@ -266,14 +261,6 @@ the development notes; for a generic AOSP tree any standard
   `VK_ERROR_INITIALIZATION_FAILED` with `typeBits=0`.** Gralloc
   zero-copy import as a Vulkan image is impossible — the round trip
   through fragment ROP is mandatory.
-- **Mi Pad 1 has no adb** — deploy goes over a custom HTTP tool on
-  the LAN.
-- **Mi Pad 1's rotation sensors are broken** on the unit this HAL
-  was developed against. EXIF orientation comes from the request's
-  `ANDROID_JPEG_ORIENTATION`; apps that compute orientation from
-  device rotation sensors (e.g. Open Camera) end up with a fixed
-  `orientation = 0` regardless of how the tablet is held — that's
-  an app + device problem, not a HAL bug.
 
 ## Origin
 
