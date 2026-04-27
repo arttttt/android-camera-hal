@@ -123,40 +123,39 @@ float aeCompFactor(int32_t evCompUnits) {
     return powf(2.0f, (float)evCompUnits / 3.0f);
 }
 
-/* Region-weighted mean of the per-patch green channel from
- * IpaStats::rgbMean, biased toward the active focus ROI. Same linear
- * pre-WB / pre-CCM domain as the AE setpoint, so the controller
- * compares like with like.
+/* Plain mean of the per-patch green channel from IpaStats::rgbMean
+ * over the active focus ROI. Same linear pre-WB / pre-CCM domain as
+ * the AE setpoint, so the controller compares like with like.
  *
- * Patches inside meta.focusRoi* (half-open rectangle in patch grid
- * coordinates) carry twice the influence of patches outside it. With
- * no tap-to-focus the meta defaults to the project's centre 8×8
- * (IpaStats::FOCUS_ROI_*) so the metric is centre-weighted as before.
- * On a tap the rectangle moves to the user's chosen subject and the
- * metric — and through it AE — follows.
+ * Spot-meter shape: patches outside meta.focusRoi* contribute zero
+ * weight. Without a tap meta defaults to the project's centre 8×8
+ * (IpaStats::FOCUS_ROI_*) so AE meters the centre as a 64-patch
+ * average. On a tap the rectangle moves to the user's chosen subject
+ * (5×5 minimum from AutoFocusController) and AE meters precisely
+ * those patches — the response to focus is unambiguous; the weighted
+ * 2x-vs-1x form we tried first averaged outside patches in heavily
+ * enough that a small tap shifted the metric by single-digit
+ * percent and the AE response read as "didn't follow focus".
  *
  * One helper, two consumers (AE controller and the AWB-gate light
  * floor) so the gate is calibrated against the same number AE
  * actually optimises. */
-float meanLumaWeighted(const IpaStats &stats, const IpaFrameMeta &meta) {
-    constexpr float W_INSIDE  = 2.0f;
-    constexpr float W_OUTSIDE = 1.0f;
+float meanLumaInRoi(const IpaStats &stats, const IpaFrameMeta &meta) {
+    int pyLo = meta.focusRoiPyLo < 0                 ? 0                 : meta.focusRoiPyLo;
+    int pyHi = meta.focusRoiPyHi > IpaStats::PATCH_Y ? IpaStats::PATCH_Y : meta.focusRoiPyHi;
+    int pxLo = meta.focusRoiPxLo < 0                 ? 0                 : meta.focusRoiPxLo;
+    int pxHi = meta.focusRoiPxHi > IpaStats::PATCH_X ? IpaStats::PATCH_X : meta.focusRoiPxHi;
 
-    float weightedSum = 0.f;
-    float weightTotal = 0.f;
-    for (int py = 0; py < IpaStats::PATCH_Y; ++py) {
-        const bool inY = (py >= meta.focusRoiPyLo && py < meta.focusRoiPyHi);
-        for (int px = 0; px < IpaStats::PATCH_X; ++px) {
-            const bool inside = inY
-                              && px >= meta.focusRoiPxLo
-                              && px < meta.focusRoiPxHi;
-            const float w = inside ? W_INSIDE : W_OUTSIDE;
-            weightedSum += w * stats.rgbMean[py][px][1];
-            weightTotal += w;
+    int   count = 0;
+    float sum   = 0.f;
+    for (int py = pyLo; py < pyHi; ++py) {
+        for (int px = pxLo; px < pxHi; ++px) {
+            sum += stats.rgbMean[py][px][1];
+            ++count;
         }
     }
-    if (weightTotal <= 0.f) return 0.f;
-    return weightedSum / weightTotal;
+    if (count <= 0) return 0.f;
+    return sum / (float)count;
 }
 
 } /* namespace */
@@ -288,7 +287,7 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
      * noise-dominated; computing gains and CCT from them would pump
      * the CCM between CcmSet brackets and show up as a hue swing.
      * Holding last-known-good is the right behaviour there. */
-    const float sceneLuma = meanLumaWeighted(stats, meta);
+    const float sceneLuma = meanLumaInRoi(stats, meta);
     const bool awbRun = (meta.awbMode == ANDROID_CONTROL_AWB_MODE_AUTO)
                      && (meta.awbLock == ANDROID_CONTROL_AWB_LOCK_OFF)
                      && (isp != nullptr)
@@ -489,14 +488,14 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
      * a fresh target rather than ramping from a stale value. */
     lockedBiasedTotalUs = 0.f;
 
-    /* Region-weighted patch mean over rgbMean.G — see
-     * meanLumaWeighted(). Saturated patches still pull the metric
+    /* Spot-meter patch mean over rgbMean.G inside meta.focusRoi* —
+     * see meanLumaInRoi(). Saturated patches still pull the metric
      * toward 1.0 (and AE backs off) via their own clipped patch mean;
-     * black patches still pull toward 0 via the same mechanism. The
-     * weight bias inside meta.focusRoi* makes the metric track the
-     * user's tap-to-focus region — without a tap the meta defaults to
-     * the centre 8×8 and the metric is centre-weighted as before. */
-    float meanLuma = meanLumaWeighted(stats, meta);
+     * black patches still pull toward 0 via the same mechanism.
+     * Without a tap meta defaults to centre 8×8 so AE meters the
+     * centre as a 64-patch average; with a tap AE meters precisely
+     * the user's chosen subject. */
+    float meanLuma = meanLumaInRoi(stats, meta);
     /* Re-use the AWB per-channel floor as the AE noise floor — same
      * semantic (sensor noise prevents reliable readings below this),
      * so both loops share a single tuning knob. */
