@@ -410,19 +410,90 @@ level / device version see the freshest contract from us; no new
 features behind the bumps but the surface that's there matches
 what the framework expects.
 
-## Suggested sequencing
+### Output cap — done
 
-1. **Tier 1.2** — short compliance PRs inside `CameraStaticMetadata`.
-2. **Tier 2** — done (drain-to-latest, `YUV_420_888` output, JSON
-   tuning).
-3. **Tier 3 PR 1-11 + housekeeping** — done (threading primitives,
-   RequestThread, CaptureThread, PipelineThread + fence-fd,
-   IPA / DelayedControls plumbing, NEON stats worker, BasicIpa AE
-   + AWB + AF, focus-ROI spatial restrict, V4L2DEVICE_OPEN_ONCE
-   removal, PR 7 produce-once + JpegWorker + ResultThread split).
-4. **HAL3.4 / Camera2 compliance** — done (see above).
-5. **ZSL + reprocess** — open. The slot reserved in PR 2
-   (`Request::inputBuffer`, `MAX_NUM_INPUT_STREAMS = 0` placeholder
-   in static metadata) is the natural next major feature: ring of
-   N most-recent frames + reprocess wiring through Camera3's input
-   stream contract. Discretionary.
+`hal/pipeline/OutputResolutionCap.h` filters advertised stream
+configurations to **16:9 ≤ 1920×1080** (`acceptsAdvertised`) and
+caps the size of any stream the framework asks `configureStreams`
+to allocate (`acceptsSize`, accepts any aspect up to the same
+ceiling so MediaRecorder thumbnail / face-detect callbacks at
+non-16:9 sizes pass through). Above 1080p the SW ISP — Vulkan
+demosaic + blit + libjpeg encode — becomes FPS-bound, and the
+post-demosaic scratch ring is sized for a single fixed
+1920×1080 RGBA slot per `SLOT_COUNT`. 4:3 photo modes will come
+back when the kernel sensor-side cropping profiles grow proper
+4:3 support; that side will pick those up.
+
+### Focus-tied AE — done
+
+AE meters from `IpaStats::rgbMean[*][*][1]` (G channel, raw
+pre-WB / pre-CCM domain) inside the active focus ROI. Two
+revisions:
+
+1. **Centre-weighted form** (commit `dc08f08`) — initial replacement
+   for the pre-existing `lumaHist`-based mean. The histogram path
+   produced an AE setpoint that didn't follow tap-to-focus and
+   spent NEON inner-loop work on a field nobody read.
+2. **Spot meter inside ROI** (commit `ad9903e`) — the weighted
+   form's 2x-vs-1x bias was too subtle on a real device, so
+   `meanLumaInRoi` switched to a plain mean over patches inside
+   the ROI only. Default ROI = centre 8×8 (matches the
+   `IpaStats::FOCUS_ROI_*` constants the rest of the project
+   already uses), so without a tap AE meters a 64-patch centre
+   spot. With a tap AE meters precisely the user's chosen subject
+   at 5×5+ patches.
+
+`StatsProcessStage` plumbs `AutoFocusController::currentFocusRoi()`
+into `IpaFrameMeta::focusRoi*` so AE / AWB-gate / AF all share one
+rectangle source-of-truth.
+
+`AutoFocusController::onSettings` widened the `isFullFrame` check
+to a 1-pixel margin (commit `aa1c8ea`) so `(0, 0, sw-1, sh-1)`-style
+"no specific subject" hints from apps don't get parsed as a real
+tap — without that the ROI was a full 16×16 grid and the spot
+meter degenerated back to a uniform mean.
+
+`lumaHist` field and the per-pixel scatter in NeonStatsEncoder
+were dropped (commit `ad34c55`) once nothing reads them.
+
+### AWB confidence gate + prior-relax — done
+
+`BasicIpa` AWB raised `awbMinValidPatches` from 32 → 96 (37.5 % of
+the 16×16 grid) and added a symmetric pull-to-prior on gate
+failure (commits `9806ce9`, `d1173a1`). Below the gate `lastWb`
+EMA-relaxes back to `wbGainPrior` (per-CCT calibrated daylight
+neutral) at the same `awbDamping` the forward path uses.
+
+Why: gray-world over a small biased subset (dim scene, a handful
+of valid patches that all sit on a non-neutral lit object —
+laptop screen, fluorescent bulb, lampshade) used to land
+incorrect WB gains and freeze them in place when the scene fell
+back below the gate. The gate + symmetric relax means dim scenes
+fall back to "looks daylight-cool" instead of cyan / blue-green.
+
+The cast was originally diagnosed in `bugs.md` as gain-dependent
+black-level drift; live diagnostics ruled that out (cast persists
+at sensor unity gain, no gain-dependent OB calibration in any of
+the `.isp` revisions or the kernel V4L2 driver). Manual dark-frame
+calibration would unlock a more-correct OB fix as a deferred
+follow-up. See the project memory `project_awb_design.md` for
+the full reasoning.
+
+## Open
+
+- **ZSL + reprocess** — slot reserved in `PipelineContext`
+  (`Request::inputBuffer`, `MAX_NUM_INPUT_STREAMS = 0` placeholder
+  in static metadata). Ring of N most-recent frames + reprocess
+  wiring through Camera3's input stream contract. Earlier draft
+  bumped `SLOT_COUNT` to 4 to back the ring; that blew the shared
+  nvmap pool and was rolled back, so a future ZSL has to size its
+  retention against the existing depth-2 ring or use a different
+  storage strategy. Discretionary.
+- **Gain-dependent optical-black calibration** — deferred more-
+  correct fix for the IMX179 high-gain cast bugs.md entry. Needs
+  a dark-frame calibration session on-device (capture covered-lens
+  raw at gain 1×, 2×, 4×, 8×, 16×, 32×, 64×, fit per-channel
+  pedestal curves, tabulate as a tuning addendum). Currently
+  masked by the AWB confidence gate.
+- **Live `bugs.md` items** — OV5693 slow ISO pulsation, vertical
+  seam at low exposures, V4L2 fd reopen perf. None blocking apps.
