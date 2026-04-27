@@ -198,48 +198,16 @@ The full prose architecture used to live in
 document predate the Tier 3 async-pipeline rewrite and the HAL3.4
 contract pass. For current shape consult
 [`docs/tier3_architecture.md`](docs/tier3_architecture.md) and the
-section above.
-
-## Source layout
-
-```
-hal/
-  Camera.cpp / .h            Camera3 device, top-level lifecycle
-  HalModule.cpp              camera_module_t entry points
-  3a/                        AutoFocusController, ExposureControl
-  metadata/                  static / per-template / per-frame builders
-  jpeg/                      JpegEncoder (libjpeg + EXIF)
-  pipeline/                  StreamConfig, BufferProcessor,
-                             PipelineThread + stages
-  ipa/                       BasicIpa (3A), NeonStatsEncoder, StatsWorker
-isp/
-  IspPipeline.{h,cpp}        backend abstraction
-  IspParams.{h,cpp}          per-frame param SSBO layout
-  sensor/                    SensorConfig, SensorTuning, DelayedControls
-  vulkan/                    VulkanIspPipeline + sub-packages:
-    runtime/                 device state, Vulkan loader / PFN dispatch
-    io/                      input ring (DMABUF), gralloc cache
-    encode/                  YUV encoder (RGBA→NV12 compute)
-    shaders/                 GLSL headers (demosaic, blit, NV12)
-v4l2/
-  V4l2Device.{h,cpp}         /dev/video0 wrapper
-  Resolution.h
-util/                        AutoLogCall, FpsCounter, Benchmark
-tools/
-  isp_to_json.py             stock .isp → tuning JSON converter
-tuning/                      per-module tuning JSON (installed as prebuilt)
-docs/                        developer docs (some sections predate Tier 3)
-```
+section above. Developer notes for individual subsystems live under
+[`docs/`](docs/).
 
 ## Build & deploy
 
-The HAL is a standard AOSP module. From an AOSP 7.1 / LineageOS 14.1
-tree:
+Standard AOSP module. From an AOSP 7.1 / LineageOS 14.1 tree:
 
 ```bash
 # Add to your device makefile
 PRODUCT_PACKAGES += camera.$(TARGET_BOARD_PLATFORM)
-PRODUCT_PACKAGES += media_profiles.xml
 
 # Build (JDK 8 needed for the AOSP 7.1 host tools)
 mmm hardware/camera
@@ -258,21 +226,6 @@ The project's specific Mi Pad 1 deploy workflow (no adb on this
 device — push over LAN with a custom HTTP tool) is documented in
 the development notes; for a generic AOSP tree any standard
 `adb push` + `pkill cameraserver` works.
-
-## Documentation index
-
-| Document | What's inside |
-|----------|---------------|
-| [docs/architecture.md](docs/architecture.md) | Component-by-component overview (parts predate Tier 3 — historical) |
-| [docs/tier3_architecture.md](docs/tier3_architecture.md) | Async pipeline architecture (current shape) |
-| [docs/isp-pipeline.md](docs/isp-pipeline.md) | Vulkan ISP detail — compute demosaic, fragment blit, Tegra K1 quirks |
-| [docs/camera3-compliance.md](docs/camera3-compliance.md) | Camera3 contract gap analysis (mostly closed after the HAL3.4 pass) |
-| [docs/latency-and-buffers.md](docs/latency-and-buffers.md) | V4L2 buffer-queue latency analysis |
-| [docs/neon-stats-review.md](docs/neon-stats-review.md) | NEON statistics kernel review |
-| [docs/roadmap.md](docs/roadmap.md) | Done items + open work + effort estimates |
-| [docs/bugs.md](docs/bugs.md) | Known bugs (deferred or won't-fix), each with location and likely cause |
-| [docs/open-questions.md](docs/open-questions.md) | Open architecture questions |
-| [docs/open-source-references.md](docs/open-source-references.md) | What libcamera / RkISP1 / RPi do differently |
 
 ## What's not implemented
 
