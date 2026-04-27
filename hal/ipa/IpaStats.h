@@ -8,15 +8,13 @@ namespace android {
 /* Layout of the statistics buffer NeonStatsEncoder produces on the
  * StatsWorker thread and StatsProcessStage forwards to the IPA.
  *
- * ~4.5 KB total, filled from a single pass (or a `phaseCount`
- * progressive sequence of partial passes) over the raw Bayer slot —
- * pre-WB / pre-CCM space, matching the libcamera IPU3 / rkisp1
- * convention. Consumers must account for the raw domain when
- * interpreting rgbMean. */
+ * Filled from a single pass (or a `phaseCount` progressive sequence
+ * of partial passes) over the raw Bayer slot — pre-WB / pre-CCM
+ * space, matching the libcamera IPU3 / rkisp1 convention. Consumers
+ * must account for the raw domain when interpreting rgbMean. */
 struct IpaStats {
-    static const int HIST_BINS   = 128;
-    static const int PATCH_X     = 16;
-    static const int PATCH_Y     = 16;
+    static const int PATCH_X = 16;
+    static const int PATCH_Y = 16;
 
     /* Focus-metric region of interest, expressed as a half-open
      * patch-grid rectangle [LO, HI) on each axis. Default covers the
@@ -30,10 +28,6 @@ struct IpaStats {
     static const int FOCUS_ROI_PX_HI = 12;
     static const int FOCUS_ROI_PY_LO = 4;
     static const int FOCUS_ROI_PY_HI = 12;
-
-    /* Rec. 601 luma, bin = clamp(luma * HIST_BINS, 0, HIST_BINS-1).
-     * uint32_t per bin gives > 4e9 headroom vs 1920*1080 pixels. */
-    uint32_t lumaHist[HIST_BINS];
 
     /* Per-patch mean RGB in [0,1]. Divided by patch pixel count in
      * the shader's tree reduction (not here). */

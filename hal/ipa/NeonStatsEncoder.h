@@ -11,9 +11,9 @@ namespace android {
  *
  * Produces the IpaStats layout the IPA consumes, computed from the
  * untouched sensor buffer before WB / CCM / gamma. Raw-space rgbMean
- * and lumaHist match the convention used by libcamera's IPU3 / rkisp1
- * pipelines; IPAs consuming this output must account for the domain
- * difference vs a post-ISP stats path.
+ * matches the convention used by libcamera's IPU3 / rkisp1 pipelines;
+ * IPAs consuming this output must account for the domain difference
+ * vs a post-ISP stats path.
  *
  * Two entry points:
  *
@@ -40,8 +40,8 @@ public:
      * axis. Patches outside the rectangle skip the Sobel kernel and
      * the greenSq accumulation entirely; their `sharpSum` /
      * `greenSqSum` slots in the Partial stay at zero, which finalize
-     * surfaces as `focusMetric == 0`. Histogram and rgbMean still run
-     * full-frame because AE / AWB consume them across all patches. */
+     * surfaces as `focusMetric == 0`. rgbMean still runs full-frame
+     * because AE / AWB consume it across all patches. */
     struct FocusRoi {
         int pyLo;
         int pyHi;
@@ -66,7 +66,6 @@ public:
          * in u64 for the same reason as sharpSum: the inner NEON loop
          * folds two u32x4 vmlal_u16 lanes into u64 per cell. */
         uint64_t greenSqSum[IpaStats::PATCH_Y][IpaStats::PATCH_X];
-        uint32_t lumaHist[IpaStats::HIST_BINS];
     };
 
     NeonStatsEncoder();
@@ -85,11 +84,11 @@ public:
      * height      Pixel dimensions of the Bayer frame.
      * pixFmt      V4L2 fourcc. Selects bit depth and 2×2 CFA phase.
      * blackLevel  Per-sample optical-black bias the sensor encodes in
-     *             the raw output. Subtracted from each histogram
-     *             sample before binning and from every accumulated
-     *             sum at finalize time, matching what the demosaic
-     *             shader does downstream. 0 disables the correction
-     *             (tunings without an opticalBlack section). */
+     *             the raw output. Subtracted in bulk from every
+     *             accumulated sum at finalize time, matching what
+     *             the demosaic shader does downstream. 0 disables
+     *             the correction (tunings without an opticalBlack
+     *             section). */
     void compute(const void     *bayer,
                  unsigned        width,
                  unsigned        height,

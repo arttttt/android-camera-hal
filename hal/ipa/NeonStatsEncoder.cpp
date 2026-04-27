@@ -107,16 +107,8 @@ void NeonStatsEncoder::computeRange(const void     *bayer,
     if (pyEnd   > IpaStats::PATCH_Y) pyEnd  = IpaStats::PATCH_Y;
     if (pyStart >= pyEnd) return;
 
-    const bool     wide     = is10Bit(pixFmt);
-    const uint8_t *cfa      = phaseChannel[IspParams::bayerPhaseFromFourcc(pixFmt)];
-    /* 10-bit → 128 bins = shift 3; 8-bit → shift 1. Keeps the bin index
-     * independent of the sensor bit depth while preserving full range
-     * coverage. */
-    const int      histShift = wide ? 3 : 1;
-
-    /* Cast once for the per-sample histogram subtract. sumCh keeps
-     * the raw accumulation and is corrected in bulk at finalize. */
-    const uint32_t bl = blackLevel;
+    const bool     wide = is10Bit(pixFmt);
+    const uint8_t *cfa  = phaseChannel[IspParams::bayerPhaseFromFourcc(pixFmt)];
 
     const uint16_t *p16 = reinterpret_cast<const uint16_t *>(bayer);
     const uint8_t  *p8  = reinterpret_cast<const uint8_t  *>(bayer);
@@ -207,14 +199,6 @@ void NeonStatsEncoder::computeRange(const void     *bayer,
                                                     vget_high_u16(gVec));
                         }
 
-                        uint16_t gbuf[8];
-                        vst1q_u16(gbuf, gVec);
-                        for (int i = 0; i < 8; ++i) {
-                            uint32_t v = (uint32_t)gbuf[i];
-                            v = (v > bl) ? (v - bl) : 0u;
-                            partial->lumaHist[v >> histShift] += 1u;
-                        }
-
                         if (inFocusRoi && neonSobel) {
                             const int lane = gIsEven ? 0 : 1;
                             const uint16x8_t tl = vld2q_u16(rowN + x - 2u).val[lane];
@@ -285,15 +269,11 @@ void NeonStatsEncoder::computeRange(const void     *bayer,
                     partial->sumCh[py][px][chan] += v;
                     partial->cntCh[py][px][chan] += 1u;
 
-                    if (chan == 1u) {
-                        const uint32_t vBin = (v > bl) ? (v - bl) : 0u;
-                        partial->lumaHist[vBin >> histShift] += 1u;
-                        if (inFocusRoi) {
-                            scalarSobelStep(p16, p8, wide,
-                                            width, height, x, y,
-                                            &partial->sharpSum[py][px],
-                                            &partial->greenSqSum[py][px]);
-                        }
+                    if (chan == 1u && inFocusRoi) {
+                        scalarSobelStep(p16, p8, wide,
+                                        width, height, x, y,
+                                        &partial->sharpSum[py][px],
+                                        &partial->greenSqSum[py][px]);
                     }
                 }
             }
@@ -307,8 +287,6 @@ void NeonStatsEncoder::finalize(const Partial &partial,
                                  IpaStats      *out) {
     if (!out) return;
     memset(out, 0, sizeof(*out));
-
-    memcpy(out->lumaHist, partial.lumaHist, sizeof(out->lumaHist));
 
     /* Normalise against the signal range after optical-black, not the
      * raw code range — matches the demosaic shader's rescale by
