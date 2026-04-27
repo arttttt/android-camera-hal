@@ -1,39 +1,54 @@
-# Developer Documentation
+# Developer documentation
 
-This directory contains design notes, architectural analysis, and a roadmap for
-the Tegra T124 Android Camera HAL3 implementation in this repository.
+Design notes, architectural analysis, and a roadmap for the Tegra K1
+/ Mi Pad 1 Camera HAL3 implementation in this repository.
 
 | Document | What's inside |
-|----------|--------------|
-| [architecture.md](architecture.md) | How the current HAL is structured — components, request flow, threading, ISP abstraction |
-| [camera3-compliance.md](camera3-compliance.md) | Gaps between the current implementation and the Camera3 HAL contract, prioritized |
-| [latency-and-buffers.md](latency-and-buffers.md) | V4L2 buffer-queue latency analysis, frame-skip strategies, delayed-controls problem |
-| [open-source-references.md](open-source-references.md) | What libcamera, RkISP1, RPi, cros-camera and AOSP V4L2 HAL do differently — patterns worth stealing |
-| [roadmap.md](roadmap.md) | Prioritized list of improvements with effort estimates |
-| [isp-pipeline.md](isp-pipeline.md) | Current IspPipeline abstraction and the two live backends (Vulkan soft-ISP / Hw) |
-| [bugs.md](bugs.md) | Known bugs found during testing but deferred; each with location, likely cause, and planned fix tier |
+|----------|---------------|
+| [architecture.md](architecture.md) | Component overview, six-thread topology, request lifecycle, stream config, 3A summary, per-module tuning |
+| [tier3_architecture.md](tier3_architecture.md) | The async-pipeline design spec: data flow, queue shapes, stage contracts, fence-fd plumbing |
+| [isp-pipeline.md](isp-pipeline.md) | Vulkan ISP detail: produce-once API, slot ring, fragment-ROP write path, Tegra K1 driver quirks |
+| [camera3-compliance.md](camera3-compliance.md) | What's NOT claimed (RAW, MANUAL_*, REPROCESSING, DEPTH_OUTPUT, CONSTRAINED_HIGH_SPEED_VIDEO) and what each would mandate |
+| [latency-and-buffers.md](latency-and-buffers.md) | What was solved (drain-to-latest, async capture, fence-fd poll, DelayedControls, produce-once + worker split) and the production PERF model |
+| [neon-stats-review.md](neon-stats-review.md) | Review of the NEON statistics kernel — correctness + register pressure analysis |
+| [open-questions.md](open-questions.md) | Open architecture questions worth investigating |
+| [open-source-references.md](open-source-references.md) | Patterns from libcamera / RkISP1 / RPi worth borrowing |
+| [roadmap.md](roadmap.md) | Done items + open work |
+| [bugs.md](bugs.md) | Known bugs (deferred or won't-fix), each with location and likely cause |
 
 ## Scope
 
-These docs describe the HAL as implemented on branch `master`. They are
-developer-facing — targeted at someone picking up the codebase to extend 3A,
-reduce latency, improve Camera3 compliance, or port to a different SoC.
+These docs describe the HAL on `master`. They are developer-facing —
+targeted at someone picking up the codebase to extend 3A, work on
+the ISP, improve Camera2 compliance, or port to a different SoC.
 
 They deliberately do **not** cover:
 
-- How to build the HAL (see top-level `README`)
-- How to flash or run on device
-- Sensor-specific tuning values (those live in `sensors/` / `SensorConfig`)
+- How to build the HAL — see top-level [`README.md`](../README.md).
+- Sensor-specific tuning values — those live in
+  `tuning/<sensor>_<integrator>.json` and per-module overrides.
 
 ## Reading order
 
-If you're new to the codebase: start with [architecture.md](architecture.md),
-then [camera3-compliance.md](camera3-compliance.md). The roadmap references
-both.
+If you're new to the codebase: start with
+[architecture.md](architecture.md) for the component map and
+request lifecycle, then dive into
+[tier3_architecture.md](tier3_architecture.md) for the threading /
+queue / fence design.
 
-If you're investigating preview latency: jump straight to
-[latency-and-buffers.md](latency-and-buffers.md).
+If you're investigating the ISP itself: jump to
+[isp-pipeline.md](isp-pipeline.md). It assumes you've read
+architecture.md first.
 
-If you're planning a rewrite or major refactor: read
-[open-source-references.md](open-source-references.md) first — most of what
-you'd design from scratch has been solved better elsewhere.
+If you're investigating preview latency: read
+[latency-and-buffers.md](latency-and-buffers.md). It cross-
+references the PERF log fields the production HAL emits.
+
+If you're scoping a new feature: skim
+[roadmap.md](roadmap.md) and [bugs.md](bugs.md) for what's
+already shipped, what's deferred, and what's known-broken.
+
+If you're considering a major refactor: read
+[open-source-references.md](open-source-references.md) first —
+most of what you'd design from scratch has been solved better
+elsewhere.
