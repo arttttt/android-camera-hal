@@ -37,52 +37,47 @@ If found, the implementation would likely sit in a new
 `isp/hw/JpegEncoderHw.{h,cpp}` behind an `IspPipeline`-level interface
 so the CPU libjpeg path stays as the fallback.
 
-## YUV_420_888 — "proper" GPU-direct and NV21 support
+## YUV_420_888 — GPU-direct write and NV21 support
 
-**Current state (Tier 2):** `IspPipeline::processToYuv420` runs a
-compute shader that writes NV12 into a host-mapped `VkBuffer`;
-`BufferProcessor::processYuvOutput` `lockYCbCr`s the gralloc target
-and repacks via libyuv (`CopyPlane` for NV12 target, `NV12ToI420` for
-I420 / YV12). NV21 is rejected with `NO_INIT`. BT.601 limited-range
-is hardcoded in the shader. Extra CPU memory traffic: one full Y copy
-(~2 MB at 1080p) + one UV copy/split (~1 MB) per frame ≈ 3-5 ms on
-Tegra LPDDR3.
+**Current state:** `VulkanIspPipeline::blitToYuv` runs a compute
+shader (`RgbaToNv12.h`) that samples the per-slot scratch image and
+writes NV12 into a host-mapped `VkBuffer`;
+`BufferProcessor::processYuvOutput` then `lockYCbCr`s the gralloc
+target and repacks via libyuv (`CopyPlane` for NV12 target,
+`NV12ToI420` for I420 / YV12). NV21 returns `NO_INIT`. BT.601
+limited-range is hardcoded in the shader. Extra CPU memory traffic:
+one full Y copy (~2 MB at 1080p) + one UV copy / split (~1 MB) per
+frame ≈ 3-5 ms on Tegra LPDDR3.
 
 **Question 1: can we skip the CPU repack entirely?**
 Ideal path: the compute shader writes **directly** into the gralloc
 buffer's YUV planes. That needs either:
 
-- A Vulkan YCbCr image format exposed to storage-image writes (Vulkan
-  1.1+ `VK_KHR_sampler_ycbcr_conversion` — not on Tegra K1).
+- A Vulkan YCbCr image format exposed to storage-image writes
+  (Vulkan 1.1+ `VK_KHR_sampler_ycbcr_conversion` — not on Tegra K1).
 - `vkGetMemoryFdPropertiesKHR` accepting a gralloc fd so we can
   `vkImportMemory` it — returns `VK_ERROR_INITIALIZATION_FAILED`
-  on our driver (see `memory/reference_tegra_vulkan.md`).
+  on this driver.
 
-Neither available, so CPU repack stays. The question reopens if we
-ever move to Vulkan 1.1 (not reachable from Tegra K1's NV driver) or
-if Tegra gralloc gains a `VK_ANDROID_native_buffer`-style YUV variant
-(no public evidence of this).
+Neither available, so the CPU repack stays. The question reopens
+only if Tegra K1's NV Vulkan driver gains a YUV-target equivalent
+of `VK_ANDROID_native_buffer` (no public evidence of this).
 
 **Question 2: NV21 targets.**
-The Android-7 libyuv we link has no direct `NV12ToNV21` and scalar
-U/V swap is ~20 ms at 1080p (unacceptable on the hot path). Options:
+Android-7's libyuv has no direct `NV12 → NV21` and a scalar U/V
+swap is ~20 ms at 1080p — unacceptable on the hot path. Options:
 
-- Chain `NV12ToI420` → `I420ToNV21` via a temp 1 MB plane. Two
-  conversions, but both NEON-accelerated — estimated 5-8 ms total
-  including alloca'd temp. Acceptable if any consumer actually picks
-  NV21.
-- Write a dedicated NEON swap using `vld2.8 / vst2.8` (8-byte
-  deinterleave + byte-swap). ~2 ms at 1080p. Low maintenance burden
-  but ties us to ARM NEON.
-- Wait for Tier 3.5 (produce-once / sample-many) to reshape the
-  GPU shader to target the layout the consumer asked for directly —
-  shader branches on chroma-step and byte-order flag from a push
-  constant. Pushes the swap to GPU, frees the CPU entirely, and
-  unifies with other per-output shader variants.
+- Chain `NV12 → I420 → NV21` via a temp 1 MB plane. Two conversions,
+  both NEON-accelerated; estimated 5-8 ms.
+- Dedicated NEON swap using `vld2.8 / vst2.8`; ~2 ms at 1080p.
+- Branch the `RgbaToNv12` shader on a chroma-step / byte-order
+  push constant so the GPU writes the consumer's layout directly.
+  Frees the CPU entirely, no extra plane allocation; cost is one
+  shader variant.
 
-Resolving this gets flagged if we see a real consumer on the device
-request NV21 (log line `YUV layout not supported (chroma_step=2,
-cb=%p, cr=%p)` with `cb > cr`). Until then the stub is OK.
+Resolving this triggers if a real consumer on the device requests
+NV21 (log line `YUV layout not supported (chroma_step=2, cb=%p,
+cr=%p)` with `cb > cr`). Until then the stub is fine.
 
 **Question 3: BT.709 + full-range and colour-space metadata.**
 Today we bake BT.601 limited into the shader and emit no
@@ -120,44 +115,33 @@ context-switch tax; bundling it with the eventual "true Treble
 port" (split vendor partition, vendor HIDL HAL) makes more sense.
 
 
-## CCM / WB — deferred CCT-driven selection
+## Manual AWB presets (INCANDESCENT / FLUORESCENT / …)
 
-**Current state (Tier 2):** `Camera::configureStreams` picks the
-nearest-CCT CCM from `SensorTuning::ccmSets()` with a hardcoded
-target of 5000 K (daylight). The `wbGain` field in each Set is
-ignored — our `VulkanIspPipeline::updateAwb` runs a live gray-world
-estimator instead and applies the result directly to the demosaic
-shader's `wbR/wbG/wbB` parameters.
+CCT-driven CCM selection is wired (Tier 3 PR 6.7): `BasicIpa`
+estimates a CCT from the gray-world G/B ratio via the tuning's
+`awb.v4.UtoCCT` polynomial, picks / interpolates a CCM between the
+calibrated `colorCorrection.Set[].cct` brackets, applies the
+matching `wbGain` priors as the AWB neutral anchor, and falls back
+to the prior on the confidence gate. So the bulk of the historical
+AWB question is closed.
 
-This is visibly wrong in non-daylight scenes: under tungsten (~2800 K)
-we apply a daylight CCM to pixels that are already warm, skin goes
-orange-yellow. Under cool white fluorescent (~4100 K) everything
-drifts slightly green.
+What's still **not** wired: the `mwbCCT.{cloudy, shade,
+incandescent, fluorescent}` preset reference points. Camera2's
+`ANDROID_CONTROL_AWB_MODE` accepts those four (plus DAYLIGHT,
+TWILIGHT, WARM_FLUORESCENT) as user-selectable presets that clamp
+the CCT target instead of running gray-world. We currently treat
+every non-AUTO / non-OFF AWB mode as "hold last gains" — manual
+presets work as a freeze, but they don't actually clamp to a
+per-preset CCT.
 
-**Question: when does proper CCT-driven selection land?**
+**Question: is preset support worth wiring?**
 
-A complete implementation has three pieces, all blocked on the Tier 3
-AWB module:
+The same plumbing as the auto path: pick the matching `mwbCCT`
+entry's CCT, drive the existing CCM LERP / wbGain prior path with
+it, ignore the gray-world estimate while the preset is active.
+`AWB_MODE_AUTO` already runs gray-world; `AWB_MODE_OFF` already
+honours `COLOR_CORRECTION_GAINS`. Adding the seven preset modes
+is a bounded extension of the AWB switch.
 
-1. **Per-frame CCT estimate.** The existing gray-world loop estimates
-   a chromaticity but we throw it away rather than classify it into a
-   CCT. A second pass converting gray-world RGB gains to an illuminant
-   temperature — via the `awb.v4.UtoCCT` / `CCTtoU` tables in the
-   tuning's `reserved` section — gives us an integer CCT per frame.
-
-2. **Interpolated CCM selection.** Swap `ccmForCctQ10(5000, …)` for
-   `ccmForCctQ10(estimatedCcm, …)` plus linear interpolation between
-   the two ccmSets bracketing the estimate. Prevents visible "snaps"
-   when the scene CCT crosses a tuning-set boundary.
-
-3. **`wbGain` as AWB prior.** Each ccmSet carries three-channel
-   white-balance gains tuned for that CCT. The AWB output should lean
-   on these instead of (or in addition to) the live gray-world estimate
-   — the stock tuning represents a lot of testing over sample scenes
-   that the runtime estimator can't recreate.
-
-`mwbCCT.{cloudy,shade,incandescent,fluorescent}` are for the *manual*
-WB presets (`ANDROID_CONTROL_AWB_MODE = INCANDESCENT / FLUORESCENT / …`),
-a separate but related consumer — those four points clamp the CCT
-target when the user selects a preset. Same plumbing as (2), different
-driver.
+Worth doing if a real consumer asks for it; not blocking common
+camera apps (which use AUTO).
