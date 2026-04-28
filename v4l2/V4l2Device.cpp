@@ -793,6 +793,19 @@ bool V4l2Device::setControls(const V4l2Controls &controls) {
     return true;
 }
 
+bool V4l2Device::getControl(uint32_t id, int32_t *value) {
+    if (mFd < 0 || !value) return false;
+    struct v4l2_control ctrl;
+    memset(&ctrl, 0, sizeof(ctrl));
+    ctrl.id = id;
+    if (ioctl(mFd, VIDIOC_G_CTRL, &ctrl) < 0) {
+        ALOGW("getControl(0x%x) FAILED: %s (%d)", id, strerror(errno), errno);
+        return false;
+    }
+    *value = ctrl.value;
+    return true;
+}
+
 bool V4l2Device::queryControl(uint32_t id, int32_t *min, int32_t *max, int32_t *def) {
     /* Allow query before connect() — staticCharacteristics() runs from
      * the framework's cameraInfo() probe which precedes openDevice, but

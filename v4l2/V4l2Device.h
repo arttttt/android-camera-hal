@@ -96,6 +96,11 @@ public:
 
     bool queryControl(uint32_t id, int32_t *min, int32_t *max, int32_t *def);
 
+    /* Readback via VIDIOC_G_CTRL — diagnostic only, used to compare
+     * what the driver actually has against what we wrote. Returns
+     * false on ioctl failure or when the device isn't open. */
+    bool getControl(uint32_t id, int32_t *value);
+
     /* Focuser subdev control */
     bool openFocuser(const char *subdevPath);
     bool setFocusPosition(int32_t position);
