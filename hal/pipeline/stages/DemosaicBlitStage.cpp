@@ -43,7 +43,8 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
     /* Open the ISP recording for this frame — demosaic gets recorded once;
      * each blitTo* call inside the loop appends a per-output operation to
      * the same command buffer; endFrame submits the lot. */
-    if (!deps.isp->beginFrame(res.width, res.height, fctx.pixFmt, fctx.frameSlotIdx)) {
+    if (!deps.isp->beginFrame(res.width, res.height, fctx.pixFmt, fctx.frameSlotIdx,
+                                ctx.request.frameNumber)) {
         ALOGE("beginFrame failed for frame %u", ctx.request.frameNumber);
         ctx.errorCode = NO_INIT;
         ctx.outputNeedsFinalUnlock.assign(n, false);

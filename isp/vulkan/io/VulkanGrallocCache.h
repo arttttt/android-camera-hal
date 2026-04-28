@@ -30,6 +30,11 @@ public:
         /* UNDEFINED → COLOR_ATTACHMENT_OPTIMAL barrier recorded once per
          * entry; flipped by the caller after the first transition. */
         bool          layoutReady;
+        /* Diagnostic: first dmabuf fd from the handle at cache-create time.
+         * If the same handle pointer comes back with a different fd, the
+         * underlying allocation was swapped under us — cache is stale. */
+        int           lastDmabufFd;
+        uint32_t      hitCount;
     };
 
     explicit VulkanGrallocCache(const VulkanDeviceState &dev);

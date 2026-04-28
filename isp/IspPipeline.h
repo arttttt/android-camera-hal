@@ -48,8 +48,9 @@ public:
      * production-impl-required behaviour at the override point. */
 
     virtual bool beginFrame(unsigned srcW, unsigned srcH, uint32_t pixFmt,
-                             int srcInputSlot) {
+                             int srcInputSlot, uint32_t frameNumber) {
         (void)srcW; (void)srcH; (void)pixFmt; (void)srcInputSlot;
+        (void)frameNumber;
         return false;
     }
 

@@ -57,9 +57,19 @@ void VulkanGrallocCache::clear() {
 bool VulkanGrallocCache::getOrCreate(ANativeWindowBuffer *anwb,
                                       unsigned width, unsigned height,
                                       Entry **outEntry) {
+    const int curFd = (anwb->handle->numFds > 0) ? anwb->handle->data[0] : -1;
     auto it = mEntries.find(anwb->handle);
     if (it != mEntries.end()) {
-        *outEntry = &it->second;
+        Entry &e = it->second;
+        if (curFd != e.lastDmabufFd) {
+            ALOGW("STALE CACHE: handle=%p prevFd=%d curFd=%d stride=%d",
+                  anwb->handle, e.lastDmabufFd, curFd, anwb->stride);
+            e.lastDmabufFd = curFd;
+        } else if ((e.hitCount++ & 0x3f) == 0) {
+            ALOGD("hit: handle=%p fd=%d stride=%d hits=%u",
+                  anwb->handle, curFd, anwb->stride, e.hitCount);
+        }
+        *outEntry = &e;
         return true;
     }
 
@@ -124,11 +134,13 @@ bool VulkanGrallocCache::getOrCreate(ANativeWindowBuffer *anwb,
         return false;
     }
 
-    entry.layoutReady = false;
+    entry.layoutReady  = false;
+    entry.lastDmabufFd = curFd;
+    entry.hitCount     = 0;
     auto res = mEntries.emplace(anwb->handle, entry);
     *outEntry = &res.first->second;
-    ALOGD("gralloc image cached: handle=%p image=%p view=%p (size=%zu)",
-          anwb->handle, entry.image, entry.view, mEntries.size());
+    ALOGD("gralloc image cached: handle=%p image=%p view=%p fd=%d (size=%zu)",
+          anwb->handle, entry.image, entry.view, curFd, mEntries.size());
     return true;
 }
 

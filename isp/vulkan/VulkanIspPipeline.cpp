@@ -300,7 +300,7 @@ bool VulkanIspPipeline::importAcquireSemaphore(int acquireFence, VkSemaphore *ou
 }
 
 bool VulkanIspPipeline::beginFrame(unsigned srcW, unsigned srcH, uint32_t pixFmt,
-                                     int srcInputSlot) {
+                                     int srcInputSlot, uint32_t frameNumber) {
     if (!mReady) return false;
     if (mRec.active) {
         ALOGE("beginFrame called while a frame is already recording");
@@ -323,10 +323,11 @@ bool VulkanIspPipeline::beginFrame(unsigned srcW, unsigned srcH, uint32_t pixFmt
 
     recordDemosaicOpen(slot, srcW, srcH);
 
-    mRec.active = true;
-    mRec.slot   = slot;
-    mRec.srcW   = srcW;
-    mRec.srcH   = srcH;
+    mRec.active      = true;
+    mRec.slot        = slot;
+    mRec.srcW        = srcW;
+    mRec.srcH        = srcH;
+    mRec.frameNumber = frameNumber;
     return true;
 }
 
@@ -355,7 +356,7 @@ bool VulkanIspPipeline::blitToGralloc(void *nativeBuffer,
 
     recordRgbaBlitRenderPass(mRec.slot, entry, mRec.srcW, mRec.srcH, dstW, dstH, crop);
 
-    PendingBlit b = { entry, releaseFenceOut };
+    PendingBlit b = { entry, releaseFenceOut, anwb->handle };
     mRec.blits.push_back(b);
     return true;
 }
@@ -447,6 +448,8 @@ bool VulkanIspPipeline::endFrame(int *submitFenceOut) {
             }
         }
         *b.releaseFenceOut = fd;
+        ALOGD("blit done: f=%u slot=%d handle=%p releaseFd=%d",
+              mRec.frameNumber, slot, b.anwHandle, fd);
     }
 
     /* Export the slot's fence as a sync_fd into mSlotSyncFd[slot] for the
