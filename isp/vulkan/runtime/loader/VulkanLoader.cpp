@@ -116,7 +116,6 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
     DEV(CmdCopyImage);
     DEV(CmdCopyBufferToImage);
     DEV(CmdFillBuffer);
-    DEV(CmdClearColorImage);
 
     DEV(CreateQueryPool);
     DEV(DestroyQueryPool);

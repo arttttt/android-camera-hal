@@ -28,7 +28,7 @@ public:
     void prewarm(unsigned width, unsigned height, uint32_t pixFmt) override;
 
     bool beginFrame(unsigned srcW, unsigned srcH, uint32_t pixFmt,
-                     int srcInputSlot, uint32_t frameNumber) override;
+                     int srcInputSlot) override;
     bool blitToGralloc(void *nativeBuffer,
                         unsigned dstW, unsigned dstH,
                         const CropRect &crop,
@@ -219,25 +219,20 @@ private:
     struct PendingBlit {
         VulkanGrallocCache::Entry *entry;   /* RGBA only; null for YUV */
         int                       *releaseFenceOut;
-        const native_handle_t     *anwHandle;   /* diagnostic-log key, may be null */
     };
     struct FrameRecording {
         bool                       active = false;
         int                        slot = -1;
-        int                        inputSlot = -1;
         unsigned                   srcW = 0;
         unsigned                   srcH = 0;
-        uint32_t                   frameNumber = 0;
         std::vector<VkSemaphore>   waitSemaphores;
         std::vector<PendingBlit>   blits;
 
         void reset() {
             active = false;
             slot = -1;
-            inputSlot = -1;
             srcW = 0;
             srcH = 0;
-            frameNumber = 0;
             waitSemaphores.clear();
             blits.clear();
         }

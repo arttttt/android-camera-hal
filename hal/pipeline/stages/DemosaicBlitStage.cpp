@@ -40,28 +40,10 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
     ctx.outputNeedsFinalUnlock.assign(n, true);
     ctx.outputJpegSnapshots.assign(n, JpegSnapshot{nullptr, 0, 0, 0, -1});
 
-    /* Diagnostic: peek at the bayer slot via the CPU mapping. A zero sum
-     * here means CSI hasn't actually filled this slot — the kernel
-     * marked it DONE but the DMA never landed. */
-    if (fctx.frameSlotIdx >= 0) {
-        deps.isp->invalidateBayer(fctx.frameSlotIdx);
-        const void *p = deps.isp->bayerHost(fctx.frameSlotIdx);
-        if (p) {
-            const uint8_t *b = (const uint8_t *)p;
-            uint32_t sum = 0;
-            for (int i = 0; i < 64; i++) sum += b[i];
-            ALOGD("bayer peek: f=%u inputSlot=%d sum64=%u "
-                  "b0..7=%02x %02x %02x %02x %02x %02x %02x %02x",
-                  ctx.request.frameNumber, fctx.frameSlotIdx, sum,
-                  b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
-        }
-    }
-
     /* Open the ISP recording for this frame — demosaic gets recorded once;
      * each blitTo* call inside the loop appends a per-output operation to
      * the same command buffer; endFrame submits the lot. */
-    if (!deps.isp->beginFrame(res.width, res.height, fctx.pixFmt, fctx.frameSlotIdx,
-                                ctx.request.frameNumber)) {
+    if (!deps.isp->beginFrame(res.width, res.height, fctx.pixFmt, fctx.frameSlotIdx)) {
         ALOGE("beginFrame failed for frame %u", ctx.request.frameNumber);
         ctx.errorCode = NO_INIT;
         ctx.outputNeedsFinalUnlock.assign(n, false);

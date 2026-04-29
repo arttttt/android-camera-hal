@@ -42,21 +42,6 @@ inline int32_t clampInt(int32_t v, int32_t lo, int32_t hi) {
     return v;
 }
 
-/* Diagnostic: read FRAME_LENGTH / EXPOSURE / GAIN back from the
- * driver and log alongside whatever the caller said it asked for.
- * Helps catch silent driver clamps and stale frame_length carrying
- * over after a manual→auto transition. */
-void logSensorState(V4l2Device *dev, const char *tag,
-                     int32_t reqFrameLen, int32_t reqExposure,
-                     int32_t reqGain) {
-    int32_t fl = -1, exp = -1, gain = -1;
-    dev->getControl(V4L2_CID_FRAME_LENGTH, &fl);
-    dev->getControl(V4L2_CID_EXPOSURE,     &exp);
-    dev->getControl(V4L2_CID_GAIN,         &gain);
-    ALOGD("%s: req frame_len=%d exp=%d gain=%d | got frame_len=%d exp=%d gain=%d",
-          tag, reqFrameLen, reqExposure, reqGain, fl, exp, gain);
-}
-
 } /* namespace */
 
 ExposureControl::ExposureControl(V4l2Device *dev, const SensorConfig &cfg)
@@ -131,31 +116,22 @@ void ExposureControl::onSettings(const CameraMetadata &cm) {
     ctrls.add(V4L2_CID_GAIN,         gain);
     mDev->setControls(ctrls);
 
-    logSensorState(mDev,
-                    aeMode == ANDROID_CONTROL_AE_MODE_OFF
-                        ? "onSettings(manual)" : "onSettings(auto)",
-                    frameLen, actualExposureUs, gain);
-
     mAppliedExposureUs = actualExposureUs;
     mAppliedGain       = gain;
 }
 
 void ExposureControl::applyBatch(const DelayedControls::Batch &batch) {
     V4l2Controls ctrls;
-    int32_t reqExp = -1, reqGain = -1;
     if (batch.has[DelayedControls::EXPOSURE]) {
-        reqExp = batch.val[DelayedControls::EXPOSURE];
-        ctrls.add(V4L2_CID_EXPOSURE, reqExp);
-        mAppliedExposureUs = reqExp;
+        ctrls.add(V4L2_CID_EXPOSURE, batch.val[DelayedControls::EXPOSURE]);
+        mAppliedExposureUs = batch.val[DelayedControls::EXPOSURE];
     }
     if (batch.has[DelayedControls::GAIN]) {
-        reqGain = batch.val[DelayedControls::GAIN];
-        ctrls.add(V4L2_CID_GAIN, reqGain);
-        mAppliedGain = reqGain;
+        ctrls.add(V4L2_CID_GAIN, batch.val[DelayedControls::GAIN]);
+        mAppliedGain = batch.val[DelayedControls::GAIN];
     }
     if (ctrls.count > 0) {
         mDev->setControls(ctrls);
-        logSensorState(mDev, "applyBatch", -1, reqExp, reqGain);
     }
 }
 

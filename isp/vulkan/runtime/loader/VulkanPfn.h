@@ -233,7 +233,6 @@ struct VulkanPfn {
     PFN_vkCmdCopyImage                              CmdCopyImage;
     PFN_vkCmdCopyBufferToImage                      CmdCopyBufferToImage;
     PFN_vkCmdFillBuffer                             CmdFillBuffer;
-    PFN_vkCmdClearColorImage                        CmdClearColorImage;
 
     PFN_vkCreateQueryPool                           CreateQueryPool;
     PFN_vkDestroyQueryPool                          DestroyQueryPool;
