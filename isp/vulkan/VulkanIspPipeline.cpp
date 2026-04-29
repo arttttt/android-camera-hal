@@ -391,7 +391,33 @@ bool VulkanIspPipeline::blitToGralloc(void *nativeBuffer,
     if (!mGrallocCache.getOrCreate(anwb, dstW, dstH, &entry))
         return false;
 
-    if (acquireFence >= 0) {
+    /* Acquire ownership of the gralloc image from the framework per the
+     * VK_ANDROID_native_buffer contract. Without this the image's
+     * contents are undefined inside Vulkan and our render-pass writes
+     * land outside the buffer the framework will eventually display —
+     * which manifested as half the preview frames going black at high-
+     * gain manual exposure. AcquireImageANDROID consumes acquireFence
+     * (closes it) and signals the returned binary semaphore once
+     * framework readiness fires; the submit waits on that semaphore. */
+    if (mDeviceState.pfn()->AcquireImageANDROID) {
+        VkSemaphoreCreateInfo sci = {};
+        sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        VkSemaphore sem = VK_NULL_HANDLE;
+        if (mDeviceState.pfn()->CreateSemaphore(mDeviceState.device(),
+                &sci, NULL, &sem) != VK_SUCCESS) {
+            if (acquireFence >= 0) ::close(acquireFence);
+            return false;
+        }
+        VkResult ar = mDeviceState.pfn()->AcquireImageANDROID(
+            mDeviceState.device(), entry->image, acquireFence, sem,
+            VK_NULL_HANDLE);
+        if (ar != VK_SUCCESS) {
+            ALOGE("vkAcquireImageANDROID failed: %d", (int)ar);
+            mDeviceState.pfn()->DestroySemaphore(mDeviceState.device(), sem, NULL);
+            return false;
+        }
+        mRec.waitSemaphores.push_back(sem);
+    } else if (acquireFence >= 0) {
         VkSemaphore sem = VK_NULL_HANDLE;
         if (!importAcquireSemaphore(acquireFence, &sem)) {
             ::close(acquireFence);
