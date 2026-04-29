@@ -99,13 +99,8 @@ void VulkanIspPipeline::fillParams(IspParams *p, unsigned w, unsigned h,
 /* --- frame helpers shared between the process* paths --- */
 
 int VulkanIspPipeline::acquireSlot() {
-    /* DIAGNOSTIC: pin to slot 0. Combined with QueueWaitIdle in
-     * endFrame this serialises everything through one slot's resources
-     * (cmd buffer, descriptor set, fence). If alternating-black frames
-     * persist with this pin, the symptom is independent of slot
-     * rotation. Revert to round-robin once the cause is identified. */
-    int slot = 0;
-    mNextSlot = 0;
+    int slot = (int)mNextSlot;
+    mNextSlot = (mNextSlot + 1) % SLOT_COUNT;
     if (mSlotSyncFd[slot] >= 0) {
         struct pollfd pfd = { mSlotSyncFd[slot], POLLIN, 0 };
         ::poll(&pfd, 1, -1);
@@ -399,6 +394,11 @@ bool VulkanIspPipeline::blitToGralloc(void *nativeBuffer,
         return false;
 
     ANativeWindowBuffer *anwb = (ANativeWindowBuffer *)nativeBuffer;
+    /* DIAGNOSTIC: drop the cache so getOrCreate always builds a fresh
+     * VkImage / view / framebuffer for the current handle. Tests
+     * whether the cache is the alternating-black-frame source while
+     * slot rotation is restored. */
+    mGrallocCache.clear();
     VulkanGrallocCache::Entry *entry = NULL;
     if (!mGrallocCache.getOrCreate(anwb, dstW, dstH, &entry))
         return false;
