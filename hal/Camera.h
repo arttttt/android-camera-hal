@@ -56,6 +56,7 @@ protected:
     virtual int configureStreams(camera3_stream_configuration_t *streamList);
     virtual const camera_metadata_t * constructDefaultRequestSettings(int type);
     virtual int processCaptureRequest(camera3_capture_request_t *request);
+    virtual int flush();
 
     /* HELPERS/SUBPROCEDURES */
 
