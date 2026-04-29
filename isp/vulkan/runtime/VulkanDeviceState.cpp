@@ -291,11 +291,25 @@ bool VulkanDeviceState::createBuffer(VkBuffer *buf, VkDeviceMemory *mem,
     ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     ai.pNext = exportable ? &emi : NULL;
     ai.allocationSize = req.size;
-    ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    /* Exportable buffers cross the GPU↔CSI boundary via dma-buf — V4L2's
+     * CSI DMA writes bypass the CPU cache, and on Tegra K1 the GPU
+     * reaches dma-buf-imported memory through a path that doesn't snoop
+     * the CPU cache either. HOST_CACHED on this kind of buffer leaves
+     * GPU reads racing the cache lines and emerging as stale (zero) on
+     * alternating frames. Force HOST_COHERENT for the exportable path
+     * so DMA writes and GPU reads share the same DRAM view. Local
+     * (non-exportable) buffers keep HOST_CACHED — CPU stats read traffic
+     * is the larger budget and we synchronise those with explicit
+     * vk{Flush,Invalidate}MappedMemoryRanges. */
+    const VkMemoryPropertyFlags preferred = exportable
+        ? (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+        : (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    const VkMemoryPropertyFlags fallback = exportable
+        ? (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
+        : (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits, preferred);
     if (ai.memoryTypeIndex == UINT32_MAX)
-        ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        ai.memoryTypeIndex = findMemoryType(req.memoryTypeBits, fallback);
 
     if (ai.memoryTypeIndex == UINT32_MAX ||
         mPfn->AllocateMemory(mDevice, &ai, NULL, mem) != VK_SUCCESS) {
