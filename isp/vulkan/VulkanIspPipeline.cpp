@@ -394,11 +394,6 @@ bool VulkanIspPipeline::blitToGralloc(void *nativeBuffer,
         return false;
 
     ANativeWindowBuffer *anwb = (ANativeWindowBuffer *)nativeBuffer;
-    /* DIAGNOSTIC: drop the cache so getOrCreate always builds a fresh
-     * VkImage / view / framebuffer for the current handle. Tests
-     * whether the cache is the alternating-black-frame source while
-     * slot rotation is restored. */
-    mGrallocCache.clear();
     VulkanGrallocCache::Entry *entry = NULL;
     if (!mGrallocCache.getOrCreate(anwb, dstW, dstH, &entry))
         return false;

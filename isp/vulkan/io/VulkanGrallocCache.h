@@ -30,11 +30,16 @@ public:
         /* UNDEFINED → COLOR_ATTACHMENT_OPTIMAL barrier recorded once per
          * entry; flipped by the caller after the first transition. */
         bool          layoutReady;
-        /* Diagnostic: first dmabuf fd from the handle at cache-create time.
-         * If the same handle pointer comes back with a different fd, the
-         * underlying allocation was swapped under us — cache is stale. */
-        int           lastDmabufFd;
-        uint32_t      hitCount;
+        /* Stale-detection identity. Camera2's BufferQueue hands back the
+         * same `native_handle_t *` pointer for buffers whose underlying
+         * gralloc allocation has been replaced; the cached VkImage is
+         * still bound to the old import and renders into freed memory.
+         * `handleHash` covers all ints in the handle (offsets, strides,
+         * format flags) and `dmabufInode` catches the case where the fd
+         * value matches but the kernel reused it for a different
+         * dma-buf. Mismatch on either invalidates the entry. */
+        uint32_t      handleHash;
+        uint64_t      dmabufInode;
     };
 
     explicit VulkanGrallocCache(const VulkanDeviceState &dev);
