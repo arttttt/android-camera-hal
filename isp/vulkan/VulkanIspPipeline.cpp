@@ -399,13 +399,6 @@ bool VulkanIspPipeline::blitToGralloc(void *nativeBuffer,
         return false;
 
     ANativeWindowBuffer *anwb = (ANativeWindowBuffer *)nativeBuffer;
-    /* DIAGNOSTIC: drop the cache so getOrCreate always builds a fresh
-     * VkImage / view / framebuffer for the current handle. Tests
-     * whether the per-handle cache is holding entries bound to memory
-     * that is no longer the displayed allocation behind the same
-     * pointer. Safe under QueueWaitIdle (GPU is drained before we get
-     * here on the producer thread). */
-    mGrallocCache.clear();
     VulkanGrallocCache::Entry *entry = NULL;
     if (!mGrallocCache.getOrCreate(anwb, dstW, dstH, &entry))
         return false;
