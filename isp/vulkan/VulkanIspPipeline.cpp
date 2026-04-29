@@ -292,6 +292,13 @@ void VulkanIspPipeline::recordRgbaBlitRenderPass(int slot,
                                           VK_SHADER_STAGE_FRAGMENT_BIT,
                                           0, sizeof(pc), &pc);
 
+    ALOGD("blit pc: f=%u slot=%d crop=(%d,%d %dx%d) src=%dx%d out=%dx%d "
+          "uvOff=(%.4f,%.4f) uvStep=(%.6f,%.6f)",
+          mRec.frameNumber, slot,
+          pc.cropX, pc.cropY, pc.cropW, pc.cropH,
+          pc.srcW, pc.srcH, pc.outW, pc.outH,
+          pc.uvOffsetX, pc.uvOffsetY, pc.uvStepX, pc.uvStepY);
+
     VkViewport vp = {};
     vp.width    = (float)dstW;
     vp.height   = (float)dstH;
