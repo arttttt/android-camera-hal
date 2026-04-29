@@ -211,12 +211,21 @@ void VulkanIspPipeline::recordRgbaBlitRenderPass(int slot,
                                                    const CropRect &crop) {
     VkCommandBuffer cb = mCmdBuf[slot];
 
+    /* Diagnostic clear: see render-pass attachment loadOp comment. */
+    VkClearValue clearValue = {};
+    clearValue.color.float32[0] = 1.0f;
+    clearValue.color.float32[1] = 0.0f;
+    clearValue.color.float32[2] = 0.0f;
+    clearValue.color.float32[3] = 1.0f;
+
     VkRenderPassBeginInfo rpbi = {};
     rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     rpbi.renderPass  = mRenderPass;
     rpbi.framebuffer = entry->framebuffer;
     rpbi.renderArea.extent.width  = dstW;
     rpbi.renderArea.extent.height = dstH;
+    rpbi.clearValueCount = 1;
+    rpbi.pClearValues    = &clearValue;
 
     mDeviceState.pfn()->CmdBeginRenderPass(cb, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
     mDeviceState.pfn()->CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, mBlitPipeline);
@@ -761,7 +770,12 @@ bool VulkanIspPipeline::createGraphicsPipeline() {
     VkAttachmentDescription att = {};
     att.format         = VK_FORMAT_R8G8B8A8_UNORM;
     att.samples        = VK_SAMPLE_COUNT_1_BIT;
-    att.loadOp         = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    /* Diagnostic: clear to red before the fragment blit, so any pixels
+     * the fragment shader fails to overwrite show up as red instead of
+     * stale / zero. Distinguishes "render pass ran but blit skipped"
+     * (red preview) from "buffer never touched by our pipeline"
+     * (whatever was there: black, stale frame, etc.). */
+    att.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
     att.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
     att.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
