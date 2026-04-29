@@ -740,6 +740,14 @@ int V4l2Device::dequeueBufferNonBlocking() {
     if(ioctl(mFd, VIDIOC_DQBUF, &bufInfo) < 0)
         return -1;
 
+    if (bufInfo.flags & V4L2_BUF_FLAG_ERROR) {
+        ALOGW("DQBUF: idx=%u seq=%u flags=0x%x ERROR",
+              bufInfo.index, bufInfo.sequence, bufInfo.flags);
+    } else {
+        ALOGD("DQBUF: idx=%u seq=%u flags=0x%x",
+              bufInfo.index, bufInfo.sequence, bufInfo.flags);
+    }
+
     return (int)bufInfo.index;
 }
 
