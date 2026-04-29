@@ -370,6 +370,7 @@ bool VulkanIspPipeline::beginFrame(unsigned srcW, unsigned srcH, uint32_t pixFmt
 
     mRec.active      = true;
     mRec.slot        = slot;
+    mRec.inputSlot   = srcInputSlot;
     mRec.srcW        = srcW;
     mRec.srcH        = srcH;
     mRec.frameNumber = frameNumber;
@@ -493,8 +494,8 @@ bool VulkanIspPipeline::endFrame(int *submitFenceOut) {
             }
         }
         *b.releaseFenceOut = fd;
-        ALOGD("blit done: f=%u slot=%d handle=%p releaseFd=%d",
-              mRec.frameNumber, slot, b.anwHandle, fd);
+        ALOGD("blit done: f=%u slot=%d inputSlot=%d handle=%p releaseFd=%d",
+              mRec.frameNumber, slot, mRec.inputSlot, b.anwHandle, fd);
     }
 
     /* Export the slot's fence as a sync_fd into mSlotSyncFd[slot] for the

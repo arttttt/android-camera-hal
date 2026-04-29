@@ -707,6 +707,17 @@ int V4l2Device::dequeueBuffer() {
     if(errno)
         return -1;
 
+    /* Diagnostic: surface kernel-marked frame errors and sequence gaps —
+     * an empty / unfilled CSI buffer would explain alternating black
+     * preview frames after a manual-mode AE transition. */
+    if (bufInfo.flags & V4L2_BUF_FLAG_ERROR) {
+        ALOGW("DQBUF: idx=%u seq=%u flags=0x%x ERROR",
+              bufInfo.index, bufInfo.sequence, bufInfo.flags);
+    } else {
+        ALOGD("DQBUF: idx=%u seq=%u flags=0x%x",
+              bufInfo.index, bufInfo.sequence, bufInfo.flags);
+    }
+
     return (int)bufInfo.index;
 }
 

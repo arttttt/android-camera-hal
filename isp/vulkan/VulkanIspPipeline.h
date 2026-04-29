@@ -224,6 +224,7 @@ private:
     struct FrameRecording {
         bool                       active = false;
         int                        slot = -1;
+        int                        inputSlot = -1;
         unsigned                   srcW = 0;
         unsigned                   srcH = 0;
         uint32_t                   frameNumber = 0;
@@ -233,6 +234,7 @@ private:
         void reset() {
             active = false;
             slot = -1;
+            inputSlot = -1;
             srcW = 0;
             srcH = 0;
             frameNumber = 0;
