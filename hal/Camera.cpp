@@ -275,6 +275,8 @@ int Camera::closeDevice() {
      * slate. Infrastructure (ISP core, 3A, BufferProcessor, pipeline,
      * worker threads) survives and will be reused. */
     mLastRequestSettings.clear();
+    mLastConfigWidth  = 0;
+    mLastConfigHeight = 0;
     if (mAf)              mAf->reset();
     if (mIsp)             mIsp->onSessionClose();
     if (mIpa)             mIpa->reset();
@@ -342,6 +344,23 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
         if (e != NO_ERROR)
             return e;
     }
+
+    /* Skip the V4L2/Vulkan reinit when only the output stream set has
+     * changed without affecting the capture resolution. Apps like Open
+     * Camera reissue configure_streams on AE_MODE auto↔manual toggles
+     * even when nothing about the streams really changed; the full
+     * stopWorkers + STREAMOFF + prewarm + STREAMON + startWorkers cycle
+     * costs ~3 s on Tegra K1 and surfaces as the camera "reopening"
+     * between mode switches. New output streams build their gralloc
+     * cache entries lazily on first blit, so no per-stream setup is
+     * needed here. */
+    if (mLastConfigWidth == width && mLastConfigHeight == height) {
+        ALOGD("configureStreams: same %ux%u capture as last — no-op reinit",
+              width, height);
+        return NO_ERROR;
+    }
+    mLastConfigWidth  = width;
+    mLastConfigHeight = height;
 
     /* Infrastructure (ISP, 3A, BufferProcessor, BayerSource, pipeline,
      * request thread) was built on the first openDevice and lives for

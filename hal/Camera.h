@@ -108,6 +108,15 @@ private:
     std::unique_ptr<StatsWorker>                  mStatsWorker;
     bool                                          mInfrastructureBuilt;
 
+    /* V4L2 capture resolution from the last configure_streams. The
+     * framework re-issues configure_streams on AE_MODE auto↔manual
+     * toggles even when the streams haven't changed; the heavy
+     * stopWorkers + STREAMOFF + prewarm + STREAMON + startWorkers
+     * cycle is unnecessary when the V4L2 input resolution is the
+     * same. 0 = no prior config (first call must run the full path). */
+    unsigned                                      mLastConfigWidth = 0;
+    unsigned                                      mLastConfigHeight = 0;
+
     /* Build the long-lived per-camera infrastructure (ISP, 3A,
      * BufferProcessor, BayerSource, tracker, pipeline, worker
      * thread). Called lazily from openDevice on first open; survives
