@@ -511,6 +511,15 @@ bool VulkanIspPipeline::endFrame(int *submitFenceOut) {
         return false;
     }
 
+    /* DIAGNOSTIC: drain the queue before requesting release fences so
+     * QueueSignalReleaseImageANDROID can't return a fence that signals
+     * before our render pass has actually committed. If this serialised
+     * version stops the alternating-black-frame symptom, the Tegra K1
+     * implementation of QueueSignalReleaseImageANDROID is signalling
+     * its sync_fd eagerly. Heavy-handed (~one GPU frame per submit);
+     * revert when the proper fix is identified. */
+    mDeviceState.pfn()->QueueWaitIdle(mDeviceState.queue());
+
     /* Per-output release fence: queue serializes after the submit, so each
      * QueueSignalReleaseImageANDROID hands back a sync_fd that signals
      * once all prior commands (including the blit into this image) have
