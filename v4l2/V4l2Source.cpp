@@ -53,13 +53,24 @@ void V4l2Source::stop() {
     }
 }
 
-const V4l2Device::VBuffer* V4l2Source::acquireNextFrame() {
+const V4l2Device::VBuffer* V4l2Source::acquireNextFrame(
+        const std::function<bool()> &abortCheck) {
     std::unique_lock<std::mutex> lock(mutex);
-    frameReady.wait(lock, [this] { return latest != nullptr || stopping; });
+    frameReady.wait(lock, [this, &abortCheck] {
+        return latest != nullptr || stopping || (abortCheck && abortCheck());
+    });
     if (stopping) return nullptr;
+    if (abortCheck && abortCheck()) return nullptr;
     const V4l2Device::VBuffer *f = latest;
     latest = nullptr;
     return f;
+}
+
+void V4l2Source::notifyForAbort() {
+    /* No state to flip — the caller has already set whatever flag the
+     * abortCheck callback inspects (e.g. ctx.errorCode). All we need
+     * is to wake the cv so blocked waiters re-evaluate the predicate. */
+    frameReady.notify_all();
 }
 
 void V4l2Source::releaseFrame(const V4l2Device::VBuffer *f) {

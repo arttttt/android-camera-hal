@@ -32,6 +32,13 @@ public:
 
     std::vector<std::unique_ptr<PipelineContext>> drainAll();
 
+    /* Set ctx.errorCode on every tracked context without removing
+     * them. Workers downstream see the flag at their next stage check
+     * and short-circuit through ResultDispatch. Used by flush() to
+     * cancel in-flight requests asynchronously without ripping the
+     * pipeline apart. */
+    void markAllAsError(int errorCode);
+
     size_t count() const;
 
 private:

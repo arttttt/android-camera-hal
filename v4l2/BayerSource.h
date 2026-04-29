@@ -1,6 +1,8 @@
 #ifndef V4L2_BAYER_SOURCE_H
 #define V4L2_BAYER_SOURCE_H
 
+#include <functional>
+
 #include "Resolution.h"
 #include "V4l2Device.h"
 
@@ -27,11 +29,21 @@ public:
      * called. Lets the owner gate start() on idempotency. */
     virtual bool isRunning() const = 0;
 
-    /* Block until the next Bayer frame is available or the source
-     * stops. Returns null on stop. The caller owns the frame for the
-     * duration of its use and must hand it back via releaseFrame()
-     * before the source may reuse the underlying V4L2 slot. */
-    virtual const V4l2Device::VBuffer* acquireNextFrame() = 0;
+    /* Block until the next Bayer frame is available, the source stops,
+     * or the optional `abortCheck` callback returns true. Returns null
+     * on stop or abort. The caller owns the frame for the duration of
+     * its use and must hand it back via releaseFrame() before the
+     * source may reuse the underlying V4L2 slot. The abort callback is
+     * intended for per-ctx cancellation from flush() — combined with
+     * notifyForAbort() it lets a blocked acquire wake up and re-check
+     * cancellation without a full source teardown. */
+    virtual const V4l2Device::VBuffer* acquireNextFrame(
+        const std::function<bool()> &abortCheck = {}) = 0;
+
+    /* Wake every thread currently blocked in acquireNextFrame so the
+     * abort callback (if any) gets re-evaluated. No-op when nothing is
+     * waiting. */
+    virtual void notifyForAbort() = 0;
 
     /* Hand a previously-acquired frame back to the source. Safe to
      * call from any thread. Released buffers are not returned to the

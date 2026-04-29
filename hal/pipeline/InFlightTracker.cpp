@@ -31,6 +31,13 @@ std::vector<std::unique_ptr<PipelineContext>> InFlightTracker::drainAll() {
     return out;
 }
 
+void InFlightTracker::markAllAsError(int errorCode) {
+    std::lock_guard<std::mutex> lock(mutex);
+    for (auto &entry : contexts) {
+        if (entry.second) entry.second->errorCode = errorCode;
+    }
+}
+
 size_t InFlightTracker::count() const {
     std::lock_guard<std::mutex> lock(mutex);
     return contexts.size();

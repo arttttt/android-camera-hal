@@ -950,8 +950,35 @@ void Camera::sDump(const camera3_device *device, int fd) {
     ALOGD("%s: IMPLEMENT ME!", __FUNCTION__);
 }
 
-int Camera::sFlush(const camera3_device *device) {
+int Camera::flush() {
+    DBGUTILS_AUTOLOGCALL(__func__);
+    Mutex::Autolock lock(mMutex);
+
+    /* Camera3 spec: must return ASAP. The HAL marks in-flight
+     * requests as ERROR_REQUEST and lets the workers drain them
+     * asynchronously; tearing the pipeline down would itself cost
+     * the seconds we're trying to save.
+     *
+     * markAllAsError sets ctx.errorCode on every tracked context;
+     * pipeline stages check the flag at entry and short-circuit to
+     * ResultDispatch, which emits notify(ERROR_REQUEST) and releases
+     * the framework's output buffers. notifyForAbort wakes any
+     * RequestThread blocked inside CaptureStage::acquireNextFrame
+     * waiting on a long manual exposure — the abortCheck callback
+     * registered there sees ctx.errorCode and the acquire returns
+     * null instead of holding the pipeline another frame period.
+     *
+     * The in-flight V4L2 capture finishes naturally; we don't
+     * STREAMOFF here. The next process_capture_request after flush
+     * acquires the following bayer normally. */
+    if (mTracker)     mTracker->markAllAsError(CAMERA3_MSG_ERROR_REQUEST);
+    if (mBayerSource) mBayerSource->notifyForAbort();
     return OK;
+}
+
+int Camera::sFlush(const camera3_device *device) {
+    Camera *thiz = static_cast<Camera *>(device->priv);
+    return thiz->flush();
 }
 
 camera3_device_ops_t Camera::sOps = {

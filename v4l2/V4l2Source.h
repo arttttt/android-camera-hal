@@ -33,7 +33,9 @@ public:
     bool start() override;
     void stop()  override;
 
-    const V4l2Device::VBuffer* acquireNextFrame() override;
+    const V4l2Device::VBuffer* acquireNextFrame(
+        const std::function<bool()> &abortCheck = {}) override;
+    void notifyForAbort() override;
     void releaseFrame(const V4l2Device::VBuffer*) override;
     void flushPendingReleases() override;
 
