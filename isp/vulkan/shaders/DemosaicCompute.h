@@ -122,8 +122,13 @@ static const char kDemosaicComputeGlsl[] =
     "        G = int(params.gammaLut[gg]);\n"
     "        B = int(params.gammaLut[bb]);\n"
     "    }\n"
+    "    /* DIAGNOSTIC: force compute output to magenta — distinguishes\n"
+    "     * 'compute always runs cleanly per frame' (preview uniformly\n"
+    "     * magenta) vs 'compute runs unevenly per slot' (alternating\n"
+    "     * magenta/black). Revert with the rest of the diagnostic\n"
+    "     * patches once the black-frame root cause lands. */\n"
     "    imageStore(outImg, ivec2(int(x), int(y)),\n"
-    "               vec4(float(R), float(G), float(B), 255.0) / 255.0);\n"
+    "               vec4(1.0, 0.0, 1.0, 1.0));\n"
     "}\n";
 
 }; /* namespace android */
