@@ -950,52 +950,8 @@ void Camera::sDump(const camera3_device *device, int fd) {
     ALOGD("%s: IMPLEMENT ME!", __FUNCTION__);
 }
 
-int Camera::flush() {
-    DBGUTILS_AUTOLOGCALL(__func__);
-    Mutex::Autolock lock(mMutex);
-
-    /* Camera3 spec: abort all in-flight requests as quickly as
-     * possible. The framework calls flush before configure_streams
-     * and on AE-mode-style transitions; without this implementation
-     * the V4L2 capture queue holds whatever long manual exposure was
-     * in flight (up to ~1 s each) and the next mode's results don't
-     * surface until that drains naturally — observable in the UI as
-     * "manual→auto takes seconds".
-     *
-     * stopWorkers tears the pipeline down with errorCode-on-drain
-     * semantics; STREAMOFF aborts the in-flight sensor capture so
-     * the next process_capture_request lands at the new mode's
-     * settings within one frame period; STREAMON re-arms the V4L2
-     * ring; errorCompletePendingRequests notifies any tracked ctxs
-     * the workers didn't already drain. startWorkers brings the
-     * pipeline back online for the framework's next request. */
-
-    stopWorkers();
-
-    if (mDev && mDev->isStreaming()) {
-        if (!mDev->setStreaming(false)) {
-            ALOGW("flush: V4L2 STREAMOFF failed");
-        }
-        if (!mDev->setStreaming(true)) {
-            ALOGE("flush: V4L2 STREAMON failed; preview will stall");
-        }
-    }
-
-    errorCompletePendingRequests();
-
-    /* Sensor-side reset of exposure/gain so the next request starts
-     * from defaults rather than whatever long-exposure manual values
-     * the previous AE mode left applied. */
-    if (mExposure) mExposure->applyDefaults();
-
-    startWorkers();
-
-    return OK;
-}
-
 int Camera::sFlush(const camera3_device *device) {
-    Camera *thiz = static_cast<Camera *>(device->priv);
-    return thiz->flush();
+    return OK;
 }
 
 camera3_device_ops_t Camera::sOps = {
