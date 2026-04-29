@@ -176,6 +176,42 @@ void VulkanIspPipeline::recordDemosaicOpen(int slot, unsigned srcW, unsigned src
     mDeviceState.pfn()->ResetCommandBuffer(cb, 0);
     mDeviceState.pfn()->BeginCommandBuffer(cb, &bi);
 
+    /* Diagnostic: pre-fill scratch with green so any compute coverage
+     * gap shows up in the final preview as green pixels. Combined with
+     * the render-pass red clear in recordRgbaBlitRenderPass: black
+     * preview = compute wrote zeros, green = compute didn't run / didn't
+     * cover, red = render pass opened but fragment didn't run. */
+    {
+        VkClearColorValue greenClear = {};
+        greenClear.float32[0] = 0.0f;
+        greenClear.float32[1] = 1.0f;
+        greenClear.float32[2] = 0.0f;
+        greenClear.float32[3] = 1.0f;
+        VkImageSubresourceRange range = {};
+        range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        range.levelCount = 1;
+        range.layerCount = 1;
+        mDeviceState.pfn()->CmdClearColorImage(cb, mScratchImg,
+            VK_IMAGE_LAYOUT_GENERAL, &greenClear, 1, &range);
+
+        VkImageMemoryBarrier clearToCompute = {};
+        clearToCompute.sType                       = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        clearToCompute.oldLayout                   = VK_IMAGE_LAYOUT_GENERAL;
+        clearToCompute.newLayout                   = VK_IMAGE_LAYOUT_GENERAL;
+        clearToCompute.srcAccessMask               = VK_ACCESS_TRANSFER_WRITE_BIT;
+        clearToCompute.dstAccessMask               = VK_ACCESS_SHADER_WRITE_BIT;
+        clearToCompute.srcQueueFamilyIndex         = VK_QUEUE_FAMILY_IGNORED;
+        clearToCompute.dstQueueFamilyIndex         = VK_QUEUE_FAMILY_IGNORED;
+        clearToCompute.image                       = mScratchImg;
+        clearToCompute.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        clearToCompute.subresourceRange.levelCount = 1;
+        clearToCompute.subresourceRange.layerCount = 1;
+        mDeviceState.pfn()->CmdPipelineBarrier(cb,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 0, NULL, 0, NULL, 1, &clearToCompute);
+    }
+
     /* Compute: Bayer → mScratchImg. */
     mDeviceState.pfn()->CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
     mDeviceState.pfn()->CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -1024,7 +1060,8 @@ bool VulkanIspPipeline::createScratchImage(unsigned width, unsigned height) {
     ici.tiling        = VK_IMAGE_TILING_OPTIMAL;
     ici.usage         = VK_IMAGE_USAGE_STORAGE_BIT |
                         VK_IMAGE_USAGE_SAMPLED_BIT |
-                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                        VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (mDeviceState.pfn()->CreateImage(mDeviceState.device(), &ici, NULL, &mScratchImg) != VK_SUCCESS) {
