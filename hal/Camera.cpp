@@ -954,6 +954,9 @@ int Camera::flush() {
     DBGUTILS_AUTOLOGCALL(__func__);
     Mutex::Autolock lock(mMutex);
 
+    const size_t inFlightCount = mTracker ? mTracker->count() : 0;
+    ALOGD("flush: inFlight=%zu", inFlightCount);
+
     /* Camera3 spec: must return ASAP. The HAL marks in-flight
      * requests as ERROR_REQUEST and lets the workers drain them
      * asynchronously; tearing the pipeline down would itself cost
