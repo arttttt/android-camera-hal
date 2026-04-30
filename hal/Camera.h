@@ -118,6 +118,13 @@ private:
     unsigned                                      mLastConfigWidth = 0;
     unsigned                                      mLastConfigHeight = 0;
 
+    /* AE_MODE seen on the previous processCaptureRequest. Used to
+     * detect auto↔manual transitions and trigger the same in-HAL
+     * cancellation flush() does — Camera2 apps generally don't call
+     * flush() on the mode change so we can't rely on the framework.
+     * 0xff = sentinel "no prior request seen". */
+    uint8_t                                       mLastAeMode = 0xff;
+
     /* Build the long-lived per-camera infrastructure (ISP, 3A,
      * BufferProcessor, BayerSource, tracker, pipeline, worker
      * thread). Called lazily from openDevice on first open; survives

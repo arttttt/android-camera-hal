@@ -277,6 +277,7 @@ int Camera::closeDevice() {
     mLastRequestSettings.clear();
     mLastConfigWidth  = 0;
     mLastConfigHeight = 0;
+    mLastAeMode       = 0xff;
     if (mAf)              mAf->reset();
     if (mIsp)             mIsp->onSessionClose();
     if (mIpa)             mIpa->reset();
@@ -498,6 +499,26 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
         } else {
             ctx->request.settings = mLastRequestSettings;
         }
+
+        /* Open Camera and similar Camera2 apps don't issue an explicit
+         * flush() on AE_MODE auto↔manual toggles, so the framework
+         * leaves whatever long manual exposure was in flight to drain
+         * naturally — observable as "manual→auto takes seconds" in
+         * preview. Detect the transition here and run the same in-HAL
+         * cancellation flush() does (mark tracker ctxs as
+         * ERROR_REQUEST + nudge the bayer source). The new request
+         * itself proceeds normally past this point. */
+        uint8_t curAeMode = ANDROID_CONTROL_AE_MODE_ON;
+        if (ctx->request.settings.exists(ANDROID_CONTROL_AE_MODE)) {
+            curAeMode = *ctx->request.settings.find(ANDROID_CONTROL_AE_MODE).data.u8;
+        }
+        if (mLastAeMode != 0xff && curAeMode != mLastAeMode) {
+            ALOGD("processCaptureRequest: AE_MODE %u→%u, cancelling in-flight",
+                  (unsigned)mLastAeMode, (unsigned)curAeMode);
+            if (mTracker)     mTracker->markAllAsError(CAMERA3_MSG_ERROR_REQUEST);
+            if (mBayerSource) mBayerSource->notifyForAbort();
+        }
+        mLastAeMode = curAeMode;
     }
 
     /* Deep-copy output buffer descriptors. Acquire-fence ownership
