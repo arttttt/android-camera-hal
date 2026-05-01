@@ -165,9 +165,18 @@ float meanLumaInRoi(const IpaStats &stats, const IpaFrameMeta &meta) {
 }
 
 /* Highlight inter-quantile mean — average of the brightest top 2 %
- * (= 5 of 256) patches, computed as max-of-channels in the
- * post-WB domain. Used as the "are we about to blow highlights"
+ * patches inside the AE focus ROI, computed as max-of-channels in
+ * the post-WB domain. Used as the "are we about to blow highlights"
  * signal driving the AE highlight-protection candidate.
+ *
+ * Why ROI-scoped, not whole-frame: AE mean uses the same ROI (spot
+ * meter on tap, default centre 8×8 otherwise). Splitting metering
+ * region between mean and highlight signals is incoherent — a tap
+ * on a dim subject would have AE mean trying to brighten the tap
+ * region while the global-frame highlight constraint (driven by an
+ * unrelated bright corner) pulled exposure back the other way, and
+ * the tap subject would never reach setpoint. Both signals draw
+ * from the same patches by construction.
  *
  * Why post-WB max, not raw green: stats live pre-WB, but downstream
  * the demosaic shader applies WB gains (R, B typically 1.5-2.0×, G
@@ -176,32 +185,51 @@ float meanLumaInRoi(const IpaStats &stats, const IpaFrameMeta &meta) {
  * clips first (max-of-three after WB) is the honest "what will
  * actually saturate downstream" metric.
  *
- * Why 16×16 patch grid not pixel histogram: NeonStatsEncoder
- * doesn't produce a histogram today; the patch grid is what we
- * have. Trade-off: we miss specular highlights smaller than ~67×120
- * pixels at 1080p (a single patch), but catch any meaningfully
- * sized bright region (windows, lamps, faces in dim scenes — the
- * cases that drive AE on this hardware). Pixel histogram for
- * specular detection is a separate, larger change in the encoder. */
-float top2pcMaxPostWbMean(const IpaStats &stats, float wbR, float wbB) {
-    constexpr int kTotalPatches =
-        IpaStats::PATCH_Y * IpaStats::PATCH_X;
-    constexpr int kTopK = kTotalPatches * 2 / 100;  /* 5 of 256 */
+ * Why patch grid not pixel histogram: NeonStatsEncoder doesn't
+ * produce a histogram today; the patch grid is what we have.
+ * Trade-off: we miss specular highlights smaller than one patch
+ * (~67×120 px at 1080p), but catch any meaningfully sized bright
+ * region. Pixel histogram for specular detection is a separate,
+ * larger change in the encoder.
+ *
+ * topK = max(1, count × 2 / 100). On the default centre 8×8 ROI
+ * (64 patches) topK collapses to 1 — IQM degenerates to single-max,
+ * which is the right behaviour for a small spot: averaging two
+ * "brightest" patches from a 64-patch tap-region would smear the
+ * signal across half the ROI, where one patch is enough to demand
+ * "don't let this saturate". On full-frame metering (256 patches)
+ * topK = 5, matching RPi's q=0.98..1.0 interquantile spec. */
+float top2pcMaxPostWbMean(const IpaStats &stats, const IpaFrameMeta &meta,
+                          float wbR, float wbB) {
+    int pyLo = meta.focusRoiPyLo < 0                 ? 0                 : meta.focusRoiPyLo;
+    int pyHi = meta.focusRoiPyHi > IpaStats::PATCH_Y ? IpaStats::PATCH_Y : meta.focusRoiPyHi;
+    int pxLo = meta.focusRoiPxLo < 0                 ? 0                 : meta.focusRoiPxLo;
+    int pxHi = meta.focusRoiPxHi > IpaStats::PATCH_X ? IpaStats::PATCH_X : meta.focusRoiPxHi;
 
-    /* Insertion-sort top-K descending. For K=5 over 256 inputs the
-     * inner shifts are negligible (~32 swaps amortised); std::sort
-     * over the full array would be 1800+ ops for the same answer. */
-    float top[kTopK];
-    for (int i = 0; i < kTopK; ++i) top[i] = 0.f;
-    for (int py = 0; py < IpaStats::PATCH_Y; ++py) {
-        for (int px = 0; px < IpaStats::PATCH_X; ++px) {
+    const int count = (pyHi - pyLo) * (pxHi - pxLo);
+    if (count <= 0) return 0.f;
+
+    /* Static upper bound for the top buffer: full frame is 256
+     * patches, 2 % = 5. */
+    constexpr int kMaxTopK = 5;
+    int topK = (count * 2) / 100;
+    if (topK < 1)        topK = 1;
+    if (topK > kMaxTopK) topK = kMaxTopK;
+
+    /* Insertion-sort top-K descending. For K ≤ 5 the inner shifts
+     * are negligible; std::sort over the full ROI would be many
+     * times the work for the same answer. */
+    float top[kMaxTopK];
+    for (int i = 0; i < topK; ++i) top[i] = 0.f;
+    for (int py = pyLo; py < pyHi; ++py) {
+        for (int px = pxLo; px < pxHi; ++px) {
             const float r = stats.rgbMean[py][px][0] * wbR;
             const float g = stats.rgbMean[py][px][1];
             const float b = stats.rgbMean[py][px][2] * wbB;
             const float maxCh = r > g ? (r > b ? r : b)
                                        : (g > b ? g : b);
-            if (maxCh <= top[kTopK - 1]) continue;
-            int j = kTopK - 1;
+            if (maxCh <= top[topK - 1]) continue;
+            int j = topK - 1;
             while (j > 0 && top[j - 1] < maxCh) {
                 top[j] = top[j - 1];
                 --j;
@@ -210,8 +238,8 @@ float top2pcMaxPostWbMean(const IpaStats &stats, float wbR, float wbB) {
         }
     }
     float sum = 0.f;
-    for (int i = 0; i < kTopK; ++i) sum += top[i];
-    return sum / (float)kTopK;
+    for (int i = 0; i < topK; ++i) sum += top[i];
+    return sum / (float)topK;
 }
 
 } /* namespace */
@@ -468,12 +496,15 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
         }
     }
 
-    /* IQM of the top 2% post-WB max-of-channels — driver of the AE
-     * highlight-protection candidate. Computed here so it lands in
-     * the diagnostic log alongside lastWb (the WB gains it depends
-     * on) and so the auto-AE branch can reuse it without a second
-     * pass over rgbMean. */
-    const float iqmHighlight = top2pcMaxPostWbMean(stats, lastWbR, lastWbB);
+    /* IQM of the top 2% post-WB max-of-channels inside the AE focus
+     * ROI — driver of the AE highlight-protection candidate.
+     * Computed here so it lands in the diagnostic log alongside
+     * lastWb (the WB gains it depends on) and so the auto-AE branch
+     * can reuse it without a second pass over rgbMean. ROI matches
+     * meanLumaInRoi so the two AE signals draw from the same set of
+     * patches — no metering-region split between mean and highlight. */
+    const float iqmHighlight = top2pcMaxPostWbMean(stats, meta,
+                                                  lastWbR, lastWbB);
 
     if (logTick) {
         int32_t diagExp = 0, diagExtraQ8 = 256;
