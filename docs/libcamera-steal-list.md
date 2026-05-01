@@ -35,6 +35,8 @@ when 3A needs to be swapped):
 8. **Multi-channel AGC** for HDR-region metering
 9. **Color-space awareness** beyond hardcoded sRGB
 10. **Noise-model section** in tuning JSON
+11. **Pixel-level histogram + iterative saturation-aware gain** — refines
+    AE highlight protection beyond patch-grid resolution
 
 ## 1. Lens-shading correction (ALSC)
 
@@ -270,6 +272,53 @@ model lets the IPA discount low-SNR patches in the gray-world average.
 
 **Effort:** small for the schema + loader (~60 LOC). The denoiser
 itself is a separate piece of work.
+
+## 11. Pixel-level histogram + iterative saturation-aware gain
+
+**In libcamera:** mainline `src/ipa/libipa/agc_mean_luminance.cpp`
+runs an inner fixed-point iteration in `estimateInitialGain()` (up to
+8 passes), each pass calling vendor-specific `estimateLuminance(yGain)`
+that **clip-saturates per-cell at 255 before averaging**. Gain
+converges on a self-consistent value where highlights are already
+modelled as saturating — the inner loop's non-linearity is what makes
+the controller self-damping near clipping. RPi `agc_channel.cpp` has
+the same pattern, plus `interQuantileMean(qLo, qHi)` operating over
+a real `Histogram` (`src/ipa/rpi/controller/histogram.cpp`) of
+per-pixel Y bins.
+
+**Where it would land:** `hal/ipa/NeonStatsEncoder` gains a Y
+histogram output (~128 bins of green-channel post-OB pixel counts).
+`BasicIpa::top2pcMaxPostWbMean` becomes `interQuantileMean` against
+the real histogram instead of the 16×16 patch grid; ROI scoping
+stays. Optionally an iterative gain estimator wraps the existing
+`ratio = setpoint / luma` loop with up to N passes per frame, each
+applying the candidate gain to a clipped luminance estimate.
+
+**Addresses:** specular highlights smaller than ~67×120 px at 1080p
+(one patch on our 16×16 grid) currently slip past the highlight
+constraint. A pixel histogram catches them. The iterative estimator
+gives the loop a self-damping behaviour near clipping that's stronger
+than the per-frame ratio clamp — `ratioMean` based on a single
+measurement linearly extrapolates a non-linear plant near saturation,
+so dim scenes with bright patches can still overshoot in theory; the
+8-pass inner loop converges where the open-loop estimate doesn't.
+
+**Effort:** medium for the histogram side. NEON code changes in
+`NeonStatsEncoder.cpp` to maintain bin counts during the existing
+single-pass reduce — should fold into the same loop body, ~50 LOC of
+NEON intrinsics. IpaStats grows a 128-int field (~512 B). BasicIpa
+swaps `top2pcMaxPostWbMean` for a histogram-quantile helper in libipa
+shape (~50 LOC). The iterative estimator is independent and small
+(~30 LOC) but only worth doing once the histogram is in.
+
+**Caveats:** today's patch-grid based highlight constraint covers
+the cases that actually drive AE on this hardware (windows, lamps,
+faces — meaningfully sized regions). The pixel-histogram refinement
+is a polish for specular highlights that aren't a current real-world
+complaint on Mi Pad 1. Defer until either: (a) a real-world scene
+shows specular blow-out the patch path missed, or (b) the noise model
+(item 10) lands and per-pixel reasoning becomes available for the
+denoiser, at which point the histogram cost is amortised.
 
 ## Not worth borrowing
 

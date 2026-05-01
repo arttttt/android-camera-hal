@@ -4,35 +4,6 @@ Bugs found during testing that aren't being fixed right now. Each entry
 should name the symptom, where it lives, what's known about the cause,
 and when it's expected to get fixed (tier in `roadmap.md`, or "TBD").
 
-## Front camera (OV5693) — slow ISO pulsation in a steady scene
-
-**Symptom:** With the front sensor the AE-reported gain pulses smoothly
-up and down by a noticeable amount even when the camera is held on a
-nominally static scene. Visible as preview brightness slowly drifting
-on/off the target. Rear camera (IMX179) does not show the same on
-matching scenes.
-
-**Investigation so far:**
-
-- Persists with the focus-tied AE in spot-meter form (commit `ad9903e`).
-- Persists with highlight protection enabled (older commit, dropped) —
-  ruling that path out as the cause.
-- `Cam-BasicIpa: 3A` log line shows luma walking around setpoint with
-  `totalUs` swinging by single-digit-percent margins per sample window;
-  no obvious external trigger (focus ROI stable, AF_REGIONS unchanged).
-
-**Suspected cause:** sensor-side, not controller. Either OV5693's
-analog gain step granularity differs from what we account for in the
-exp/gain split (so AE's intended sub-step lands rounded to a
-neighbouring step every other frame), or the OV5693 V4L2 driver
-applies gain with an off-by-one delay relative to what
-`SensorConfig::controlDelay` claims and AE chases its own delayed
-update. Both fit the "slow pulsing on a static scene" signature; need
-empirical data — gain step sweep + per-frame applied-vs-requested
-timeline — to pick.
-
-**Status:** Logged, no fix scheduled. Tier TBD. Workaround: rear camera.
-
 ## AE over-brightens preview (both cameras, IMX179 noticeable more)
 
 **Symptom:** With 3A auto, preview is consistently ~1/2 stop brighter

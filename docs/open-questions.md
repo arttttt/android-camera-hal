@@ -4,6 +4,60 @@ Questions whose answer would change a design choice but aren't blocking
 current work. Each entry: what's unknown, why it matters, where the
 answer might live.
 
+## AE per-frame variability source on IMX179
+
+**Question:** what generates the regular per-frame variability on the
+rear camera that the AE close-speed boost (Step 3 of the Tier 3 AE
+refactor) resonates with?
+
+Empirical observation: with `active.hal_overrides.ae.close_speed_zone
+> 0` on IMX179, AE gain swings frame-to-frame at large amplitude even
+when the scene looks visually static. Setting `close_speed_zone = 0`
+(single-pole LPF at τ ≈ 5 frames everywhere, no faster pole near
+target) makes the swings disappear. OV5693 with `close_speed_zone =
+0.2` is stable on the same kind of test, so it's not the boost itself
+that's wrong — something on the rear cam path provides input
+variability in the band the boost amplifies.
+
+Plausible sources, none confirmed:
+
+- **Mains flicker.** 33 ms exposure ≈ 3.3 cycles of 50 Hz mains;
+  different frames sample different parts of the cycle, giving 5-10 %
+  brightness flutter per frame. RPi's AGC pins shutter to multiples
+  of `flickerPeriod` and trades the residue into gain — we don't.
+- **AWB → iqmHi cascade.** `lastWbR/B` drift between frames (visible
+  in 3A logs: ~9 % shift in `lastWbB` over 2 s); `iqmHi` is computed
+  as max-of-channels post-WB, so the highlight constraint candidate
+  moves whenever WB does. On a coloured scene this cascades through
+  `min(ratioMean, ratioHighlight)` even when the underlying luma is
+  steady. OV5693 on a dim test scene sits below the AWB confidence
+  gate and stays on priors — no AWB flutter, no cascade.
+- **Lens-shading absent.** IMX179 has 20-30 % corner falloff; ROI
+  patches near the vignette boundary swing in mean-luma with sub-
+  pixel camera shake.
+- **V4L2 gain quantization.** Old `bugs.md` hypothesis. Kernel driver
+  may round Q8 gain coarser than we ask for — AE writes 1430, sensor
+  applies 1408 every other frame, AE chases its own delayed
+  observation.
+- **Real scene variability.** Faces, breathing, hands, shadows.
+
+**Why it matters:** if the source is identified and addressed at the
+source (anti-flicker / AWB damping / LSC / kernel patch), the boost
+in Step 3 could be re-enabled on IMX179 for faster final-approach
+convergence. Until then `close_speed_zone = 0` mitigates the symptom
+without addressing cause.
+
+**Where to look:**
+
+- Per-frame (not per-32-frame) `Cam-BasicIpa: 3A:` log over a held
+  static scene, FFT the gain trajectory — period of resonance points
+  at the frequency of the variability source.
+- Compare manual-AE preview at fixed exposure: if brightness still
+  flutters → mains flicker or sensor noise; if steady → it's the AE
+  loop with WB cascade or quantization.
+- Disable AWB (force priors) on rear cam, re-test boost — isolates
+  AWB cascade as a candidate.
+
 ## HW JPEG encoder on Tegra K1 / Android 7
 
 **Question:** is any Tegra K1 hardware JPEG encoder block reachable
