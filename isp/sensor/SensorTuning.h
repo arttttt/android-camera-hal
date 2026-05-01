@@ -217,13 +217,27 @@ public:
         float toleranceOut;     /* exit-dead-band threshold (hysteresis) */
         float maxFstopDeltaPos;
         float maxFstopDeltaNeg;
+        /* HAL-specific (not from NVIDIA .isp): width of the
+         * "near-target" deviation band around filtered exposure where
+         * the LPF runs at √convergeSpeed instead of convergeSpeed —
+         * faster final-approach pole that kills the long settling tail
+         * after a step transition. Read from active.hal_overrides.ae.
+         * close_speed_zone in the tuning JSON. Zero / missing key
+         * disables the asymmetric boost entirely (LPF runs at the
+         * single convergeSpeed pole everywhere), per the project's
+         * "no silent fallbacks for 3A tuning knobs" rule. Per-sensor
+         * because the optimal width depends on scene noise floor at
+         * the sensor — too wide a zone on a noisy sensor causes
+         * frame-period resonance with measurement noise. */
+        float closeSpeedZone;
         AeParams()
             : loaded(false),
               higherTarget(0.f), lowerTarget(0.f),
               higherBrightness(0.f), lowerBrightness(0.f),
               convergeSpeed(0.f),
               toleranceIn(0.f), toleranceOut(0.f),
-              maxFstopDeltaPos(0.f), maxFstopDeltaNeg(0.f) {}
+              maxFstopDeltaPos(0.f), maxFstopDeltaNeg(0.f),
+              closeSpeedZone(0.f) {}
     };
 
     const ModuleInfo&           module()        const { return mModule; }

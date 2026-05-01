@@ -285,6 +285,17 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
             mAeParams.maxFstopDeltaNeg = ae["MaxFstopDeltaNeg"].asFloat();
     }
 
+    /* HAL-specific overrides — keys that don't exist in NVIDIA's .isp
+     * profiles, kept under `active.hal_overrides` so the
+     * isp_to_json.py converter has a clear "preserve verbatim" carveout
+     * the next time it regenerates the active section. */
+    const Json::Value &halOverrides = active["hal_overrides"];
+    if (halOverrides.isObject()) {
+        const Json::Value &halAe = halOverrides["ae"];
+        if (halAe.isObject() && halAe.isMember("close_speed_zone"))
+            mAeParams.closeSpeedZone = halAe["close_speed_zone"].asFloat();
+    }
+
     ALOGD("tuning loaded: %s (%s/%s) — %zu CCM sets, AF=%d, BL=(%d,%d,%d,%d)",
           fn.c_str(), sensor, integrator, mCcmSets.size(), mHasAf,
           mOpticalBlack.r, mOpticalBlack.gr, mOpticalBlack.gb, mOpticalBlack.b);

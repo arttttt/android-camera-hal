@@ -81,6 +81,7 @@ private:
     float   aeDamping;           /* ConvergeSpeed                   */
     float   aeRatioMin;          /* 2^-MaxFstopDeltaNeg             */
     float   aeRatioMax;          /* 2^+MaxFstopDeltaPos             */
+    float   aeCloseSpeedZone;    /* hal_overrides.ae.close_speed_zone */
 
     /* AE state — total exposure at unity gain (µs), i.e. the
      * exposureUs × gain / gainUnit scalar in absolute EV space. Each

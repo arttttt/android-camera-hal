@@ -117,6 +117,15 @@ float deriveAeRatioMin(const SensorTuning *t) {
     return 1.0f / powf(2.0f, t->aeParams().maxFstopDeltaNeg);
 }
 
+/* HAL-specific override, not from NVIDIA .isp — see SensorTuning::
+ * AeParams::closeSpeedZone. Returned as-is (zero / missing →
+ * BasicIpa disables the asymmetric boost), per the project's
+ * "no silent fallbacks for 3A tuning knobs" rule. */
+float deriveAeCloseSpeedZone(const SensorTuning *t) {
+    if (!t) return 0.f;
+    return t->aeParams().closeSpeedZone;
+}
+
 unsigned toQ8(float x) {
     return (unsigned)(x * 256.0f + 0.5f);
 }
@@ -262,6 +271,7 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
       aeDamping  (deriveAeDamping  (sensorTuning)),
       aeRatioMin (deriveAeRatioMin (sensorTuning)),
       aeRatioMax (deriveAeRatioMax (sensorTuning)),
+      aeCloseSpeedZone(deriveAeCloseSpeedZone(sensorTuning)),
       filteredTotalUs((float)cfg.exposureDefault * (float)cfg.gainDefault
                       / (float)cfg.gainUnit),
       lastEvComp(0),
@@ -289,12 +299,14 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
                       && awbSceneLightFloor > 0.f
                       && awbDamping > 0.f;
     ALOGD("3A knobs: aeOK=%d aeSetpoint=%.3f aeDamping=%.3f aeRatio=[%.3f,%.3f] "
+          "aeCloseZone=%.3f "
           "awbOK=%d awbMinChannel=%.4f awbSceneLightFloor=%.4f awbDamping=%.3f "
           "wbPrior=(%.3f,%.3f) "
           "gainMax=%d gainUnit=%d maxExpDef=%d tuningLoaded=%d",
           aeOK ? 1 : 0,
           (double)aeSetpoint, (double)aeDamping,
           (double)aeRatioMin, (double)aeRatioMax,
+          (double)aeCloseSpeedZone,
           awbOK ? 1 : 0,
           (double)awbMinChannel, (double)awbSceneLightFloor,
           (double)awbDamping, (double)wbRPrior, (double)wbBPrior,
@@ -728,19 +740,26 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
     aeConvergedFrames = 0;
 
     /* Single-pole LPF on absolute target with RPi-style asymmetric
-     * speed: damping doubles (effective speed = √aeDamping ≈ 0.5
-     * for ConvergeSpeed = 0.25) when target is within 20% of
-     * filtered, slow damping otherwise. The wider far-field
-     * envelope keeps step-scene transients from punching through;
-     * the faster near-field finish kills the long approach tail
-     * that AE otherwise spends crawling the last ±10% — visible in
-     * an EMA with τ = 1/aeDamping ≈ 4 frames as a noticeable
-     * "settling" hang. The 20% boundary is well above the 2% dead-
-     * band so a frame can transit close→hold without speed
-     * oscillation; below 20% AE is by definition near convergence
-     * and a faster pole is harmless. */
-    const float speed = absDeviation < 0.2f ? sqrtf(aeDamping)
-                                             : aeDamping;
+     * speed: when target is within ±aeCloseSpeedZone of filtered,
+     * the LPF runs at √aeDamping (faster final approach pole) to
+     * kill the long settling tail an EMA at τ = 1/aeDamping ≈ 4
+     * frames otherwise spends crawling the last ±10%. Outside the
+     * zone — and on any sensor where the zone is zero / missing in
+     * tuning — the LPF runs at the single aeDamping pole everywhere.
+     *
+     * Per-sensor zone width because the optimal value depends on
+     * the sensor's measurement noise floor: too wide a zone on a
+     * noisy sensor makes the boosted pole's response time (~τ = 2
+     * frames) sit close to the period of measurement noise, which
+     * resonates and the controller starts amplifying scene flutter
+     * instead of damping it. Configured from
+     * active.hal_overrides.ae.close_speed_zone in tuning JSON; zero
+     * disables the boost (no resonance risk, slight loss of
+     * convergence sharpness). */
+    const float speed = (aeCloseSpeedZone > 0.f
+                      && absDeviation < aeCloseSpeedZone)
+                       ? sqrtf(aeDamping)
+                       : aeDamping;
     filteredTotalUs = speed * targetTotalUs
                     + (1.0f - speed) * filteredTotalUs;
     lastEvComp = meta.aeExposureCompensation;

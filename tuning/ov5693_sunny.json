@@ -32,6 +32,12 @@
       "MaxFstopDeltaPos": 0.4,
       "MaxFstopDeltaNeg": 0.5
     },
+    "hal_overrides": {
+      "_comment": "HAL-specific knobs not present in NVIDIA .isp; preserve verbatim across isp_to_json.py regenerations.",
+      "ae": {
+        "close_speed_zone": 0.2
+      }
+    },
     "mwbCCT": {
       "cloudy": 7000,
       "shade": 6550,
