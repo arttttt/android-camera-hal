@@ -13,6 +13,7 @@ Design notes, architectural analysis, and a roadmap for the Tegra K1
 | [neon-stats-review.md](neon-stats-review.md) | Review of the NEON statistics kernel — correctness + register pressure analysis |
 | [open-questions.md](open-questions.md) | Open architecture questions worth investigating |
 | [open-source-references.md](open-source-references.md) | Patterns from libcamera / RkISP1 / RPi worth borrowing |
+| [libcamera-steal-list.md](libcamera-steal-list.md) | Ranked, scoped TODO list of concrete patterns to lift from libcamera, with file paths on both sides |
 | [roadmap.md](roadmap.md) | Done items + open work |
 | [bugs.md](bugs.md) | Known bugs (deferred or won't-fix), each with location and likely cause |
 

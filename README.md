@@ -65,16 +65,25 @@ preview are all working.
 
 ### 3A
 
-- **AE** — proportional controller toward a tuning-derived setpoint
-  (NVIDIA `MeanAlg.{Higher,Lower}Target` midpoint, gamma-decoded into
-  the linear-luma domain the metric lives in). Spot mean of the green
-  channel inside the active focus ROI; default ROI = centre 8×8
-  patches, tap-to-focus moves it to the user's chosen subject. EMA
-  damping, hard ratio clamps, dead-band from `MeanAlg.ToleranceIn`,
-  EV compensation as an additive offset, AE_LOCK with cascade EMA so
-  EV steps under lock don't tear mid-rolling-shutter. Exposure /
-  gain split via `SensorConfig::splitExposureGain` (prefers exposure
-  up to default frame_length, then gain).
+- **AE** — open-loop target in absolute EV space (µs at unity gain),
+  single-pole LPF toward target each frame. Two parallel candidate
+  ratios: `ratioMean = setpoint / luma` chases NVIDIA's
+  `MeanAlg.{Higher,Lower}Target` midpoint (gamma-decoded into the
+  linear-luma domain the metric lives in); `ratioHighlight =
+  highlightCap / IQM_top2%` keeps the brightest 2% of post-WB max-
+  of-channels patches under cap. Strictest wins (RPi / libcamera
+  convention). Both clamped to the tuning's MaxFstopDelta envelope
+  as a per-frame rate limit. Spot metering inside the active focus
+  ROI (default centre 8×8 patches, tap-to-focus moves it). 2 %
+  absolute-deviation dead-band freezes the LPF at convergence.
+  Optional asymmetric LPF speed (faster pole when `|target/filtered
+  − 1| < closeSpeedZone`) configurable per sensor via
+  `active.hal_overrides.ae.close_speed_zone`. EV compensation as a
+  multiplicative offset on the target. AE_LOCK holds converged
+  exposure / gain, EV steps under lock are EMA-smoothed so a hard
+  EV jump doesn't tear mid-rolling-shutter. Exposure / gain split
+  via `SensorConfig::splitExposureGain` (prefers exposure up to
+  default frame_length, then gain).
 - **AWB** — gray-world over a 16×16 patch grid (rgbMean from NEON
   stats), saturated / near-black patches filtered. **96-valid-patch
   confidence gate**: below it, lastWb EMA-relaxes back to the
@@ -122,10 +131,11 @@ preview are all working.
   focus distance, bayer pattern, sensor orientation) live in
   `tuning/_module_<sensor>_<integrator>.json` and are merged at
   conversion time.
-- HAL-side overrides under `tuning/<sensor>_<integrator>_overrides.json`
-  deep-merge on top of the converted profile (currently AF
-  state-machine knobs for IMX179: step, contrast / retrigger ratios,
-  settle frames).
+- HAL-specific knobs that don't exist in NVIDIA `.isp` (currently the
+  AE close-speed-zone width per sensor) live under an
+  `active.hal_overrides` sub-section in the same per-module JSON,
+  carved out so `tools/isp_to_json.py` preserves them verbatim across
+  regenerations from the upstream `.isp`.
 - Live consumers: `AutoFocusController`, `SensorTuning::ccmForCctQ10`,
   `DemosaicCompute` shader (optical-black bias), `BasicIpa` AE+AWB,
   `CameraStaticMetadata` (per-module geometry).
