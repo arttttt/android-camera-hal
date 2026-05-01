@@ -81,23 +81,29 @@ private:
     float   aeDamping;           /* ConvergeSpeed                   */
     float   aeRatioMin;          /* 2^-MaxFstopDeltaNeg             */
     float   aeRatioMax;          /* 2^+MaxFstopDeltaPos             */
-    float   aeToleranceInStops;  /* ToleranceIn — hard dead-band around setpoint */
 
-    /* AE state. Total exposure at unity gain (µs) — the
-     * exposureUs × gain / gainUnit scalar the controller accumulates
-     * against the setpoint. Stored as float so tiny per-frame
-     * corrections (damping × clamped ratio) don't vanish into
-     * integer truncation on the gainUnit=1 IMX179 side: rounding
-     * exposure and gain back into ints every frame used to trap AE
-     * at the first split where extraGainQ8 / 256 dropped the
-     * fractional bit, freezing gain at a low step. Exposure and
-     * gain are derived at write-time via SensorConfig::splitExposureGain. */
-    float   lastTotalUs;
+    /* AE state — total exposure at unity gain (µs), i.e. the
+     * exposureUs × gain / gainUnit scalar in absolute EV space. Each
+     * frame computes a fresh `targetTotalUs = filteredTotalUs × ratio`
+     * (ratio = setpoint / measuredLuma, clamped) and low-passes
+     * filteredTotalUs toward it; the previous loop kept state in
+     * multiplier-space (state ×= smoothedAeMult, with smoothedAeMult
+     * itself a cascade EMA), which carried directional inertia past
+     * the setpoint crossing and integrated as visible overshoot. EV-
+     * space target + single LPF removes the inertia by construction —
+     * crossing the setpoint just flips ratio's sign for one step and
+     * filteredTotalUs immediately starts moving the other way, no
+     * memory of the old direction. Float so per-frame corrections
+     * don't vanish into integer truncation on a gainUnit=1 sensor.
+     * Exposure / gain are split at write-time via
+     * SensorConfig::splitExposureGain. */
+    float   filteredTotalUs;
 
     /* The exposure-compensation value (1/3-stop units) that was in
-     * effect at the last lastTotalUs update. Lets the AE-lock branch
-     * scale the held exposure when the framework changes EV during
-     * the lock — biased = lastTotalUs × factor(current) / factor(lastEvComp). */
+     * effect at the last filteredTotalUs update. Lets the AE-lock
+     * branch scale the held exposure when the framework changes EV
+     * during the lock — biased = filteredTotalUs × factor(current) /
+     * factor(lastEvComp). */
     int32_t  lastEvComp;
 
     /* Smoothed version of the EV-biased held exposure. Without it,
@@ -128,16 +134,6 @@ private:
      * stability on a nominally static shot. EMA'd with ConvergeSpeed
      * so the controller sees an already-low-passed reading. */
     float   smoothedLuma;
-
-    /* Second-order smoothing on the AE per-frame multiplier. The
-     * first-order damped ratio (1 + (ratio-1)*aeDamping) is run
-     * through a second EMA (same ConvergeSpeed) so step scene
-     * changes ramp up over a few frames instead of producing a
-     * single-frame pop. Now that IMX179 advertises gain in Q8 too
-     * (post-kernel-patch), the combined (ratio_clamp × damping ×
-     * cascade EMA) chain already lands under perceptibility for
-     * every individual frame — no hard per-frame cap needed. */
-    float   smoothedAeMult;
 
     /* Frame counter for throttled diagnostic logs. Incremented on
      * every processStats entry; a single ALOGD fires per N frames. */

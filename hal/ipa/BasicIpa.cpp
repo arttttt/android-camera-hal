@@ -25,9 +25,10 @@ namespace {
  * V4L2 QUERYCTRL advertised on this driver. Using a HAL-side
  * `maxExposureUs = 200000 µs` constant inflated the AE state ceiling
  * to ~6× what the sensor can physically reach at 30 fps, so a dark
- * scene saturated `lastTotalUs` into phantom territory and AE
- * needed dozens of frames to unwind once the scene brightened —
- * visible as daylight over-exposure + brightness pumping. */
+ * scene saturated AE state into phantom territory and the
+ * controller needed dozens of frames to unwind once the scene
+ * brightened — visible as daylight over-exposure + brightness
+ * pumping. */
 
 /* Saturation ceiling for per-patch filtering. Patches with any
  * channel above this value are dropped — the missing highlight
@@ -116,11 +117,6 @@ float deriveAeRatioMin(const SensorTuning *t) {
     return 1.0f / powf(2.0f, t->aeParams().maxFstopDeltaNeg);
 }
 
-float deriveAeTolIn(const SensorTuning *t) {
-    if (!t || !t->aeParams().loaded) return 0.f;
-    return t->aeParams().toleranceIn;
-}
-
 unsigned toQ8(float x) {
     return (unsigned)(x * 256.0f + 0.5f);
 }
@@ -188,9 +184,8 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
       aeDamping  (deriveAeDamping  (sensorTuning)),
       aeRatioMin (deriveAeRatioMin (sensorTuning)),
       aeRatioMax (deriveAeRatioMax (sensorTuning)),
-      aeToleranceInStops (deriveAeTolIn (sensorTuning)),
-      lastTotalUs((float)cfg.exposureDefault * (float)cfg.gainDefault
-                  / (float)cfg.gainUnit),
+      filteredTotalUs((float)cfg.exposureDefault * (float)cfg.gainDefault
+                      / (float)cfg.gainUnit),
       lastEvComp(0),
       lockedBiasedTotalUs(0.f),
       /* Normalise the R / B priors against G so the shader-side WB
@@ -205,7 +200,6 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
       lastWbR(wbRPrior),
       lastWbB(wbBPrior),
       smoothedLuma(0.f),
-      smoothedAeMult(1.0f),
       frameCount(0),
       aeLockHeld(false),
       aeConvergedFrames(0) {
@@ -217,14 +211,12 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
                       && awbSceneLightFloor > 0.f
                       && awbDamping > 0.f;
     ALOGD("3A knobs: aeOK=%d aeSetpoint=%.3f aeDamping=%.3f aeRatio=[%.3f,%.3f] "
-          "aeTolIn=%.3fst "
           "awbOK=%d awbMinChannel=%.4f awbSceneLightFloor=%.4f awbDamping=%.3f "
           "wbPrior=(%.3f,%.3f) "
           "gainMax=%d gainUnit=%d maxExpDef=%d tuningLoaded=%d",
           aeOK ? 1 : 0,
           (double)aeSetpoint, (double)aeDamping,
           (double)aeRatioMin, (double)aeRatioMax,
-          (double)aeToleranceInStops,
           awbOK ? 1 : 0,
           (double)awbMinChannel, (double)awbSceneLightFloor,
           (double)awbDamping, (double)wbRPrior, (double)wbBPrior,
@@ -246,15 +238,14 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
 }
 
 void BasicIpa::reset() {
-    lastTotalUs    = (float)sensorCfg.exposureDefault
-                   * (float)sensorCfg.gainDefault
-                   / (float)sensorCfg.gainUnit;
+    filteredTotalUs = (float)sensorCfg.exposureDefault
+                    * (float)sensorCfg.gainDefault
+                    / (float)sensorCfg.gainUnit;
     lastEvComp     = 0;
     lockedBiasedTotalUs = 0.f;
     lastWbR        = wbRPrior;
     lastWbB        = wbBPrior;
     smoothedLuma   = 0.f;
-    smoothedAeMult = 1.0f;
     aeLockHeld          = false;
     aeConvergedFrames = 0;
 
@@ -429,7 +420,7 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
 
     if (logTick) {
         int32_t diagExp = 0, diagExtraQ8 = 256;
-        sensorCfg.splitExposureGain((int32_t)(lastTotalUs + 0.5f),
+        sensorCfg.splitExposureGain((int32_t)(filteredTotalUs + 0.5f),
                                      &diagExp, &diagExtraQ8);
         const int32_t diagGain = (int32_t)(((int64_t)sensorCfg.gainUnit
                                            * diagExtraQ8 + 128) / 256);
@@ -444,7 +435,7 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
               (double)lastWbR, (double)lastWbB,
               (double)wbRPrior, (double)wbBPrior,
               toQ8(lastWbR), toQ8(lastWbB),
-              diagEstCct, (double)lastTotalUs, diagExp,
+              diagEstCct, (double)filteredTotalUs, diagExp,
               diagGain, diagGainClamped,
               meta.aeExposureCompensation);
     }
@@ -461,8 +452,8 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
     }
 
     /* AE locked — by the framework's AE_LOCK or by AF (across a
-     * sweep). Hold the converged operating point: keep `lastTotalUs`
-     * and the EMA state untouched, but **re-publish the held
+     * sweep). Hold the converged operating point: keep
+     * `filteredTotalUs` untouched, but **re-publish the held
      * exposure / gain into DelayedControls every frame** so
      * ApplySettingsStage sees a populated `pendingWrite` and stays
      * on the converged values. Returning an empty batch here would
@@ -472,22 +463,22 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
      * is what an "AE lock" must not do.
      *
      * EV compensation still applies as an additive offset on top of
-     * the locked level — `lastTotalUs` already reflects whatever EV
-     * was active at convergence (`lastEvComp`); rescale by the ratio
-     * `factor(current) / factor(lastEvComp)` so dragging the EV
-     * slider while locked moves exposure proportionally instead of
-     * being silently latched. */
+     * the locked level — `filteredTotalUs` already reflects whatever
+     * EV was active at convergence (`lastEvComp`); rescale by the
+     * ratio `factor(current) / factor(lastEvComp)` so dragging the
+     * EV slider while locked moves exposure proportionally instead
+     * of being silently latched. */
     if (meta.aeLock == ANDROID_CONTROL_AE_LOCK_ON || aeLockHeld) {
         const float lockedFactor  = aeCompFactor(lastEvComp);
         const float currentFactor = aeCompFactor(meta.aeExposureCompensation);
-        const float biasedTarget  = lastTotalUs * (currentFactor / lockedFactor);
+        const float biasedTarget  = filteredTotalUs * (currentFactor / lockedFactor);
 
         /* EMA toward the new biased target. First locked frame
          * after unlock (sentinel <= 0) seeds without smoothing so
          * locking from a static auto state is instant; subsequent
          * EV moves get aeDamping × delta per frame, matching the
-         * cascade the auto path applies and avoiding a one-frame
-         * exposure step that mid-frame readout would slice apart. */
+         * auto path's LPF and avoiding a one-frame exposure step
+         * that mid-frame readout would slice apart. */
         if (lockedBiasedTotalUs <= 0.f) {
             lockedBiasedTotalUs = biasedTarget;
         } else {
@@ -546,100 +537,91 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
     const float effectiveSetpoint = aeSetpoint
                                   * aeCompFactor(meta.aeExposureCompensation);
 
-    /* P-controller toward the setpoint, hard-clamped and EMA-damped.
-     * Dead-band the adjustment when luma is already within
-     * aeToleranceInStops (from tuning's ae.MeanAlg.ToleranceIn) of
-     * the setpoint — stops AE from chasing sensor noise and scene
-     * micro-flutter around the target, which would otherwise show
-     * up as a visible brightness ripple in "well-exposed" scenes.
-     * Tolerance is in f-stops; we compare the log2 of the ratio
-     * against it (ratio=1.414 → 0.5 stops, ratio=0.707 → -0.5
-     * stops). toleranceIn==0 (tuning missing) disables the gate so
-     * BasicIpa behaves as before. */
+    /* Open-loop "where would I have to be right now" in absolute EV
+     * space. ratio = setpoint / luma is what scale factor on the
+     * current state would put us exactly at setpoint this frame.
+     * Clamped to the tuning's MaxFstopDelta envelope so a single-
+     * frame scene step can't ask for more authority than the
+     * controller is allowed to spend per frame; the clamp survives
+     * from the previous loop as a rate limit. */
     float ratio = effectiveSetpoint / meanLuma;
     if (ratio < aeRatioMin) ratio = aeRatioMin;
     if (ratio > aeRatioMax) ratio = aeRatioMax;
 
-    /* Dead-band from the tuning's ToleranceIn: when luma is already
-     * within that many stops of the setpoint, hold the AE state and
-     * republish the current split so result metadata stays
-     * consistent. No Schmitt latch — the cascaded smoothing below is
-     * what keeps AE from jerking on micro-scene flutter; adding an
-     * exit-gate on top only made AE visibly freeze once it settled.
-     * While held, relax the smoothed multiplier back toward 1.0 so
-     * the next tick out of dead-band doesn't resume with a stale
-     * ramp. */
-    if (aeToleranceInStops > 0.f) {
-        const float stops = log2f(ratio);
-        const float absStops = stops < 0.f ? -stops : stops;
-        if (absStops < aeToleranceInStops) {
-            int32_t heldExposureUs, heldExtraGainQ8;
-            sensorCfg.splitExposureGain((int32_t)(lastTotalUs + 0.5f),
-                                         &heldExposureUs, &heldExtraGainQ8);
-            int32_t heldGain = (int32_t)(((int64_t)sensorCfg.gainUnit
-                                         * heldExtraGainQ8 + 128) / 256);
-            if (heldGain < 1)                 heldGain = 1;
-            if (heldGain > sensorCfg.gainMax) heldGain = sensorCfg.gainMax;
-            batch.has[DelayedControls::EXPOSURE] = true;
-            batch.val[DelayedControls::EXPOSURE] = heldExposureUs;
-            batch.has[DelayedControls::GAIN]     = true;
-            batch.val[DelayedControls::GAIN]     = heldGain;
-            smoothedAeMult = aeDamping * 1.0f
-                           + (1.0f - aeDamping) * smoothedAeMult;
-            /* Each in-tolerance frame counts toward the convergence
-             * report — once the count crosses the threshold,
-             * isAeConverged() flips true. */
-            if (aeConvergedFrames < INT32_MAX) aeConvergedFrames++;
-            return batch;
-        }
+    /* Recompute the absolute target every frame from the current
+     * filtered state and the freshly-measured ratio, then LPF
+     * filteredTotalUs toward it. The previous loop kept state in
+     * multiplier-space (state ×= smoothedAeMult, where smoothedAeMult
+     * itself was a cascade EMA), which carried directional inertia
+     * past the setpoint crossing — visible on dim scenes as gain
+     * climbing for ~30 frames after luma had already crossed the
+     * setpoint, then over-correcting back through it.
+     *
+     * EV-space target has no directional memory: each frame's target
+     * is derived afresh from the current measurement, only the
+     * single-pole LPF on filteredTotalUs carries history. Crossing
+     * the setpoint is one frame's sign flip in (target − filtered),
+     * nothing accumulated to unwind. Same convergence speed (~τ =
+     * 1/aeDamping ≈ 4 frames at ConvergeSpeed = 0.25), no overshoot
+     * by construction.
+     *
+     * State stays in float "µs at unity gain" so per-frame
+     * corrections don't vanish into integer truncation; rounded ints
+     * across frames used to lose ~1/256 of the signal on gainUnit=1
+     * sensors and stall the LPF at its first rounding step. The
+     * envelope clamp [minTotal, maxTotal] also serves as anti-windup:
+     * once the state hits maxTotal because the scene is darker than
+     * the sensor can reach at default frame_length, the next frame's
+     * target stays clamped instead of accumulating phantom headroom
+     * to unwind on the way back. */
+    const int32_t gainUnit = sensorCfg.gainUnit;
+    const float   maxTotal = (float)sensorCfg.maxExposureUsDefault()
+                           * (float)sensorCfg.gainMax / (float)gainUnit;
+    const float   minTotal = (float)sensorCfg.lineTimeUs * 2.0f;
+    float targetTotalUs = filteredTotalUs * ratio;
+    if (targetTotalUs < minTotal) targetTotalUs = minTotal;
+    if (targetTotalUs > maxTotal) targetTotalUs = maxTotal;
+
+    /* Absolute-deviation dead-band, RPi-style: when target is within
+     * ±2 % of filtered state, freeze the filter entirely and report
+     * the frame as converged. Sized to be larger than any single LPF
+     * step the controller would normally take in steady state, which
+     * is what kills the "deadband-too-narrow + control latency =
+     * auto-oscillation" limit-cycle pattern (the previous stops-based
+     * dead-band of 0.05st ≈ 3.5 % was just under one ratio_clamp ×
+     * damping = 8 % step, so it acted as a transit zone, not a
+     * resting region). 2 % is below sensor noise on a still scene yet
+     * above frame-to-frame measurement jitter — AE neither chases
+     * noise nor stalls in a half-converged state. */
+    constexpr float kAeStableRegion = 0.02f;
+    const float deviation    = targetTotalUs / filteredTotalUs - 1.0f;
+    const float absDeviation = deviation < 0.f ? -deviation : deviation;
+    if (absDeviation < kAeStableRegion) {
+        int32_t heldExposureUs, heldExtraGainQ8;
+        sensorCfg.splitExposureGain((int32_t)(filteredTotalUs + 0.5f),
+                                     &heldExposureUs, &heldExtraGainQ8);
+        int32_t heldGain = (int32_t)(((int64_t)gainUnit
+                                     * heldExtraGainQ8 + 128) / 256);
+        if (heldGain < 1)                 heldGain = 1;
+        if (heldGain > sensorCfg.gainMax) heldGain = sensorCfg.gainMax;
+        batch.has[DelayedControls::EXPOSURE] = true;
+        batch.val[DelayedControls::EXPOSURE] = heldExposureUs;
+        batch.has[DelayedControls::GAIN]     = true;
+        batch.val[DelayedControls::GAIN]     = heldGain;
+        if (aeConvergedFrames < INT32_MAX) aeConvergedFrames++;
+        lastEvComp = meta.aeExposureCompensation;
+        return batch;
     }
-    /* Out of dead-band (or dead-band disabled): AE actively chasing,
-     * so we're not stably at setpoint. */
     aeConvergedFrames = 0;
 
-    /* Cascaded smoothing on the AE per-frame multiplier. The
-     * first-order damped ratio is itself EMA'd (same ConvergeSpeed)
-     * before being applied to the state. Effect: on a step scene
-     * change the per-frame state delta starts at ~damping² of the
-     * target (≈1 % at ConvergeSpeed=0.2) and ramps up smoothly,
-     * instead of jumping to damping×ratio_clamp (≈8 %) on the very
-     * first frame. Convergence envelope stays similar — a full stop
-     * is still closed in ~30 frames — but the ride is visibly
-     * smooth. */
-    const float adjusted = 1.0f + (ratio - 1.0f) * aeDamping;
-    smoothedAeMult = aeDamping * adjusted + (1.0f - aeDamping) * smoothedAeMult;
-    /* No hard per-frame cap: with the Q8 gain fix on IMX179 (kernel
-     * patch) the sensor no longer quantises to whole-stop brackets,
-     * so cascade EMA × ratio_clamp × damping already lands under the
-     * perceptibility threshold for every individual frame while
-     * keeping convergence at ~0.5 s per stop. */
-
-    /* Accumulate in float "µs at unity gain" space. Exposure and
-     * gain are only materialised at write-time via
-     * SensorConfig::splitExposureGain; storing rounded ints across
-     * frames lost ~1/256 of the signal on gainUnit=1 sensors and
-     * stalled the EMA at its first rounding step.
-     *
-     * Clamp to what the sensor can physically deliver at its default
-     * frame_length: max exposure × driver-advertised gainMax, both
-     * read from SensorConfig. Letting the state exceed this walks AE
-     * into a region where every increment is ignored by V4L2 (the
-     * driver clamps to gainMax silently), producing lag and a
-     * brightness overshoot on scene transitions. */
-    const int32_t gainUnit = sensorCfg.gainUnit;
-    float newTotal = lastTotalUs * smoothedAeMult;
-
-    const float maxTotal = (float)sensorCfg.maxExposureUsDefault()
-                         * (float)sensorCfg.gainMax / (float)gainUnit;
-    const float minTotal = (float)sensorCfg.lineTimeUs * 2.0f;
-    if (newTotal < minTotal) newTotal = minTotal;
-    if (newTotal > maxTotal) newTotal = maxTotal;
-    lastTotalUs = newTotal;
-    lastEvComp  = meta.aeExposureCompensation;
+    /* Single-pole LPF on absolute target. */
+    filteredTotalUs = aeDamping * targetTotalUs
+                    + (1.0f - aeDamping) * filteredTotalUs;
+    lastEvComp = meta.aeExposureCompensation;
 
     int32_t newExposureUs;
     int32_t newExtraGainQ8;
-    sensorCfg.splitExposureGain((int32_t)(newTotal + 0.5f),
+    sensorCfg.splitExposureGain((int32_t)(filteredTotalUs + 0.5f),
                                  &newExposureUs, &newExtraGainQ8);
 
     int32_t newGain = (int32_t)(((int64_t)gainUnit * newExtraGainQ8 + 128) / 256);
@@ -654,10 +636,11 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
 }
 
 bool BasicIpa::isAeConverged() const {
-    /* Five consecutive in-tolerance frames is enough for the
-     * controller's cascade EMA to have a meaningful chance of being
-     * settled, while still being short enough that AF doesn't wait
-     * a noticeable beat after the first dead-band entry. */
+    /* Five consecutive in-dead-band frames before reporting
+     * converged — short enough that AF doesn't wait a noticeable
+     * beat after the first stable entry, long enough that a
+     * single-frame measurement fluke clearing the gate doesn't
+     * advance us prematurely. */
     constexpr int32_t kRequired = 5;
     return aeConvergedFrames >= kRequired;
 }
