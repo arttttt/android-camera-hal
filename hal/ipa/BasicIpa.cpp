@@ -164,6 +164,56 @@ float meanLumaInRoi(const IpaStats &stats, const IpaFrameMeta &meta) {
     return sum / (float)count;
 }
 
+/* Highlight inter-quantile mean — average of the brightest top 2 %
+ * (= 5 of 256) patches, computed as max-of-channels in the
+ * post-WB domain. Used as the "are we about to blow highlights"
+ * signal driving the AE highlight-protection candidate.
+ *
+ * Why post-WB max, not raw green: stats live pre-WB, but downstream
+ * the demosaic shader applies WB gains (R, B typically 1.5-2.0×, G
+ * pinned at 1.0). A patch with raw G=0.5 / B=0.55 already clips on
+ * the B channel after a 1.6× WB gain. Picking the channel that
+ * clips first (max-of-three after WB) is the honest "what will
+ * actually saturate downstream" metric.
+ *
+ * Why 16×16 patch grid not pixel histogram: NeonStatsEncoder
+ * doesn't produce a histogram today; the patch grid is what we
+ * have. Trade-off: we miss specular highlights smaller than ~67×120
+ * pixels at 1080p (a single patch), but catch any meaningfully
+ * sized bright region (windows, lamps, faces in dim scenes — the
+ * cases that drive AE on this hardware). Pixel histogram for
+ * specular detection is a separate, larger change in the encoder. */
+float top2pcMaxPostWbMean(const IpaStats &stats, float wbR, float wbB) {
+    constexpr int kTotalPatches =
+        IpaStats::PATCH_Y * IpaStats::PATCH_X;
+    constexpr int kTopK = kTotalPatches * 2 / 100;  /* 5 of 256 */
+
+    /* Insertion-sort top-K descending. For K=5 over 256 inputs the
+     * inner shifts are negligible (~32 swaps amortised); std::sort
+     * over the full array would be 1800+ ops for the same answer. */
+    float top[kTopK];
+    for (int i = 0; i < kTopK; ++i) top[i] = 0.f;
+    for (int py = 0; py < IpaStats::PATCH_Y; ++py) {
+        for (int px = 0; px < IpaStats::PATCH_X; ++px) {
+            const float r = stats.rgbMean[py][px][0] * wbR;
+            const float g = stats.rgbMean[py][px][1];
+            const float b = stats.rgbMean[py][px][2] * wbB;
+            const float maxCh = r > g ? (r > b ? r : b)
+                                       : (g > b ? g : b);
+            if (maxCh <= top[kTopK - 1]) continue;
+            int j = kTopK - 1;
+            while (j > 0 && top[j - 1] < maxCh) {
+                top[j] = top[j - 1];
+                --j;
+            }
+            top[j] = maxCh;
+        }
+    }
+    float sum = 0.f;
+    for (int i = 0; i < kTopK; ++i) sum += top[i];
+    return sum / (float)kTopK;
+}
+
 } /* namespace */
 
 BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
@@ -418,6 +468,13 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
         }
     }
 
+    /* IQM of the top 2% post-WB max-of-channels — driver of the AE
+     * highlight-protection candidate. Computed here so it lands in
+     * the diagnostic log alongside lastWb (the WB gains it depends
+     * on) and so the auto-AE branch can reuse it without a second
+     * pass over rgbMean. */
+    const float iqmHighlight = top2pcMaxPostWbMean(stats, lastWbR, lastWbB);
+
     if (logTick) {
         int32_t diagExp = 0, diagExtraQ8 = 256;
         sensorCfg.splitExposureGain((int32_t)(filteredTotalUs + 0.5f),
@@ -427,11 +484,12 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
         const int32_t diagGainClamped =
             diagGain > sensorCfg.gainMax ? sensorCfg.gainMax
                                           : (diagGain < 1 ? 1 : diagGain);
-        ALOGD("3A: frame=%u luma=%.3f nValid=%d awbRun=%d "
+        ALOGD("3A: frame=%u luma=%.3f iqmHi=%.3f nValid=%d awbRun=%d "
               "lastWb=(%.3f,%.3f) wbPrior=(%.3f,%.3f) "
               "Q8=(%u,%u) estCct=%d totalUs=%.0f exp=%d gain=%d gainClamp=%d "
               "evComp=%d",
-              frameCount, (double)sceneLuma, diagNValid, awbRun ? 1 : 0,
+              frameCount, (double)sceneLuma, (double)iqmHighlight,
+              diagNValid, awbRun ? 1 : 0,
               (double)lastWbR, (double)lastWbB,
               (double)wbRPrior, (double)wbBPrior,
               toQ8(lastWbR), toQ8(lastWbB),
@@ -537,16 +595,40 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
     const float effectiveSetpoint = aeSetpoint
                                   * aeCompFactor(meta.aeExposureCompensation);
 
-    /* Open-loop "where would I have to be right now" in absolute EV
-     * space. ratio = setpoint / luma is what scale factor on the
-     * current state would put us exactly at setpoint this frame.
-     * Clamped to the tuning's MaxFstopDelta envelope so a single-
-     * frame scene step can't ask for more authority than the
-     * controller is allowed to spend per frame; the clamp survives
-     * from the previous loop as a rate limit. */
-    float ratio = effectiveSetpoint / meanLuma;
-    if (ratio < aeRatioMin) ratio = aeRatioMin;
-    if (ratio > aeRatioMax) ratio = aeRatioMax;
+    /* Two-candidate AE — mean target + highlight protection,
+     * strictest wins (RPi / libcamera convention).
+     *
+     * ratioMean = setpoint / luma is the open-loop scale factor that
+     * would put us exactly at the mean-grey setpoint this frame.
+     *
+     * ratioHighlight = highlightCap / IQM_top2% is the scale factor
+     * that would pull the brightest 2% of patches (post-WB) down to
+     * the cap. Active only when scene contains regions brighter
+     * than the cap; on a dim scene IQM is small so ratioHighlight
+     * lands above ratioMax (clamped) and falls out of min().
+     *
+     * Both clamped to the tuning's MaxFstopDelta envelope as a
+     * per-frame rate limit. min() picks the candidate that asks for
+     * less exposure — i.e. highlight constraint can darken below
+     * mean target but never push above it.
+     *
+     * Cap = 0.8: brightest 2% of patches sit at 80% of the dynamic
+     * range, leaving ~0.3-stop headroom before sensor clip. RPi
+     * default for similar mode. Compile-time constant for now;
+     * promote to per-sensor tuning if it needs scene-adaptive
+     * shaping later. */
+    float ratioMean = effectiveSetpoint / meanLuma;
+    if (ratioMean < aeRatioMin) ratioMean = aeRatioMin;
+    if (ratioMean > aeRatioMax) ratioMean = aeRatioMax;
+
+    constexpr float kAeHighlightCap = 0.8f;
+    float ratioHighlight = (iqmHighlight > 0.f)
+                         ? (kAeHighlightCap / iqmHighlight)
+                         : aeRatioMax;
+    if (ratioHighlight < aeRatioMin) ratioHighlight = aeRatioMin;
+    if (ratioHighlight > aeRatioMax) ratioHighlight = aeRatioMax;
+
+    const float ratio = ratioMean < ratioHighlight ? ratioMean : ratioHighlight;
 
     /* Recompute the absolute target every frame from the current
      * filtered state and the freshly-measured ratio, then LPF
