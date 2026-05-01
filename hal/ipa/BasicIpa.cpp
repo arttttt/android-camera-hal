@@ -727,9 +727,22 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
     }
     aeConvergedFrames = 0;
 
-    /* Single-pole LPF on absolute target. */
-    filteredTotalUs = aeDamping * targetTotalUs
-                    + (1.0f - aeDamping) * filteredTotalUs;
+    /* Single-pole LPF on absolute target with RPi-style asymmetric
+     * speed: damping doubles (effective speed = √aeDamping ≈ 0.5
+     * for ConvergeSpeed = 0.25) when target is within 20% of
+     * filtered, slow damping otherwise. The wider far-field
+     * envelope keeps step-scene transients from punching through;
+     * the faster near-field finish kills the long approach tail
+     * that AE otherwise spends crawling the last ±10% — visible in
+     * an EMA with τ = 1/aeDamping ≈ 4 frames as a noticeable
+     * "settling" hang. The 20% boundary is well above the 2% dead-
+     * band so a frame can transit close→hold without speed
+     * oscillation; below 20% AE is by definition near convergence
+     * and a faster pole is harmless. */
+    const float speed = absDeviation < 0.2f ? sqrtf(aeDamping)
+                                             : aeDamping;
+    filteredTotalUs = speed * targetTotalUs
+                    + (1.0f - speed) * filteredTotalUs;
     lastEvComp = meta.aeExposureCompensation;
 
     int32_t newExposureUs;
