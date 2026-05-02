@@ -275,12 +275,25 @@ further rewrite.
    when the Vulkan stats encoder + shader + base-class virtuals
    were removed.
 8. **BasicIpa AE + ApplySettings AE-mode branch (post-PR-6.5).**
-   `BasicIpa` now owns the AE loop: P-controller with EMA damping
-   over the green-channel mean-luma histogram, setpoint 0.35
-   (pre-gamma proxy for 18 % mid grey), ratio clamp ∈ [0.5, 2.0].
-   The (exposure, gain) split goes through
-   `SensorConfig::splitExposureGain` which prefers exposure up to
-   `kMaxExposureUs = 200 ms` before pushing into analog gain.
+   `BasicIpa` owns the AE loop. Originally shipped as a P-controller
+   with EMA damping over the green-channel mean-luma histogram,
+   setpoint 0.35 (pre-gamma proxy for 18 % mid grey), hardcoded
+   ratio clamp ∈ [0.5, 2.0] and exposure ceiling `kMaxExposureUs =
+   200 ms`. Refactored substantially since:
+   setpoint moved to `pow(MeanAlg.target/255, 2.2)` from tuning;
+   stats source switched from histogram to focus-ROI patch-grid
+   (`rgbMean[*][*][1]`); ratio clamps and damping promoted to
+   tuning's `MaxFstopDelta` / `ConvergeSpeed`; exposure ceiling
+   replaced by `maxExposureUsDefault × gainMax` from
+   driver-queried envelope; AE_LOCK + EV-comp + AF-coordinated
+   lock added; cascade EMA on the multiplier ripped out and
+   replaced with absolute-EV-space target + single-pole LPF +
+   2 % dead-band + RPi-style top-2% IQM highlight constraint
+   (commits `7c3bc7e`, `99a7e92`, `b061a76`, `997f7c6`, `fabed2f`,
+   `2947b17`, 2026-05-01). Current shape lives in
+   `tier3_architecture.md#basicipa-ae-loop-landed` — read that for
+   the up-to-date description.
+
    `ApplySettingsStage` branches on `ANDROID_CONTROL_AE_MODE`:
    `OFF` → manual (parse request, write V4L2, publish into
    `DelayedControls` for result-metadata consistency); non-`OFF`
@@ -293,9 +306,9 @@ further rewrite.
    RequestThread + result builder). `StatsProcessStage` skips its
    `DelayedControls::push` when AE is OFF so framework authority
    is never fought by the IPA. Dark-scene policy is FPS-priority:
-   AE clamps at `kMaxExposureUs` inside the default
-   `frame_length` rather than extending integration at the cost
-   of frame rate.
+   AE clamps at the sensor's `maxExposureUsDefault` inside the
+   default `frame_length` rather than extending integration at the
+   cost of frame rate.
 9. **BasicIpa AWB + AF (post-PR-6.6 / 6.7 / 6.8).** Gray-world AWB
    over `rgbMean[16][16][3]` with CCT estimation from ln(G/B) and
    per-CCT CCM LERP across the tuning's `colorCorrection.Set[]`;

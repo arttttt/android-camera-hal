@@ -255,12 +255,22 @@ Built once per camera by `CameraStaticMetadata::build()` in
 
 ## 3A summary
 
-- **AE** lives in `BasicIpa::processStats`. Spot mean of
-  `IpaStats::rgbMean[*][*][1]` (G channel) inside the active
-  `meta.focusRoi` rectangle, P-controller toward
-  `aeSetpoint = pow(MeanAlg.target/255, 2.2)`, EMA damping, hard
-  ratio clamps from `MaxFstopDelta{Pos,Neg}`, dead-band from
-  `ToleranceIn`, EV-comp as a target multiplier, AE_LOCK with
+- **AE** lives in `BasicIpa::processStats`. State is `filteredTotalUs`
+  (absolute exposure × gain at unity, in µs). Each frame two
+  candidate ratios are computed: `ratioMean = setpoint / lumaInRoi`
+  (spot mean of `IpaStats::rgbMean[*][*][1]` inside `meta.focusRoi`,
+  setpoint = `pow(MeanAlg.target/255, 2.2)`) and `ratioHighlight =
+  highlightCap / IQM_top2%` (post-WB max-of-channels of the brightest
+  ~2 % of patches in the same ROI, cap = 0.8). Strictest wins;
+  `target = filteredTotalUs × ratio`, then a single-pole LPF brings
+  `filteredTotalUs` toward `target`. Both ratios are clamped to the
+  per-sensor `MaxFstopDelta{Pos,Neg}` envelope as a per-frame rate
+  limit. A 2 % absolute-deviation dead-band freezes the LPF at
+  convergence. Optional asymmetric LPF speed (faster pole when
+  `|target/filtered − 1| < closeSpeedZone`) is configurable per
+  sensor via `active.hal_overrides.ae.close_speed_zone`; zero / key
+  missing disables the boost. EV-comp is a multiplicative offset on
+  the target. AE_LOCK holds the converged operating point with an
   EMA-smoothed locked-bias so EV steps under lock don't tear the
   rolling-shutter readout. Exposure / gain split via
   `SensorConfig::splitExposureGain` (prefers exposure up to one
@@ -323,12 +333,18 @@ converted from the stock NVIDIA `.isp` overrides via
   orientation, bayer pattern). Merged in at conversion time from
   `tuning/_module_<sensor>_<integrator>.json`.
 
-A separate per-sensor override file (e.g.
-`tuning/imx179_primax_overrides.json`) deep-merges on top of the
-converted profile in `SensorTuning::load`. Used for HAL-side knobs
-that aren't appropriate to round-trip through NVIDIA's JSON
-schema (currently AF state-machine tunings for IMX179: step,
-contrast / retrigger ratios, settle frames).
+HAL-specific knobs that don't have a counterpart in NVIDIA's `.isp`
+schema live under an `active.hal_overrides` sub-section *inside*
+the same per-module JSON. `tools/isp_to_json.py` carves this section
+out as preserve-verbatim across `.isp` regenerations. Currently
+populated with `ae.close_speed_zone` (per-sensor width of the AE
+LPF's faster-pole zone — see the AE summary above; IMX179 = 0
+because the boost resonates with per-frame variability on rear cam
+that hasn't been root-caused, OV5693 = 0.2). AF state-machine knobs
+(`step_coarse`, `step_fine`, `contrast_ratio`, etc.) live directly
+under `active.af` of the same JSON — there is no separate
+`*_overrides.json` file and no deep-merge logic in
+`SensorTuning::load`.
 
 `SensorTuning` (`isp/sensor/`) loads at `Camera` construction.
 `!isLoaded()` falls back to compile-time defaults so the HAL stays

@@ -412,37 +412,68 @@ this space directly (see below); AWB / AF will do the same.
 
 ### BasicIpa AE loop (landed)
 
-`BasicIpa::processStats` is a P-controller with EMA damping:
+`BasicIpa::processStats` is an open-loop EV-space target plus a
+single-pole LPF, with two parallel candidate ratios — strictest
+wins:
 
-1. Mean bin of the green-channel histogram over **all** 128 bins
-   (saturated + black-clip included — skipping them was tempting but
-   made AE chase overexposed results on high-contrast scenes; including
-   them lets saturation pull the metric toward 1.0 and the loop back
-   off). Divide by `(HIST_BINS - 1)` → mean luma in [0, 1]. Floor at
-   `kAeMeasuredFloor = 0.02` so a pitch-black frame doesn't produce
-   an unbounded ratio.
-2. `ratio = kAeSetpoint / meanLuma`, clamp ∈ `[0.5, 2.0]` so a single
-   very-bright / very-dark frame can't slam the sensor into saturation
-   or black-clip in one go. Damp: `adjusted = 1 + (ratio - 1) × 0.3`.
-3. Compute "last total at unity gain":
-   `lastTotal = lastExposureUs × lastGain / gainUnit`. Multiply by
-   `adjusted`. Clamp into `[kMinTotalUs, kMaxExposureUs × gainMax /
-   gainUnit]`.
-4. `SensorConfig::splitExposureGain` divides the new total back into
-   `(exposureUs, extraGainQ8)`. It prefers to spend exposure first up
-   to `kMaxExposureUs = 200000` (~200 ms, inside the default
-   `frame_length`) before pushing into analog gain — dark-scene
-   policy is **FPS priority**: we clamp rather than stretch
-   `frame_length` to brighten.
-5. Emit a two-entry `DelayedControls::Batch` with
-   `EXPOSURE = newExposureUs` and `GAIN = newGain`, stash both as
-   the new `last*`.
+1. **Spot mean.** `meanLumaInRoi` averages the green channel of
+   `IpaStats::rgbMean` inside `meta.focusRoi` (default centre 8×8
+   patches; tap-to-focus moves it). EMA-smoothed across frames at
+   `aeDamping = ConvergeSpeed` to filter measurement noise into the
+   controller. Floored at `awbMinChannel` so a near-black frame
+   doesn't produce an unbounded ratio.
+2. **Two ratios.**
+   - `ratioMean = effectiveSetpoint / meanLuma`, where
+     `effectiveSetpoint = aeSetpoint × aeCompFactor(evComp)` and
+     `aeSetpoint = pow(MeanAlg.target/255, 2.2)` — gamma-decode of
+     NVIDIA's post-gamma 0..255 target into the linear pre-gamma
+     domain the histogram lives in.
+   - `ratioHighlight = highlightCap / IQM_top2%`, where IQM is the
+     mean of the top 2 % brightest patches' post-WB max-of-channels
+     inside the same ROI; `highlightCap = 0.8`. On dim scenes IQM
+     stays low, ratioHighlight clamps above ratioMax and falls out
+     of `min`. On scenes with a bright region, this candidate pulls
+     AE darker than ratioMean would, capping post-WB clip headroom.
+   Both clamped to `[aeRatioMin, aeRatioMax]` (from tuning's
+   `MaxFstopDelta{Pos,Neg}`) as a per-frame rate limit.
+3. **EV-space target.** `ratio = min(ratioMean, ratioHighlight)`,
+   then `targetTotalUs = filteredTotalUs × ratio`, clamped to the
+   sensor envelope `[lineTimeUs × 2, maxExposureUsDefault × gainMax
+   / gainUnit]`. The clamp doubles as anti-windup: the LPF state
+   stays at `maxTotalUs` if the scene is darker than the sensor can
+   reach at default frame_length.
+4. **Dead-band + LPF.** If `|targetTotalUs / filteredTotalUs − 1| <
+   0.02` (2 %, RPi `stableRegion` default), freeze the LPF and
+   re-publish the held split — that's the single anti-pulsation
+   primitive. Otherwise:
+   `filteredTotalUs ← speed × targetTotalUs + (1 − speed) ×
+   filteredTotalUs`, where
+   `speed = (closeSpeedZone > 0 && |dev| < closeSpeedZone) ?
+   √aeDamping : aeDamping`. The asymmetric (faster) pole near
+   target is opt-in per sensor via
+   `active.hal_overrides.ae.close_speed_zone`; zero / missing
+   disables it (single pole everywhere).
+5. **Split.** `SensorConfig::splitExposureGain` divides
+   `filteredTotalUs` into `(exposureUs, extraGainQ8)`, preferring
+   exposure up to one default frame_length before reaching for
+   gain — dark-scene policy is FPS priority. Emit a two-entry
+   `DelayedControls::Batch`.
 
-Tuning constants (`kAeSetpoint = 0.35`, `kAeDamping = 0.3`, ratio
-clamps, `kAeMeasuredFloor`, exposure envelope) live in
-`hal/ipa/BasicIpa.cpp`'s anonymous namespace. Moving them into
-`SensorTuning` is a future enhancement when two sensors disagree; for
-now IMX179 and OV5693 use the same values.
+State is `filteredTotalUs` (float) plus `smoothedLuma` (input
+filter) and `lockedBiasedTotalUs` (only used during AE_LOCK).
+There is **no multiplier-space accumulator** — the previous design
+kept state as `state ×= smoothedAeMult` with cascaded EMA, which
+carried directional inertia past the setpoint crossing and showed
+up as ~30-frame overshoot ramps on dim scenes (front-cam OV5693
+"slow ISO pulsation" bug, fixed 2026-05-01).
+
+Knobs, all from `SensorTuning::aeParams()`:
+`{higher,lower}Target` (→ aeSetpoint), `convergeSpeed` (→
+aeDamping), `maxFstopDelta{Pos,Neg}` (→ ratio clamps), and the HAL-
+specific `closeSpeedZone` from `active.hal_overrides.ae.
+close_speed_zone`. No silent fallbacks — missing keys → zero →
+the corresponding branch disables itself (LPF runs without the
+asymmetric boost, etc.).
 
 ### ApplySettingsStage AE-mode branch
 
