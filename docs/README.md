@@ -14,6 +14,7 @@ Design notes, architectural analysis, and a roadmap for the Tegra K1
 | [open-questions.md](open-questions.md) | Open architecture questions worth investigating |
 | [open-source-references.md](open-source-references.md) | Patterns from libcamera / RkISP1 / RPi worth borrowing |
 | [libcamera-steal-list.md](libcamera-steal-list.md) | Ranked, scoped TODO list of concrete patterns to lift from libcamera, with file paths on both sides |
+| [3a-refactor.md](3a-refactor.md) | Migration plan for `BasicIpa` → `Ipa3A` + three pure controllers + partial-driven results. Transient; deleted on completion. |
 | [roadmap.md](roadmap.md) | Done items + open work |
 | [bugs.md](bugs.md) | Known bugs (deferred or won't-fix), each with location and likely cause |
 
