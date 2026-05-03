@@ -34,6 +34,12 @@ struct AwbResult {
     std::experimental::optional<CcmQ10>   ccm;
     int                                   estCct = 0;
     uint8_t                               state  = 0;
+    /* Number of patches that passed the saturation / noise-floor
+     * filter on this tick. -1 = controller didn't run (manual mode,
+     * lock, or scene below floor); >= 0 = ran, value matches the
+     * gate input. Used by the throttled diagnostic log to surface
+     * gray-world confidence per frame. */
+    int                                   validPatchCount = -1;
 };
 
 } /* namespace android */

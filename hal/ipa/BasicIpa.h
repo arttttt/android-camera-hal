@@ -2,11 +2,13 @@
 #define HAL_IPA_BASIC_IPA_H
 
 #include <stdint.h>
+#include <memory>
 
 #include "Ipa.h"
 
 namespace android {
 
+class  AutoWhiteBalanceController;
 class  IspPipeline;
 class  SensorTuning;
 struct SensorConfig;
@@ -55,6 +57,11 @@ public:
              const SensorTuning *tuning,
              const float wbGainPrior[3],
              int16_t *ccmBufferQ10);
+    /* Out-of-line because mAwb is a unique_ptr to a forward-declared
+     * type — implicit destructor would need the full definition
+     * here, which we deliberately keep out to break the include cycle
+     * between BasicIpa and the controllers it owns. */
+    ~BasicIpa() override;
 
     DelayedControls::Batch processStats(uint32_t inputSequence,
                                         const IpaStats &stats,
@@ -69,19 +76,23 @@ private:
     const SensorTuning  *tuning;
     int16_t             *ccmBufferQ10;
 
-    /* AWB / AE knobs resolved at construction from SensorTuning
-     * (with compile-time fallbacks for tunings that predate the
-     * active.* promotions). Stored as members so the ctor init-
-     * list can use them and the per-frame loop reads them hot —
-     * no tuning dereference on the stats path. */
-    float   awbMinChannel;       /* CStatsMinThreshold              */
-    float   awbSceneLightFloor;  /* CStatsDarkThreshold             */
-    float   awbDamping;          /* SmoothingWpTrackingFraction     */
+    /* AE knobs resolved at construction from SensorTuning. Stored
+     * as members so the ctor init-list can use them and the per-
+     * frame loop reads them hot — no tuning dereference on the
+     * stats path. AWB knobs of the same shape live inside the
+     * AutoWhiteBalanceController. */
     float   aeSetpoint;          /* (HigherTarget + LowerTarget) / 2/255 */
     float   aeDamping;           /* ConvergeSpeed                   */
     float   aeRatioMin;          /* 2^-MaxFstopDeltaNeg             */
     float   aeRatioMax;          /* 2^+MaxFstopDeltaPos             */
     float   aeCloseSpeedZone;    /* hal_overrides.ae.close_speed_zone */
+    float   awbSceneLightFloor;  /* CStatsDarkThreshold — coordinator
+                                    gate, kept here until step 6 lifts
+                                    coordination into Ipa3A          */
+    float   awbMinChannel;       /* CStatsMinThreshold — used by AE as
+                                    a per-patch noise floor; moves
+                                    into AutoExposureController in
+                                    step 4                           */
 
     /* AE state — total exposure at unity gain (µs), i.e. the
      * exposureUs × gain / gainUnit scalar in absolute EV space. Each
@@ -118,16 +129,12 @@ private:
      * the next lock entry, seed from target instead of EMA". */
     float    lockedBiasedTotalUs;
 
-    /* AWB state. R / B gain multipliers relative to G (G pinned at
-     * unity on the shader side). The prior values come from the
-     * sensor's tuned wbGain at its daylight CcmSet (the hottest-CCT
-     * anchor the tuning ships) — the "neutral white on this sensor"
-     * point. Floats so the EMA damps cleanly between frames;
-     * converted to Q8 only at the setWbGains boundary. */
-    float   wbRPrior;
-    float   wbBPrior;
-    float   lastWbR;
-    float   lastWbB;
+    /* AWB controller — owns gray-world math, EMA-relax to prior,
+     * gate, CCT estimation, and CCM LERP. Lifetime tied to BasicIpa.
+     * The controller exposes `currentWbR/B` and `currentEstCct` for
+     * AE highlight-constraint and diagnostics; everything else flows
+     * through `process` / `applyManualGains` returning AwbResult. */
+    std::unique_ptr<AutoWhiteBalanceController> mAwb;
 
     /* Smoothed scene luma. Measurement noise and frame-to-frame
      * scene flutter would otherwise push AE in and out of the

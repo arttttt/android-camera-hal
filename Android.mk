@@ -71,6 +71,7 @@ LOCAL_SRC_FILES += \
     hal/metadata/RequestTemplateBuilder.cpp \
     hal/metadata/ResultMetadataBuilder.cpp \
     hal/3a/AutoFocusController.cpp \
+    hal/3a/AutoWhiteBalanceController.cpp \
     hal/3a/ExposureControl.cpp \
     hal/ipa/BasicIpa.cpp \
     hal/ipa/NeonStatsEncoder.cpp \
