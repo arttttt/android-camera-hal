@@ -3,12 +3,52 @@
 
 #include <stdint.h>
 
+#include <camera/CameraMetadata.h>
+
 #include "IpaFrameMeta.h"
 #include "sensor/DelayedControls.h"
 
 namespace android {
 
+class PartialEmitter;
 struct IpaStats;
+struct SensorConfig;
+
+/* Per-frame inputs to Ipa::processStats. Carries the stats / metadata
+ * the controllers consume plus the contextual identity (frameNumber,
+ * timestamp) and emit channel (PartialEmitter) the IPA tick uses to
+ * publish per-controller partial results to the framework before the
+ * final buffer-bearing result lands. SensorConfig stays a const ref
+ * because gainToIso/maxExposureUs and friends drive the AE-partial
+ * metadata derivation.
+ *
+ * Pass-by-struct because StubIpa and Ipa3A share the signature; an
+ * argument list this wide gets unwieldy fast. */
+class DelayedControls;
+
+struct IpaProcessParams {
+    uint32_t                 inputSequence;
+    uint32_t                 frameNumber;
+    int64_t                  timestampNs;
+    const IpaStats          &stats;
+    const IpaFrameMeta      &meta;
+    const CameraMetadata    &requestSettings;  /* request metadata, used as
+                                                * partial-CameraMetadata seed
+                                                * so AE/AWB state echoes pick
+                                                * up the request's *_MODE /
+                                                * *_LOCK keys                */
+    const SensorConfig      &sensorCfg;
+    DelayedControls         *delayedControls;  /* applyControls(frameNumber)
+                                                * yields what's physically on
+                                                * the sensor right now (used
+                                                * to fill the AE partial's
+                                                * exposure / sensitivity
+                                                * fields with the real
+                                                * applied values rather than
+                                                * the IPA's just-decided
+                                                * future-frame batch).      */
+    PartialEmitter          *emitter;     /* nullable on cold start */
+};
 
 /* Image Processing Algorithms — the 3A brain.
  *
@@ -36,15 +76,15 @@ class Ipa {
 public:
     virtual ~Ipa() {}
 
-    /* Inspects stats for frame `inputSequence` and returns the
-     * control batch the scheduler should publish. Batch entries
+    /* Inspects stats for frame `params.inputSequence` and returns
+     * the control batch the scheduler should publish. Batch entries
      * with has[i] == false mean "no change for this control on
      * this frame" — DelayedControls leaves the matching cell
-     * untouched. `meta` carries the framework AE / AWB mode and
-     * lock flags for the current request. */
-    virtual DelayedControls::Batch processStats(uint32_t inputSequence,
-                                                const IpaStats &stats,
-                                                const IpaFrameMeta &meta) = 0;
+     * untouched. The IPA tick may also emit per-controller partial
+     * result metadata via `params.emitter` between controller calls
+     * — apps that gate UI on AE / AWB state see them earlier than
+     * the buffer-bearing final partial. */
+    virtual DelayedControls::Batch processStats(const IpaProcessParams &params) = 0;
 
     /* Drops any internal averaging / peak-tracking state. Called
      * on session boundary (closeDevice) alongside the other

@@ -714,6 +714,7 @@ void Camera::buildInfrastructure() {
         d.sensorCfg       = &mSensorCfg;
         d.statsWorker     = mStatsWorker.get();
         d.af              = mAf;
+        d.emitter         = mPartialEmitter.get();
         mStatsProcessStage.reset(new StatsProcessStage(d));
     }
 

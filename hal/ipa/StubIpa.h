@@ -13,9 +13,7 @@ namespace android {
  * without stats support. */
 class StubIpa : public Ipa {
 public:
-    DelayedControls::Batch processStats(uint32_t inputSequence,
-                                        const IpaStats &stats,
-                                        const IpaFrameMeta &meta) override;
+    DelayedControls::Batch processStats(const IpaProcessParams &params) override;
     void reset() override;
     /* No AE loop here — always reports converged so the AF gate
      * doesn't block on stub builds; lock is a structural no-op. */

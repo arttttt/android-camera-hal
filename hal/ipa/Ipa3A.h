@@ -55,9 +55,7 @@ public:
      * include cycle between Ipa3A and the controllers it owns. */
     ~Ipa3A() override;
 
-    DelayedControls::Batch processStats(uint32_t inputSequence,
-                                        const IpaStats &stats,
-                                        const IpaFrameMeta &meta) override;
+    DelayedControls::Batch processStats(const IpaProcessParams &params) override;
     void reset() override;
     bool isAeConverged() const override;
     void setAeLock(bool lock) override;

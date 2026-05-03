@@ -5,6 +5,8 @@
 
 #include <system/camera_metadata.h>
 
+#include <camera/CameraMetadata.h>
+
 #include "3a/AeResult.h"
 #include "3a/AfResult.h"
 #include "3a/AutoExposureController.h"
@@ -14,6 +16,9 @@
 #include "IpaFrameMeta.h"
 #include "IpaStats.h"
 #include "IspPipeline.h"
+#include "metadata/CameraStaticMetadata.h"
+#include "metadata/ResultMetadataBuilder.h"
+#include "pipeline/PartialEmitter.h"
 #include "sensor/SensorConfig.h"
 #include "sensor/SensorTuning.h"
 
@@ -115,9 +120,9 @@ void Ipa3A::setAeLock(bool lock) {
     mAe->setLock(lock);
 }
 
-DelayedControls::Batch Ipa3A::processStats(uint32_t /*inputSequence*/,
-                                               const IpaStats &stats,
-                                               const IpaFrameMeta &meta) {
+DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
+    const IpaStats     &stats = params.stats;
+    const IpaFrameMeta &meta  = params.meta;
     DelayedControls::Batch emptyBatch;
     for (int i = 0; i < DelayedControls::COUNT; ++i) {
         emptyBatch.has[i] = false;
@@ -159,6 +164,38 @@ DelayedControls::Batch Ipa3A::processStats(uint32_t /*inputSequence*/,
         for (int i = 0; i < 9; ++i) ccmBufferQ10[i] = awbResult.ccm->v[i];
     }
 
+    /* Build the per-frame AF report once — used by buildAwbMetadata
+     * (AWB-state derivation reads afState) and by ResultDispatchStage
+     * later for the AF partial. */
+    AutoFocusController::Report afReport;
+    afReport.afState = ANDROID_CONTROL_AF_STATE_INACTIVE;
+    afReport.afMode  = ANDROID_CONTROL_AF_MODE_OFF;
+    afReport.focusDiopter = 0.f;
+    if (af) afReport = af->report();
+
+    /* AWB partial — emit immediately so apps gating UI on AWB state
+     * see it without waiting for the buffer-bearing final result.
+     * The metadata subset includes ANDROID_CONTROL_AWB_STATE /
+     * ANDROID_CONTROL_AWB_MODE; everything else lands later. The
+     * source CameraMetadata is a copy of the request settings so
+     * `cm.exists(ANDROID_CONTROL_AWB_LOCK)` and friends used by the
+     * builder's state derivation pick up app-provided values. */
+    if (params.emitter) {
+        ResultMetadataBuilder::FrameState fs;
+        fs.timestampNs       = params.timestampNs;
+        fs.frameNumber       = params.frameNumber;
+        fs.appliedExposureUs = 0;
+        fs.appliedGain       = 0;
+        fs.af                = afReport;
+        fs.aeConverged       = false;
+
+        CameraMetadata awbMd = params.requestSettings;
+        ResultMetadataBuilder::buildAwbMetadata(awbMd, fs);
+        const camera_metadata_t *awbBlob = awbMd.getAndLock();
+        params.emitter->emit(params.frameNumber, 1, awbBlob, 0, nullptr);
+        awbMd.unlock(awbBlob);
+    }
+
     /* AE — coordinator gates the manual-mode skip; otherwise the
      * controller runs and decides internally whether to publish the
      * lock-held value or the freshly-computed batch. The current WB
@@ -169,6 +206,40 @@ DelayedControls::Batch Ipa3A::processStats(uint32_t /*inputSequence*/,
         aeResult = mAe->process(stats, meta,
                                 mAwb->currentWbR(),
                                 mAwb->currentWbB());
+    }
+
+    /* AE partial — emit immediately. Apps watching ANDROID_CONTROL_AE_STATE
+     * (e.g. PRECAPTURE / CONVERGED transitions) see them as soon as the
+     * IPA tick finishes, ahead of the buffer-bearing final result.
+     * appliedExposureUs / appliedGain on this frame come from
+     * DelayedControls::applyControls(frameNumber) — what's physically
+     * in effect right now, not the IPA's just-decided batch (which
+     * lands one delay window later). */
+    if (params.emitter) {
+        int32_t appliedExpUs = params.sensorCfg.exposureDefault;
+        int32_t appliedGain  = params.sensorCfg.gainDefault;
+        if (params.delayedControls) {
+            const DelayedControls::Batch live =
+                params.delayedControls->applyControls(params.frameNumber);
+            if (live.has[DelayedControls::EXPOSURE])
+                appliedExpUs = live.val[DelayedControls::EXPOSURE];
+            if (live.has[DelayedControls::GAIN])
+                appliedGain  = live.val[DelayedControls::GAIN];
+        }
+
+        ResultMetadataBuilder::FrameState fs;
+        fs.timestampNs       = params.timestampNs;
+        fs.frameNumber       = params.frameNumber;
+        fs.appliedExposureUs = appliedExpUs;
+        fs.appliedGain       = appliedGain;
+        fs.af                = afReport;
+        fs.aeConverged       = mAe->isConverged();
+
+        CameraMetadata aeMd = params.requestSettings;
+        ResultMetadataBuilder::buildAeMetadata(aeMd, fs, params.sensorCfg);
+        const camera_metadata_t *aeBlob = aeMd.getAndLock();
+        params.emitter->emit(params.frameNumber, 2, aeBlob, 0, nullptr);
+        aeMd.unlock(aeBlob);
     }
 
     /* AF — runs every tick the controller is wired in. process()

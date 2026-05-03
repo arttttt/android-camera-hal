@@ -5,10 +5,11 @@
 
 namespace android {
 
-class  Ipa;
-class  DelayedControls;
-class  StatsWorker;
 class  AutoFocusController;
+class  DelayedControls;
+class  Ipa;
+class  PartialEmitter;
+class  StatsWorker;
 struct SensorConfig;
 
 /* Runs on PipelineThread once the frame's submit fence has
@@ -40,7 +41,11 @@ public:
         DelayedControls     *delayedControls;
         const SensorConfig  *sensorCfg;
         StatsWorker         *statsWorker;
-        AutoFocusController *af;          /* may be null */
+        AutoFocusController *af;          /* may be null — used for
+                                           * currentFocusRoi() only       */
+        PartialEmitter      *emitter;     /* threaded into the IPA tick so
+                                           * AWB / AE partials hit the
+                                           * framework on this stage      */
     };
 
     explicit StatsProcessStage(const Deps &deps);

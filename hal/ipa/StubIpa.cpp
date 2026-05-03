@@ -4,9 +4,7 @@
 
 namespace android {
 
-DelayedControls::Batch StubIpa::processStats(uint32_t /*inputSequence*/,
-                                             const IpaStats & /*stats*/,
-                                             const IpaFrameMeta & /*meta*/) {
+DelayedControls::Batch StubIpa::processStats(const IpaProcessParams & /*params*/) {
     DelayedControls::Batch empty;
     for (int i = 0; i < DelayedControls::COUNT; ++i) {
         empty.has[i] = false;

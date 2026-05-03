@@ -91,8 +91,23 @@ void StatsProcessStage::process(PipelineContext &ctx) {
      *
      * IPA also drives AF internally now (post-step-5 of the 3A
      * refactor) — the coordinator calls af->process(stats, ...) and
-     * routes its result, so this stage no longer touches AF. */
-    DelayedControls::Batch batch = deps.ipa->processStats(statsSeq, stats, meta);
+     * routes its result, so this stage no longer touches AF.
+     *
+     * IpaProcessParams carries everything the AWB / AE partial emits
+     * inside the tick need (frameNumber, timestampNs, applied-state
+     * lookup via DelayedControls, the request-settings seed). */
+    IpaProcessParams params = {
+        statsSeq,
+        ctx.request.frameNumber,
+        ctx.tShutter ? ctx.tShutter : ctx.tAccepted,
+        stats,
+        meta,
+        ctx.request.settings,
+        *deps.sensorCfg,
+        deps.delayedControls,
+        deps.emitter,
+    };
+    DelayedControls::Batch batch = deps.ipa->processStats(params);
     ctx.aeConverged = deps.ipa->isAeConverged();
 
     const nsecs_t tIpa = systemTime();
