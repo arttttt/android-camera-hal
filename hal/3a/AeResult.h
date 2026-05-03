@@ -35,8 +35,15 @@ struct AeResult {
     DelayedControls::Batch  batch;
     uint8_t                 state;
     bool                    converged;
+    /* Diagnostic-only — IQM of the top 2% post-WB max-of-channels
+     * patches inside the AE focus ROI on this tick. The highlight-
+     * protection candidate (`gain_highlight = highlightCap / iqm`)
+     * is internal to the controller; this field surfaces the metric
+     * to the per-32-frame log for tuning visibility. Zero when the
+     * controller did not run this tick. */
+    float                   iqmHighlight;
 
-    AeResult() : batch{}, state(0), converged(false) {}
+    AeResult() : batch{}, state(0), converged(false), iqmHighlight(0.f) {}
 };
 
 } /* namespace android */
