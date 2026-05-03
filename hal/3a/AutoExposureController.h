@@ -17,7 +17,7 @@ struct SensorConfig;
  * highlight constraint), strictest wins. Owns the smoothed total-
  * exposure state (`filteredTotalUs`), the input-luma EMA, the
  * convergence dead-band counter, and the AE-LOCK held state. See
- * docs/tier3_architecture.md "BasicIpa AE loop" for the full
+ * docs/tier3_architecture.md "Ipa3A AE loop" for the full
  * description of the math.
  *
  * Pure math: the controller never reaches into the ISP, never pushes
@@ -54,7 +54,7 @@ public:
     /* Drop the smoothed luma + locked-bias EMA so the next session
      * starts from a clean slate. Other state (`filteredTotalUs`,
      * lock flag) reseeds from sensor defaults the same way the
-     * previous BasicIpa::reset did. */
+     * previous Ipa3A::reset did. */
     void reset();
 
     /* True when the controller has been within the dead-band for

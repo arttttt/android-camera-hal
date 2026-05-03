@@ -107,7 +107,7 @@ public:
      *   fit so far-off chromaticities don't extrapolate CCT beyond
      *   the fit's calibrated range.
      *
-     * Stats / smoothing axis (consumed by BasicIpa's AWB gate):
+     * Stats / smoothing axis (consumed by Ipa3A's AWB gate):
      *   cStatsMinThreshold     — per-channel floor for a patch to
      *                            be counted in gray-world (noise
      *                            floor — NVIDIA ships 0.02).
@@ -200,7 +200,7 @@ public:
      * lower one), ConvergeSpeed is the EMA damping on the per-frame
      * correction, and MaxFstopDelta{Pos,Neg} cap the single-frame
      * exposure change in f-stops. `loaded` detects the promoted
-     * section; tunings without it let BasicIpa fall back to its
+     * section; tunings without it let Ipa3A fall back to its
      * compile-time defaults.
      *
      * Target / brightness are in NVIDIA's 0..255 mean-luma scale;
@@ -274,7 +274,7 @@ public:
      *   out[0] = G_raw / R_raw
      *   out[1] = 1.0
      *   out[2] = G_raw / B_raw
-     * which is exactly the gray-world result BasicIpa's per-frame
+     * which is exactly the gray-world result Ipa3A's per-frame
      * AWB produces, so cold-start and converged steady-state live
      * in the same domain and there's no jump at the first tick.
      * Falls back to {1, 1, 1} when the tuning has no FusionLights

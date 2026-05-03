@@ -64,7 +64,7 @@
 #include "pipeline/stages/ResultDispatchStage.h"
 #include "pipeline/stages/StatsDispatchStage.h"
 #include "pipeline/stages/StatsProcessStage.h"
-#include "ipa/BasicIpa.h"
+#include "ipa/Ipa3A.h"
 
 extern camera_module_t HAL_MODULE_INFO_SYM;
 
@@ -236,9 +236,9 @@ int Camera::openDevice(hw_device_t **device) {
         mDev->openFocuser("/dev/v4l-subdev0");
 
     /* Pull driver-advertised ranges into mSensorCfg before anything
-     * consumes it. BasicIpa's ctor (inside buildInfrastructure) uses
+     * consumes it. Ipa3A's ctor (inside buildInfrastructure) uses
      * gainDefault / exposureDefault / gainMax / frameLenDefault to
-     * seed AE state — querying afterwards leaves BasicIpa holding
+     * seed AE state — querying afterwards leaves Ipa3A holding
      * stale values from SensorConfig's static seeds until the first
      * session's configureStreams runs. */
     populateSensorConfigFromDriver();
@@ -574,16 +574,16 @@ void Camera::buildInfrastructure() {
 
     /* WB prior + seed CCM. Takes the hottest-CCT CcmSet the tuning
      * ships as the sensor's calibrated "daylight" anchor — no
-     * literal CCT appears here. BasicIpa stores the same prior as
+     * literal CCT appears here. Ipa3A stores the same prior as
      * its lastWbR / lastWbB so the very first frame (before any
      * stats arrive) renders through sensor-correct WB gains; the
      * mCcmQ10 buffer handed to setCcm is then rewritten every AWB
-     * tick via BasicIpa's U → CCT → LERP path. Tunings without
+     * tick via Ipa3A's U → CCT → LERP path. Tunings without
      * awb.v4 fall back to nearest-CCT pick at the same daylight
      * anchor via the legacy ccmForCctQ10 route. */
     /* `wbGainPrior` now carries ready-to-apply shader gains —
      * (G/R, 1.0, G/B) of NVIDIA's FusionInitLight raw anchor, post
-     * black-level. BasicIpa consumes wbGainPrior[0] / wbGainPrior[1]
+     * black-level. Ipa3A consumes wbGainPrior[0] / wbGainPrior[1]
      * as wbRPrior and [2] / [1] as wbBPrior (both yield G/{R,B} as
      * the gray-world R and B multipliers). For the CCM seed we need
      * the same U = ln(G/B) the per-frame AWB loop uses, which is
@@ -603,14 +603,14 @@ void Camera::buildInfrastructure() {
 
     /* AF controller built before IPA so the IPA can hold a non-null
      * AF pointer for in-coordinator dispatch (af->process is called
-     * from BasicIpa::processStats and its result drives the AE / AWB
+     * from Ipa3A::processStats and its result drives the AE / AWB
      * lock toggles via the coordinator). */
     if (mSoftIspEnabled) {
         mExposure = new ExposureControl(mDev, mSensorCfg);
         mAf       = new AutoFocusController(mDev, &mTuning);
     }
 
-    mIpa.reset(new BasicIpa(mSensorCfg, mIsp, mAf, &mTuning,
+    mIpa.reset(new Ipa3A(mSensorCfg, mIsp, mAf, &mTuning,
                             wbGainPrior, mCcmQ10));
 
     mJpeg = new JpegEncoder();

@@ -28,7 +28,7 @@ struct SensorConfig;
  * libcamera IPU3 / rkisp1 convention. Runs on PipelineThread via
  * StatsProcessStage. Every call must finish well below one frame
  * budget (< 1 ms on Tegra K1 CPU). */
-class BasicIpa : public Ipa {
+class Ipa3A : public Ipa {
 public:
     /* `wbGainPrior` carries the sensor's per-CCT neutral priors (R, G, B)
      * from SensorTuning. The AWB controller normalises to R/G and B/G
@@ -44,7 +44,7 @@ public:
      * it in place lets the next demosaic submit read fresh
      * coefficients without any extra plumbing. Pass tuning == nullptr
      * to disable the CCT drive. */
-    BasicIpa(const SensorConfig &sensorCfg, IspPipeline *isp,
+    Ipa3A(const SensorConfig &sensorCfg, IspPipeline *isp,
              AutoFocusController *af,
              const SensorTuning *tuning,
              const float wbGainPrior[3],
@@ -52,8 +52,8 @@ public:
     /* Out-of-line because mAe / mAwb are unique_ptrs to forward-
      * declared types — implicit destructor would need the full
      * definitions here, which we deliberately keep out to break the
-     * include cycle between BasicIpa and the controllers it owns. */
-    ~BasicIpa() override;
+     * include cycle between Ipa3A and the controllers it owns. */
+    ~Ipa3A() override;
 
     DelayedControls::Batch processStats(uint32_t inputSequence,
                                         const IpaStats &stats,

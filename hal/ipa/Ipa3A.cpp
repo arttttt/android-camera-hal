@@ -1,4 +1,4 @@
-#include "BasicIpa.h"
+#include "Ipa3A.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -17,7 +17,7 @@
 #include "sensor/SensorConfig.h"
 #include "sensor/SensorTuning.h"
 
-#define LOG_TAG "Cam-BasicIpa"
+#define LOG_TAG "Cam-Ipa3A"
 #include <utils/Log.h>
 
 namespace android {
@@ -56,7 +56,7 @@ float meanLumaInRoiForLog(const IpaStats &stats, const IpaFrameMeta &meta) {
 
 } /* namespace */
 
-BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
+Ipa3A::Ipa3A(const SensorConfig &cfg, IspPipeline *ispPipeline,
                    AutoFocusController *afCtrl,
                    const SensorTuning *sensorTuning,
                    const float wbGainPrior[3],
@@ -87,9 +87,9 @@ BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
     }
 }
 
-BasicIpa::~BasicIpa() = default;
+Ipa3A::~Ipa3A() = default;
 
-void BasicIpa::reset() {
+void Ipa3A::reset() {
     mAe->reset();
     mAwb->reset();
 
@@ -107,15 +107,15 @@ void BasicIpa::reset() {
     }
 }
 
-bool BasicIpa::isAeConverged() const {
+bool Ipa3A::isAeConverged() const {
     return mAe->isConverged();
 }
 
-void BasicIpa::setAeLock(bool lock) {
+void Ipa3A::setAeLock(bool lock) {
     mAe->setLock(lock);
 }
 
-DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
+DelayedControls::Batch Ipa3A::processStats(uint32_t /*inputSequence*/,
                                                const IpaStats &stats,
                                                const IpaFrameMeta &meta) {
     DelayedControls::Batch emptyBatch;

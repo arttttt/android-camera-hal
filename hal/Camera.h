@@ -136,7 +136,7 @@ private:
     /* Pull driver-advertised ranges (frame-length, gain, exposure)
      * into mSensorCfg via VIDIOC_QUERYCTRL. Called from openDevice
      * before buildInfrastructure so every subsequent consumer —
-     * BasicIpa's ctor, ExposureControl, result metadata — reads
+     * Ipa3A's ctor, ExposureControl, result metadata — reads
      * live V4L2 values rather than SensorConfig's static seeds. */
     void populateSensorConfigFromDriver();
 

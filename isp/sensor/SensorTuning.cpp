@@ -230,7 +230,7 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
          * means under one tuned illuminant; the default index is
          * the one NVIDIA ships as "start here". Subtract
          * opticalBlack.r so the RGB lives in the same post-BL
-         * domain BasicIpa's stats work in. */
+         * domain Ipa3A's stats work in. */
         const Json::Value &lights = v4["FusionLights"];
         const Json::Value &init   = v4["FusionInitLight"];
         if (lights.isArray() && init.isNumeric()) {
