@@ -38,8 +38,9 @@ struct IpaFrameMeta {
     /* ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION — signed step count in
      * units of ANDROID_CONTROL_AE_COMPENSATION_STEP (1/3 stop in our
      * static metadata). The IPA scales its target by 2^(value/3)
-     * before driving the AE controller; the manual path lives in
-     * ExposureControl::onSettings and is unaffected. */
+     * before driving the AE controller; the manual-mode equivalent
+     * lives in AutoExposureController::parseManualSettings, which
+     * applies the same EV scaling against the requested shutter time. */
     int32_t aeExposureCompensation;
 
     /* ANDROID_COLOR_CORRECTION_GAINS, decoded as the per-channel

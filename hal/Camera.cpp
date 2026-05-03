@@ -142,7 +142,6 @@ Camera::Camera(const char *devNode, int facing)
     mValid = true;
     mIsp = NULL;
     mAf = NULL;
-    mExposure = NULL;
     mJpeg = NULL;
     mBufferProcessor = NULL;
 
@@ -439,9 +438,16 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
     }
     ALOGV("+-------------------------------------------------------------------------------");
 
-    /* mExposure is long-lived (built in openDevice); push defaults
-     * each reconfigure so sensor controls reflect the new session. */
-    if (mExposure) mExposure->applyDefaults();
+    /* Push exposure / gain defaults so the sensor has a sane baseline
+     * before STREAMON. The driver-queried defaults from
+     * populateSensorConfigFromDriver are the "what the sensor itself
+     * boots to" values; apply them once per reconfigure so a session
+     * starting from a previous frame's leftover state lands on the
+     * documented default. AE / IPA take over from frame 1 onward. */
+    if (mDev) {
+        mDev->setControl(V4L2_CID_EXPOSURE, mSensorCfg.exposureDefault);
+        mDev->setControl(V4L2_CID_GAIN,     mSensorCfg.gainDefault);
+    }
 
     if(!mDev->setStreaming(true)) {
         ALOGE("Could not start streaming");
@@ -606,8 +612,7 @@ void Camera::buildInfrastructure() {
      * from Ipa3A::processStats and its result drives the AE / AWB
      * lock toggles via the coordinator). */
     if (mSoftIspEnabled) {
-        mExposure = new ExposureControl(mDev, mSensorCfg);
-        mAf       = new AutoFocusController(mDev, &mTuning);
+        mAf = new AutoFocusController(mDev, &mTuning);
     }
 
     mIpa.reset(new Ipa3A(mSensorCfg, mIsp, mAf, &mTuning,
@@ -654,7 +659,7 @@ void Camera::buildInfrastructure() {
      * standalone rather than appended here. */
     {
         ApplySettingsStage::Deps d;
-        d.exposure        = mExposure;
+        d.dev             = mDev;
         d.af              = mAf;
         d.sensorCfg       = &mSensorCfg;
         d.delayedControls = mDelayedControls.get();
@@ -771,7 +776,6 @@ void Camera::destroyInfrastructure() {
 
     delete mBufferProcessor; mBufferProcessor = NULL;
     delete mAf;              mAf = NULL;
-    delete mExposure;        mExposure = NULL;
     delete mJpeg;            mJpeg = NULL;
     if (mIsp) { mIsp->destroy(); delete mIsp; mIsp = NULL; }
 

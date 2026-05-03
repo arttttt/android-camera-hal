@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#include <camera/CameraMetadata.h>
+
 #include "AeResult.h"
 
 namespace android {
@@ -11,6 +13,20 @@ class IpaFrameMeta;
 class SensorTuning;
 struct IpaStats;
 struct SensorConfig;
+
+/* Output of `AutoExposureController::parseManualSettings` — the V4L2
+ * triple to push for a manual-AE frame (or the auto-AE cold-start
+ * fallback path). DelayedControls::Batch only carries EXPOSURE +
+ * GAIN; the manual path also needs a frame_length sized for the
+ * requested exposure (long shutter has to grow the readout window
+ * past the default frame period), so the helper returns all three
+ * values in one struct. ApplySettingsStage builds a V4l2Controls
+ * write from this. */
+struct ExposureWriteValues {
+    int32_t frameLen;
+    int32_t exposureUs;
+    int32_t gain;
+};
 
 /* AE controller — open-loop EV-space target plus a single-pole LPF,
  * with two parallel candidate ratios (mean-grey target + top-2% IQM
@@ -28,10 +44,11 @@ struct SensorConfig;
  *
  * Coordinator-side gating:
  *  - Caller invokes `process` only when `meta.aeMode != AE_MODE_OFF`.
- *    Manual AE keeps the framework as the authority and is handled
- *    on the apply side (ApplySettingsStage / ExposureControl);
- *    invoking `process` for AE_MODE_OFF would push state without
- *    any of it landing on the sensor.
+ *    Manual AE keeps the framework as the authority — ApplySettingsStage
+ *    parses the request via the static `parseManualSettings` helper
+ *    on this class and writes V4L2 directly; invoking `process` for
+ *    AE_MODE_OFF would push state without any of it landing on the
+ *    sensor.
  *  - Caller is also free to skip the call entirely on AF-sweep
  *    frames; the controller's state is preserved across the gap and
  *    AE resumes from the converged operating point on the next call.
@@ -69,6 +86,21 @@ public:
 
     /* For diagnostic logging — current EV-space state. */
     float currentFilteredTotalUs() const { return filteredTotalUs; }
+
+    /* Manual-AE / cold-start parsing. Stateless deterministic mapping
+     * from request metadata to the V4L2 triple. Reads
+     * ANDROID_SENSOR_EXPOSURE_TIME, ANDROID_SENSOR_SENSITIVITY,
+     * ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION, ANDROID_CONTROL_AE_MODE
+     * (clamped, EV-comp applied, then split based on AE_MODE: manual
+     * grows frame_length to fit a long shutter, auto-cold-start
+     * splits via SensorConfig::splitExposureGain to keep FPS).
+     *
+     * Static because there is no inter-frame state to preserve — the
+     * call is pure. ApplySettingsStage uses it on the RequestThread
+     * for both the AE_MODE_OFF path and the auto-mode cold-start
+     * fallback when the IPA hasn't pushed yet. */
+    static ExposureWriteValues parseManualSettings(const CameraMetadata &cm,
+                                                   const SensorConfig   &cfg);
 
 private:
     const SensorConfig &sensorCfg;

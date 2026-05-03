@@ -17,7 +17,6 @@
 #include "ipa/StatsWorker.h"
 #include "IspPipeline.h"
 #include "3a/AutoFocusController.h"
-#include "3a/ExposureControl.h"
 #include "jpeg/JpegEncoder.h"
 #include "pipeline/BufferProcessor.h"
 #include "pipeline/CameraCallbackEmitter.h"
@@ -84,7 +83,6 @@ protected:
 private:
     IspPipeline *mIsp;
     AutoFocusController *mAf;
-    ExposureControl *mExposure;
     JpegEncoder *mJpeg;
     BufferProcessor *mBufferProcessor;
     Mutex mMutex;
@@ -136,8 +134,9 @@ private:
     /* Pull driver-advertised ranges (frame-length, gain, exposure)
      * into mSensorCfg via VIDIOC_QUERYCTRL. Called from openDevice
      * before buildInfrastructure so every subsequent consumer —
-     * Ipa3A's ctor, ExposureControl, result metadata — reads
-     * live V4L2 values rather than SensorConfig's static seeds. */
+     * Ipa3A's ctor, ApplySettingsStage's manual path, result
+     * metadata — reads live V4L2 values rather than SensorConfig's
+     * static seeds. */
     void populateSensorConfigFromDriver();
 
     /* Stop / (re)start the capture and request workers around a

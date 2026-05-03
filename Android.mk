@@ -73,7 +73,6 @@ LOCAL_SRC_FILES += \
     hal/3a/AutoExposureController.cpp \
     hal/3a/AutoFocusController.cpp \
     hal/3a/AutoWhiteBalanceController.cpp \
-    hal/3a/ExposureControl.cpp \
     hal/ipa/Ipa3A.cpp \
     hal/ipa/NeonStatsEncoder.cpp \
     hal/ipa/StatsWorker.cpp \
