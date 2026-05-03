@@ -1,5 +1,3 @@
-#define LOG_TAG "Cam-ResultMeta"
-
 #include "ResultMetadataBuilder.h"
 
 #include <stdint.h>
@@ -78,13 +76,6 @@ void ResultMetadataBuilder::buildAeMetadata(CameraMetadata &cm,
         }
     }
     cm.update(ANDROID_CONTROL_AE_STATE, &reportAeState, 1);
-
-    /* Throttled diag — every 32 frames. */
-    if ((fs.frameNumber & 0x1f) == 0u) {
-        ALOGD("AE: frame=%u aeMode=%u aeLock=%u aeConverged=%d aeState=%u",
-              fs.frameNumber, reportAeMode, aeLock,
-              fs.aeConverged ? 1 : 0, reportAeState);
-    }
 }
 
 void ResultMetadataBuilder::buildAwbMetadata(CameraMetadata &cm,
@@ -104,11 +95,6 @@ void ResultMetadataBuilder::buildAwbMetadata(CameraMetadata &cm,
                                    : ANDROID_CONTROL_AWB_STATE_CONVERGED;
     }
     cm.update(ANDROID_CONTROL_AWB_STATE, &reportAwbState, 1);
-
-    if ((fs.frameNumber & 0x1f) == 0u) {
-        ALOGD("AWB: frame=%u awbMode=%u awbState=%u",
-              fs.frameNumber, reportAwbMode, reportAwbState);
-    }
 }
 
 void ResultMetadataBuilder::build(CameraMetadata &cm, const FrameState &fs,

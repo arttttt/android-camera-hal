@@ -3,9 +3,6 @@
 
 #include <hardware/camera3.h>
 
-#define LOG_TAG "Cam-Emitter"
-#include <utils/Log.h>
-
 #include "PartialEmitter.h"
 
 namespace android {
@@ -40,8 +37,6 @@ public:
         cr.output_buffers     = buffers;
         cr.input_buffer       = nullptr;
         cr.partial_result     = partialCount;
-        ALOGD("emit: frame=%u partial=%u nbufs=%zu",
-              frameNumber, partialCount, numBuffers);
         ops->process_capture_result(ops, &cr);
     }
 
