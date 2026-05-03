@@ -8,6 +8,7 @@
 #include "3a/AeResult.h"
 #include "3a/AfResult.h"
 #include "3a/AutoExposureController.h"
+#include "3a/AutoFocusController.h"
 #include "3a/AutoWhiteBalanceController.h"
 #include "3a/AwbResult.h"
 #include "IpaFrameMeta.h"
@@ -56,11 +57,13 @@ float meanLumaInRoiForLog(const IpaStats &stats, const IpaFrameMeta &meta) {
 } /* namespace */
 
 BasicIpa::BasicIpa(const SensorConfig &cfg, IspPipeline *ispPipeline,
+                   AutoFocusController *afCtrl,
                    const SensorTuning *sensorTuning,
                    const float wbGainPrior[3],
                    int16_t *ccmBufQ10)
     : sensorCfg(cfg),
       isp(ispPipeline),
+      af(afCtrl),
       tuning(sensorTuning),
       ccmBufferQ10(ccmBufQ10),
       awbSceneLightFloor(awbSceneLightFloorOf(sensorTuning)),
@@ -166,6 +169,26 @@ DelayedControls::Batch BasicIpa::processStats(uint32_t /*inputSequence*/,
         aeResult = mAe->process(stats, meta,
                                 mAwb->currentWbR(),
                                 mAwb->currentWbB());
+    }
+
+    /* AF — runs every tick the controller is wired in. process()
+     * harvests pending edge signals (startSweep / sweepComplete);
+     * the coordinator translates them into AE / AWB lock toggles
+     * since the controllers themselves are decoupled from each other.
+     * VCM writes still happen inside AutoFocusController via mDev
+     * (timing matters — sweep-step VCM writes need to land on the
+     * frame the state machine decides; threading them through
+     * the result would add a frame of latency). */
+    if (af) {
+        const AfResult afResult = af->process(stats, aeResult.converged);
+        if (afResult.startSweep) {
+            if (isp) isp->setAwbLock(true);
+            mAe->setLock(true);
+        }
+        if (afResult.sweepComplete) {
+            if (isp) isp->setAwbLock(false);
+            mAe->setLock(false);
+        }
     }
 
     /* Throttled diagnostic. Same per-32-frame format the previous

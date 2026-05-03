@@ -9,6 +9,7 @@
 namespace android {
 
 class  AutoExposureController;
+class  AutoFocusController;
 class  AutoWhiteBalanceController;
 class  IspPipeline;
 class  SensorTuning;
@@ -44,6 +45,7 @@ public:
      * coefficients without any extra plumbing. Pass tuning == nullptr
      * to disable the CCT drive. */
     BasicIpa(const SensorConfig &sensorCfg, IspPipeline *isp,
+             AutoFocusController *af,
              const SensorTuning *tuning,
              const float wbGainPrior[3],
              int16_t *ccmBufferQ10);
@@ -63,6 +65,7 @@ public:
 private:
     const SensorConfig  &sensorCfg;
     IspPipeline         *isp;
+    AutoFocusController *af;          /* not owned — lifetime ≤ Camera */
     const SensorTuning  *tuning;
     int16_t             *ccmBufferQ10;
 

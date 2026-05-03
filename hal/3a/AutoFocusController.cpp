@@ -8,8 +8,6 @@
 #include <system/camera_metadata.h>
 
 #include "V4l2Device.h"
-#include "IspPipeline.h"
-#include "ipa/Ipa.h"
 #include "sensor/SensorTuning.h"
 
 namespace android {
@@ -97,12 +95,11 @@ void growToMin(int *lo, int *hi, int gridLimit, int minSpan) {
 
 } /* namespace */
 
-AutoFocusController::AutoFocusController(V4l2Device *dev, IspPipeline *isp,
-                                         Ipa *ipa,
+AutoFocusController::AutoFocusController(V4l2Device *dev,
                                          const SensorTuning *tuning)
     : mDev(dev)
-    , mIsp(isp)
-    , mIpa(ipa)
+    , mPendingStartSweep(false)
+    , mPendingSweepComplete(false)
     , mVcmInfinity(0)
     , mVcmMacroStart(0)
     , mVcmMacroEnd(0)
@@ -237,14 +234,13 @@ void AutoFocusController::beginCoarseFromCurrent(uint8_t /*afMode*/) {
 }
 
 void AutoFocusController::startSweep(uint8_t afMode) {
-    mIsp->setAwbLock(true);
-    /* Hold the converged AE target across the sweep. The score is
-     * already exposure-invariant by construction (focusMetric =
-     * grad²/pixel²), but locking AE removes any residual brightness
-     * drift from sensor-side gain ladders and stops the AE
-     * controller from chasing scene changes the sweep itself
-     * provokes. Released on commit / cancel / reset. */
-    if (mIpa) mIpa->setAeLock(true);
+    /* Signal coordinator to lock AE / AWB across the sweep. The
+     * focus score is already exposure-invariant by construction
+     * (focusMetric = grad²/pixel²), but locking removes residual
+     * brightness drift from sensor-side gain ladders and stops the
+     * AE controller from chasing scene changes the sweep itself
+     * provokes. Released on commit / cancel via mPendingSweepComplete. */
+    mPendingStartSweep = true;
     mSettleFrames     = 0;
     mSweepBestScore   = 0.f;
     mScanData.clear();
@@ -273,8 +269,7 @@ void AutoFocusController::startSweep(uint8_t afMode) {
 
 void AutoFocusController::cancelSweep() {
     if (mState == ScanState::Idle) return;
-    mIsp->setAwbLock(false);
-    if (mIpa) mIpa->setAeLock(false);
+    mPendingSweepComplete = true;
     mState = ScanState::Idle;
 }
 
@@ -461,8 +456,7 @@ void AutoFocusController::commitSweep(bool focused) {
                              : mSweepBestPos;
     mDev->setFocusPosition(finalPos);
     mFocusPosition = finalPos;
-    mIsp->setAwbLock(false);
-    if (mIpa) mIpa->setAeLock(false);
+    mPendingSweepComplete = true;
     /* Force the next idle onStats to capture a fresh scene snapshot
      * — at commit time we don't yet have a stats frame for the
      * just-committed lens position; better to read it on the next
@@ -593,7 +587,9 @@ void AutoFocusController::onFrameStart() {
     mDev->setFocusPosition(mSweepPos);
 }
 
-void AutoFocusController::onStats(const IpaStats &stats) {
+AfResult AutoFocusController::process(const IpaStats &stats, bool aeConverged) {
+    AfResult out;
+
     /* Snapshot the AF region once for the whole tick so all sums and
      * the scene-change snapshot agree. Must match the rectangle the
      * NEON encoder restricted Sobel / greenSq to (see StatsWorker /
@@ -615,7 +611,7 @@ void AutoFocusController::onStats(const IpaStats &stats) {
          * ticks up, and a fresh sweep launches once stability has
          * persisted for `mRetriggerDelay` frames. */
         if (mAfMode != ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-            return;
+            goto finish;
 
         float curRgb[3];
         sumRgbInRoi(stats.rgbMean, roi, curRgb);
@@ -629,7 +625,7 @@ void AutoFocusController::onStats(const IpaStats &stats) {
             mSceneRgbSnapshot[1]    = curRgb[1];
             mSceneRgbSnapshot[2]    = curRgb[2];
             mSceneChangeCount       = 0;
-            return;
+            goto finish;
         }
 
         const bool changed =
@@ -672,15 +668,14 @@ void AutoFocusController::onStats(const IpaStats &stats) {
          * keeps `mSceneChangeCount` at its current value, so once
          * AE settles the scan launches immediately rather than
          * having to wait `retriggerDelay` again. */
-        const bool aeReady = !mIpa || mIpa->isAeConverged();
-        if (mSceneChangeCount >= mRetriggerDelay && aeReady &&
+        if (mSceneChangeCount >= mRetriggerDelay && aeConverged &&
             sweepCooldownDone) {
             ALOGD("AF: scene stabilised after change, starting sweep "
                   "(snap_sh=%.0f cur_sh=%.0f)",
                   (double)mSceneFocusSnapshot, (double)score);
             startSweep(mAfMode);
         }
-        return;
+        goto finish;
     }
 
     /* After a VCM move, give the lens a few frames to settle before
@@ -688,7 +683,7 @@ void AutoFocusController::onStats(const IpaStats &stats) {
      * based on its move magnitude. */
     if (mSettleFrames > 0) {
         mSettleFrames--;
-        return;
+        goto finish;
     }
 
     ALOGD("AF: state=%d pos=%d score=%.0f best=%d/%.0f",
@@ -738,19 +733,35 @@ void AutoFocusController::onStats(const IpaStats &stats) {
                   peakHolds ? 1 : 0, bracketed ? 1 : 0,
                   focused ? "Focused" : "Failed");
             commitSweep(focused);
-            return;
+            goto finish;
         }
         default:
-            return;  /* Idle / Pdaf — unreachable here */
+            goto finish;  /* Idle / Pdaf — unreachable here */
     }
 
     mDev->setFocusPosition(mSweepPos);
+
+finish:
+    /* Harvest pending edge signals into the result; clear so the
+     * coordinator only sees them on the frame they fire. State,
+     * VCM position, focus distance reported every tick. */
+    out.startSweep    = mPendingStartSweep;
+    out.sweepComplete = mPendingSweepComplete;
+    mPendingStartSweep    = false;
+    mPendingSweepComplete = false;
+
+    const Report r = report();
+    out.state       = r.afState;
+    if (mState != ScanState::Idle) out.vcmPosition = mSweepPos;
+    return out;
 }
 
 void AutoFocusController::reset() {
     if (mState != ScanState::Idle) {
-        mIsp->setAwbLock(false);
-        if (mIpa) mIpa->setAeLock(false);
+        /* Mid-sweep reset: signal coordinator to release any locks
+         * that startSweep had requested, even if the harvest never
+         * actually happened (camera close mid-sweep). */
+        mPendingSweepComplete = true;
     }
     mState              = ScanState::Idle;
     mAfMode             = ANDROID_CONTROL_AF_MODE_OFF;

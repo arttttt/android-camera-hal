@@ -601,19 +601,17 @@ void Camera::buildInfrastructure() {
     }
     mIsp->setCcm(mCcmQ10);
 
-    /* IPA built before the AF controller so the latter can take a
-     * non-null Ipa* — AF queries `isAeConverged()` to gate
-     * continuous-mode retriggers and toggles `setAeLock` across
-     * each sweep. The IPA reads tuning + isp + ccm only at
-     * construction; nothing else needed yet at this point. */
-    mIpa.reset(new BasicIpa(mSensorCfg, mIsp, &mTuning, wbGainPrior, mCcmQ10));
-
-    /* Soft-ISP path owns exposure + AF; HW-ISP firmware owns them
-     * otherwise. */
+    /* AF controller built before IPA so the IPA can hold a non-null
+     * AF pointer for in-coordinator dispatch (af->process is called
+     * from BasicIpa::processStats and its result drives the AE / AWB
+     * lock toggles via the coordinator). */
     if (mSoftIspEnabled) {
         mExposure = new ExposureControl(mDev, mSensorCfg);
-        mAf       = new AutoFocusController(mDev, mIsp, mIpa.get(), &mTuning);
+        mAf       = new AutoFocusController(mDev, &mTuning);
     }
+
+    mIpa.reset(new BasicIpa(mSensorCfg, mIsp, mAf, &mTuning,
+                            wbGainPrior, mCcmQ10));
 
     mJpeg = new JpegEncoder();
 

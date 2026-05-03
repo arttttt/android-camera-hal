@@ -87,19 +87,15 @@ void StatsProcessStage::process(PipelineContext &ctx) {
     /* Pass the frame-of-stats sequence to the IPA so it can correlate
      * with its own history. DelayedControls::push still uses ctx.sequence
      * for effect timing — the control goes into effect relative to
-     * today's frame, not to the frame the stats came from. */
+     * today's frame, not to the frame the stats came from.
+     *
+     * IPA also drives AF internally now (post-step-5 of the 3A
+     * refactor) — the coordinator calls af->process(stats, ...) and
+     * routes its result, so this stage no longer touches AF. */
     DelayedControls::Batch batch = deps.ipa->processStats(statsSeq, stats, meta);
     ctx.aeConverged = deps.ipa->isAeConverged();
 
     const nsecs_t tIpa = systemTime();
-
-    /* Feed the IPA stats grid into AF. The state machine no-ops
-     * outside an active sweep, so the unconditional call is the
-     * cheapest way to keep AF and IPA on the same hot stats path
-     * without per-stage gating. */
-    if (deps.af) deps.af->onStats(stats);
-
-    const nsecs_t tAf = systemTime();
 
     /* Publish each set control at seq + its own silicon delay.
      * DelayedControls::push tags the whole batch with one sequence,
@@ -121,11 +117,10 @@ void StatsProcessStage::process(PipelineContext &ctx) {
     }
 
     const nsecs_t tEnd = systemTime();
-    ALOGD("PERF: peek=%lldus ipa=%lldus af=%lldus push=%lldus total=%lldus f=%u",
+    ALOGD("PERF: peek=%lldus ipa=%lldus push=%lldus total=%lldus f=%u",
           (long long)((tPeek - t0)    / 1000),
           (long long)((tIpa  - tPeek) / 1000),
-          (long long)((tAf   - tIpa)  / 1000),
-          (long long)((tEnd  - tAf)   / 1000),
+          (long long)((tEnd  - tIpa)  / 1000),
           (long long)((tEnd  - t0)    / 1000),
           ctx.request.frameNumber);
 }

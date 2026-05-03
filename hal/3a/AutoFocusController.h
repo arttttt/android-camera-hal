@@ -7,14 +7,13 @@
 
 #include <camera/CameraMetadata.h>
 
+#include "AfResult.h"
 #include "ipa/IpaStats.h"
 
 namespace android {
 
 class V4l2Device;
-class IspPipeline;
 class SensorTuning;
-class Ipa;
 
 /* Contrast-detect autofocus for a single-VCM sensor.
  *
@@ -63,15 +62,13 @@ public:
      * tuning provides AF data we consume it (inf/macro positions,
      * settle time, sweep step + scene-change knobs).
      *
-     * `ipa` is the AE coordination channel. The controller asks it
-     * whether AE has converged before launching a continuous-AF
-     * retrigger (refusing to scan on a still-chasing exposure) and
-     * tells it to hold the converged target across an active sweep
-     * (so AE doesn't keep adjusting brightness mid-scan). May be
-     * null for cold-bring-up — the AE checks then degenerate to
-     * "always converged, never lock", matching StubIpa. */
-    AutoFocusController(V4l2Device *dev, IspPipeline *isp, Ipa *ipa,
-                        const SensorTuning *tuning);
+     * No IspPipeline / Ipa pointers any more. AE-converged signal
+     * comes in as an argument to `process`; AE / AWB lock toggling
+     * across a sweep is published to the coordinator via
+     * `AfResult::startSweep` / `sweepComplete` edge flags — the
+     * coordinator decides which back-ends (Ipa::setAeLock,
+     * IspPipeline::setAwbLock) to nudge. */
+    AutoFocusController(V4l2Device *dev, const SensorTuning *tuning);
 
     /* Drive the state machine from request metadata. Reads AF_MODE,
      * LENS_FOCUS_DISTANCE, AF_TRIGGER. Continuous-mode re-triggering
@@ -90,8 +87,19 @@ public:
      * gate so the AWB / movement of the camera stops triggering
      * focus retriggers as soon as the sharpness signal alone wobbles.
      * Caller hands over the same stats buffer the IPA has already
-     * finished with. */
-    void onStats(const IpaStats &stats);
+     * finished with.
+     *
+     * `aeConverged` gates continuous-AF retrigger — refuses to scan
+     * while AE is still chasing exposure (brightness changes from AE
+     * catching up would look like scene changes). The coordinator
+     * passes the AE controller's current convergence flag.
+     *
+     * Returned AfResult.startSweep / sweepComplete are edge signals
+     * the coordinator latches: on startSweep the coordinator should
+     * lock AE / AWB until sweepComplete fires. State-machine internal
+     * VCM writes still happen in this call via mDev (timing matters);
+     * `vcmPosition` in the result is informational only. */
+    AfResult process(const IpaStats &stats, bool aeConverged);
 
     Report report() const;
     bool   isSweeping() const { return mState != ScanState::Idle; }
@@ -159,8 +167,12 @@ private:
     int32_t clampVcm(int32_t pos) const;
 
     V4l2Device  *mDev;
-    IspPipeline *mIsp;
-    Ipa         *mIpa;
+
+    /* Edge signals the coordinator latches into AfResult on the
+     * frame they fire. Set inside startSweep / commitSweep / cancel
+     * helpers; harvested at the end of process() and cleared. */
+    bool         mPendingStartSweep;
+    bool         mPendingSweepComplete;
 
     /* Calibrated VCM positions — resolved from SensorTuning at
      * construction when available, otherwise compile-time defaults. */
