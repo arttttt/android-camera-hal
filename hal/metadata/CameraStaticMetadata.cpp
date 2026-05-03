@@ -25,10 +25,10 @@ namespace {
  * own backpressure / scheduler windows. After Tier 3 PR 4 we run a
  * fence-fd ring of depth 4 between RequestThread and PipelineThread
  * (PipelineContext.SLOT_COUNT in the Vulkan ISP, GPU-submit ring of
- * the same size). PartialResultCount stays at 1 — every result is
- * a single full delivery (see ResultDispatchStage). */
+ * the same size). `kPartialResultCount` lives in
+ * CameraStaticMetadata.h so producers (IPA tick, result-dispatch
+ * stage) can reference the same advertised value. */
 constexpr uint8_t  kPipelineMaxDepth   = 4;
-constexpr int32_t  kPartialResultCount = 1;
 
 /* Conservative 30 fps cap when the driver does not report a framerate
  * for a given mode — better for the framework than a 60 fps lie. */

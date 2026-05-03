@@ -13,7 +13,9 @@
 #include "PipelineContext.h"
 #include "BayerSource.h"
 #include "3a/AutoFocusController.h"
+#include "metadata/CameraStaticMetadata.h"
 #include "metadata/ResultMetadataBuilder.h"
+#include "pipeline/PartialEmitter.h"
 #include "sensor/SensorConfig.h"
 
 #define LOG_TAG "Cam-ResultDispatchStage"
@@ -78,20 +80,19 @@ void ResultDispatchStage::process(PipelineContext &ctx) {
     ResultMetadataBuilder::build(ctx.request.settings, fs, *deps.sensorCfg);
 
     const camera_metadata_t *result = ctx.request.settings.getAndLock();
-    if (ops) {
-        camera3_capture_result cr;
-        cr.frame_number       = ctx.request.frameNumber;
-        cr.result             = result;
-        cr.num_output_buffers = buffers.size();
-        cr.output_buffers     = buffers.array();
-        cr.input_buffer       = nullptr;
-        /* `1` because we advertise PARTIAL_RESULT_COUNT=1: every
-         * result is a single full delivery. `0` is the "more
-         * partials coming" sentinel and is invalid for HALs that
-         * don't advertise partial-result support — framework
-         * rejects with "Result is malformed". */
-        cr.partial_result     = 1;
-        ops->process_capture_result(ops, &cr);
+    if (deps.emitter) {
+        /* Final partial of the frame: carries the buffer pointers
+         * and (until the per-controller partial-emit step lands)
+         * the full metadata blob. Counter = `kPartialResultCount`
+         * signals "this is the last partial for this frame" to the
+         * framework; intermediate partials (1..count-1) will be
+         * issued from the IPA tick once 3A is split into separate
+         * controllers, each with its own metadata subset. */
+        deps.emitter->emit(ctx.request.frameNumber,
+                           kPartialResultCount,
+                           result,
+                           buffers.size(),
+                           buffers.array());
     }
     ctx.request.settings.unlock(result);
 

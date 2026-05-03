@@ -20,6 +20,7 @@
 #include "3a/ExposureControl.h"
 #include "jpeg/JpegEncoder.h"
 #include "pipeline/BufferProcessor.h"
+#include "pipeline/CameraCallbackEmitter.h"
 #include "pipeline/JpegWorker.h"
 #include "pipeline/StreamConfig.h"
 #include "DbgUtils.h"
@@ -62,7 +63,6 @@ protected:
 
     void notifyShutter(uint32_t frameNumber, uint64_t timestamp);
     void notifyError(uint32_t frameNumber, camera3_stream_t *stream, int errorCode);
-    void processCaptureResult(uint32_t frameNumber, const camera_metadata_t *result, const Vector<camera3_stream_buffer> &buffers);
 
     camera_metadata_t *mStaticCharacteristics;
     camera_metadata_t *mDefaultRequestSettings[CAMERA3_TEMPLATE_COUNT];
@@ -89,6 +89,7 @@ private:
     BufferProcessor *mBufferProcessor;
     Mutex mMutex;
 
+    std::unique_ptr<CameraCallbackEmitter>        mPartialEmitter;
     std::unique_ptr<BayerSource>                  mBayerSource;
     std::unique_ptr<InFlightTracker>              mTracker;
     std::unique_ptr<EventQueue<PipelineContext*>> mRequestQueue;

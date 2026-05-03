@@ -623,6 +623,7 @@ void Camera::buildInfrastructure() {
     bpDeps.jpegBufferSize = &mJpegBufferSize;
     mBufferProcessor = new BufferProcessor(bpDeps);
 
+    mPartialEmitter.reset(new CameraCallbackEmitter(&mCallbackOps));
     mBayerSource.reset(new V4l2Source(mDev));
     mTracker.reset(new InFlightTracker());
     mRequestQueue.reset(new EventQueue<PipelineContext*>(REQUEST_QUEUE_CAPACITY));
@@ -696,6 +697,7 @@ void Camera::buildInfrastructure() {
     {
         ResultDispatchStage::Deps d;
         d.callbackOps = &mCallbackOps;
+        d.emitter     = mPartialEmitter.get();
         d.bayerSource = mBayerSource.get();
         d.af          = mAf;
         d.sensorCfg   = &mSensorCfg;
@@ -913,23 +915,6 @@ void Camera::notifyError(uint32_t frameNumber, camera3_stream_t *stream, int err
     msg.message.error.error_stream = stream;
     msg.message.error.error_code   = errorCode;
     mCallbackOps->notify(mCallbackOps, &msg);
-}
-
-void Camera::processCaptureResult(uint32_t frameNumber, const camera_metadata_t *result, const Vector<camera3_stream_buffer> &buffers) {
-    camera3_capture_result captureResult;
-    captureResult.frame_number = frameNumber;
-    captureResult.result = result;
-    captureResult.num_output_buffers = buffers.size();
-    captureResult.output_buffers = buffers.array();
-    captureResult.input_buffer = NULL;
-    /* `1` is the only legal value when PARTIAL_RESULT_COUNT == 1 —
-     * each result is a single full delivery. `0` means "metadata
-     * isn't done yet, more partials coming"; the framework rejects
-     * results that claim that on a HAL that didn't advertise
-     * partial-result support. */
-    captureResult.partial_result = 1;
-
-    mCallbackOps->process_capture_result(mCallbackOps, &captureResult);
 }
 
 /******************************************************************************\
