@@ -137,7 +137,7 @@ preview are all working.
   carved out so `tools/isp_to_json.py` preserves them verbatim across
   regenerations from the upstream `.isp`.
 - Live consumers: `AutoFocusController`, `SensorTuning::ccmForCctQ10`,
-  `DemosaicCompute` shader (optical-black bias), `BasicIpa` AE+AWB,
+  `DemosaicCompute` shader (optical-black bias), `Ipa3A` AE+AWB,
   `CameraStaticMetadata` (per-module geometry).
 - Reserved (not yet consumed): lens shading, full AE VFRTable, full
   AWB CCT LUT, noise reduction sets, tone curves, sharpness filters.
@@ -169,8 +169,8 @@ preview are all working.
             ┌─────────────────┘       └─────────────┐
             ▼                                       ▼
     RequestThread                          per-camera helpers
-    ↳ PipelineContext queue                AutoFocusController
-            │                              ExposureControl
+    ↳ PipelineContext queue                Ipa3A coordinator
+            │                              ↳ AE / AWB / AF controllers
             ▼                              JpegEncoder
     PipelineThread                         BufferProcessor
     ↳ acquireSlot, demosaic compute,
@@ -195,7 +195,7 @@ preview are all working.
                     ResultThread → process_capture_result
 
     StatsWorker (NEON, parallel to GPU): rgbMean[16×16] +
-        focusMetric[ROI] → IPA (BasicIpa) → DelayedControls
+        focusMetric[ROI] → IPA (Ipa3A) → DelayedControls
 ```
 
 Per-frame control writes (exposure, gain) round-trip through
@@ -246,7 +246,7 @@ needs a restart.
   per-frame sensor settings round-trip we don't implement (manual
   exposure / gain via `SENSOR_EXPOSURE_TIME` / `SENSOR_SENSITIVITY`
   in non-OFF AE mode is honoured opportunistically through
-  `BasicIpa`'s pull, but the strict MANUAL_SENSOR contract isn't
+  `Ipa3A`'s pull, but the strict MANUAL_SENSOR contract isn't
   claimed).
 - **`CONSTRAINED_HIGH_SPEED_VIDEO`** — would need a high-fps sensor
   mode and a relaxed-metadata path the HAL doesn't have.

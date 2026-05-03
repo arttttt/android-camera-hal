@@ -65,14 +65,25 @@ GPU-visible input ring — no CPU copy on the hot path.
 
 - **Per-camera helpers** under `hal/`:
   - `hal/3a/AutoFocusController` — CDAF state machine, AF region
-    parsing, AE coordination over `Ipa::isAeConverged()` /
-    `Ipa::setAeLock()`.
-  - `hal/3a/ExposureControl` — manual sensor settings (the
-    AE_MODE=OFF path) and EV-comp calculations consumed by
-    `BasicIpa`.
-  - `hal/ipa/BasicIpa` — production AE / AWB IPA. Consumes
-    `IpaStats` from `StatsWorker`, returns a
-    `DelayedControls::Batch` of exposure / gain to publish.
+    parsing. Pure return-style: `process(stats, aeConverged) →
+    AfResult`; the coordinator translates `startSweep` /
+    `sweepComplete` flags into AE / AWB lock toggles.
+  - `hal/3a/AutoExposureController` — EV-space LPF + dead-band +
+    asymmetric speed + highlight-protection candidate. Pure return-
+    style: `process(stats, meta, currentWb) → AeResult`. Static
+    helper `parseManualSettings` handles the `AE_MODE = OFF` /
+    cold-start V4L2 triple computation.
+  - `hal/3a/AutoWhiteBalanceController` — gray-world + 96-patch
+    confidence gate + EMA-relax to prior + CCT-LERP CCM. Pure
+    return-style: `process(stats) → AwbResult` and
+    `applyManualGains(...)` for `AWB_MODE = OFF`.
+  - `hal/ipa/Ipa3A` — 3A coordinator. Owns the three controllers,
+    runs gating decisions, dispatches in order
+    AWB → AE → AF, routes their results to backends
+    (`IspPipeline::setWbGains` / `mCcmQ10` for AWB, `DelayedControls`
+    for AE, `V4l2Device` focuser for AF). Emits AWB and AE partial
+    results inside the IPA tick (counters 1, 2); the final partial
+    with buffers comes from `ResultDispatchStage` (counter 3).
   - `hal/ipa/StatsWorker` + `hal/ipa/NeonStatsEncoder` — NEON
     statistics worker thread + the kernel that computes
     `IpaStats::rgbMean` and `IpaStats::focusMetric` over raw Bayer.
@@ -100,7 +111,7 @@ GPU-visible input ring — no CPU copy on the hot path.
   ring + RGBA→NV12 compute encoder. See
   [isp-pipeline.md](isp-pipeline.md) for the per-frame mechanics.
 
-- **`Ipa`** abstraction in `hal/ipa/Ipa.h` with `BasicIpa` and a
+- **`Ipa`** abstraction in `hal/ipa/Ipa.h` with `Ipa3A` and a
   `StubIpa` for cold-bringup.
 
 - **`DelayedControls`** (`isp/sensor/DelayedControls.cpp/.h`) —
@@ -161,9 +172,12 @@ PipelineThread                                           [post-submit stages]
     ↳ poll() on submit fence fd
     StatsDispatchStage   StatsWorker::submit(bayer slot, focusRoi)
                           (StatsWorker computes IpaStats off-thread)
-    StatsProcessStage    StatsWorker::peek(stats) → BasicIpa.processStats
+    StatsProcessStage    StatsWorker::peek(stats) → Ipa3A.processStats
+                          → AWB / AE partials emitted from the IPA tick
                           → Batch{exposure,gain} → DelayedControls.push
-                          AutoFocusController::onStats(stats)
+                          → AutoFocusController::process(stats, aeConverged)
+                            inside Ipa3A; routes startSweep / sweepComplete
+                            into AE / AWB lock toggles
     push to ResultQueue
     │
     ▼
@@ -255,7 +269,7 @@ Built once per camera by `CameraStaticMetadata::build()` in
 
 ## 3A summary
 
-- **AE** lives in `BasicIpa::processStats`. State is `filteredTotalUs`
+- **AE** lives in `Ipa3A::processStats`. State is `filteredTotalUs`
   (absolute exposure × gain at unity, in µs). Each frame two
   candidate ratios are computed: `ratioMean = setpoint / lumaInRoi`
   (spot mean of `IpaStats::rgbMean[*][*][1]` inside `meta.focusRoi`,

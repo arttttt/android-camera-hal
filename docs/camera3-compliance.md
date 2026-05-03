@@ -33,11 +33,12 @@ without remap, and `MAX_NUM_OUTPUT_RAW > 0` (entangled with `RAW`
 capability).
 
 **Why we don't claim it:** the strict precapture-trigger semantics
-+ no-remap timing guarantees are more than `BasicIpa` provides.
++ no-remap timing guarantees are more than `Ipa3A` provides.
 Manual exposure / gain via `SENSOR_EXPOSURE_TIME` /
 `SENSOR_SENSITIVITY` in the AE_MODE=OFF path is honoured on a
-best-effort basis through `ExposureControl`, but the strict
-`MANUAL_SENSOR` contract isn't promised.
+best-effort basis through `AutoExposureController::
+parseManualSettings` + `ApplySettingsStage`'s direct V4L2 write,
+but the strict `MANUAL_SENSOR` contract isn't promised.
 
 ### `MANUAL_POST_PROCESSING`
 
@@ -111,10 +112,12 @@ expectation, and lying about the format would mislead apps.
 The following items used to be open and were closed during the
 HAL3.4 / Camera2 compliance pass (commit `f34d870` and around):
 
-- **AE / AWB / AF state in result metadata** — `BasicIpa` reports
-  honest `INACTIVE / SEARCHING / CONVERGED / LOCKED` on AE,
-  `INACTIVE / CONVERGED / LOCKED` on AWB; AF lifecycle is owned
-  by `AutoFocusController` and reported per-frame.
+- **AE / AWB / AF state in result metadata** — `Ipa3A`'s sub-
+  controllers report honest `INACTIVE / SEARCHING / CONVERGED /
+  LOCKED` on AE (via `AutoExposureController`) and `INACTIVE /
+  CONVERGED / LOCKED` on AWB (via `AutoWhiteBalanceController`);
+  AF lifecycle is owned by `AutoFocusController` and reported
+  per-frame.
 - **Requested controls echoed in result metadata** — every key
   in `ANDROID_REQUEST_AVAILABLE_REQUEST_KEYS` round-trips through
   `ResultMetadataBuilder`.
@@ -127,8 +130,10 @@ HAL3.4 / Camera2 compliance pass (commit `f34d870` and around):
 - **Per-mode `min_frame_duration`** — derived from
   `VIDIOC_ENUM_FRAMEINTERVALS`, fallback to 30 fps when the driver
   doesn't advertise.
-- **`partial_result = 1`** on every result; `PARTIAL_RESULT_COUNT
-  = 1` advertised.
+- **Partial results** — three partials per frame (`PARTIAL_RESULT_COUNT
+  = 3`): AWB (counter 1) and AE (counter 2) emit from inside the IPA
+  tick, the final partial with output buffers + AF/base metadata
+  (counter 3) lands from `ResultDispatchStage`.
 - **HAL3.2 ABI** — `register_stream_buffers` and
   `get_metadata_vendor_tag_ops` set to NULL (deprecated form);
   consumer gralloc usage flags preserved.

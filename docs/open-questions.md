@@ -49,7 +49,7 @@ without addressing cause.
 
 **Where to look:**
 
-- Per-frame (not per-32-frame) `Cam-BasicIpa: 3A:` log over a held
+- Per-frame (not per-32-frame) `Cam-Ipa3A: 3A:` log over a held
   static scene, FFT the gain trajectory — period of resonance points
   at the frequency of the variability source.
 - Compare manual-AE preview at fixed exposure: if brightness still
@@ -171,7 +171,7 @@ port" (split vendor partition, vendor HIDL HAL) makes more sense.
 
 ## Manual AWB presets (INCANDESCENT / FLUORESCENT / …)
 
-CCT-driven CCM selection is wired (Tier 3 PR 6.7): `BasicIpa`
+CCT-driven CCM selection is wired (Tier 3 PR 6.7): `Ipa3A`
 estimates a CCT from the gray-world G/B ratio via the tuning's
 `awb.v4.UtoCCT` polynomial, picks / interpolates a CCM between the
 calibrated `colorCorrection.Set[].cct` brackets, applies the

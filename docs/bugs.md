@@ -14,7 +14,7 @@ which exposes a separate blue/green cast problem — see the AE
 section of [tier3_architecture.md](tier3_architecture.md) and the
 "gain-dependent colour cast" note below.
 
-**Current derivation (hal/ipa/BasicIpa.cpp):**
+**Current derivation (hal/3a/AutoExposureController.cpp):**
 `aeSetpoint = pow(mid / 255, 2.2)` where `mid = (HigherTarget +
 LowerTarget) / 2` from `active.ae.MeanAlg`. On the shipped tunings:
 
@@ -52,7 +52,7 @@ lever; (2) sRGB-correct gamma decode if the cast persists after LSC.
 ## Gain-dependent blue/green colour cast at high analog gain (IMX179)
 
 **Symptom:** In low-light scenes on the main camera, preview picks
-up a blue/green cast once BasicIpa drives `gain` toward the 64x
+up a blue/green cast once Ipa3A drives `gain` toward the 64x
 post-kernel-patch ceiling. Disabling AE in the camera app removes
 the cast — the framework picks a more moderate gain and the image
 goes darker instead.

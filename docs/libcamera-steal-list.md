@@ -30,7 +30,7 @@ Architectural cleanups (pay off when a second sensor / SoC lands, or
 when 3A needs to be swapped):
 
 5. **Explicit `Fence` type** on the buffer boundary
-6. **`IpaInterface` factoring** without IPC — clean swap for `BasicIpa`
+6. **`IpaInterface` factoring** without IPC — clean swap for `Ipa3A`
 7. **MediaDevice / subdev introspection** — replaces `/dev/video0` scan
 8. **Multi-channel AGC** for HDR-region metering
 9. **Color-space awareness** beyond hardcoded sRGB
@@ -83,7 +83,7 @@ shared buffer the ISP reads at consume time. The IPA's
 [tier3_architecture.md](tier3_architecture.md), "Per-frame ISP tuning
 channel"). Today `VulkanIspPipeline::process*` takes only geometry;
 WB/CCM/gamma are mutated via `setCcm` / `setWbGains` between
-submits. Lift this to a per-frame `IspParams` populated by `BasicIpa`
+submits. Lift this to a per-frame `IspParams` populated by `Ipa3A`
 and consumed by `DemosaicBlitStage`. The struct already exists
 in shape — `isp/vulkan/IspParams.h` — but is set as a singleton, not
 threaded through the request.
@@ -126,8 +126,8 @@ gray-world stats with the prior to pick gains under low-confidence
 scenes (which is exactly when our gray-world fails).
 
 **Where it would land:** `hal/ipa/BayesianAwb.{h,cpp}`, alongside the
-existing gray-world path in `BasicIpa`. The 96-valid-patch confidence
-gate we already have (see memory: BasicIpa AWB design) becomes the
+existing gray-world path in `Ipa3A`. The 96-valid-patch confidence
+gate we already have (see memory: Ipa3A AWB design) becomes the
 trigger for falling back to the prior — except instead of EMA-relaxing
 to `wbGainPrior` (a static daylight neutral), we relax to the
 lux-conditioned prior from tuning.
@@ -179,10 +179,10 @@ What's worth taking is the **interface shape**, not the IPC machinery:
 `processStats() → DelayedControls::Batch`. Lift it to a fuller
 interface that also owns the per-frame `IspParams` produced (item 2)
 and the result-metadata contributions (AE state, AF state). Both
-`BasicIpa` and `StubIpa` already exist as concrete impls — this is
+`Ipa3A` and `StubIpa` already exist as concrete impls — this is
 about widening the contract, not introducing the boundary.
 
-**Addresses:** today `BasicIpa` reaches into `AutoFocusController` for
+**Addresses:** today `Ipa3A` reaches into `AutoFocusController` for
 AE-lock coordination via direct calls. A widened interface with
 explicit "before-frame" / "after-stats" hooks makes the dependency
 direction one-way and testable in isolation.
@@ -222,7 +222,7 @@ short-exposure + long-exposure for HDR composition, or
 spot+matrix metering) run in parallel and feed back independent gains.
 
 **Where it would land:** `hal/ipa/MultiChannelAgc.{h,cpp}` alongside
-`BasicIpa`. Today AE is single-channel proportional in `BasicIpa::
+`Ipa3A`. Today AE is single-channel proportional in `Ipa3A::
 processStats`.
 
 **Addresses:** no current bug — but anything HDR-shaped (bracketed
@@ -288,7 +288,7 @@ per-pixel Y bins.
 
 **Where it would land:** `hal/ipa/NeonStatsEncoder` gains a Y
 histogram output (~128 bins of green-channel post-OB pixel counts).
-`BasicIpa::top2pcMaxPostWbMean` becomes `interQuantileMean` against
+`Ipa3A::top2pcMaxPostWbMean` becomes `interQuantileMean` against
 the real histogram instead of the 16×16 patch grid; ROI scoping
 stays. Optionally an iterative gain estimator wraps the existing
 `ratio = setpoint / luma` loop with up to N passes per frame, each
@@ -306,7 +306,7 @@ so dim scenes with bright patches can still overshoot in theory; the
 **Effort:** medium for the histogram side. NEON code changes in
 `NeonStatsEncoder.cpp` to maintain bin counts during the existing
 single-pass reduce — should fold into the same loop body, ~50 LOC of
-NEON intrinsics. IpaStats grows a 128-int field (~512 B). BasicIpa
+NEON intrinsics. IpaStats grows a 128-int field (~512 B). Ipa3A
 swaps `top2pcMaxPostWbMean` for a histogram-quantile helper in libipa
 shape (~50 LOC). The iterative estimator is independent and small
 (~30 LOC) but only worth doing once the histogram is in.

@@ -44,7 +44,7 @@ sensor output.
    `S_EXT_CTRLS` write with the frame_number it lands on. Per-frame
    result metadata reports the value that *actually* applied at
    silicon, not the value the request asked for. Single source of
-   truth for both auto (BasicIpa-driven) and manual
+   truth for both auto (Ipa3A-driven) and manual
    (ApplySettings-driven) AE writes — neither side fights the
    other.
 

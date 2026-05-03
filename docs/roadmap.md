@@ -27,7 +27,9 @@ Every big translation unit was audited against the project rules
 
 - **`hal/Camera.cpp`**: 1400 → ~636 LOC. Behaviour ripped out into
   sub-packages under `hal/`:
-  - `hal/3a/` — `AutoFocusController`, `ExposureControl`.
+  - `hal/3a/` — `AutoFocusController`, `AutoExposureController`,
+    `AutoWhiteBalanceController` (the three pure-return-style 3A
+    controllers; `Ipa3A` coordinates them).
   - `hal/metadata/` — `CameraStaticMetadata`, `RequestTemplateBuilder`,
     `ResultMetadataBuilder`.
   - `hal/jpeg/` — `JpegEncoder`.
@@ -254,7 +256,7 @@ further rewrite.
    `StatsProcessStage` sits between fence reap and result dispatch
    on `PipelineThread` and wires the producer path. `closeDevice`
    resets `Ipa` and `DelayedControls` alongside existing session
-   cleanups. `BasicIpa` (real AE / AWB / AF) is a follow-up PR; what
+   cleanups. `Ipa3A` (real AE / AWB / AF) is a follow-up PR; what
    this one lands is the shape.
 7. **NEON stats experiment (post-PR-6).** Original design had the
    statistics producer as a GPU compute shader (histogram + patch
@@ -270,12 +272,12 @@ further rewrite.
    CPU per frame stays below ~4 ms; `phaseCount = 1` falls back to
    one-shot compute via a single constant flip. Raw-Bayer semantics
    for rgbMean / lumaHist match the libcamera IPU3 / rkisp1
-   convention — `BasicIpa`'s AE loop (next entry) consumes these
+   convention — `Ipa3A`'s AE loop (next entry) consumes these
    directly in the pre-WB / pre-CCM domain. Binary shrank ~8 KB
    when the Vulkan stats encoder + shader + base-class virtuals
    were removed.
-8. **BasicIpa AE + ApplySettings AE-mode branch (post-PR-6.5).**
-   `BasicIpa` owns the AE loop. Originally shipped as a P-controller
+8. **Ipa3A AE + ApplySettings AE-mode branch (post-PR-6.5).**
+   `Ipa3A` owns the AE loop. Originally shipped as a P-controller
    with EMA damping over the green-channel mean-luma histogram,
    setpoint 0.35 (pre-gamma proxy for 18 % mid grey), hardcoded
    ratio clamp ∈ [0.5, 2.0] and exposure ceiling `kMaxExposureUs =
@@ -309,7 +311,7 @@ further rewrite.
    AE clamps at the sensor's `maxExposureUsDefault` inside the
    default `frame_length` rather than extending integration at the
    cost of frame rate.
-9. **BasicIpa AWB + AF (post-PR-6.6 / 6.7 / 6.8).** Gray-world AWB
+9. **Ipa3A AWB + AF (post-PR-6.6 / 6.7 / 6.8).** Gray-world AWB
    over `rgbMean[16][16][3]` with CCT estimation from ln(G/B) and
    per-CCT CCM LERP across the tuning's `colorCorrection.Set[]`;
    shader gets WB gains every frame (zero silicon delay) and a
@@ -396,7 +398,7 @@ the Camera2 contract gaps that were keeping app paths broken:
 - HAL3.3 ABI: validate
   `camera3_stream_configuration_t::operation_mode` (NORMAL only),
   `camera3_stream_t::rotation` (0 only), reject DEPTH `data_space`.
-- AE contract: report `ANDROID_CONTROL_AE_STATE` from BasicIpa
+- AE contract: report `ANDROID_CONTROL_AE_STATE` from Ipa3A
   convergence + AE_LOCK; honour `AE_EXPOSURE_COMPENSATION` on the
   auto path and as an additive offset through AE_LOCK with EMA
   smoothing to avoid the rolling-shutter readout split on big
@@ -471,7 +473,7 @@ were dropped (commit `ad34c55`) once nothing reads them.
 
 ### AWB confidence gate + prior-relax — done
 
-`BasicIpa` AWB raised `awbMinValidPatches` from 32 → 96 (37.5 % of
+`Ipa3A` AWB raised `awbMinValidPatches` from 32 → 96 (37.5 % of
 the 16×16 grid) and added a symmetric pull-to-prior on gate
 failure (commits `9806ce9`, `d1173a1`). Below the gate `lastWb`
 EMA-relaxes back to `wbGainPrior` (per-CCT calibrated daylight

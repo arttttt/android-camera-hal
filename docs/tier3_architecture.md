@@ -226,7 +226,7 @@ PostProcessor
 thread-local delivery mode. Not libcamera-port; just the idea.
 
 `V4l2Source` implements `BayerSource`. `VulkanIspPipeline`
-implements `IspPipeline`. `StubIpa` / `BasicIpa` implement `Ipa`.
+implements `IspPipeline`. `StubIpa` / `Ipa3A` implement `Ipa`.
 `JpegEncoder` wraps `PostProcessor`.
 
 Naming follows the no-Hungarian rule. Members are `bayerReady`, not
@@ -250,8 +250,9 @@ The async event-driven pipeline is expressed as four primitives:
   Narrow interface, one concrete class per unit of work (apply
   settings, notify shutter, dequeue bayer, demosaic+blit, dispatch
   result, etc.). Stages own their own helper state (e.g. an
-  `ApplySettingsStage` holds the `ExposureControl` + `AutoFocusController`
-  instances), not the context's — they only read/write context fields.
+  `ApplySettingsStage` holds an `AutoFocusController*` + the V4L2
+  device handle for direct AE-OFF triple writes), not the context's —
+  they only read/write context fields.
 
 - **`Pipeline`** — ordered `vector<PipelineStage*>` executed on one
   thread against a `PipelineContext`. Each thread owns its own
@@ -407,12 +408,12 @@ IPA treats stats as an input, not a blocker.
 
 Raw-Bayer domain: because stats are computed on the uncorrected sensor
 buffer before WB / CCM / gamma, `rgbMean` / `lumaHist` semantics match
-libcamera's IPU3 / rkisp1 convention. `BasicIpa`'s AE loop consumes
+libcamera's IPU3 / rkisp1 convention. `Ipa3A`'s AE loop consumes
 this space directly (see below); AWB / AF will do the same.
 
-### BasicIpa AE loop (landed)
+### Ipa3A AE loop (landed)
 
-`BasicIpa::processStats` is an open-loop EV-space target plus a
+`Ipa3A::processStats` is an open-loop EV-space target plus a
 single-pole LPF, with two parallel candidate ratios — strictest
 wins:
 
@@ -480,29 +481,30 @@ asymmetric boost, etc.).
 `ApplySettingsStage` is the single V4L2 writer for exposure + gain
 and branches on `ANDROID_CONTROL_AE_MODE`:
 
-- **`AE_MODE_OFF` — manual.** Parse request metadata via
-  `ExposureControl::onSettings`, which clamps into sensor limits and
-  calls `V4l2Device::setControl`. Then publish the applied values
-  into `DelayedControls::push(request.frameNumber, …)` so
+- **`AE_MODE_OFF` — manual.** Parse request metadata via the static
+  helper `AutoExposureController::parseManualSettings`, which clamps
+  into sensor limits and returns an `ExposureWriteValues{frameLen,
+  exposureUs, gain}`; `ApplySettingsStage` writes the triple in one
+  `VIDIOC_S_EXT_CTRLS` call and publishes `(EXPOSURE, GAIN)` into
+  `DelayedControls::push(request.frameNumber, …)` so
   `ResultMetadataBuilder::applyControls(frame + delay)` returns the
   same numbers we just wrote. `StatsProcessStage` detects
   `AE_MODE_OFF` and **skips** its own `DelayedControls::push` — the
-  IPA's compute still runs (useful for a clean switch back to
-  auto), but the result is kept out of the ring so the framework's
-  manual authority is never fought.
+  IPA's compute still runs (useful for a clean switch back to auto),
+  but the result is kept out of the ring so the framework's manual
+  authority is never fought.
 
 - **`AE_MODE != OFF` — auto.** Read
-  `DelayedControls::pendingWrite(request.frameNumber)` — a new
-  companion to `applyControls(seq)` that returns
-  `slot[seq]` directly ("what to write at frame seq", the auto
-  branch's consumer API) rather than
-  `slot[seq − delay[id]]` ("what was in physical effect at frame
-  seq", the result-metadata consumer API). If either
-  `EXPOSURE` / `GAIN` is set, `ExposureControl::applyBatch` writes
-  them in one `VIDIOC_S_EXT_CTRLS` call. If the ring has nothing
-  for this slot (cold start, or `StubIpa`-era empty batches), we
-  fall back to the manual `onSettings` path so the sensor never
-  freezes during bring-up.
+  `DelayedControls::pendingWrite(request.frameNumber)` — a companion
+  to `applyControls(seq)` that returns `slot[seq]` directly ("what
+  to write at frame seq", the auto branch's consumer API) rather
+  than `slot[seq − delay[id]]` ("what was in physical effect at
+  frame seq", the result-metadata consumer API). If either
+  `EXPOSURE` / `GAIN` is set, `ApplySettingsStage` writes them in
+  one `VIDIOC_S_EXT_CTRLS` call. If the ring has nothing for this
+  slot (cold start, or `StubIpa`-era empty batches), it falls back
+  to the same `parseManualSettings` path so the sensor never freezes
+  during bring-up.
 
 `DelayedControls` is therefore the single source of truth for
 applied exposure + gain. Producers: ApplySettings (manual branch,
@@ -512,14 +514,14 @@ ApplySettings' auto branch on RequestThread, `applyControls` from
 `ResultMetadataBuilder` on PipelineThread. The class owns a mutex
 since those four call sites span three threads.
 
-### AWB / AF inside BasicIpa (pending)
+### AWB / AF inside Ipa3A (pending)
 
 AWB will be gray-world over `rgbMean[16][16][3]` (still pre-WB /
 pre-CCM), emitting WB gain batches into `DelayedControls` via the
 same IPA push path. AF will feed `sharpness[16][16]` into
 `AutoFocusController` in place of its current gralloc
 `SW_READ_OFTEN` sharpness read — removing the last CPU lock on the
-output surface. Both extend `BasicIpa::processStats`; no new
+output surface. Both extend `Ipa3A::processStats`; no new
 threading.
 
 ## Stats — NEON on StatsWorker
@@ -682,7 +684,7 @@ No silent death.
 Originally eight PRs. The `DelayedControls` PR folded into the 3A PR
 once it became clear the former has no real consumer without the
 latter (see the DelayedControls section above for the full rationale);
-the NEON-stats rewrite and the BasicIpa AE + ApplySettings branch were
+the NEON-stats rewrite and the Ipa3A AE + ApplySettings branch were
 sized as follow-ups after `StatsProcessStage` + `StubIpa` had landed,
 so what started as seven landings became nine. Each one isolates a
 single concern so that review stays focused and FPS regressions /
@@ -748,7 +750,7 @@ otherwise force interleaving of the result queue across threads.
 
 - `Ipa` interface under `hal/ipa/`; `StubIpa` returns empty batches
   so `ApplySettingsStage`'s direct push remains authoritative until
-  `BasicIpa` lands.
+  `Ipa3A` lands.
 - `DelayedControls` class (`isp/sensor/DelayedControls.{h,cpp}`);
   `controlDelay` lives in `SensorConfig` (silicon property, not JSON).
 - `StatsProcessStage` inserted between fence reap and
@@ -781,9 +783,9 @@ open.
   `IspPipeline::mappedStats` / `invalidateStats`) removed once the
   CPU path was validated on-device; binary shrank ~8 KB.
 
-### PR 6.6 — BasicIpa AE + ApplySettings AE-mode branch — SHIPPED
+### PR 6.6 — Ipa3A AE + ApplySettings AE-mode branch — SHIPPED
 
-- `hal/ipa/BasicIpa` — P-controller with EMA damping over the
+- `hal/ipa/Ipa3A` — P-controller with EMA damping over the
   raw-Bayer green-channel mean-luma histogram (see IPA section for
   the math). Replaces `StubIpa` in `Camera::buildInfrastructure`.
 - `hal/pipeline/stages/ApplySettingsStage` — branches on
@@ -800,9 +802,13 @@ open.
   (StatsProcessStage) + binder (ApplySettings); consumers span
   RequestThread (pendingWrite) + PipelineThread
   (ResultMetadataBuilder). The class is now thread-safe by design.
-- `hal/3a/ExposureControl` — added `applyBatch(const Batch&)` for
-  the auto branch; fixed a bug where `onSettings` stored
-  `mAppliedExposureUs` in lines rather than µs.
+- `hal/3a/ExposureControl` (since deleted in the 3A refactor; its
+  responsibilities split between `AutoExposureController::
+  parseManualSettings` and the direct V4L2 writes inside
+  `ApplySettingsStage`) — at PR-6.5 time it gained
+  `applyBatch(const Batch&)` for the auto branch and fixed a bug
+  where `onSettings` stored `mAppliedExposureUs` in lines rather
+  than µs.
 - `hal/pipeline/stages/StatsProcessStage` — when `AE_MODE == OFF`,
   skips the `DelayedControls::push` so the framework's manual
   authority isn't fought by the IPA (compute still runs, for clean
