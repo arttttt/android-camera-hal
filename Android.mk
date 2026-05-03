@@ -9,7 +9,7 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := camera.$(TARGET_BOARD_PLATFORM)
 LOCAL_MODULE_RELATIVE_PATH := hw
 
-LOCAL_CFLAGS += -std=c++11
+LOCAL_CFLAGS += -std=c++14
 LOCAL_CFLAGS += -fno-short-enums
 LOCAL_CFLAGS += -Wno-unused-parameter -Wno-missing-field-initializers
 LOCAL_CFLAGS += -pthread

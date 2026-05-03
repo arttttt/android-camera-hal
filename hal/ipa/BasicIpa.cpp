@@ -5,6 +5,9 @@
 
 #include <system/camera_metadata.h>
 
+#include "3a/AeResult.h"
+#include "3a/AfResult.h"
+#include "3a/AwbResult.h"
 #include "IpaFrameMeta.h"
 #include "IpaStats.h"
 #include "IspPipeline.h"
