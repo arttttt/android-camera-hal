@@ -2,30 +2,29 @@
 #define HAL_3A_BAYESIAN_AWB_CONTROLLER_H
 
 #include "Awb.h"
+#include "sensor/SensorTuning.h"
 
 namespace android {
 
-class SensorTuning;
 struct IpaStats;
 
 /* RPi-style Bayesian AWB controller.
  *
- * Skeleton: emits the cold-start prior gains every tick — no real
- * estimation yet. Real coarseSearch / prior interpolation /
- * fineSearch land across subsequent steps of the AWB-Bayes
- * migration plan (see docs/awb-bayes.md). Until each step is wired
- * and the calibration session has produced the tuning data, the
- * AwbFactory keeps gray-world as the production path; routing here
- * requires an explicit `active.awb.algorithm = "bayes"` *and* a
- * complete `BayesParams` block.
+ * Current state: coarseSearch over the calibrated CT curves
+ * (`bayesParams.ctCurveR`, `ctCurveB`). For each candidate CT
+ * along a log-stepped traversal of the curves' domain, the
+ * controller computes candidate gains `gainR = 1/ctR(t)`,
+ * `gainB = 1/ctB(t)` and accumulates per-zone squared error
+ * `(gainR·R/G − 1)² + (gainB·B/G − 1)²` over the patches that
+ * pass the same saturation / noise-floor filter gray-world uses.
+ * The CT minimising the sum is picked. No prior, no off-curve
+ * refinement, no temporal smoothing — those land in steps 6, 7,
+ * 8 of the migration plan (see docs/awb-bayes.md).
  *
  * Construction mirrors GrayWorldAwbController so the factory can
  * swap impls without re-shaping callers — same `(tuning,
- * wbGainPrior[3])` signature, same R/B prior normalisation against
- * G. The Bayes-specific tuning surface
- * (`SensorTuning::bayesParams()`) is read in later steps; the
- * skeleton stores `tuning` to avoid touching the header again
- * when those reads land. */
+ * wbGainPrior[3])` signature, same R/B prior normalisation
+ * against G as the cold-start anchor and the no-signal fallback. */
 class BayesianAwbController : public Awb {
 public:
     BayesianAwbController(const SensorTuning *tuning,
@@ -46,10 +45,17 @@ public:
 private:
     const SensorTuning *tuning;
 
+    /* Direct const-pointer into the tuning's optional<BayesParams>;
+     * the AwbFactory only constructs us when the optional is engaged,
+     * but the pointer-or-null shape lets `process` short-circuit
+     * cleanly into the prior fallback if the precondition ever
+     * loosens (and avoids re-dereferencing the optional every
+     * tick). Lifetime is tied to `tuning` — same camera session. */
+    const SensorTuning::BayesParams *bayes;
+
     /* Sensor-calibrated daylight neutral, R / B normalised to G.
-     * Skeleton seeds `current` with these and keeps emitting them.
-     * Real algorithm steps will update `current` per tick from the
-     * coarseSearch / fineSearch outputs. */
+     * Cold-start anchor; also the no-signal fallback when no zones
+     * survive the patch filter on a given tick. */
     float wbRPrior;
     float wbBPrior;
 
