@@ -70,6 +70,10 @@
           [7000, 0.65]
         ],
         "deltaLimit": 0.2,
+        "biasCT": 5500,
+        "biasProportion": 0.05,
+        "transversePos": 0.03,
+        "transverseNeg": 0.03,
         "priors": [
           {
             "_comment": "Single broad daylight-favouring prior. Peaks softly at 5500 K matching the test-anchor calibration; warmer lights are mildly down-weighted. luxIndex is currently 0 across all production tunings (no ae.luxAnchor calibrated yet), so the lux dimension has no real bracketing yet — we ship one entry until step 10 introduces real lux-conditioned shapes.",
