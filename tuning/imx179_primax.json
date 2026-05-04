@@ -54,20 +54,28 @@
       "fluorescent": 4300
     },
     "awb": {
-      "_bayes_comment": "Synthetic test-anchor calibration — values not from a grey-card session. ctCurveR/B at 5500 K match the diagnostic measurement at FusionInitLight=5 (~daylight, R/G≈0.50, B/G≈0.55); warmer / cooler endpoints are physically-plausible extrapolation. Replace with proper calibration in step 10 of the AWB-Bayes plan.",
+      "_bayes_comment": "ctCurveR/B between 3500-5350 K are derived from awb.v4.FusionLights (NVIDIA-calibrated post-OB raw R/GR/GB/B values per illuminant) with CCT labels back-computed from awb.v4.UtoCCT. Endpoints at 2700 K and 7000 K are linear extrapolation — these CTs lie outside the sensor's calibrated range and need a grey-card session under real incandescent / shade light to be replaced with measurements (see Step 10 of docs/awb-bayes.md).",
       "algorithm": "bayes",
       "bayes": {
         "ctCurveR": [
-          [2700, 1.10],
-          [4000, 0.70],
-          [5500, 0.50],
-          [7000, 0.40]
+          [2700, 1.05],
+          [3500, 0.95],
+          [4150, 0.70],
+          [4400, 0.55],
+          [4750, 0.50],
+          [5050, 0.42],
+          [5350, 0.38],
+          [7000, 0.30]
         ],
         "ctCurveB": [
-          [2700, 0.25],
-          [4000, 0.40],
-          [5500, 0.55],
-          [7000, 0.65]
+          [2700, 0.22],
+          [3500, 0.27],
+          [4150, 0.38],
+          [4400, 0.44],
+          [4750, 0.53],
+          [5050, 0.62],
+          [5350, 0.73],
+          [7000, 1.05]
         ],
         "deltaLimit": 0.2,
         "biasCT": 5500,
