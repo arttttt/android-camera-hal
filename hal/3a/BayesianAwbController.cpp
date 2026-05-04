@@ -185,6 +185,20 @@ AwbResult BayesianAwbController::process(const IpaStats &stats,
     const float logMax     = logf(ctMax);
     const float deltaLimit = bayes->deltaLimit;
     const PriorBlend prior = selectPriors(bayes->priors, luxIndex);
+
+    /* Bias samples — synthetic zones anchored at `biasCT` with
+     * weight `biasProportion × nValid`. When the real signal is
+     * weak (few zones, or the present zones happen to look biased)
+     * the bias term pulls the search toward the calibrated fallback
+     * CT. With strong signal (many neutral-ish zones) the real
+     * error sum dwarfs the bias term and the search behaves like
+     * the unbiased coarseSearch. Disabled (no bias contribution)
+     * when the tuning leaves either field at zero. */
+    const bool  hasBias    = bayes->biasCT > 0.f && bayes->biasProportion > 0.f;
+    const float biasR      = hasBias ? bayes->ctCurveR.eval(bayes->biasCT) : 0.f;
+    const float biasB      = hasBias ? bayes->ctCurveB.eval(bayes->biasCT) : 0.f;
+    const float biasWeight = hasBias ? bayes->biasProportion * (float)nValid : 0.f;
+
     float bestT     = ctMin;
     float bestErr   = 0.f;
     bool  bestSet   = false;
@@ -206,6 +220,13 @@ AwbResult BayesianAwbController::process(const IpaStats &stats,
             float d2 = dR * dR + dB * dB;
             if (deltaLimit > 0.f && d2 > deltaLimit) d2 = deltaLimit;
             err += d2;
+        }
+        if (hasBias) {
+            const float dR = gainR * biasR - 1.0f;
+            const float dB = gainB * biasB - 1.0f;
+            float d2 = dR * dR + dB * dB;
+            if (deltaLimit > 0.f && d2 > deltaLimit) d2 = deltaLimit;
+            err += d2 * biasWeight;
         }
         err -= evalPriorBlend(prior, t);
         if (!bestSet || err < bestErr) {
