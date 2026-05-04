@@ -125,6 +125,7 @@ BayesianAwbController::BayesianAwbController(const SensorTuning *t,
                ? wbGainPrior[0] / wbGainPrior[1] : 1.0f),
       wbBPrior(wbGainPrior[1] > 0.02f
                ? wbGainPrior[2] / wbGainPrior[1] : 1.0f),
+      frameCounter(0),
       current{wbRPrior, wbBPrior, 0} {
 }
 
@@ -140,6 +141,7 @@ void BayesianAwbController::reset() {
     current.wbR    = wbRPrior;
     current.wbB    = wbBPrior;
     current.estCct = 0;
+    frameCounter   = 0;
 }
 
 AwbResult BayesianAwbController::process(const IpaStats &stats,
@@ -190,11 +192,20 @@ AwbResult BayesianAwbController::process(const IpaStats &stats,
     }
     out.validPatchCount = nValid;
 
-    /* No usable signal — relax to prior. No EMA yet; the controller
-     * just publishes the prior verbatim. */
+    /* No usable signal — EMA-relax to the prior. Sharing the same
+     * `damping` as the steady-state output smoothing means a
+     * temporary drop in valid zones doesn't snap WB; gains crawl
+     * back toward the calibrated daylight neutral over the same
+     * ~20-frame window. damping == 0 falls back to a hard reset. */
     if (nValid == 0) {
-        current.wbR = wbRPrior;
-        current.wbB = wbBPrior;
+        const float dampNoSig = bayes->damping;
+        if (dampNoSig > 0.f) {
+            current.wbR = dampNoSig * wbRPrior + (1.0f - dampNoSig) * current.wbR;
+            current.wbB = dampNoSig * wbBPrior + (1.0f - dampNoSig) * current.wbB;
+        } else {
+            current.wbR = wbRPrior;
+            current.wbB = wbBPrior;
+        }
         WbGains gainsQ8;
         gainsQ8.r = (uint16_t)toQ8(current.wbR);
         gainsQ8.g = 256;
@@ -324,14 +335,27 @@ AwbResult BayesianAwbController::process(const IpaStats &stats,
         }
     }
 
-    /* Publish off-curve gains (fineSearch winner if it improved on
-     * the curve, otherwise the coarseSearch on-curve point). estCct
-     * stays anchored at coarseSearch — the off-curve refinement
-     * doesn't change the underlying CT, only the magenta/green
-     * displacement. No IIR smoothing yet — that's step 8. */
-    current.wbR    = 1.0f / bestR;
-    current.wbB    = 1.0f / bestB;
+    /* Temporal smoothing on the published gains. First
+     * `startupFrames` after reset bypass the IIR (hard snap) so
+     * cold-start lands on the bayes estimate immediately instead
+     * of crawling from the calibrated prior. Past that, the EMA
+     * at `damping` rate dampens both per-tick search noise and
+     * scene-change transients. damping == 0 disables smoothing —
+     * gains track the per-tick estimate verbatim, which is the
+     * Step-7 behaviour. estCct is reported from coarseSearch
+     * directly; the off-curve fineSearch displaces gains in
+     * chromaticity, not in CT. */
+    const float gainRTarget = 1.0f / bestR;
+    const float gainBTarget = 1.0f / bestB;
+
+    float speed = 1.0f;
+    if (frameCounter >= (uint32_t)bayes->startupFrames && bayes->damping > 0.f)
+        speed = bayes->damping;
+
+    current.wbR    = speed * gainRTarget + (1.0f - speed) * current.wbR;
+    current.wbB    = speed * gainBTarget + (1.0f - speed) * current.wbB;
     current.estCct = (int)(bestT + 0.5f);
+    if (frameCounter < UINT32_MAX) ++frameCounter;
 
     WbGains gainsQ8;
     gainsQ8.r = (uint16_t)toQ8(current.wbR);

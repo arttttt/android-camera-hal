@@ -1,6 +1,8 @@
 #ifndef HAL_3A_BAYESIAN_AWB_CONTROLLER_H
 #define HAL_3A_BAYESIAN_AWB_CONTROLLER_H
 
+#include <stdint.h>
+
 #include "Awb.h"
 #include "sensor/SensorTuning.h"
 
@@ -10,8 +12,8 @@ struct IpaStats;
 
 /* RPi-style Bayesian AWB controller.
  *
- * Current state: two-stage search over the calibrated CT curves
- * (`bayesParams.ctCurveR`, `ctCurveB`).
+ * Two-stage search over the calibrated CT curves
+ * (`bayesParams.ctCurveR`, `ctCurveB`):
  *
  *   coarseSearch — log-stepped traversal of the curves' domain.
  *     Cost at each candidate t:
@@ -27,9 +29,12 @@ struct IpaStats;
  *     correction off the Planckian locus (fluorescent banks,
  *     mixed light, sensor-side IR leak).
  *
- * No temporal smoothing yet — output is jittery on real frames;
- * IIR damping lands in step 8 of the migration plan (see
- * docs/awb-bayes.md).
+ * Output-side IIR damping smooths the published gains. First
+ * `startupFrames` ticks after reset publish the per-tick estimate
+ * verbatim (cold-start snap); afterwards the gains EMA toward
+ * the estimate at `damping` rate. The same damping factor pulls
+ * `current` toward the prior on no-signal frames so a temporary
+ * drop in valid zones doesn't jump the WB.
  *
  * Construction mirrors GrayWorldAwbController so the factory can
  * swap impls without re-shaping callers — same `(tuning,
@@ -64,10 +69,17 @@ private:
     const SensorTuning::BayesParams *bayes;
 
     /* Sensor-calibrated daylight neutral, R / B normalised to G.
-     * Cold-start anchor; also the no-signal fallback when no zones
-     * survive the patch filter on a given tick. */
+     * Cold-start anchor; also the no-signal EMA-relax target when
+     * no zones survive the patch filter on a given tick. */
     float wbRPrior;
     float wbBPrior;
+
+    /* Temporal-smoothing counters. `frameCounter` increments per
+     * `process()` call after `reset()`; while it's below
+     * `startupFrames` the published gains snap to the per-tick
+     * estimate without smoothing. After that the EMA at `damping`
+     * rate kicks in. */
+    uint32_t frameCounter;
 
     struct State {
         float wbR;

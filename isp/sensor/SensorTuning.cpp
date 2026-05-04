@@ -327,6 +327,10 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
             bp.biasCT         = bayes["biasCT"].asFloat();
         if (bayes.isMember("biasProportion"))
             bp.biasProportion = bayes["biasProportion"].asFloat();
+        if (bayes.isMember("startupFrames"))
+            bp.startupFrames  = bayes["startupFrames"].asInt();
+        if (bayes.isMember("damping"))
+            bp.damping        = bayes["damping"].asFloat();
 
         const Json::Value &modes = bayes["modes"];
         if (modes.isObject()) {

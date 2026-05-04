@@ -302,6 +302,17 @@ public:
         float biasCT         = 0.f;
         float biasProportion = 0.f;
 
+        /* Output-side temporal smoothing. The first `startupFrames`
+         * after a session start / reset publish the per-tick
+         * estimate verbatim (hard snap, no smoothing) so cold-start
+         * doesn't crawl. After that, gains EMA toward the per-tick
+         * estimate at `damping` rate (RPi default 0.05 → ~20 frames
+         * to settle). damping == 0 disables smoothing — published
+         * gains track the per-tick estimate directly, like Steps
+         * 5-7 did. startupFrames == 0 skips the snap phase. */
+        int   startupFrames  = 0;
+        float damping        = 0.f;
+
         struct ModeRange {
             float ctLo = 0.f;
             float ctHi = 0.f;
