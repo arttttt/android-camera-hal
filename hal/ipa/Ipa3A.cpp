@@ -74,7 +74,8 @@ Ipa3A::Ipa3A(const SensorConfig &cfg, IspPipeline *ispPipeline,
       awbSceneLightFloor(awbSceneLightFloorOf(sensorTuning)),
       mAe(new AutoExposureController(cfg, sensorTuning)),
       mAwb(new AutoWhiteBalanceController(sensorTuning, wbGainPrior)),
-      frameCount(0) {
+      frameCount(0),
+      lastLuxIndex(0.f) {
     ALOGD("3A knobs: awbSceneLightFloor=%.4f wbPrior=(%.3f,%.3f) "
           "gainMax=%d gainUnit=%d maxExpDef=%d tuningLoaded=%d",
           (double)awbSceneLightFloor,
@@ -208,6 +209,14 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
                                 mAwb->currentWbB());
     }
 
+    /* Cache the post-AE lux index. AWB on the next tick reads this
+     * (one-frame stale) for its lux-conditioned prior interpolation;
+     * lux changes slowly enough that the staleness is irrelevant
+     * compared to the AWB EMA's own time constant. Zero when AE
+     * skipped this tick (AE_MODE = OFF) or when the tuning has no
+     * `active.ae.luxAnchor`. */
+    if (aeResult.luxIndex > 0.f) lastLuxIndex = aeResult.luxIndex;
+
     /* AE partial — emit immediately. Apps watching ANDROID_CONTROL_AE_STATE
      * (e.g. PRECAPTURE / CONVERGED transitions) see them as soon as the
      * IPA tick finishes, ahead of the buffer-bearing final result.
@@ -279,14 +288,16 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
         const WbGains gQ8 = mAwb->currentGainsQ8();
         ALOGD("3A: frame=%u luma=%.3f iqmHi=%.3f nValid=%d awbRun=%d "
               "lastWb=(%.3f,%.3f) Q8=(%u,%u) estCct=%d "
-              "totalUs=%.0f exp=%d gain=%d gainClamp=%d evComp=%d",
+              "totalUs=%.0f exp=%d gain=%d gainClamp=%d evComp=%d "
+              "lux=%.0f",
               frameCount, (double)sceneLuma, (double)aeResult.iqmHighlight,
               awbResult.validPatchCount, awbRun ? 1 : 0,
               (double)mAwb->currentWbR(), (double)mAwb->currentWbB(),
               gQ8.r, gQ8.b,
               mAwb->currentEstCct(), (double)totalUs, diagExp,
               diagGain, diagGainClamped,
-              meta.aeExposureCompensation);
+              meta.aeExposureCompensation,
+              (double)lastLuxIndex);
     }
 
     return aeResult.batch;

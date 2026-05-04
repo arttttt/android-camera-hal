@@ -379,6 +379,25 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
         if (ae.isMember("MaxFstopDeltaNeg"))
             mAeParams.maxFstopDeltaNeg = ae["MaxFstopDeltaNeg"].asFloat();
 
+        /* Lux index calibration anchor. Tuning provides a known-light
+         * reference: at illumination `lux`, the AE-converged total
+         * exposure is `totalUs` with measured scene luma `sceneLuma`.
+         * The runtime lux index is the inverse-scaling of these
+         * against current AE state — see the AE controller for the
+         * math. All three fields must be positive for the optional
+         * to be emplaced; partial blocks leave it absent. */
+        const Json::Value &anchor = ae["luxAnchor"];
+        if (anchor.isObject()
+         && anchor.isMember("lux")
+         && anchor.isMember("totalUs")
+         && anchor.isMember("sceneLuma")) {
+            LuxAnchor a;
+            a.lux       = anchor["lux"].asFloat();
+            a.totalUs   = anchor["totalUs"].asFloat();
+            a.sceneLuma = anchor["sceneLuma"].asFloat();
+            if (a.lux > 0.f && a.totalUs > 0.f && a.sceneLuma > 0.f)
+                mAeParams.luxAnchor = a;
+        }
     }
 
     /* HAL-specific overrides — keys that don't exist in NVIDIA's .isp

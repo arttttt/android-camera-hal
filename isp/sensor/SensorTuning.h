@@ -8,6 +8,7 @@
 
 #include <experimental/optional>
 
+#include "LuxAnchor.h"
 #include "Pwl.h"
 
 namespace android {
@@ -235,6 +236,13 @@ public:
          * the sensor — too wide a zone on a noisy sensor causes
          * frame-period resonance with measurement noise. */
         float closeSpeedZone;
+
+        /* Lux index calibration anchor. Optional — present iff the
+         * parser found a complete `active.ae.luxAnchor` block.
+         * Consumers (the AE controller) check by `if (luxAnchor)`
+         * and fall back to publishing `luxIndex = 0` when absent. */
+        std::experimental::optional<LuxAnchor> luxAnchor;
+
         AeParams()
             : loaded(false),
               higherTarget(0.f), lowerTarget(0.f),

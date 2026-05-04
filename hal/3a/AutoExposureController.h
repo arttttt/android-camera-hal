@@ -3,9 +3,12 @@
 
 #include <stdint.h>
 
+#include <experimental/optional>
+
 #include <camera/CameraMetadata.h>
 
 #include "AeResult.h"
+#include "sensor/LuxAnchor.h"
 
 namespace android {
 
@@ -103,6 +106,11 @@ public:
                                                    const SensorConfig   &cfg);
 
 private:
+    /* Back-compute scene lux from the current AE state against the
+     * per-sensor `luxAnchor`. Returns 0 when the anchor is absent
+     * (no tuning) or when inputs are degenerate. */
+    float computeLuxIndex(float currentTotalUs, float currentLuma) const;
+
     const SensorConfig &sensorCfg;
 
     /* Tuning-derived knobs, resolved at construction. No silent
@@ -121,6 +129,13 @@ private:
      * shared semantics ("sensor noise prevents reliable readings
      * below this"). Pulled from awb.v4 in tuning. */
     float lumaNoiseFloor;
+
+    /* Lux index calibration anchor. Present iff the tuning ships a
+     * complete `active.ae.luxAnchor` triple. Used by the per-frame
+     * `computeLuxIndex` to back-compute scene lux from the current
+     * AE state; absent → `AeResult::luxIndex = 0`, downstream Bayes
+     * AWB falls back to a fixed prior. */
+    std::experimental::optional<LuxAnchor> luxAnchor;
 
     /* AE state — total exposure at unity gain (µs), absolute EV
      * space. Each frame: target = filteredTotalUs × ratio (clamped),

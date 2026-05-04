@@ -187,6 +187,8 @@ AutoExposureController::AutoExposureController(const SensorConfig &cfg,
       lumaNoiseFloor(
           tuning && tuning->awbParams().cStatsMinThreshold > 0.f
           ? tuning->awbParams().cStatsMinThreshold : 0.f),
+      luxAnchor(tuning ? tuning->aeParams().luxAnchor
+                       : std::experimental::optional<LuxAnchor>()),
       filteredTotalUs((float)cfg.exposureDefault * (float)cfg.gainDefault
                       / (float)cfg.gainUnit),
       smoothedLuma(0.f),
@@ -213,6 +215,23 @@ bool AutoExposureController::isConverged() const {
 
 void AutoExposureController::setLock(bool lock) {
     aeLockHeld = lock;
+}
+
+float AutoExposureController::computeLuxIndex(float currentTotalUs,
+                                                float currentLuma) const {
+    if (!luxAnchor)                    return 0.f;
+    if (currentTotalUs       < 1.f)    return 0.f;
+    if (luxAnchor->sceneLuma < 1e-6f)  return 0.f;
+    /* Per-frame back-compute from the AE-converged state.
+     *   sensorY = k × lux × totalUs   (sensor sensitivity k constant)
+     * Solving at the anchor for k, then for current lux:
+     *   lux = anchor.lux × (anchor.totalUs / currentTotalUs)
+     *                    × (currentLuma   / anchor.sceneLuma)
+     * In steady state currentLuma ≈ AE setpoint, so the lux signal
+     * reduces to the totalUs ratio scaled by the anchor — robust to
+     * the AE controller's dead-band noise. */
+    return (luxAnchor->lux * currentLuma * luxAnchor->totalUs)
+         / (luxAnchor->sceneLuma * currentTotalUs);
 }
 
 ExposureWriteValues AutoExposureController::parseManualSettings(
@@ -419,6 +438,7 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
         if (aeConvergedFrames < INT32_MAX) aeConvergedFrames++;
         lastEvComp = meta.aeExposureCompensation;
         out.converged = (aeConvergedFrames >= kAeConvergedFramesRequired);
+        out.luxIndex  = computeLuxIndex(filteredTotalUs, meanLuma);
         return out;
     }
     aeConvergedFrames = 0;
@@ -449,6 +469,7 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
     batch.val[DelayedControls::EXPOSURE] = newExposureUs;
     batch.has[DelayedControls::GAIN]     = true;
     batch.val[DelayedControls::GAIN]     = newGain;
+    out.luxIndex = computeLuxIndex(filteredTotalUs, meanLuma);
     return out;
 }
 

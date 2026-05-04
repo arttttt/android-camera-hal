@@ -43,7 +43,17 @@ struct AeResult {
      * controller did not run this tick. */
     float                   iqmHighlight;
 
-    AeResult() : batch{}, state(0), converged(false), iqmHighlight(0.f) {}
+    /* Relative-scale scene brightness in lux units, derived from
+     * the AE-converged exposure and the current scene luma against
+     * a per-sensor calibration anchor. Zero when the tuning has no
+     * `active.ae.luxAnchor` block, or when the controller did not
+     * run on this tick. The Bayes AWB consumes this to interpolate
+     * its lux-conditioned CT prior; gray-world ignores it. */
+    float                   luxIndex;
+
+    AeResult()
+        : batch{}, state(0), converged(false),
+          iqmHighlight(0.f), luxIndex(0.f) {}
 };
 
 } /* namespace android */

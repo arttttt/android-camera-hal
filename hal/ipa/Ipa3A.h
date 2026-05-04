@@ -84,6 +84,12 @@ private:
     /* Frame counter for throttled diagnostic logs. Incremented on
      * every processStats entry; a single ALOGD fires per N frames. */
     uint32_t frameCount;
+
+    /* Last published lux index from AeResult. Cached so the AWB
+     * controller (which runs ahead of AE in the tick) can read the
+     * previous frame's brightness estimate; one-frame staleness is
+     * a non-issue since lux changes slowly relative to AWB's EMA. */
+    float lastLuxIndex;
 };
 
 } /* namespace android */
