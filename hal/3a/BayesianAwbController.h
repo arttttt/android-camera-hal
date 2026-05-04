@@ -10,18 +10,26 @@ struct IpaStats;
 
 /* RPi-style Bayesian AWB controller.
  *
- * Current state: coarseSearch over the calibrated CT curves
- * (`bayesParams.ctCurveR`, `ctCurveB`) with a per-zone deltaLimit
- * clamp and a lux-conditioned log-prior. For each candidate CT
- * along a log-stepped traversal of the curves' domain, the
- * controller computes candidate gains `gainR = 1/ctR(t)`,
- * `gainB = 1/ctB(t)` and accumulates per-zone clamped squared
- * error `min((gainR·R/G − 1)² + (gainB·B/G − 1)², deltaLimit)`
- * over the patches that pass the same saturation / noise-floor
- * filter gray-world uses, then subtracts the lux-bracketed prior
- * `prior(t | luxIndex)`. The CT minimising the cost is picked.
- * No off-curve refinement, no temporal smoothing — those land in
- * steps 7, 8 of the migration plan (see docs/awb-bayes.md).
+ * Current state: two-stage search over the calibrated CT curves
+ * (`bayesParams.ctCurveR`, `ctCurveB`).
+ *
+ *   coarseSearch — log-stepped traversal of the curves' domain.
+ *     Cost at each candidate t:
+ *       Σ_zones min((gainR·R/G − 1)² + (gainB·B/G − 1)², deltaLimit)
+ *         + biasWeight × min((gainR·biasR − 1)² + ..., deltaLimit)
+ *         − prior(t | luxIndex)
+ *     where (gainR, gainB) = (1/ctR(t), 1/ctB(t)). Picks the
+ *     minimising t.
+ *
+ *   fineSearch — refine the coarseSearch winner along the axis
+ *     perpendicular to the CT curve in (R/G, B/G) space, capped
+ *     by transversePos / transverseNeg. Adds magenta ↔ green
+ *     correction off the Planckian locus (fluorescent banks,
+ *     mixed light, sensor-side IR leak).
+ *
+ * No temporal smoothing yet — output is jittery on real frames;
+ * IIR damping lands in step 8 of the migration plan (see
+ * docs/awb-bayes.md).
  *
  * Construction mirrors GrayWorldAwbController so the factory can
  * swap impls without re-shaping callers — same `(tuning,

@@ -20,9 +20,59 @@ constexpr float awbMaxChannel = 0.95f;
 /* coarseSearch granularity. Log-stepped traversal from ctMin to
  * ctMax; 30 points across the typical 2000-10000 K calibration
  * range gives ~140 K resolution near 4000 K — finer than the
- * dead-band of any IIR damping we'll add later. fineSearch (step
- * 7) refines off-grid. */
+ * dead-band of any IIR damping we'll add later. fineSearch
+ * refines off-grid in the perpendicular axis. */
 constexpr int kCoarseSteps = 30;
+
+/* fineSearch granularity. RPi default is 12; covers ±transverse
+ * range with ~1/6th-step resolution. The off-curve search is
+ * cheap (one cost eval per step), so granularity here is dwarfed
+ * by the inner zone loop's runtime. */
+constexpr int kFineSteps = 12;
+
+/* Per-zone normalised chromaticity — R/G and B/G after the patch
+ * filter. Lifted to anon-namespace so coarseSearch and fineSearch
+ * share the storage shape, and the cost helper can take it by
+ * pointer. */
+struct Zone {
+    float r;   /* R / G */
+    float b;   /* B / G */
+};
+
+/* Cost-function inputs that don't change across the inner search
+ * loops — the zone array, bias anchor, deltaLimit. Bundled here
+ * so the helper signature stays sane and both coarseSearch /
+ * fineSearch pass the same context. The lux-conditioned prior is
+ * separate because fineSearch evaluates it at a fixed CT (the
+ * coarseSearch winner) regardless of the off-curve offset. */
+struct CostInputs {
+    const Zone *zones;
+    int         nValid;
+    bool        hasBias;
+    float       biasR;
+    float       biasB;
+    float       biasWeight;
+    float       deltaLimit;
+};
+
+float computeCostAtGains(const CostInputs &c, float gainR, float gainB) {
+    float err = 0.f;
+    for (int z = 0; z < c.nValid; ++z) {
+        const float dR = gainR * c.zones[z].r - 1.0f;
+        const float dB = gainB * c.zones[z].b - 1.0f;
+        float d2 = dR * dR + dB * dB;
+        if (c.deltaLimit > 0.f && d2 > c.deltaLimit) d2 = c.deltaLimit;
+        err += d2;
+    }
+    if (c.hasBias) {
+        const float dR = gainR * c.biasR - 1.0f;
+        const float dB = gainB * c.biasB - 1.0f;
+        float d2 = dR * dR + dB * dB;
+        if (c.deltaLimit > 0.f && d2 > c.deltaLimit) d2 = c.deltaLimit;
+        err += d2 * c.biasWeight;
+    }
+    return err;
+}
 
 unsigned toQ8(float x) {
     return (unsigned)(x * 256.0f + 0.5f);
@@ -118,10 +168,6 @@ AwbResult BayesianAwbController::process(const IpaStats &stats,
      * Cortex-A15 scalar. */
     const float awbMinChannel = tuning
         ? tuning->awbParams().cStatsMinThreshold : 0.f;
-    struct Zone {
-        float r;   /* R / G */
-        float b;   /* B / G */
-    };
     Zone zones[IpaStats::PATCH_X * IpaStats::PATCH_Y];
     int  nValid = 0;
     for (int py = 0; py < IpaStats::PATCH_Y; ++py) {
@@ -186,18 +232,17 @@ AwbResult BayesianAwbController::process(const IpaStats &stats,
     const float deltaLimit = bayes->deltaLimit;
     const PriorBlend prior = selectPriors(bayes->priors, luxIndex);
 
-    /* Bias samples — synthetic zones anchored at `biasCT` with
-     * weight `biasProportion × nValid`. When the real signal is
-     * weak (few zones, or the present zones happen to look biased)
-     * the bias term pulls the search toward the calibrated fallback
-     * CT. With strong signal (many neutral-ish zones) the real
-     * error sum dwarfs the bias term and the search behaves like
-     * the unbiased coarseSearch. Disabled (no bias contribution)
-     * when the tuning leaves either field at zero. */
-    const bool  hasBias    = bayes->biasCT > 0.f && bayes->biasProportion > 0.f;
-    const float biasR      = hasBias ? bayes->ctCurveR.eval(bayes->biasCT) : 0.f;
-    const float biasB      = hasBias ? bayes->ctCurveB.eval(bayes->biasCT) : 0.f;
-    const float biasWeight = hasBias ? bayes->biasProportion * (float)nValid : 0.f;
+    /* Bias samples — synthetic zone anchored at `biasCT` with
+     * weight `biasProportion × nValid`. See Step 7a commit.
+     * Disabled when `biasCT` or `biasProportion` is zero. */
+    CostInputs cost;
+    cost.zones      = zones;
+    cost.nValid     = nValid;
+    cost.hasBias    = bayes->biasCT > 0.f && bayes->biasProportion > 0.f;
+    cost.biasR      = cost.hasBias ? bayes->ctCurveR.eval(bayes->biasCT) : 0.f;
+    cost.biasB      = cost.hasBias ? bayes->ctCurveB.eval(bayes->biasCT) : 0.f;
+    cost.biasWeight = cost.hasBias ? bayes->biasProportion * (float)nValid : 0.f;
+    cost.deltaLimit = deltaLimit;
 
     float bestT     = ctMin;
     float bestErr   = 0.f;
@@ -213,22 +258,8 @@ AwbResult BayesianAwbController::process(const IpaStats &stats,
         const float gainR = 1.0f / ctR;
         const float gainB = 1.0f / ctB;
 
-        float err = 0.f;
-        for (int z = 0; z < nValid; ++z) {
-            const float dR = gainR * zones[z].r - 1.0f;
-            const float dB = gainB * zones[z].b - 1.0f;
-            float d2 = dR * dR + dB * dB;
-            if (deltaLimit > 0.f && d2 > deltaLimit) d2 = deltaLimit;
-            err += d2;
-        }
-        if (hasBias) {
-            const float dR = gainR * biasR - 1.0f;
-            const float dB = gainB * biasB - 1.0f;
-            float d2 = dR * dR + dB * dB;
-            if (deltaLimit > 0.f && d2 > deltaLimit) d2 = deltaLimit;
-            err += d2 * biasWeight;
-        }
-        err -= evalPriorBlend(prior, t);
+        const float err = computeCostAtGains(cost, gainR, gainB)
+                        - evalPriorBlend(prior, t);
         if (!bestSet || err < bestErr) {
             bestErr = err;
             bestT   = t;
@@ -236,13 +267,63 @@ AwbResult BayesianAwbController::process(const IpaStats &stats,
         }
     }
 
-    /* Convert the winning CT back to candidate gains and publish.
-     * No IIR smoothing yet — output is jittery on real frames; that
-     * gets fixed in step 8. */
-    const float bestGainR = 1.0f / bayes->ctCurveR.eval(bestT);
-    const float bestGainB = 1.0f / bayes->ctCurveB.eval(bestT);
-    current.wbR    = bestGainR;
-    current.wbB    = bestGainB;
+    /* fineSearch — refine the on-curve coarseSearch winner along
+     * the axis perpendicular to the CT curve in (R/G, B/G) space.
+     * The on-curve search alone can only express CT shifts; real
+     * scenes also need magenta ↔ green correction (off-curve in
+     * Planckian terms — fluorescent banks, mixed light, sensor
+     * IR-leak). transversePos / transverseNeg cap the displacement
+     * on each side of the curve in chromaticity units (RPi
+     * defaults ≈ 0.03, i.e. ~3 % off-curve). The prior contribution
+     * is constant across this loop — fineSearch doesn't change CT
+     * — so it falls out of the argmin and we skip subtracting it. */
+    float bestR = bayes->ctCurveR.eval(bestT);
+    float bestB = bayes->ctCurveB.eval(bestT);
+    const bool fineEnabled = bayes->transversePos > 0.f
+                          || bayes->transverseNeg > 0.f;
+    if (fineEnabled) {
+        /* Tangent at bestT via centred finite difference; perpendicular
+         * is the 90°-rotated unit tangent. ε at 1 % of CT keeps the
+         * sample inside the calibrated curve domain. */
+        const float dt   = bestT * 0.01f;
+        const float dr   = bayes->ctCurveR.eval(bestT + dt)
+                         - bayes->ctCurveR.eval(bestT - dt);
+        const float db   = bayes->ctCurveB.eval(bestT + dt)
+                         - bayes->ctCurveB.eval(bestT - dt);
+        const float norm = sqrtf(dr * dr + db * db);
+        if (norm > 1e-6f) {
+            const float perpR = -db / norm;
+            const float perpB =  dr / norm;
+            float bestFineErr = computeCostAtGains(cost,
+                                                    1.0f / bestR,
+                                                    1.0f / bestB);
+            const float tPos = bayes->transversePos;
+            const float tNeg = bayes->transverseNeg;
+            for (int i = 0; i < kFineSteps; ++i) {
+                const float frac   = (float)i / (float)(kFineSteps - 1);
+                const float offset = -tNeg + frac * (tPos + tNeg);
+                const float candR  = bestR + offset * perpR;
+                const float candB  = bestB + offset * perpB;
+                if (candR < 1e-6f || candB < 1e-6f) continue;
+                const float err = computeCostAtGains(cost,
+                                                      1.0f / candR,
+                                                      1.0f / candB);
+                if (err < bestFineErr) {
+                    bestFineErr = err;
+                    bestR       = candR;
+                    bestB       = candB;
+                }
+            }
+        }
+    }
+
+    /* Publish off-curve gains (fineSearch winner if it improved on
+     * the curve, otherwise the coarseSearch on-curve point). estCct
+     * stays anchored at coarseSearch — the off-curve refinement
+     * doesn't change the underlying CT, only the magenta/green
+     * displacement. No IIR smoothing yet — that's step 8. */
+    current.wbR    = 1.0f / bestR;
+    current.wbB    = 1.0f / bestB;
     current.estCct = (int)(bestT + 0.5f);
 
     WbGains gainsQ8;
