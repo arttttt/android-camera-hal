@@ -11,7 +11,8 @@
 #include "3a/AfResult.h"
 #include "3a/AutoExposureController.h"
 #include "3a/AutoFocusController.h"
-#include "3a/AutoWhiteBalanceController.h"
+#include "3a/Awb.h"
+#include "3a/AwbFactory.h"
 #include "3a/AwbResult.h"
 #include "IpaFrameMeta.h"
 #include "IpaStats.h"
@@ -73,7 +74,7 @@ Ipa3A::Ipa3A(const SensorConfig &cfg, IspPipeline *ispPipeline,
       ccmBufferQ10(ccmBufQ10),
       awbSceneLightFloor(awbSceneLightFloorOf(sensorTuning)),
       mAe(new AutoExposureController(cfg, sensorTuning)),
-      mAwb(new AutoWhiteBalanceController(sensorTuning, wbGainPrior)),
+      mAwb(createAwb(sensorTuning, wbGainPrior)),
       frameCount(0),
       lastLuxIndex(0.f) {
     ALOGD("3A knobs: awbSceneLightFloor=%.4f wbPrior=(%.3f,%.3f) "
@@ -150,7 +151,7 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
                                            meta.manualWbG,
                                            meta.manualWbB);
     } else if (awbRun) {
-        awbResult = mAwb->process(stats);
+        awbResult = mAwb->process(stats, lastLuxIndex);
     }
 
     /* Route AWB result. Gains hit the shader (zero silicon delay);

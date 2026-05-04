@@ -1,4 +1,4 @@
-#include "AutoWhiteBalanceController.h"
+#include "GrayWorldAwbController.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -52,7 +52,7 @@ unsigned toQ8(float x) {
 
 } /* namespace */
 
-AutoWhiteBalanceController::AutoWhiteBalanceController(
+GrayWorldAwbController::GrayWorldAwbController(
         const SensorTuning *t,
         const float wbGainPrior[3])
     : tuning(t),
@@ -68,7 +68,7 @@ AutoWhiteBalanceController::AutoWhiteBalanceController(
       current{wbRPrior, wbBPrior, 0} {
 }
 
-WbGains AutoWhiteBalanceController::currentGainsQ8() const {
+WbGains GrayWorldAwbController::currentGainsQ8() const {
     WbGains g;
     g.r = (uint16_t)toQ8(current.wbR);
     g.g = 256;
@@ -76,13 +76,14 @@ WbGains AutoWhiteBalanceController::currentGainsQ8() const {
     return g;
 }
 
-void AutoWhiteBalanceController::reset() {
+void GrayWorldAwbController::reset() {
     current.wbR    = wbRPrior;
     current.wbB    = wbBPrior;
     current.estCct = 0;
 }
 
-AwbResult AutoWhiteBalanceController::process(const IpaStats &stats) {
+AwbResult GrayWorldAwbController::process(const IpaStats &stats,
+                                            float /*luxIndex*/) {
     AwbResult out;
 
     /* Gray-world over rgbMean patches, with saturated / near-black
@@ -183,7 +184,7 @@ AwbResult AutoWhiteBalanceController::process(const IpaStats &stats) {
     return out;
 }
 
-AwbResult AutoWhiteBalanceController::applyManualGains(
+AwbResult GrayWorldAwbController::applyManualGains(
         float rGainAbs, float gGainAbs, float bGainAbs) {
     AwbResult out;
 

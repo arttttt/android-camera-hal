@@ -10,7 +10,7 @@ namespace android {
 
 class  AutoExposureController;
 class  AutoFocusController;
-class  AutoWhiteBalanceController;
+class  Awb;
 class  IspPipeline;
 class  SensorTuning;
 struct SensorConfig;
@@ -77,9 +77,11 @@ private:
      * speed, highlight constraint, AE-LOCK + EV-comp bias. */
     std::unique_ptr<AutoExposureController> mAe;
 
-    /* AWB controller — owns gray-world math, EMA-relax to prior,
-     * gate, CCT estimation, CCM LERP. */
-    std::unique_ptr<AutoWhiteBalanceController> mAwb;
+    /* AWB controller — concrete impl picked by `createAwb` from the
+     * tuning's algorithm flag (gray-world default; Bayes when
+     * calibrated). The coordinator only sees the abstract interface;
+     * gating + result routing are impl-agnostic. */
+    std::unique_ptr<Awb> mAwb;
 
     /* Frame counter for throttled diagnostic logs. Incremented on
      * every processStats entry; a single ALOGD fires per N frames. */

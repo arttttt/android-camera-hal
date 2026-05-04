@@ -1,7 +1,7 @@
-#ifndef HAL_3A_AUTO_WHITE_BALANCE_CONTROLLER_H
-#define HAL_3A_AUTO_WHITE_BALANCE_CONTROLLER_H
+#ifndef HAL_3A_GRAY_WORLD_AWB_CONTROLLER_H
+#define HAL_3A_GRAY_WORLD_AWB_CONTROLLER_H
 
-#include "AwbResult.h"
+#include "Awb.h"
 
 namespace android {
 
@@ -44,48 +44,24 @@ struct IpaStats;
  *  - `wbGainPrior[3]` carries the sensor's calibrated R/G/B prior
  *    (typically the daylight CcmSet's wbGain). Stored normalised to
  *    G = 1.0 for direct EMA-relax target. */
-class AutoWhiteBalanceController {
+class GrayWorldAwbController : public Awb {
 public:
-    AutoWhiteBalanceController(const SensorTuning *tuning,
-                               const float wbGainPrior[3]);
+    GrayWorldAwbController(const SensorTuning *tuning,
+                           const float wbGainPrior[3]);
 
-    /* Auto-mode gray-world tick. Returns AwbResult with the updated
-     * gains (always populated post-EMA), an optional CCM update
-     * (populated when the tuning has the awb.v4 section loaded),
-     * the estimated CCT (Kelvin), the AWB state for result metadata,
-     * and the valid-patch count for diagnostics. */
-    AwbResult process(const IpaStats &stats);
+    /* Auto-mode gray-world tick. `luxIndex` is ignored — gray-world
+     * is brightness-blind; the Bayesian impl is what consumes it. */
+    AwbResult process(const IpaStats &stats, float luxIndex) override;
 
-    /* Manual-mode push. Snapshots the framework-provided absolute
-     * R / G / B gains as the new internal state (normalised so
-     * G = 1.0 in the controller's R/B-relative model) and returns a
-     * Result that echoes the gains for the coordinator to push to
-     * the shader. CCM is left untouched — manual gains without
-     * COLOR_CORRECTION_TRANSFORM in the request keeps the current
-     * per-CCT CCM. */
-    AwbResult applyManualGains(float rGainAbs, float gGainAbs, float bGainAbs);
+    AwbResult applyManualGains(float rGainAbs, float gGainAbs,
+                                float bGainAbs) override;
 
-    /* Reset to the daylight prior. Called on session boundary
-     * (Camera::closeDevice → Ipa::reset). */
-    void reset();
+    void reset() override;
 
-    /* Snapshot of the controller's smoothed gains, normalised with
-     * G pinned at 1.0. Public so AE's highlight-protection candidate
-     * can read the current WB on a frame where AWB didn't run (skip
-     * branch — coordinator passes the cached value into AE). */
-    float currentWbR() const { return current.wbR; }
-    float currentWbB() const { return current.wbB; }
-
-    /* Same gains as currentWbR/B, in the Q8 form the IspPipeline
-     * shader-side WB stage consumes. Convenience for the cold-start
-     * shader seed and for any caller that wants to push the cached
-     * gains without going through process(). */
-    WbGains currentGainsQ8() const;
-
-    /* Estimated CCT (Kelvin) from the most recent successful gray-
-     * world tick, or the prior's CCT if AWB never ran in this
-     * session. For result metadata + diagnostic. */
-    int currentEstCct() const { return current.estCct; }
+    float    currentWbR()     const override { return current.wbR; }
+    float    currentWbB()     const override { return current.wbB; }
+    WbGains  currentGainsQ8() const override;
+    int      currentEstCct()  const override { return current.estCct; }
 
 private:
     const SensorTuning *tuning;
@@ -114,4 +90,4 @@ private:
 
 } /* namespace android */
 
-#endif /* HAL_3A_AUTO_WHITE_BALANCE_CONTROLLER_H */
+#endif /* HAL_3A_GRAY_WORLD_AWB_CONTROLLER_H */
