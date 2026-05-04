@@ -494,6 +494,48 @@ calibration would unlock a more-correct OB fix as a deferred
 follow-up. See the project memory `project_awb_design.md` for
 the full reasoning.
 
+### Bayesian AWB — shipped on IMX179 (partial calibration)
+
+After live diagnostics confirmed the cyan-cast on real (non-dim)
+scenes was a structural gray-world failure on colour-dominant
+average — not an OB / clamp / prior-shape bug — the AWB path was
+rebuilt around an RPi-style Bayesian estimator. Migration plan in
+`docs/awb-bayes.md` (Steps 1-9 done, Step 10 partial, Step 11
+shipped for IMX179, Step 12 deferred).
+
+Pipeline lands in `hal/3a/BayesianAwbController` behind a common
+`Awb` interface; `AwbFactory::createAwb` picks gray-world or
+bayes per-sensor from `active.awb.algorithm` + a populated
+`bayes` block. Per tick:
+
+- coarseSearch over `bayes.ctCurveR / ctCurveB` PWLs, log-stepped
+  across the curves' calibrated CT domain. Cost per candidate t:
+  `Σ_zones min(δ², deltaLimit) + biasWeight·min(δ_bias², deltaLimit)
+  − prior(t | luxIndex)` with zones = (R/G, B/G) per patch and
+  `(gainR, gainB) = (1/ctR(t), 1/ctB(t))`.
+- fineSearch refines off-curve along the perpendicular axis in
+  (R/G, B/G) space, capped by `transversePos / transverseNeg`,
+  for magenta ↔ green correction the on-curve search can't
+  express.
+- Output gains IIR-smoothed at `damping` after `startupFrames`
+  cold-start snap.
+- Manual AWB presets (INCANDESCENT / DAYLIGHT / …) supported by
+  clipping the coarseSearch CT range to per-mode windows from
+  `bayes.modes[]`. The matching modes are also advertised in
+  `ANDROID_CONTROL_AWB_AVAILABLE_MODES` only when the sensor
+  actually has bayes calibration — gray-world keeps AUTO / OFF.
+
+IMX179 ships bayes with calibration data derived from the
+existing `awb.v4.FusionLights` raw `[R, GR, GB, B]` measurements
+(post-OB) — eight inner CT points across ~3500-5350 K, plus
+extrapolated 2700 K and 7000 K endpoints for INCANDESCENT /
+SHADE preset coverage. OV5693 stays on gray-world for now;
+proper grey-card calibration of both sensors (Step 10 full)
+is the open follow-up.
+
+Closes the `manual AWB presets` open-question item from
+`open-questions.md`.
+
 ## Open
 
 - **ZSL + reprocess** — slot reserved in `PipelineContext`

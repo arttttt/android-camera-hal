@@ -84,13 +84,25 @@ preview are all working.
   EV jump doesn't tear mid-rolling-shutter. Exposure / gain split
   via `SensorConfig::splitExposureGain` (prefers exposure up to
   default frame_length, then gain).
-- **AWB** — gray-world over a 16×16 patch grid (rgbMean from NEON
-  stats), saturated / near-black patches filtered. **96-valid-patch
-  confidence gate**: below it, lastWb EMA-relaxes back to the
-  per-CCT-calibrated daylight prior — gate is "trust the calibrated
-  neutral over a stale gray-world reading on a noise / non-neutral
-  subset". CCT estimated via NVIDIA's `awb.v4` U → CCT polynomial,
-  CCM LERP'd across calibrated brackets.
+- **AWB** — picked per-sensor by `AwbFactory::createAwb` from the
+  tuning's `active.awb.algorithm` flag.
+  *IMX179 (rear)* runs RPi-style **Bayesian AWB**: coarseSearch
+  over CT curves (calibrated post-OB raw R/G and B/G ratios per
+  illuminant) with a lux-conditioned log-prior, deltaLimit
+  per-zone error clamp, biasCT pull toward a fallback CT, and
+  off-curve fineSearch in (R/G, B/G) chromaticity space for
+  magenta ↔ green refinement. IIR damping smooths published gains
+  after a startup-snap window. Manual AWB presets
+  (INCANDESCENT / DAYLIGHT / etc.) clip the coarseSearch range
+  to per-mode CT windows; matching modes are advertised in
+  `ANDROID_CONTROL_AWB_AVAILABLE_MODES`.
+  *OV5693 (front)* stays on the original gray-world fallback —
+  patch-grid average + 96-valid-patch confidence gate +
+  EMA-relax to a calibrated daylight prior — until proper
+  grey-card calibration lands.
+  Both share the downstream pipe: WB applied in the demosaic
+  shader (zero silicon delay), CCM LERP'd across `colorCorrection
+  .Set[]` and updated through the shared Q10 buffer.
 - **AF** — CDAF state machine (`Idle → Coarse1 → [Coarse2] → Fine
   → Settle`). Score is `Σ(Gx² + Gy²) / Σ I²` (exposure-invariant
   Tenengrad ratio) computed in NEON over the focus ROI. Continuous

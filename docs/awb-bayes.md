@@ -1,7 +1,10 @@
 # AWB Bayesian — migration plan
 
-**Status:** open. Transient document — delete on completion (same
-pattern as the 3A refactor plan).
+**Status:** in flight. Steps 1-9 done; Step 10 partial (FusionLights-
+derived calibration on IMX179, real grey-card session still pending);
+Step 11 shipped for IMX179; Step 12 deferred until OV5693 is
+calibrated and bayes is the default on both. Transient document —
+delete once Step 10 (full) + Step 12 land.
 
 **Why:** the current `AutoWhiteBalanceController` is gray-world over
 the 16×16 patch grid with a 96-patch confidence gate and EMA-relax
@@ -70,7 +73,7 @@ Each step is one bisectable commit, compiles + smoke-passes on its
 own. Order chosen so the live algorithm flips only at step 10 —
 everything before that is dark-launched scaffolding.
 
-### Step 1 — Tuning schema for `awb.bayes` + algorithm switch
+### Step 1 — Tuning schema for `awb.bayes` + algorithm switch (DONE)
 
 `SensorTuning` parses a new optional `active.awb.bayes` JSON block
 with: `priors[]` (lux-conditioned PWLs), `ctCurveR` / `ctCurveB`
@@ -82,7 +85,7 @@ change yet — gray-world keeps running.
 `tools/isp_to_json.py` preserved-section list grows by one
 (`awb.bayes`) so re-runs don't drop the fresh section.
 
-### Step 2 — Lux index in AE result
+### Step 2 — Lux index in AE result (DONE — pipe wired; `ae.luxAnchor` not yet calibrated, so luxIndex publishes 0 today)
 
 `AutoExposureController` computes an absolute-ish lux index from
 the converged `filteredTotalUs` against a per-sensor calibration
@@ -91,7 +94,7 @@ one entry per sensor). Surfaces as `AeResult.luxIndex`. `Ipa3A`
 caches the last value for AWB consumption. No behaviour change
 yet — gray-world doesn't read it.
 
-### Step 3 — `Awb` interface + factory
+### Step 3 — `Awb` interface + factory (DONE)
 
 `AutoWhiteBalanceController` becomes `Awb` — a pure-virtual base
 declaring `process(stats, luxIndex) → AwbResult` and
@@ -103,7 +106,7 @@ a factory keyed off `tuning.awb.algorithm`. No `BayesianAwbController`
 yet; factory always returns gray-world. Smoke-pass: same output as
 today.
 
-### Step 4 — `BayesianAwbController` skeleton
+### Step 4 — `BayesianAwbController` skeleton (DONE)
 
 Empty `BayesianAwbController` implementing `Awb` — `process` returns
 the cold-start `wbGainPrior` every tick, no real estimation. Factory
@@ -112,7 +115,7 @@ to `"grayworld"`; bayes path is only reachable with an explicit
 override JSON. Smoke-pass: gray-world unchanged on production
 tunings.
 
-### Step 5 — coarseSearch over CT curves
+### Step 5 — coarseSearch over CT curves (DONE)
 
 Implement `coarseSearch(stats)`:
 - Per-zone normalise `R/(G+1)`, `B/(G+1)` (post-saturation /
@@ -128,7 +131,7 @@ Implement `coarseSearch(stats)`:
 likelihood smoothing. Bayes-path output is bounded but jittery on
 real frames.
 
-### Step 6 — Prior interpolation by lux + deltaLimit clamp
+### Step 6 — Prior interpolation by lux + deltaLimit clamp (DONE)
 
 - `interpolatePrior(luxIndex)` builds a PWL by interpolating
   between the two `priors[]` entries bracketing the current lux.
@@ -141,7 +144,7 @@ This is where the cyan-cast actually starts to fix on real data:
 prior pulls the search toward the scene-appropriate CCT band even
 when gray-world average is biased.
 
-### Step 7 — Bias samples + fineSearch
+### Step 7 — Bias samples + fineSearch (DONE — split into 7a / 7b commits; off-curve drift bug found and fixed during integration)
 
 - `bias_proportion × Σzones.counted` synthetic samples added at
   `(R, G, B) = (1/biasCT_R, 1, 1/biasCT_B)` so the search has a
@@ -152,7 +155,7 @@ when gray-world average is biased.
   prior. Provides green ↔ magenta correction the on-curve search
   alone can't express.
 
-### Step 8 — Startup-snap + IIR damping for output
+### Step 8 — Startup-snap + IIR damping for output (DONE)
 
 - First N frames after `reset()` (`startupFrames`, default 10):
   speed = 1.0 (instant snap to the bayes output), so cold-start
@@ -165,7 +168,7 @@ when gray-world average is biased.
 `BayesianAwbController` is feature-complete at this point. Still
 behind tuning switch, still off in production.
 
-### Step 9 — Mode CT-ranges (manual AWB presets)
+### Step 9 — Mode CT-ranges (manual AWB presets) (DONE — including `ANDROID_CONTROL_AWB_AVAILABLE_MODES` advertise gated by bayes presence)
 
 `process(stats, luxIndex, mode)` honours mode-specific CT ranges
 from `tuning.awb.bayes.modes`:
@@ -179,10 +182,27 @@ Same coarseSearch / fineSearch / prior pipeline, just a clipped
 `[ctLo, ctHi]` window. Closes the open-question item from
 `docs/open-questions.md` (manual AWB presets).
 
-### Step 10 — Calibration session + tuning JSON updates
+### Step 10 — Calibration session + tuning JSON updates (PARTIAL)
 
-**User task, not a code commit.** Grey-card session for
-IMX179 + OV5693:
+**IMX179: partial — FusionLights-derived.** The existing tuning's
+`awb.v4.FusionLights` array carries 11 post-OB raw `[R, GR, GB, B]`
+samples per illuminant calibrated by NVIDIA. Each entry was
+converted into a `(CCT, R/G, B/G)` triple by averaging GR/GB,
+back-computing CCT via the existing `awb.v4.UtoCCT` polynomial,
+and shipping the resulting points as `bayes.ctCurveR / ctCurveB`
+in `imx179_primax.json`. CCT range covered by real measurement:
+~3500-5350 K (8 inner points). Endpoints at 2700 K (INCANDESCENT
+preset target) and 7000 K (CLOUDY / SHADE) remain extrapolated.
+
+**OV5693: not started.** Front sensor still on gray-world.
+
+**Real grey-card session still pending** — needed to replace the
+extrapolated warm / cool endpoints with measurements. Until then
+INCANDESCENT and SHADE presets land near the curves' boundary
+behaviour (extrapolated values), and on a non-incandescent test
+scene the INCANDESCENT preset overshoots into a strong blue cast.
+
+**User task when convenient.** Grey-card session for the gaps:
 
 - 4-5 illuminants spanning the working CCT range
   (incandescent ~2700 K, warm LED ~3000 K, cool fluorescent
@@ -198,7 +218,7 @@ ctCurveB / priors / modes` populated. `awb.algorithm` flipped to
 `"bayes"`. `tools/isp_to_json.py` does not regenerate this
 section.
 
-### Step 11 — Production flip
+### Step 11 — Production flip (SHIPPED for IMX179)
 
 Smoke test on both sensors with the new tuning. Validate cyan-cast
 fixed on the original repro scene + no regression on simple
@@ -206,7 +226,7 @@ neutral / colour-dominant scenes. If solid: keep
 `awb.algorithm = "bayes"` shipped. If a sensor isn't calibrated
 (or fails QA), it stays on `"grayworld"` until calibration lands.
 
-### Step 12 — Cleanup
+### Step 12 — Cleanup (NOT STARTED — premature while OV5693 is still on gray-world)
 
 If both production sensors run bayes long enough to validate:
 

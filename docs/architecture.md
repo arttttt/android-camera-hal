@@ -73,9 +73,17 @@ GPU-visible input ring — no CPU copy on the hot path.
     style: `process(stats, meta, currentWb) → AeResult`. Static
     helper `parseManualSettings` handles the `AE_MODE = OFF` /
     cold-start V4L2 triple computation.
-  - `hal/3a/AutoWhiteBalanceController` — gray-world + 96-patch
-    confidence gate + EMA-relax to prior + CCT-LERP CCM. Pure
-    return-style: `process(stats) → AwbResult` and
+  - `hal/3a/Awb` — pure-virtual AWB interface. Two impls:
+    `GrayWorldAwbController` (fallback / sensors without bayes
+    calibration) keeps the original 96-patch confidence gate +
+    EMA-relax to prior + CCT-LERP CCM behaviour;
+    `BayesianAwbController` is the production path on IMX179 —
+    coarseSearch over CT curves + lux-conditioned prior +
+    deltaLimit clamp + biasCT pull + off-curve fineSearch + IIR
+    damping. Selected by `hal/3a/AwbFactory::createAwb` from the
+    tuning's `active.awb.algorithm` flag plus a populated
+    `bayes` block. Same return-style:
+    `process(stats, luxIndex, awbMode) → AwbResult`,
     `applyManualGains(...)` for `AWB_MODE = OFF`.
   - `hal/ipa/Ipa3A` — 3A coordinator. Owns the three controllers,
     runs gating decisions, dispatches in order
@@ -289,18 +297,47 @@ Built once per camera by `CameraStaticMetadata::build()` in
   rolling-shutter readout. Exposure / gain split via
   `SensorConfig::splitExposureGain` (prefers exposure up to one
   default frame_length, then gain).
-- **AWB** is gray-world over `rgbMean[16][16][3]` with patch-level
-  saturation / noise-floor filtering. A 96-valid-patch confidence
-  gate (`awbMinValidPatches = 96`, 37.5 % of the grid) protects
-  against gray-world failures on dim / colour-biased scenes:
-  below the gate `lastWb` EMA-relaxes back to `wbGainPrior` (the
-  per-CCT calibrated daylight neutral). CCT estimated from the
-  gray-world G/B ratio via the tuning's `awb.v4` U → CCT polynomial,
-  CCM LERP'd between calibrated brackets in
-  `colorCorrection.Set[]`. WB gains apply in the demosaic shader
-  (zero silicon delay); CCM via the shared `mCcmQ10` buffer the
-  shader reads. See [project memory `project_awb_design.md`] for
-  the gate / pull-to-prior rationale.
+- **AWB** has two implementations behind a common `Awb`
+  interface, picked per-sensor by `AwbFactory::createAwb` from
+  the tuning JSON's `active.awb.algorithm` flag.
+
+  *GrayWorldAwbController* — original gray-world over
+  `rgbMean[16][16][3]` with patch-level saturation / noise-floor
+  filtering. A 96-valid-patch confidence gate (`awbMinValidPatches
+  = 96`, 37.5 % of the grid) protects against gray-world failures
+  on dim / colour-biased scenes: below the gate `lastWb`
+  EMA-relaxes back to `wbGainPrior` (the per-CCT calibrated
+  daylight neutral). CCT estimated from the gray-world G/B ratio
+  via the tuning's `awb.v4` U → CCT polynomial. Used as the
+  fallback path on sensors without a Bayes calibration block.
+  OV5693 (front) currently runs here.
+
+  *BayesianAwbController* — RPi-style two-stage estimator over
+  the calibrated CT curves (`bayes.ctCurveR / ctCurveB`).
+  coarseSearch is a log-stepped traversal of the curve domain;
+  cost at each candidate t is `Σ_zones min(δ², deltaLimit) +
+  biasWeight · min(δ_bias², deltaLimit) − prior(t | luxIndex)`,
+  with zones = (R/G, B/G) per filtered patch and
+  `(gainR, gainB) = (1/ctR(t), 1/ctB(t))`. The lux-conditioned
+  prior is interpolated between calibrated `bayes.priors[]`
+  entries; the bias term anchors weak-signal scenes toward
+  `biasCT`; the per-zone deltaLimit clamp keeps a single
+  off-grey region from dominating. fineSearch refines the
+  on-curve winner perpendicular to the curve in (R/G, B/G)
+  space (magenta ↔ green correction off the Planckian locus,
+  bounded by `transversePos / transverseNeg`). Output gains are
+  IIR-smoothed at `damping` rate after the first `startupFrames`
+  cold-start snap. Manual AWB presets (`INCANDESCENT` / `DAYLIGHT`
+  / etc.) clip the coarseSearch CT range to per-mode windows from
+  `bayes.modes[]`. IMX179 (rear) runs here.
+
+  Both impls share the downstream pipe: WB gains apply in the
+  demosaic shader (zero silicon delay); CCM is LERP'd between
+  calibrated brackets in `colorCorrection.Set[]` and lands in
+  the shared `mCcmQ10` buffer the shader reads. See
+  [project memory `project_awb_design.md`] and
+  [docs/awb-bayes.md] for the migration plan + remaining
+  calibration work.
 - **AF** is a CDAF state machine in `AutoFocusController`:
   `Idle → Coarse1 → [Coarse2] → Fine → Settle`, parabolic peak
   interpolation, scene-change retrigger on continuous AF.

@@ -169,33 +169,19 @@ context-switch tax; bundling it with the eventual "true Treble
 port" (split vendor partition, vendor HIDL HAL) makes more sense.
 
 
-## Manual AWB presets (INCANDESCENT / FLUORESCENT / …)
+## Manual AWB presets — closed (shipped via Bayes-AWB Step 9)
 
-CCT-driven CCM selection is wired (Tier 3 PR 6.7): `Ipa3A`
-estimates a CCT from the gray-world G/B ratio via the tuning's
-`awb.v4.UtoCCT` polynomial, picks / interpolates a CCM between the
-calibrated `colorCorrection.Set[].cct` brackets, applies the
-matching `wbGain` priors as the AWB neutral anchor, and falls back
-to the prior on the confidence gate. So the bulk of the historical
-AWB question is closed.
+`BayesianAwbController` honours Camera2's manual AWB presets
+(INCANDESCENT / FLUORESCENT / WARM_FLUORESCENT / DAYLIGHT /
+CLOUDY_DAYLIGHT / SHADE) by clipping the coarseSearch CT range
+to a per-mode `[ctLo, ctHi]` window from `bayes.modes[]` in the
+sensor's tuning JSON. Same coarseSearch / fineSearch / prior /
+deltaLimit pipeline; only the search window changes. The
+matching modes are advertised in
+`ANDROID_CONTROL_AWB_AVAILABLE_MODES` only when the sensor's
+tuning carries the calibration block — gray-world sensors keep
+AUTO / OFF only, since gray-world has no preset semantics.
 
-What's still **not** wired: the `mwbCCT.{cloudy, shade,
-incandescent, fluorescent}` preset reference points. Camera2's
-`ANDROID_CONTROL_AWB_MODE` accepts those four (plus DAYLIGHT,
-TWILIGHT, WARM_FLUORESCENT) as user-selectable presets that clamp
-the CCT target instead of running gray-world. We currently treat
-every non-AUTO / non-OFF AWB mode as "hold last gains" — manual
-presets work as a freeze, but they don't actually clamp to a
-per-preset CCT.
-
-**Question: is preset support worth wiring?**
-
-The same plumbing as the auto path: pick the matching `mwbCCT`
-entry's CCT, drive the existing CCM LERP / wbGain prior path with
-it, ignore the gray-world estimate while the preset is active.
-`AWB_MODE_AUTO` already runs gray-world; `AWB_MODE_OFF` already
-honours `COLOR_CORRECTION_GAINS`. Adding the seven preset modes
-is a bounded extension of the AWB switch.
-
-Worth doing if a real consumer asks for it; not blocking common
-camera apps (which use AUTO).
+IMX179 ships with all six presets defined; OV5693 stays on
+gray-world (no `bayes.modes[]`) until Step 10 calibration lands
+for it. See `docs/awb-bayes.md` Step 9.
