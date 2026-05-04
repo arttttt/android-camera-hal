@@ -3,7 +3,12 @@
 
 #include <stdint.h>
 #include <string>
+#include <utility>
 #include <vector>
+
+#include <experimental/optional>
+
+#include "Pwl.h"
 
 namespace android {
 
@@ -240,6 +245,62 @@ public:
               closeSpeedZone(0.f) {}
     };
 
+    /* AWB algorithm selector. The tuning JSON's
+     * `active.awb.algorithm` ("grayworld" | "bayes") drives which
+     * `Awb` controller variant the IPA factory instantiates.
+     * GrayWorld is the default — keeps the historical pre-Bayes
+     * behaviour on sensors without a fresh Bayesian calibration.
+     * Bayes pulls from `BayesParams`, which must be `loaded` for
+     * the controller to operate; otherwise the factory logs a
+     * warning and falls back to GrayWorld. */
+    enum class AwbAlgorithm {
+        GrayWorld,
+        Bayes,
+    };
+
+    /* Bayesian-AWB tuning data. Populated from `active.awb.bayes`.
+     * The Bayes controller uses:
+     *   - `priors` (lux-conditioned PWLs of CT → log-likelihood) to
+     *     bias CT estimation by scene brightness.
+     *   - `ctCurveR` / `ctCurveB` to compute candidate gain pairs
+     *     `(1/ctR, 1/ctB)` at each searched CT.
+     *   - `deltaLimit` to clamp per-zone error contributions in the
+     *     coarseSearch likelihood (one off-grey zone can't dominate
+     *     the sum-of-squares over real neutrals).
+     *   - `biasCT` + `biasProportion` to inject synthetic samples
+     *     toward a fallback CT when scene signal is weak.
+     *   - `transversePos` / `transverseNeg` to bound the off-curve
+     *     fineSearch (magenta / green shift away from the CT line).
+     *   - `modes` to clip coarseSearch to a CT range per Camera2
+     *     manual-AWB preset (INCANDESCENT / DAYLIGHT / etc.).
+     *
+     * The optional wraps the whole struct: presence at the accessor
+     * is the "loaded" check — there is no separate flag. The parser
+     * only emplaces a BayesParams when the minimum-viable data set
+     * is parsed (CT curves + at least one prior). */
+    struct BayesParams {
+        Pwl ctCurveR;   /* CT (Kelvin) → R/G ratio */
+        Pwl ctCurveB;   /* CT (Kelvin) → B/G ratio */
+
+        struct LuxPrior {
+            float lux = 0.f;
+            Pwl   prior;   /* CT (Kelvin) → log-likelihood */
+        };
+        std::vector<LuxPrior> priors;   /* sorted by lux ascending */
+
+        float transversePos  = 0.f;
+        float transverseNeg  = 0.f;
+        float deltaLimit     = 0.f;
+        float biasCT         = 0.f;
+        float biasProportion = 0.f;
+
+        struct ModeRange {
+            float ctLo = 0.f;
+            float ctHi = 0.f;
+        };
+        std::vector<std::pair<std::string, ModeRange>> modes;
+    };
+
     const ModuleInfo&           module()        const { return mModule; }
     const AfParams&             af()            const { return mAf; }
     const std::vector<CcmSet>&  ccmSets()       const { return mCcmSets; }
@@ -247,6 +308,14 @@ public:
     const AwbRefs&              awbRefs()       const { return mAwbRefs; }
     const AwbParams&            awbParams()     const { return mAwbParams; }
     const AeParams&             aeParams()      const { return mAeParams; }
+    AwbAlgorithm                awbAlgorithm()  const { return mAwbAlgorithm; }
+
+    /* Optional surface — `engaged()` true iff the parser saw a
+     * minimum-viable bayes block. Callers route by checking
+     * presence: `if (auto &b = tuning->bayesParams()) { ... }`. */
+    const std::experimental::optional<BayesParams>& bayesParams() const {
+        return mBayesParams;
+    }
 
     /* Fill `out` (9 entries, row-major 3x3) with the Q10 fixed-point CCM
      * closest to `cctK`. Uses nearest-CCT from ccmSets(); if the tuning
@@ -328,6 +397,8 @@ private:
     AwbRefs      mAwbRefs;
     AwbParams    mAwbParams;
     AeParams     mAeParams;
+    AwbAlgorithm                              mAwbAlgorithm = AwbAlgorithm::GrayWorld;
+    std::experimental::optional<BayesParams>  mBayesParams;
     std::string  mBayerPattern;
 };
 

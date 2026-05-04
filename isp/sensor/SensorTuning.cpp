@@ -257,6 +257,101 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
         }
     }
 
+    /* AWB algorithm selector. The factory in Ipa3A consults this to
+     * decide between gray-world (current production path) and Bayes
+     * (lux-conditioned prior, requires the bayes block populated).
+     * Missing key / unknown value → GrayWorld, with a warning so a
+     * typo in the tuning JSON is visible in logcat. */
+    const Json::Value &awbAlg = active["awb"]["algorithm"];
+    if (awbAlg.isString()) {
+        const std::string s = awbAlg.asString();
+        if (s == "bayes") {
+            mAwbAlgorithm = AwbAlgorithm::Bayes;
+        } else if (s == "grayworld") {
+            mAwbAlgorithm = AwbAlgorithm::GrayWorld;
+        } else {
+            ALOGW("tuning: unknown awb.algorithm '%s', staying on grayworld",
+                  s.c_str());
+        }
+    }
+
+    /* AWB-Bayes calibration block. Populated by a per-sensor grey-card
+     * calibration session (see docs/awb-bayes.md step 10); a tuning
+     * regenerated from a stock NVIDIA .isp without manual merge has
+     * none of this. The parser builds a candidate `BayesParams`
+     * locally and only emplaces it into `mBayesParams` when the
+     * minimum-viable subset (CT curves + at least one prior) is
+     * present — partial blocks below that threshold leave
+     * `mBayesParams` empty so consumers don't run on half-data. */
+    const Json::Value &bayes = active["awb"]["bayes"];
+    if (bayes.isObject()) {
+        BayesParams bp;
+
+        auto readPwl = [](const Json::Value &arr, Pwl *out) -> bool {
+            if (!arr.isArray() || arr.size() < 2) return false;
+            out->clear();
+            for (Json::Value::ArrayIndex i = 0; i < arr.size(); ++i) {
+                const Json::Value &row = arr[i];
+                if (!row.isArray() || row.size() != 2) {
+                    out->clear();
+                    return false;
+                }
+                out->addPoint(row[0].asFloat(), row[1].asFloat());
+            }
+            return true;
+        };
+
+        const bool ctR = readPwl(bayes["ctCurveR"], &bp.ctCurveR);
+        const bool ctB = readPwl(bayes["ctCurveB"], &bp.ctCurveB);
+
+        const Json::Value &priors = bayes["priors"];
+        if (priors.isArray()) {
+            for (Json::Value::ArrayIndex i = 0; i < priors.size(); ++i) {
+                const Json::Value &entry = priors[i];
+                if (!entry.isObject()) continue;
+                if (!entry.isMember("lux") || !entry.isMember("pwl")) continue;
+                BayesParams::LuxPrior lp;
+                lp.lux = entry["lux"].asFloat();
+                if (!readPwl(entry["pwl"], &lp.prior)) continue;
+                bp.priors.push_back(std::move(lp));
+            }
+        }
+
+        if (bayes.isMember("transversePos"))
+            bp.transversePos  = bayes["transversePos"].asFloat();
+        if (bayes.isMember("transverseNeg"))
+            bp.transverseNeg  = bayes["transverseNeg"].asFloat();
+        if (bayes.isMember("deltaLimit"))
+            bp.deltaLimit     = bayes["deltaLimit"].asFloat();
+        if (bayes.isMember("biasCT"))
+            bp.biasCT         = bayes["biasCT"].asFloat();
+        if (bayes.isMember("biasProportion"))
+            bp.biasProportion = bayes["biasProportion"].asFloat();
+
+        const Json::Value &modes = bayes["modes"];
+        if (modes.isObject()) {
+            const Json::Value::Members names = modes.getMemberNames();
+            for (size_t i = 0; i < names.size(); ++i) {
+                const Json::Value &m = modes[names[i]];
+                if (!m.isObject()) continue;
+                if (!m.isMember("ctLo") || !m.isMember("ctHi")) continue;
+                BayesParams::ModeRange r;
+                r.ctLo = m["ctLo"].asFloat();
+                r.ctHi = m["ctHi"].asFloat();
+                bp.modes.emplace_back(names[i], r);
+            }
+        }
+
+        if (ctR && ctB && !bp.priors.empty())
+            mBayesParams = std::move(bp);
+    }
+
+    if (mAwbAlgorithm == AwbAlgorithm::Bayes && !mBayesParams) {
+        ALOGW("tuning: awb.algorithm=bayes but bayes block missing or "
+              "incomplete; falling back to grayworld");
+        mAwbAlgorithm = AwbAlgorithm::GrayWorld;
+    }
+
     const Json::Value &ae = active["ae"];
     if (ae.isObject()) {
         const Json::Value &mean = ae["MeanAlg"];
@@ -283,6 +378,7 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
             mAeParams.maxFstopDeltaPos = ae["MaxFstopDeltaPos"].asFloat();
         if (ae.isMember("MaxFstopDeltaNeg"))
             mAeParams.maxFstopDeltaNeg = ae["MaxFstopDeltaNeg"].asFloat();
+
     }
 
     /* HAL-specific overrides — keys that don't exist in NVIDIA's .isp
