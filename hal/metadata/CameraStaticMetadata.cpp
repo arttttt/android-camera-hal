@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/user.h>
+#include <vector>
 #include <linux/videodev2.h>
 
 #include <hardware/camera3.h>
@@ -318,7 +319,8 @@ void writeAvailableFpsRanges(CameraMetadata &cm, V4l2Device *dev) {
 /* 3A capabilities + feature flags (flash, stats, scene modes, effects,
  * stabilization). Everything that tells the framework "what we support"
  * outside of resolutions/ranges. */
-void writeControlInfo(CameraMetadata &cm, int facing) {
+void writeControlInfo(CameraMetadata &cm, int facing,
+                      const SensorTuning *tuning) {
     static const uint8_t flashInfoAvailable = ANDROID_FLASH_INFO_AVAILABLE_FALSE;
     cm.update(ANDROID_FLASH_INFO_AVAILABLE, &flashInfoAvailable, 1);
 
@@ -378,11 +380,46 @@ void writeControlInfo(CameraMetadata &cm, int facing) {
     };
     cm.update(ANDROID_CONTROL_AE_AVAILABLE_ANTIBANDING_MODES, controlAeAvailableAntibandingModes, NELEM(controlAeAvailableAntibandingModes));
 
-    static const uint8_t controlAwbAvailableModes[] = {
-            ANDROID_CONTROL_AWB_MODE_AUTO,
-            ANDROID_CONTROL_AWB_MODE_OFF
-    };
-    cm.update(ANDROID_CONTROL_AWB_AVAILABLE_MODES, controlAwbAvailableModes, NELEM(controlAwbAvailableModes));
+    /* AUTO + OFF are always advertised — every Awb impl honours them
+     * (AUTO via the per-tick search / gray-world, OFF via
+     * applyManualGains or last-held). Manual presets (INCANDESCENT
+     * / DAYLIGHT / …) require the per-sensor bayes block to be
+     * loaded with a `modes` map — only the Bayesian impl interprets
+     * them via CT-range clipping; gray-world has no preset support
+     * and silently behaves as AUTO if asked, which would break the
+     * Camera2 contract apps expect when they pick a preset. So we
+     * gate the extra entries on bayes presence + a non-empty modes
+     * block. Sensors on gray-world keep the AUTO/OFF-only list. */
+    std::vector<uint8_t> controlAwbAvailableModes;
+    controlAwbAvailableModes.push_back(ANDROID_CONTROL_AWB_MODE_AUTO);
+    controlAwbAvailableModes.push_back(ANDROID_CONTROL_AWB_MODE_OFF);
+    if (tuning
+     && tuning->awbAlgorithm() == SensorTuning::AwbAlgorithm::Bayes
+     && tuning->bayesParams() && !tuning->bayesParams()->modes.empty()) {
+        const auto &modes = tuning->bayesParams()->modes;
+        auto have = [&modes](const char *name) -> bool {
+            for (size_t i = 0; i < modes.size(); ++i)
+                if (modes[i].first == name) return true;
+            return false;
+        };
+        if (have("INCANDESCENT"))
+            controlAwbAvailableModes.push_back(ANDROID_CONTROL_AWB_MODE_INCANDESCENT);
+        if (have("FLUORESCENT"))
+            controlAwbAvailableModes.push_back(ANDROID_CONTROL_AWB_MODE_FLUORESCENT);
+        if (have("WARM_FLUORESCENT"))
+            controlAwbAvailableModes.push_back(ANDROID_CONTROL_AWB_MODE_WARM_FLUORESCENT);
+        if (have("DAYLIGHT"))
+            controlAwbAvailableModes.push_back(ANDROID_CONTROL_AWB_MODE_DAYLIGHT);
+        if (have("CLOUDY_DAYLIGHT"))
+            controlAwbAvailableModes.push_back(ANDROID_CONTROL_AWB_MODE_CLOUDY_DAYLIGHT);
+        if (have("TWILIGHT"))
+            controlAwbAvailableModes.push_back(ANDROID_CONTROL_AWB_MODE_TWILIGHT);
+        if (have("SHADE"))
+            controlAwbAvailableModes.push_back(ANDROID_CONTROL_AWB_MODE_SHADE);
+    }
+    cm.update(ANDROID_CONTROL_AWB_AVAILABLE_MODES,
+              controlAwbAvailableModes.data(),
+              controlAwbAvailableModes.size());
 
     if (facing == CAMERA_FACING_BACK) {
         uint8_t controlAfAvailableModes[] = {
@@ -796,7 +833,7 @@ camera_metadata_t *CameraStaticMetadata::build(V4l2Device *dev, int facing,
     writeJpegInfo           (cm, dev, jpegBufferSize);
     writeSensorRanges       (cm, dev, sensorCfg);
     writeAvailableFpsRanges (cm, dev);
-    writeControlInfo        (cm, facing);
+    writeControlInfo        (cm, facing, tuning);
     writeStageAvailableModes(cm);
     writeLensCalibration    (cm, tuning);
     writeHalInfo            (cm);
