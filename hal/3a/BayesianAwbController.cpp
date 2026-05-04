@@ -277,8 +277,15 @@ AwbResult BayesianAwbController::process(const IpaStats &stats,
      * defaults ≈ 0.03, i.e. ~3 % off-curve). The prior contribution
      * is constant across this loop — fineSearch doesn't change CT
      * — so it falls out of the argmin and we skip subtracting it. */
-    float bestR = bayes->ctCurveR.eval(bestT);
-    float bestB = bayes->ctCurveB.eval(bestT);
+    /* On-curve anchor — fixed throughout fineSearch. The winner
+     * (bestR / bestB) is updated as candidates beat it but never
+     * feeds back into candidate generation; if we let it, sequential
+     * wins compound the offset and the search drifts well past the
+     * transverse caps. */
+    const float baseR = bayes->ctCurveR.eval(bestT);
+    const float baseB = bayes->ctCurveB.eval(bestT);
+    float bestR = baseR;
+    float bestB = baseB;
     const bool fineEnabled = bayes->transversePos > 0.f
                           || bayes->transverseNeg > 0.f;
     if (fineEnabled) {
@@ -295,15 +302,15 @@ AwbResult BayesianAwbController::process(const IpaStats &stats,
             const float perpR = -db / norm;
             const float perpB =  dr / norm;
             float bestFineErr = computeCostAtGains(cost,
-                                                    1.0f / bestR,
-                                                    1.0f / bestB);
+                                                    1.0f / baseR,
+                                                    1.0f / baseB);
             const float tPos = bayes->transversePos;
             const float tNeg = bayes->transverseNeg;
             for (int i = 0; i < kFineSteps; ++i) {
                 const float frac   = (float)i / (float)(kFineSteps - 1);
                 const float offset = -tNeg + frac * (tPos + tNeg);
-                const float candR  = bestR + offset * perpR;
-                const float candB  = bestB + offset * perpB;
+                const float candR  = baseR + offset * perpR;
+                const float candB  = baseB + offset * perpB;
                 if (candR < 1e-6f || candB < 1e-6f) continue;
                 const float err = computeCostAtGains(cost,
                                                       1.0f / candR,
