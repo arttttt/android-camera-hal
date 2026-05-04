@@ -73,6 +73,7 @@ LOCAL_SRC_FILES += \
     hal/3a/AutoExposureController.cpp \
     hal/3a/AutoFocusController.cpp \
     hal/3a/AwbFactory.cpp \
+    hal/3a/BayesianAwbController.cpp \
     hal/3a/GrayWorldAwbController.cpp \
     hal/ipa/Ipa3A.cpp \
     hal/ipa/NeonStatsEncoder.cpp \
