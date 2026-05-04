@@ -131,14 +131,19 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
         emptyBatch.val[i] = 0;
     }
 
-    /* AWB — coordinator-side gating decides which path runs. The
-     * controller is pure compute, never hits the ISP / DelayedControls
-     * itself. Auto path requires AWB AUTO mode, no framework lock,
-     * no AF sweep (isp->awbLocked, set by AutoFocusController), and
-     * a scene above the noise floor. Manual path takes user-provided
-     * gains directly. Anything else holds. */
+    /* AWB — coordinator-side gating. The controller is pure compute,
+     * never hits the ISP / DelayedControls itself. The Awb impl
+     * accepts the Camera2 awbMode value: gray-world ignores it,
+     * Bayes interprets preset modes (INCANDESCENT / DAYLIGHT / …)
+     * as CT-range clips for its search. Routing:
+     *   - AWB_MODE_OFF + manualWbValid → applyManualGains.
+     *   - AWB_MODE_OFF without manual gains → hold last (no call).
+     *   - any other mode (AUTO + presets) → process(...) under the
+     *     usual gates (no framework lock, no AF sweep, scene above
+     *     noise floor). */
     const float sceneLuma = meanLumaInRoiForLog(stats, meta);
-    const bool awbRun = (meta.awbMode == ANDROID_CONTROL_AWB_MODE_AUTO)
+    const bool awbModeRun = (meta.awbMode != ANDROID_CONTROL_AWB_MODE_OFF);
+    const bool awbRun = awbModeRun
                      && (meta.awbLock == ANDROID_CONTROL_AWB_LOCK_OFF)
                      && (isp != nullptr)
                      && !isp->awbLocked()
@@ -151,7 +156,7 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
                                            meta.manualWbG,
                                            meta.manualWbB);
     } else if (awbRun) {
-        awbResult = mAwb->process(stats, lastLuxIndex);
+        awbResult = mAwb->process(stats, lastLuxIndex, meta.awbMode);
     }
 
     /* Route AWB result. Gains hit the shader (zero silicon delay);

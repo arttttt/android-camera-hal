@@ -15,8 +15,10 @@ struct IpaStats;
  * Two-stage search over the calibrated CT curves
  * (`bayesParams.ctCurveR`, `ctCurveB`):
  *
- *   coarseSearch — log-stepped traversal of the curves' domain.
- *     Cost at each candidate t:
+ *   coarseSearch — log-stepped traversal of the curves' domain
+ *     (clipped to a per-mode CT window when the Camera2 awbMode
+ *     names a preset like DAYLIGHT / INCANDESCENT). Cost at each
+ *     candidate t:
  *       Σ_zones min((gainR·R/G − 1)² + (gainB·B/G − 1)², deltaLimit)
  *         + biasWeight × min((gainR·biasR − 1)² + ..., deltaLimit)
  *         − prior(t | luxIndex)
@@ -45,7 +47,9 @@ public:
     BayesianAwbController(const SensorTuning *tuning,
                            const float wbGainPrior[3]);
 
-    AwbResult process(const IpaStats &stats, float luxIndex) override;
+    AwbResult process(const IpaStats &stats,
+                       float luxIndex,
+                       uint8_t awbMode) override;
 
     AwbResult applyManualGains(float rGainAbs, float gGainAbs,
                                 float bGainAbs) override;

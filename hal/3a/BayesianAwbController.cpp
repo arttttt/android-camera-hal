@@ -3,6 +3,8 @@
 #include <math.h>
 #include <stdint.h>
 
+#include <system/camera_metadata.h>
+
 #include "ipa/IpaStats.h"
 
 namespace android {
@@ -115,6 +117,27 @@ float evalPriorBlend(const PriorBlend &pb, float ct) {
     return yLo + pb.blend * (yHi - yLo);
 }
 
+/* Camera2 AWB mode → tuning JSON key. The tuning's `bayes.modes`
+ * is keyed by the strings emitted here so a regen of the tuning
+ * doesn't have to hard-code Camera2 enum values. AUTO is mapped
+ * but normally not present in the tuning (search uses the full
+ * curve domain by default); a tuning *may* override it to clip
+ * AUTO to a narrower band. Returns nullptr for unknown / OFF
+ * modes — caller skips the mode clip. */
+const char *awbModeToName(uint8_t awbMode) {
+    switch (awbMode) {
+    case ANDROID_CONTROL_AWB_MODE_AUTO:             return "AUTO";
+    case ANDROID_CONTROL_AWB_MODE_INCANDESCENT:     return "INCANDESCENT";
+    case ANDROID_CONTROL_AWB_MODE_FLUORESCENT:      return "FLUORESCENT";
+    case ANDROID_CONTROL_AWB_MODE_WARM_FLUORESCENT: return "WARM_FLUORESCENT";
+    case ANDROID_CONTROL_AWB_MODE_DAYLIGHT:         return "DAYLIGHT";
+    case ANDROID_CONTROL_AWB_MODE_CLOUDY_DAYLIGHT:  return "CLOUDY_DAYLIGHT";
+    case ANDROID_CONTROL_AWB_MODE_TWILIGHT:         return "TWILIGHT";
+    case ANDROID_CONTROL_AWB_MODE_SHADE:            return "SHADE";
+    default:                                        return nullptr;
+    }
+}
+
 } /* namespace */
 
 BayesianAwbController::BayesianAwbController(const SensorTuning *t,
@@ -145,7 +168,8 @@ void BayesianAwbController::reset() {
 }
 
 AwbResult BayesianAwbController::process(const IpaStats &stats,
-                                          float luxIndex) {
+                                          float luxIndex,
+                                          uint8_t awbMode) {
     AwbResult out;
 
     /* Defensive — the AwbFactory only routes us when bayesParams
@@ -222,8 +246,34 @@ AwbResult BayesianAwbController::process(const IpaStats &stats,
     const float ctRMax = bayes->ctCurveR.maxX();
     const float ctBMin = bayes->ctCurveB.minX();
     const float ctBMax = bayes->ctCurveB.maxX();
-    const float ctMin  = ctRMin > ctBMin ? ctRMin : ctBMin;
-    const float ctMax  = ctRMax < ctBMax ? ctRMax : ctBMax;
+    float ctMin  = ctRMin > ctBMin ? ctRMin : ctBMin;
+    float ctMax  = ctRMax < ctBMax ? ctRMax : ctBMax;
+
+    /* Manual-preset clip — Camera2 AWB modes other than AUTO / OFF
+     * narrow the search to a calibrated CT band so the resulting
+     * gains land near a known illuminant regardless of what the
+     * scene actually looks like. Same coarseSearch + fineSearch
+     * pipeline; only the [ctMin, ctMax] window changes. Modes
+     * absent from the tuning's `modes` map fall through to the
+     * full search range — the controller doesn't fail on an app's
+     * unrecognised preset. */
+    const char *modeName = awbModeToName(awbMode);
+    if (modeName) {
+        for (size_t i = 0; i < bayes->modes.size(); ++i) {
+            if (bayes->modes[i].first == modeName) {
+                const float lo = bayes->modes[i].second.ctLo;
+                const float hi = bayes->modes[i].second.ctHi;
+                if (lo > ctMin) ctMin = lo;
+                if (hi < ctMax) ctMax = hi;
+                break;
+            }
+        }
+    }
+    /* Empty-range guard — clip can collapse to a single point if
+     * the preset's range falls outside the calibrated curves;
+     * coarseSearch handles equal endpoints by re-evaluating the
+     * same t every step, but ctMin > ctMax would break logf. */
+    if (ctMin > ctMax) ctMax = ctMin;
 
     /* coarseSearch — log-stepped traversal of the calibrated CT
      * range. Cost at each candidate t:

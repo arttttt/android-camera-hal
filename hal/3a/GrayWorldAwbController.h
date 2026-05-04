@@ -49,9 +49,12 @@ public:
     GrayWorldAwbController(const SensorTuning *tuning,
                            const float wbGainPrior[3]);
 
-    /* Auto-mode gray-world tick. `luxIndex` is ignored — gray-world
-     * is brightness-blind; the Bayesian impl is what consumes it. */
-    AwbResult process(const IpaStats &stats, float luxIndex) override;
+    /* Auto-mode gray-world tick. `luxIndex` and `awbMode` are
+     * ignored — gray-world is brightness-blind and has no mode-
+     * specific CT-range support; the Bayesian impl consumes both. */
+    AwbResult process(const IpaStats &stats,
+                       float luxIndex,
+                       uint8_t awbMode) override;
 
     AwbResult applyManualGains(float rGainAbs, float gGainAbs,
                                 float bGainAbs) override;

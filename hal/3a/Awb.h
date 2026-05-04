@@ -1,6 +1,8 @@
 #ifndef HAL_3A_AWB_H
 #define HAL_3A_AWB_H
 
+#include <stdint.h>
+
 #include "AwbResult.h"
 #include "WbGains.h"
 
@@ -31,11 +33,17 @@ class Awb {
 public:
     virtual ~Awb() = default;
 
-    /* Auto-mode tick. `luxIndex` is the AE-derived relative-scale
-     * brightness (zero when no `ae.luxAnchor` is calibrated);
-     * gray-world ignores it, Bayes consumes it for prior
-     * interpolation. */
-    virtual AwbResult process(const IpaStats &stats, float luxIndex) = 0;
+    /* Auto / preset-mode tick. `luxIndex` is the AE-derived
+     * relative-scale brightness (zero when no `ae.luxAnchor` is
+     * calibrated); gray-world ignores it, Bayes consumes it for
+     * prior interpolation. `awbMode` is the Camera2 enum value
+     * (`ANDROID_CONTROL_AWB_MODE_*`) — Bayes maps preset modes
+     * onto the tuning's `bayes.modes[]` to clip its CT search
+     * range; gray-world ignores it and runs unconditionally. The
+     * coordinator decides whether to invoke at all. */
+    virtual AwbResult process(const IpaStats &stats,
+                               float luxIndex,
+                               uint8_t awbMode) = 0;
 
     /* Manual-mode push (AWB_MODE_OFF + COLOR_CORRECTION_GAINS in
      * the request). Snapshots the framework-provided absolute

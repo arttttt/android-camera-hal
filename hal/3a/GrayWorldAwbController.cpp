@@ -83,7 +83,8 @@ void GrayWorldAwbController::reset() {
 }
 
 AwbResult GrayWorldAwbController::process(const IpaStats &stats,
-                                            float /*luxIndex*/) {
+                                            float /*luxIndex*/,
+                                            uint8_t /*awbMode*/) {
     AwbResult out;
 
     /* Gray-world over rgbMean patches, with saturated / near-black
