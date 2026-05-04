@@ -69,11 +69,17 @@
           [5500, 0.55],
           [7000, 0.65]
         ],
+        "deltaLimit": 0.2,
         "priors": [
           {
-            "_comment": "Placeholder uniform prior — Step 5 ignores priors; this entry exists only to satisfy the loaded gate (parser requires non-empty priors[]).",
+            "_comment": "Single broad daylight-favouring prior. Peaks softly at 5500 K matching the test-anchor calibration; warmer lights are mildly down-weighted. luxIndex is currently 0 across all production tunings (no ae.luxAnchor calibrated yet), so the lux dimension has no real bracketing yet — we ship one entry until step 10 introduces real lux-conditioned shapes.",
             "lux": 400,
-            "pwl": [[2700, 0.0], [7000, 0.0]]
+            "pwl": [
+              [2700, 0.05],
+              [4000, 0.20],
+              [5500, 0.40],
+              [7000, 0.25]
+            ]
           }
         ]
       },
