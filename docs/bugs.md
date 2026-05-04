@@ -74,6 +74,73 @@ propagates it.
 - **Soft cap on max gain** — interim mitigation; `gain<=32` loses
   one stop of low-light capability but likely removes the cast.
 
+## ISO sticks after manual → auto switch in Camera2 apps
+
+**Symptom:** open camera in `AE_MODE = ON`, AE adapts normally. Set
+manual ISO via the app (`AE_MODE = OFF` + `SENSOR_SENSITIVITY` +
+`SENSOR_EXPOSURE_TIME`). Switch back to auto. ISO stops responding
+to scene changes — preview "stuck" at a fixed ISO regardless of how
+much the scene brightens or dims. Reproduces on IMX179 (rear) with
+the test config; presumably on OV5693 too.
+
+**Diagnosis attempts (2026-05-04):** two patches landed and were
+both dropped after they didn't fix the user-visible behaviour.
+
+1. *parseManualSettings stale-field guard* — `AutoExposureController::
+   parseManualSettings` honoured `SENSOR_EXPOSURE_TIME` /
+   `SENSOR_SENSITIVITY` from the request unconditionally, including
+   on the auto cold-start fallback path inside `ApplySettingsStage`.
+   Apps that don't strip those fields when switching to auto would
+   leak manual values into the first few auto frames. Patch made the
+   parser ignore them when `aeMode != OFF`. Didn't fix it; sensor
+   still appeared stuck (now at the cfg-default gain ≈ ISO 100,
+   which on IMX179 happens to look like the manual ISO 100 the user
+   had just set).
+2. *Auto-fallback writes last-applied state instead of defaults* —
+   second attempt: when the IPA's push hadn't landed for the
+   current frame yet, `ApplySettingsStage` queried
+   `delayedControls.applyControls(frame)` and wrote the silicon's
+   currently-applied exposure / gain instead of stomping with cfg
+   defaults. Idea was that the sensor stays at the prior manual
+   operating point until IPA takes over, AE controller adapts on
+   stats reflecting that real exposure, no defaults interlude.
+   User confirmed still stuck.
+
+Both patches were dropped via `git reset --hard 0577a9c +
+--force-with-lease`; history clean.
+
+**Suspects still open:**
+- `aeLockHeld` not clearing on the `OFF → ON` mode transition.
+  AF triggered a sweep at the wrong moment, `setLock(true)` was
+  called, but the matching `setLock(false)` never fired (or fired
+  before the diag log captured it). The lock branch in
+  `AutoExposureController::process` then re-publishes the held
+  exposure / gain forever.
+- `filteredTotalUs` carrying a stale state from a long-past auto
+  session, with the LPF damping = 0.05 simply not converging fast
+  enough to look responsive. Visually indistinguishable from
+  "stuck" if the recovery takes more than a few seconds.
+- A race between `ApplySettingsStage` (RequestThread) reading
+  `pendingWrite(frame)` and the IPA (PipelineThread) writing the
+  same slot — if the read consistently wins, the auto branch
+  always falls through to its fallback and the IPA's decisions
+  never reach the sensor.
+
+**Where to look next:**
+- Per-frame log of `aeLockHeld`, `aeMode`, `aeLock` and the
+  raw V4L2 write source for ~5 s spanning the manual→auto switch.
+  The throttled `3A:` log catches one sample per 32 frames, which
+  is too coarse to localise the lock entry / exit edges.
+- Confirm whether `mAe->setLock(false)` is called via
+  `afResult.sweepComplete` after a sweep that started during the
+  manual phase — print AF state transitions alongside.
+- Check if the IPA push for stats-from-frame-N actually lands at
+  slot `N + delay` before `ApplySettingsStage`'s read for frame
+  `N + delay` runs. If not, the race theory is the bug.
+
+**Status:** open, no fix planned for this iteration. Doesn't block
+the AWB-Bayes plan; address as a separate Tier 4 AE-stability item.
+
 ## V4L2 fd reopened on every camera open — should only reopen on stream config change
 
 **Symptom:** After dropping `V4L2DEVICE_OPEN_ONCE` the V4L2 fd now closes
