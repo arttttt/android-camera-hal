@@ -54,6 +54,29 @@
       "fluorescent": 4300
     },
     "awb": {
+      "_bayes_comment": "Synthetic test-anchor calibration — values not from a grey-card session. ctCurveR/B at 5500 K match the diagnostic measurement at FusionInitLight=5 (~daylight, R/G≈0.50, B/G≈0.55); warmer / cooler endpoints are physically-plausible extrapolation. Replace with proper calibration in step 10 of the AWB-Bayes plan.",
+      "algorithm": "bayes",
+      "bayes": {
+        "ctCurveR": [
+          [2700, 1.10],
+          [4000, 0.70],
+          [5500, 0.50],
+          [7000, 0.40]
+        ],
+        "ctCurveB": [
+          [2700, 0.25],
+          [4000, 0.40],
+          [5500, 0.55],
+          [7000, 0.65]
+        ],
+        "priors": [
+          {
+            "_comment": "Placeholder uniform prior — Step 5 ignores priors; this entry exists only to satisfy the loaded gate (parser requires non-empty priors[]).",
+            "lux": 400,
+            "pwl": [[2700, 0.0], [7000, 0.0]]
+          }
+        ]
+      },
       "v4": {
         "NumGrayLineSoftClampPoints": 10,
         "GrayLineSoftClamp": [
