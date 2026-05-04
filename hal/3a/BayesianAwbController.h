@@ -11,15 +11,17 @@ struct IpaStats;
 /* RPi-style Bayesian AWB controller.
  *
  * Current state: coarseSearch over the calibrated CT curves
- * (`bayesParams.ctCurveR`, `ctCurveB`). For each candidate CT
+ * (`bayesParams.ctCurveR`, `ctCurveB`) with a per-zone deltaLimit
+ * clamp and a lux-conditioned log-prior. For each candidate CT
  * along a log-stepped traversal of the curves' domain, the
  * controller computes candidate gains `gainR = 1/ctR(t)`,
- * `gainB = 1/ctB(t)` and accumulates per-zone squared error
- * `(gainR·R/G − 1)² + (gainB·B/G − 1)²` over the patches that
- * pass the same saturation / noise-floor filter gray-world uses.
- * The CT minimising the sum is picked. No prior, no off-curve
- * refinement, no temporal smoothing — those land in steps 6, 7,
- * 8 of the migration plan (see docs/awb-bayes.md).
+ * `gainB = 1/ctB(t)` and accumulates per-zone clamped squared
+ * error `min((gainR·R/G − 1)² + (gainB·B/G − 1)², deltaLimit)`
+ * over the patches that pass the same saturation / noise-floor
+ * filter gray-world uses, then subtracts the lux-bracketed prior
+ * `prior(t | luxIndex)`. The CT minimising the cost is picked.
+ * No off-curve refinement, no temporal smoothing — those land in
+ * steps 7, 8 of the migration plan (see docs/awb-bayes.md).
  *
  * Construction mirrors GrayWorldAwbController so the factory can
  * swap impls without re-shaping callers — same `(tuning,

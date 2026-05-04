@@ -28,6 +28,43 @@ unsigned toQ8(float x) {
     return (unsigned)(x * 256.0f + 0.5f);
 }
 
+/* Lux-conditioned prior selection. Two priors bracketing the
+ * current lux are blended linearly; outside the range, the closer
+ * endpoint applies. With a single prior the blend reduces to that
+ * one PWL at every CT step (luxIndex ignored), which is what test
+ * tunings ship before the multi-illuminant calibration session. */
+struct PriorBlend {
+    const Pwl *lo;
+    const Pwl *hi;
+    float      blend;   /* 0 = pure lo, 1 = pure hi */
+};
+
+PriorBlend selectPriors(
+        const std::vector<SensorTuning::BayesParams::LuxPrior> &priors,
+        float luxIndex) {
+    if (priors.empty())                       return {nullptr, nullptr, 0.f};
+    if (priors.size() == 1)                   return {&priors[0].prior, nullptr, 0.f};
+    if (luxIndex <= priors.front().lux)       return {&priors.front().prior, nullptr, 0.f};
+    if (luxIndex >= priors.back().lux)        return {&priors.back().prior, nullptr, 0.f};
+    for (size_t i = 1; i < priors.size(); ++i) {
+        if (luxIndex <= priors[i].lux) {
+            const float lo = priors[i - 1].lux;
+            const float hi = priors[i].lux;
+            return {&priors[i - 1].prior, &priors[i].prior,
+                    (luxIndex - lo) / (hi - lo)};
+        }
+    }
+    return {&priors.back().prior, nullptr, 0.f};
+}
+
+float evalPriorBlend(const PriorBlend &pb, float ct) {
+    if (!pb.lo) return 0.f;
+    const float yLo = pb.lo->eval(ct);
+    if (!pb.hi) return yLo;
+    const float yHi = pb.hi->eval(ct);
+    return yLo + pb.blend * (yHi - yLo);
+}
+
 } /* namespace */
 
 BayesianAwbController::BayesianAwbController(const SensorTuning *t,
@@ -56,7 +93,7 @@ void BayesianAwbController::reset() {
 }
 
 AwbResult BayesianAwbController::process(const IpaStats &stats,
-                                          float /*luxIndex*/) {
+                                          float luxIndex) {
     AwbResult out;
 
     /* Defensive — the AwbFactory only routes us when bayesParams
@@ -132,11 +169,22 @@ AwbResult BayesianAwbController::process(const IpaStats &stats,
     const float ctMax  = ctRMax < ctBMax ? ctRMax : ctBMax;
 
     /* coarseSearch — log-stepped traversal of the calibrated CT
-     * range. Likelihood = sum over zones of `(gainR·R/G − 1)² +
-     * (gainB·B/G − 1)²`. No prior, no clamp, no off-curve
-     * refinement on this step. */
-    const float logMin = logf(ctMin);
-    const float logMax = logf(ctMax);
+     * range. Cost at each candidate t:
+     *   `Σ_zones min((gainR·R/G − 1)² + (gainB·B/G − 1)², deltaLimit)
+     *      − prior(t)`
+     * `deltaLimit` caps how much one off-grey zone can pull the
+     * sum (a saturated-blue laptop screen or a green carpet would
+     * otherwise dominate the squared-error landscape regardless of
+     * the rest of the scene). `prior(t)` is the lux-conditioned
+     * tuning anchor: subtracted from the cost so higher prior →
+     * preferred t. Both default to inert (deltaLimit = 0 → no
+     * clamp; empty/uniform priors → contribution zero), which is
+     * the Step-5-equivalent behaviour and the path tunings without
+     * a calibrated bayes block fall down. */
+    const float logMin     = logf(ctMin);
+    const float logMax     = logf(ctMax);
+    const float deltaLimit = bayes->deltaLimit;
+    const PriorBlend prior = selectPriors(bayes->priors, luxIndex);
     float bestT     = ctMin;
     float bestErr   = 0.f;
     bool  bestSet   = false;
@@ -155,8 +203,11 @@ AwbResult BayesianAwbController::process(const IpaStats &stats,
         for (int z = 0; z < nValid; ++z) {
             const float dR = gainR * zones[z].r - 1.0f;
             const float dB = gainB * zones[z].b - 1.0f;
-            err += dR * dR + dB * dB;
+            float d2 = dR * dR + dB * dB;
+            if (deltaLimit > 0.f && d2 > deltaLimit) d2 = deltaLimit;
+            err += d2;
         }
+        err -= evalPriorBlend(prior, t);
         if (!bestSet || err < bestErr) {
             bestErr = err;
             bestT   = t;
