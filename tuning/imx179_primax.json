@@ -76,6 +76,14 @@
         "transverseNeg": 0.03,
         "startupFrames": 10,
         "damping": 0.05,
+        "modes": {
+          "INCANDESCENT":     { "ctLo": 2700, "ctHi": 3200 },
+          "WARM_FLUORESCENT": { "ctLo": 2900, "ctHi": 3300 },
+          "FLUORESCENT":      { "ctLo": 4000, "ctHi": 4500 },
+          "DAYLIGHT":         { "ctLo": 5400, "ctHi": 5800 },
+          "CLOUDY_DAYLIGHT":  { "ctLo": 6000, "ctHi": 6800 },
+          "SHADE":            { "ctLo": 6800, "ctHi": 7000 }
+        },
         "priors": [
           {
             "_comment": "Single broad daylight-favouring prior. Peaks softly at 5500 K matching the test-anchor calibration; warmer lights are mildly down-weighted. luxIndex is currently 0 across all production tunings (no ae.luxAnchor calibrated yet), so the lux dimension has no real bracketing yet — we ship one entry until step 10 introduces real lux-conditioned shapes.",
