@@ -514,15 +514,36 @@ ApplySettings' auto branch on RequestThread, `applyControls` from
 `ResultMetadataBuilder` on PipelineThread. The class owns a mutex
 since those four call sites span three threads.
 
-### AWB / AF inside Ipa3A (pending)
+### AWB / AF inside Ipa3A (landed)
 
-AWB will be gray-world over `rgbMean[16][16][3]` (still pre-WB /
-pre-CCM), emitting WB gain batches into `DelayedControls` via the
-same IPA push path. AF will feed `sharpness[16][16]` into
-`AutoFocusController` in place of its current gralloc
-`SW_READ_OFTEN` sharpness read — removing the last CPU lock on the
-output surface. Both extend `Ipa3A::processStats`; no new
-threading.
+AWB sits behind a pure-virtual `Awb` interface in `hal/3a/Awb.h`
+with two impls picked per-sensor by `AwbFactory::createAwb` from
+the tuning's `active.awb.algorithm`. `GrayWorldAwbController`
+runs over `rgbMean[16][16][3]` (still pre-WB / pre-CCM) with the
+96-valid-patch confidence gate and EMA-relax to `wbGainPrior`;
+`BayesianAwbController` does coarseSearch over per-sensor CT curves
+plus lux-conditioned prior + deltaLimit clamp + biasCT pull +
+off-curve fineSearch + IIR damping. Both produce WB gains that the
+shader applies in the same frame (zero silicon delay) and a
+CCM-LERP'd Q10 matrix routed through `mCcmQ10`; neither side goes
+through `DelayedControls`. IMX179 ships bayes today; OV5693 stays
+on gray-world until grey-card calibration lands. See
+[awb-bayes.md](awb-bayes.md) for the migration plan + remaining
+calibration work.
+
+AF reads `IpaStats::focusMetric` — `Σ(Gx²+Gy²)/Σ I²` per patch from
+the NEON encoder, exposure-invariant — instead of locking the
+gralloc preview surface for `SW_READ_OFTEN`. Coarse-fine state
+machine with parabolic peak interpolation and multi-channel
+scene-change retrigger. Coordinator (`Ipa3A`) translates the
+controller's `startSweep` / `sweepComplete` edge flags into
+AE / AWB lock toggles so the sensor + WB stay put across a sweep.
+
+Both extend `Ipa3A::processStats`; no new threading. Three partial
+results land per frame (`PARTIAL_RESULT_COUNT = 3`): AWB (counter
+1) and AE (counter 2) emit from inside the IPA tick via
+`PartialEmitter`; the final partial with output buffers + AF/base
+metadata (counter 3) lands from `ResultDispatchStage`.
 
 ## Stats — NEON on StatsWorker
 
