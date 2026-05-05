@@ -51,49 +51,22 @@ The encoder math is correct.
   covers `[0, 8)`, phase 1 covers `[8, 16)` — the documented "exactly once"
   property holds.
 
-## 2. Issues
+## 2. Issues — resolved
 
-### 2.1 Real bug — session state leaks across `configureStreams`
+The two items called out in the original review have both landed:
 
-`Camera::closeDevice` calls `mStatsWorker->reset()` (`hal/Camera.cpp:229`).
-`Camera::configureStreams` does `stopWorkers()` → V4L2 reconfig →
-`startWorkers()` with no reset in between.
-
-If a reconfigure lands while the worker is mid-cycle (`phase != 0`), the
-next `startWorkers()` run resumes on the old `currentJob.bayer` pointer.
-
-- **Same resolution**: one frame of mixed stats (old partial + new slot
-  content).
-- **Different resolution**: `VulkanIspPipeline::ensureBuffers` →
-  `VulkanInputRing::ensureSize` unmaps the old ring. The next
-  `computeRange(currentJob.bayer, …)` dereferences freed memory.
-
-Android camera HAL3 allows `configure_streams` to be called multiple times
-on the same `open`, so this is reachable.
-
-**Fix**: add `if (mStatsWorker) mStatsWorker->reset();` between
-`errorCompletePendingRequests()` and the V4L2 stop at the top of
-`configureStreams`. Same pattern as `closeDevice`.
-
-### 2.2 Vestigial GPU-stats surface after `78f13d8`
-
-Leftovers from the deleted GPU stats backend:
-
-1. `isp/vulkan/VulkanIspPipeline.h:191-197` — comment on
-   `TIMESTAMPS_PER_SLOT = 4` still labels query 2 as "after stats". The
-   dispatch is gone; query 2 now bounds a no-op region between the scratch
-   barrier and the blit.
-2. `isp/vulkan/VulkanIspPipeline.cpp:236-241` — rollback-hint comment
-   ("Encoder allocation stays in place until the full removal commit…") is
-   stale. The full removal landed.
-3. `isp/vulkan/VulkanIspPipeline.cpp:1195-1199` —
-   `PERF-GPU: … stats=%lluus …` now prints a near-zero barrier cost. Either
-   drop the column and shrink `TIMESTAMPS_PER_SLOT` to 3, or rename to
-   `barrier=`.
-4. `hal/ipa/IpaStats.h:8-14` — header comment describes the struct as
-   "written by the GPU stats compute pass" and points at
-   `isp/vulkan/io/VulkanStatsEncoder`, a file that no longer exists. Update
-   to reference `NeonStatsEncoder`.
+- **Session state leak across `configureStreams`** — fixed.
+  `Camera::configureStreams` now calls `mStatsWorker->reset()`
+  between `errorCompletePendingRequests()` and the V4L2 stop
+  (`hal/Camera.cpp:387`), matching the `closeDevice` pattern.
+  A mid-cycle reconfigure can no longer resume on a stale
+  `currentJob.bayer` pointer after the input ring is resized.
+- **Vestigial GPU-stats surface** — gone. `TIMESTAMPS_PER_SLOT`,
+  the "after stats" comment, the rollback-hint, and the
+  `PERF-GPU: … stats=…` line have all been removed from
+  `isp/vulkan/VulkanIspPipeline.{h,cpp}`. `IpaStats.h`'s header
+  comment now correctly attributes the struct to
+  `NeonStatsEncoder` on the `StatsWorker` thread.
 
 ## 3. Performance
 
