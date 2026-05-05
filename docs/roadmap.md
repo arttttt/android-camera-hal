@@ -27,9 +27,10 @@ Every big translation unit was audited against the project rules
 
 - **`hal/Camera.cpp`**: 1400 → ~636 LOC. Behaviour ripped out into
   sub-packages under `hal/`:
-  - `hal/3a/` — `AutoFocusController`, `AutoExposureController`,
-    `AutoWhiteBalanceController` (the three pure-return-style 3A
-    controllers; `Ipa3A` coordinates them).
+  - `hal/3a/` — `AutoFocusController`, `AutoExposureController`, and
+    the `Awb` interface with `GrayWorldAwbController` +
+    `BayesianAwbController` impls behind `AwbFactory` (the three
+    pure-return-style 3A surfaces; `Ipa3A` coordinates them).
   - `hal/metadata/` — `CameraStaticMetadata`, `RequestTemplateBuilder`,
     `ResultMetadataBuilder`.
   - `hal/jpeg/` — `JpegEncoder`.

@@ -115,8 +115,9 @@ HAL3.4 / Camera2 compliance pass (commit `f34d870` and around):
 - **AE / AWB / AF state in result metadata** — `Ipa3A`'s sub-
   controllers report honest `INACTIVE / SEARCHING / CONVERGED /
   LOCKED` on AE (via `AutoExposureController`) and `INACTIVE /
-  CONVERGED / LOCKED` on AWB (via `AutoWhiteBalanceController`);
-  AF lifecycle is owned by `AutoFocusController` and reported
+  CONVERGED / LOCKED` on AWB (via the `Awb` interface, currently
+  `BayesianAwbController` on IMX179 and `GrayWorldAwbController` on
+  OV5693); AF lifecycle is owned by `AutoFocusController` and reported
   per-frame.
 - **Requested controls echoed in result metadata** — every key
   in `ANDROID_REQUEST_AVAILABLE_REQUEST_KEYS` round-trips through
