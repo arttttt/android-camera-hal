@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2016 Antmicro
+ * Copyright (C) 2026 Artem Bambalov
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -158,7 +158,7 @@ camera_module_t HAL_MODULE_INFO_SYM = {
         .hal_api_version    = HARDWARE_HAL_API_VERSION,
         .id                 = CAMERA_HARDWARE_MODULE_ID,
         .name               = "V4l2 Camera",
-        .author             = "Antmicro Ltd.",
+        .author             = "Artem Bambalov",
         .methods            = &android::HalModule::moduleMethods,
         .dso                = NULL,
         .reserved           = {0}
