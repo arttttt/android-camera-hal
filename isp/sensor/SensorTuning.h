@@ -86,15 +86,6 @@ public:
          * JSON omits them. */
         int settleFramesCoarse;
         int settleFramesFine;
-
-        /* I2C identifier of the actuator (VCM / piezo) paired with this
-         * sensor, in "<adapter>-<addr_hex_4>" sysfs form (e.g. "2-000c"
-         * for an AD5823 on i2c-2 at 0x0c). Empty when no actuator is
-         * configured. V4l2Device::openFocuser resolves it to a
-         * /dev/v4l-subdev node at runtime via the sysfs device symlink
-         * — registration order doesn't matter, kernel-internal names
-         * aren't read. */
-        std::string actuatorI2c;
     };
 
     struct CcmSet {

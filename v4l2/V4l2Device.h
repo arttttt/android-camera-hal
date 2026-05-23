@@ -96,12 +96,14 @@ public:
 
     bool queryControl(uint32_t id, int32_t *min, int32_t *max, int32_t *def);
 
-    /* Focuser subdev control. The actuator is identified by its I2C
-     * address in "<adapter>-<addr_hex_4>" sysfs form (e.g. "2-000c").
-     * The HAL walks /dev/v4l-subdev* and matches the parent device
-     * symlink — registration order and kernel-internal names don't
-     * affect the result. */
-    bool openFocuser(const char *i2cId);
+    /* Focuser subdev control. Discovered via the media controller:
+     * the HAL walks /dev/media0, finds the SENSOR entity that owns
+     * our /dev/videoN data plane, follows its incoming sink link to
+     * the paired LENS entity, and opens the matching
+     * /dev/v4l-subdev. Zero string matching, zero hardcoded paths;
+     * registration order doesn't affect the result and multi-sensor
+     * configurations resolve automatically. */
+    bool openFocuser();
     bool setFocusPosition(int32_t position);
     void closeFocuser();
 

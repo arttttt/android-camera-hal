@@ -21,7 +21,10 @@
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <linux/videodev2.h>
+#include <linux/media.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <dirent.h>
 #include <limits.h>
 
@@ -101,63 +104,136 @@ V4l2Device::~V4l2Device() {
     free((void *)mDevNode);
 }
 
-bool V4l2Device::openFocuser(const char *i2cId) {
+/* Walk an entity's links and return the source entity of the first
+ * link whose sink is `sinkId`. Used twice in openFocuser to step
+ * through the graph (video → sensor → lens). Returns 0 if no
+ * incoming link exists or any ioctl fails. */
+static uint32_t mediaSinkSource(int mediaFd, uint32_t sinkId)
+{
+    struct media_entity_desc ent;
+    memset(&ent, 0, sizeof(ent));
+    ent.id = sinkId;
+    if (ioctl(mediaFd, MEDIA_IOC_ENUM_ENTITIES, &ent) < 0)
+        return 0;
+
+    struct media_pad_desc  pads[16];
+    struct media_link_desc lnks[64];
+    struct media_links_enum links;
+    memset(pads, 0, sizeof(pads));
+    memset(lnks, 0, sizeof(lnks));
+    memset(&links, 0, sizeof(links));
+    links.entity = sinkId;
+    links.pads = pads;
+    links.links = lnks;
+    if (ioctl(mediaFd, MEDIA_IOC_ENUM_LINKS, &links) < 0)
+        return 0;
+
+    for (unsigned i = 0; i < ent.links; i++)
+        if (lnks[i].sink.entity == sinkId)
+            return lnks[i].source.entity;
+    return 0;
+}
+
+bool V4l2Device::openFocuser()
+{
     if (mFocuserFd >= 0)
         return true;
-    if (!i2cId || !i2cId[0]) {
-        ALOGW("openFocuser: empty i2cId");
+    if (!mDevNode) {
+        ALOGW("openFocuser: no video device path");
         return false;
     }
 
-    /* Walk /dev/v4l-subdev*, resolve each one's sysfs parent device
-     * symlink, and match the basename against the requested I2C id.
-     * Subdevs registered by an I2C client (focuser, sensor) have a
-     * parent path ending in ".../i2c-<adapter>/<adapter>-<addr>";
-     * ISP / host1x subdevs end elsewhere and won't match. */
+    struct stat st;
+    if (stat(mDevNode, &st) < 0) {
+        ALOGW("openFocuser: stat(%s): %s", mDevNode, strerror(errno));
+        return false;
+    }
+    const unsigned videoMajor = major(st.st_rdev);
+    const unsigned videoMinor = minor(st.st_rdev);
+
+    int mediaFd = open("/dev/media0", O_RDWR);
+    if (mediaFd < 0) {
+        ALOGW("openFocuser: open /dev/media0: %s", strerror(errno));
+        return false;
+    }
+
+    /* Find the entity whose dev matches our open video device. */
+    uint32_t videoId = 0;
+    struct media_entity_desc ent;
+    uint32_t id = 0;
+    while (1) {
+        memset(&ent, 0, sizeof(ent));
+        ent.id = id | MEDIA_ENT_ID_FLAG_NEXT;
+        if (ioctl(mediaFd, MEDIA_IOC_ENUM_ENTITIES, &ent) < 0)
+            break;
+        id = ent.id;
+        if (ent.v4l.major == videoMajor && ent.v4l.minor == videoMinor) {
+            videoId = ent.id;
+            break;
+        }
+    }
+    if (!videoId) {
+        ALOGW("openFocuser: no media entity for %u:%u",
+              videoMajor, videoMinor);
+        close(mediaFd);
+        return false;
+    }
+
+    /* Walk video ← sensor ← lens. */
+    const uint32_t sensorId = mediaSinkSource(mediaFd, videoId);
+    const uint32_t lensId   = sensorId ? mediaSinkSource(mediaFd, sensorId) : 0;
+    if (!lensId) {
+        ALOGW("openFocuser: no lens link from sensor (video=%u sensor=%u)",
+              videoId, sensorId);
+        close(mediaFd);
+        return false;
+    }
+
+    /* Read the lens entity to get its dev(major:minor). */
+    memset(&ent, 0, sizeof(ent));
+    ent.id = lensId;
+    if (ioctl(mediaFd, MEDIA_IOC_ENUM_ENTITIES, &ent) < 0) {
+        ALOGW("openFocuser: ENUM_ENTITIES(lens=%u): %s",
+              lensId, strerror(errno));
+        close(mediaFd);
+        return false;
+    }
+    close(mediaFd);
+
+    const unsigned lensMajor = ent.v4l.major;
+    const unsigned lensMinor = ent.v4l.minor;
+
+    /* Find /dev/v4l-subdev* with the lens's dev. */
     DIR *dir = opendir("/dev");
     if (!dir) {
-        ALOGE("openFocuser: opendir /dev: %s (%d)", strerror(errno), errno);
+        ALOGE("openFocuser: opendir /dev: %s", strerror(errno));
         return false;
     }
-
     struct dirent *de;
     while ((de = readdir(dir)) != nullptr) {
         if (strncmp(de->d_name, "v4l-subdev", 10) != 0)
             continue;
-
-        char sysLink[256];
-        snprintf(sysLink, sizeof(sysLink),
-                 "/sys/class/video4linux/%s/device", de->d_name);
-
-        char realPath[PATH_MAX];
-        if (realpath(sysLink, realPath) == nullptr)
+        char path[64];
+        snprintf(path, sizeof(path), "/dev/%s", de->d_name);
+        if (stat(path, &st) < 0)
+            continue;
+        if (major(st.st_rdev) != lensMajor || minor(st.st_rdev) != lensMinor)
             continue;
 
-        const char *base = strrchr(realPath, '/');
-        if (!base)
-            continue;
-        base++;  /* skip '/' */
-
-        if (strcmp(base, i2cId) != 0)
-            continue;
-
-        char devPath[64];
-        snprintf(devPath, sizeof(devPath), "/dev/%s", de->d_name);
-        mFocuserFd = open(devPath, O_RDWR);
+        mFocuserFd = open(path, O_RDWR);
         if (mFocuserFd < 0) {
-            ALOGW("openFocuser(%s): open %s: %s (%d)",
-                  i2cId, devPath, strerror(errno), errno);
+            ALOGW("openFocuser: open %s: %s", path, strerror(errno));
             closedir(dir);
             return false;
         }
-        ALOGD("Focuser opened: %s (I2C %s) fd=%d",
-              devPath, i2cId, mFocuserFd);
+        ALOGD("Focuser opened: %s (entity %u) fd=%d",
+              path, lensId, mFocuserFd);
         closedir(dir);
         return true;
     }
-
     closedir(dir);
-    ALOGE("openFocuser: no V4L2 subdev matched I2C id '%s'", i2cId);
+    ALOGW("openFocuser: no /dev/v4l-subdev* with dev %u:%u",
+          lensMajor, lensMinor);
     return false;
 }
 

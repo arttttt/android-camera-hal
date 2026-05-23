@@ -230,13 +230,11 @@ int Camera::openDevice(hw_device_t **device) {
     mDev->connect();
     *device = &common;
 
-    /* Open focuser if the tuning declares one. The actuator I2C id
-     * is resolved at runtime to a /dev/v4l-subdev node via the sysfs
-     * device symlink — registration order and kernel-internal names
-     * don't affect the result. Empty id (or missing `af` block in the
-     * tuning JSON) means no focuser; AF stays inactive. */
-    if (!mTuning.af().actuatorI2c.empty())
-        mDev->openFocuser(mTuning.af().actuatorI2c.c_str());
+    /* Open focuser if the tuning declares this sensor has AF. The
+     * actual lens subdev is discovered via the media controller —
+     * no paths or hardware ids in user config. */
+    if (mTuning.hasAf())
+        mDev->openFocuser();
 
     /* Pull driver-advertised ranges into mSensorCfg before anything
      * consumes it. Ipa3A's ctor (inside buildInfrastructure) uses
