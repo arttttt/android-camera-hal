@@ -929,31 +929,46 @@ void Camera::notifyError(uint32_t frameNumber, camera3_stream_t *stream, int err
 \******************************************************************************/
 
 int Camera::sClose(hw_device_t *device) {
-    /* TODO: check device module */
+    if (!device) {
+        ALOGE("sClose: NULL device");
+        return -ENODEV;
+    }
     Camera *thiz = static_cast<Camera *>(reinterpret_cast<camera3_device_t *>(device));
     return thiz->closeDevice();
 }
 
 int Camera::sInitialize(const camera3_device *device, const camera3_callback_ops_t *callback_ops) {
-    /* TODO: check pointers */
+    if (!device) {
+        ALOGE("sInitialize: NULL device");
+        return -ENODEV;
+    }
     Camera *thiz = static_cast<Camera *>(const_cast<camera3_device *>(device));
     return thiz->initialize(callback_ops);
 }
 
 int Camera::sConfigureStreams(const camera3_device *device, camera3_stream_configuration_t *stream_list) {
-    /* TODO: check pointers */
+    if (!device) {
+        ALOGE("sConfigureStreams: NULL device");
+        return -ENODEV;
+    }
     Camera *thiz = static_cast<Camera *>(const_cast<camera3_device *>(device));
     return thiz->configureStreams(stream_list);
 }
 
 const camera_metadata_t * Camera::sConstructDefaultRequestSettings(const camera3_device *device, int type) {
-    /* TODO: check pointers */
+    if (!device) {
+        ALOGE("sConstructDefaultRequestSettings: NULL device");
+        return nullptr;
+    }
     Camera *thiz = static_cast<Camera *>(const_cast<camera3_device *>(device));
     return thiz->constructDefaultRequestSettings(type);
 }
 
 int Camera::sProcessCaptureRequest(const camera3_device *device, camera3_capture_request_t *request) {
-    /* TODO: check pointers */
+    if (!device) {
+        ALOGE("sProcessCaptureRequest: NULL device");
+        return -ENODEV;
+    }
     Camera *thiz = static_cast<Camera *>(const_cast<camera3_device *>(device));
     return thiz->processCaptureRequest(request);
 }
@@ -993,6 +1008,15 @@ int Camera::flush() {
 }
 
 int Camera::sFlush(const camera3_device *device) {
+    /* Framework occasionally invokes flush via a stale ops vtable
+     * during teardown — Camera2Client::disconnect → stopPreviewL →
+     * flush can fire after the device has been logically torn down.
+     * Guard both the device pointer and its priv field so we exit
+     * cleanly instead of dereferencing NULL. */
+    if (!device || !device->priv) {
+        ALOGE("sFlush: NULL device/priv");
+        return -ENODEV;
+    }
     Camera *thiz = static_cast<Camera *>(device->priv);
     return thiz->flush();
 }
