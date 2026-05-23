@@ -104,33 +104,40 @@ V4l2Device::~V4l2Device() {
     free((void *)mDevNode);
 }
 
-/* Walk an entity's links and return the source entity of the first
- * link whose sink is `sinkId`. Used twice in openFocuser to step
- * through the graph (video → sensor → lens). Returns 0 if no
- * incoming link exists or any ioctl fails. */
+/* Find the source entity of an incoming link to `sinkId`. The kernel
+ * `MEDIA_IOC_ENUM_LINKS` ioctl reports outgoing links only, so we
+ * walk every entity and check which one's outgoing list contains a
+ * link landing on `sinkId`. Used twice in openFocuser to step the
+ * graph (video ← sensor ← lens). Returns 0 if no such link exists. */
 static uint32_t mediaSinkSource(int mediaFd, uint32_t sinkId)
 {
     struct media_entity_desc ent;
-    memset(&ent, 0, sizeof(ent));
-    ent.id = sinkId;
-    if (ioctl(mediaFd, MEDIA_IOC_ENUM_ENTITIES, &ent) < 0)
-        return 0;
+    uint32_t id = 0;
+    while (1) {
+        memset(&ent, 0, sizeof(ent));
+        ent.id = id | MEDIA_ENT_ID_FLAG_NEXT;
+        if (ioctl(mediaFd, MEDIA_IOC_ENUM_ENTITIES, &ent) < 0)
+            break;
+        id = ent.id;
+        if (ent.id == sinkId || ent.links == 0)
+            continue;
 
-    struct media_pad_desc  pads[16];
-    struct media_link_desc lnks[64];
-    struct media_links_enum links;
-    memset(pads, 0, sizeof(pads));
-    memset(lnks, 0, sizeof(lnks));
-    memset(&links, 0, sizeof(links));
-    links.entity = sinkId;
-    links.pads = pads;
-    links.links = lnks;
-    if (ioctl(mediaFd, MEDIA_IOC_ENUM_LINKS, &links) < 0)
-        return 0;
+        struct media_pad_desc  pads[16];
+        struct media_link_desc lnks[64];
+        struct media_links_enum links;
+        memset(pads, 0, sizeof(pads));
+        memset(lnks, 0, sizeof(lnks));
+        memset(&links, 0, sizeof(links));
+        links.entity = ent.id;
+        links.pads = pads;
+        links.links = lnks;
+        if (ioctl(mediaFd, MEDIA_IOC_ENUM_LINKS, &links) < 0)
+            continue;
 
-    for (unsigned i = 0; i < ent.links; i++)
-        if (lnks[i].sink.entity == sinkId)
-            return lnks[i].source.entity;
+        for (unsigned i = 0; i < ent.links; i++)
+            if (lnks[i].sink.entity == sinkId)
+                return ent.id;
+    }
     return 0;
 }
 
