@@ -121,6 +121,13 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
             af.get("settle_frames_coarse", 2).asInt();
         mAf.settleFramesFine =
             af.get("settle_frames_fine", 1).asInt();
+
+        /* Hardware identifier of the actuator's I2C client, used by
+         * V4l2Device to find the matching /dev/v4l-subdev. Missing key
+         * leaves actuatorI2c empty — the HAL skips opening a focuser
+         * and AF stays inactive (logged as a warning). */
+        mAf.actuatorI2c =
+            af.get("actuator_i2c", "").asString();
         mHasAf = true;
     }
 

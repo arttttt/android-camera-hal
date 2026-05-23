@@ -96,8 +96,12 @@ public:
 
     bool queryControl(uint32_t id, int32_t *min, int32_t *max, int32_t *def);
 
-    /* Focuser subdev control */
-    bool openFocuser(const char *subdevPath);
+    /* Focuser subdev control. The actuator is identified by its I2C
+     * address in "<adapter>-<addr_hex_4>" sysfs form (e.g. "2-000c").
+     * The HAL walks /dev/v4l-subdev* and matches the parent device
+     * symlink — registration order and kernel-internal names don't
+     * affect the result. */
+    bool openFocuser(const char *i2cId);
     bool setFocusPosition(int32_t position);
     void closeFocuser();
 

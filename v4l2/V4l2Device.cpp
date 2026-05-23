@@ -22,8 +22,11 @@
 #include <sys/ioctl.h>
 #include <linux/videodev2.h>
 #include <sys/mman.h>
+#include <dirent.h>
+#include <limits.h>
 
 #include <utils/Log.h>
+#include <cstdio>
 #include <cstring>
 #include <errno.h>
 #include <cstdlib>
@@ -98,16 +101,64 @@ V4l2Device::~V4l2Device() {
     free((void *)mDevNode);
 }
 
-bool V4l2Device::openFocuser(const char *subdevPath) {
+bool V4l2Device::openFocuser(const char *i2cId) {
     if (mFocuserFd >= 0)
         return true;
-    mFocuserFd = open(subdevPath, O_RDWR);
-    if (mFocuserFd < 0) {
-        ALOGW("openFocuser(%s): %s (%d)", subdevPath, strerror(errno), errno);
+    if (!i2cId || !i2cId[0]) {
+        ALOGW("openFocuser: empty i2cId");
         return false;
     }
-    ALOGD("Focuser opened: %s fd=%d", subdevPath, mFocuserFd);
-    return true;
+
+    /* Walk /dev/v4l-subdev*, resolve each one's sysfs parent device
+     * symlink, and match the basename against the requested I2C id.
+     * Subdevs registered by an I2C client (focuser, sensor) have a
+     * parent path ending in ".../i2c-<adapter>/<adapter>-<addr>";
+     * ISP / host1x subdevs end elsewhere and won't match. */
+    DIR *dir = opendir("/dev");
+    if (!dir) {
+        ALOGE("openFocuser: opendir /dev: %s (%d)", strerror(errno), errno);
+        return false;
+    }
+
+    struct dirent *de;
+    while ((de = readdir(dir)) != nullptr) {
+        if (strncmp(de->d_name, "v4l-subdev", 10) != 0)
+            continue;
+
+        char sysLink[256];
+        snprintf(sysLink, sizeof(sysLink),
+                 "/sys/class/video4linux/%s/device", de->d_name);
+
+        char realPath[PATH_MAX];
+        if (realpath(sysLink, realPath) == nullptr)
+            continue;
+
+        const char *base = strrchr(realPath, '/');
+        if (!base)
+            continue;
+        base++;  /* skip '/' */
+
+        if (strcmp(base, i2cId) != 0)
+            continue;
+
+        char devPath[64];
+        snprintf(devPath, sizeof(devPath), "/dev/%s", de->d_name);
+        mFocuserFd = open(devPath, O_RDWR);
+        if (mFocuserFd < 0) {
+            ALOGW("openFocuser(%s): open %s: %s (%d)",
+                  i2cId, devPath, strerror(errno), errno);
+            closedir(dir);
+            return false;
+        }
+        ALOGD("Focuser opened: %s (I2C %s) fd=%d",
+              devPath, i2cId, mFocuserFd);
+        closedir(dir);
+        return true;
+    }
+
+    closedir(dir);
+    ALOGE("openFocuser: no V4L2 subdev matched I2C id '%s'", i2cId);
+    return false;
 }
 
 bool V4l2Device::setFocusPosition(int32_t position) {
