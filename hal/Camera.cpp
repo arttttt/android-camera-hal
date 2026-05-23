@@ -233,8 +233,11 @@ int Camera::openDevice(hw_device_t **device) {
     /* Open focuser if the tuning declares this sensor has AF. The
      * actual lens subdev is discovered via the media controller —
      * no paths or hardware ids in user config. */
-    if (mTuning.hasAf())
-        mDev->openFocuser();
+    ALOGI("openDevice: facing=%d hasAf=%d", mFacing, (int)mTuning.hasAf());
+    if (mTuning.hasAf()) {
+        if (!mDev->openFocuser())
+            ALOGW("openDevice: focuser open failed; AF will be inactive");
+    }
 
     /* Pull driver-advertised ranges into mSensorCfg before anything
      * consumes it. Ipa3A's ctor (inside buildInfrastructure) uses

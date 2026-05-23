@@ -136,8 +136,13 @@ static uint32_t mediaSinkSource(int mediaFd, uint32_t sinkId)
 
 bool V4l2Device::openFocuser()
 {
-    if (mFocuserFd >= 0)
+    ALOGI("openFocuser: enter (mFocuserFd=%d mDevNode=%s)",
+          mFocuserFd, mDevNode ? mDevNode : "<null>");
+
+    if (mFocuserFd >= 0) {
+        ALOGI("openFocuser: already open, fd=%d", mFocuserFd);
         return true;
+    }
     if (!mDevNode) {
         ALOGW("openFocuser: no video device path");
         return false;
@@ -150,6 +155,8 @@ bool V4l2Device::openFocuser()
     }
     const unsigned videoMajor = major(st.st_rdev);
     const unsigned videoMinor = minor(st.st_rdev);
+    ALOGI("openFocuser: video dev %s -> %u:%u",
+          mDevNode, videoMajor, videoMinor);
 
     int mediaFd = open("/dev/media0", O_RDWR);
     if (mediaFd < 0) {
@@ -178,10 +185,15 @@ bool V4l2Device::openFocuser()
         close(mediaFd);
         return false;
     }
+    ALOGI("openFocuser: video entity id=%u name='%s'", videoId, ent.name);
 
     /* Walk video ← sensor ← lens. */
     const uint32_t sensorId = mediaSinkSource(mediaFd, videoId);
+    ALOGI("openFocuser: sensor entity id=%u (from video=%u)",
+          sensorId, videoId);
     const uint32_t lensId   = sensorId ? mediaSinkSource(mediaFd, sensorId) : 0;
+    ALOGI("openFocuser: lens entity id=%u (from sensor=%u)",
+          lensId, sensorId);
     if (!lensId) {
         ALOGW("openFocuser: no lens link from sensor (video=%u sensor=%u)",
               videoId, sensorId);
@@ -202,6 +214,8 @@ bool V4l2Device::openFocuser()
 
     const unsigned lensMajor = ent.v4l.major;
     const unsigned lensMinor = ent.v4l.minor;
+    ALOGI("openFocuser: lens entity '%s' dev=%u:%u",
+          ent.name, lensMajor, lensMinor);
 
     /* Find /dev/v4l-subdev* with the lens's dev. */
     DIR *dir = opendir("/dev");
@@ -226,7 +240,7 @@ bool V4l2Device::openFocuser()
             closedir(dir);
             return false;
         }
-        ALOGD("Focuser opened: %s (entity %u) fd=%d",
+        ALOGI("openFocuser: OPENED %s (entity %u) fd=%d",
               path, lensId, mFocuserFd);
         closedir(dir);
         return true;
@@ -238,8 +252,10 @@ bool V4l2Device::openFocuser()
 }
 
 bool V4l2Device::setFocusPosition(int32_t position) {
-    if (mFocuserFd < 0)
+    if (mFocuserFd < 0) {
+        ALOGW("setFocusPosition(%d): focuser not open", position);
         return false;
+    }
 
     struct v4l2_control ctrl;
     memset(&ctrl, 0, sizeof(ctrl));
@@ -250,6 +266,7 @@ bool V4l2Device::setFocusPosition(int32_t position) {
         ALOGW("setFocusPosition(%d): %s (%d)", position, strerror(errno), errno);
         return false;
     }
+    ALOGD("setFocusPosition: %d -> fd=%d OK", position, mFocuserFd);
     return true;
 }
 
