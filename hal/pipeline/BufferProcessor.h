@@ -14,6 +14,7 @@
 namespace android {
 
 class IspPipeline;
+class NvBlitContext;
 class PostProcessor;
 struct PipelineContext;
 
@@ -29,6 +30,12 @@ public:
         IspPipeline   *isp;
         PostProcessor *jpeg;
         const size_t  *jpegBufferSize;  /* single value per session, set at configureStreams */
+        /* Optional HW VIC bridge. When ready, YCbCr_420_888 outputs are
+         * not handled by processOne — they're deferred to
+         * processYuvNvBlit which runs after the ISP submit fence so
+         * NvBlit can wait on it. Null disables the path; processOne
+         * falls back to the libyuv repack. */
+        NvBlitContext *nvblit;
     };
 
     struct FrameContext {
@@ -45,6 +52,11 @@ public:
 
     struct OutputState {
         bool needsFinalUnlock;
+        /* Set by processOne when a YCbCr_420_888 output was held back
+         * for the HW VIC bridge path. DemosaicBlitStage iterates the
+         * output list a second time after isp->endFrame and calls
+         * processYuvNvBlit for each output with this flag set. */
+        bool deferredNvBlit;
     };
 
     explicit BufferProcessor(const Deps &deps);
@@ -79,6 +91,20 @@ public:
      * and offload to ResultThread. No-op when no YUV output is in the
      * request. */
     void finalizeCpuOutputs(PipelineContext &ctx);
+
+    /* Post-isp->endFrame HW VIC dispatch for one YCbCr_420_888 output
+     * that processOne flagged with OutputState::deferredNvBlit. Calls
+     * NvBlit with src = ISP scratch handle, dst = output gralloc;
+     * srcFence (Vulkan submit) and dstFence (framework acquire) wait
+     * inside the VIC. On success the release sync_fd is written to
+     * *releaseFenceOut and ownership of both input fences is consumed
+     * by NvBlit. On failure both input fences are closed here and
+     * *releaseFenceOut is left at -1. */
+    status_t processYuvNvBlit(const camera3_stream_buffer &srcBuf,
+                               const FrameContext &fctx,
+                               uint32_t frameNumber,
+                               int submitFenceFd,
+                               int *releaseFenceOut);
 
     /* Release every BLOB output's JpegSnapshot so the ISP ring rotates
      * without an encode. Called by PipelineThread on the error path

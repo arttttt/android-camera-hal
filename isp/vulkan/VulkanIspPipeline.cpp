@@ -1016,6 +1016,11 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
     return true;
 }
 
+buffer_handle_t VulkanIspPipeline::scratchHandle() const {
+    return mScratchGb != nullptr ? mScratchGb->getNativeBuffer()->handle
+                                  : nullptr;
+}
+
 void VulkanIspPipeline::releaseScratchResources() {
     if (mScratchView) {
         mDeviceState.pfn()->DestroyImageView(mDeviceState.device(), mScratchView, NULL);

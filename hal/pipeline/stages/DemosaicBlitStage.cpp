@@ -50,18 +50,34 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
         return;
     }
 
+    /* Two-pass:
+     *  1. Record Vulkan ops for every output (RGBA / BLOB / YUV-fallback)
+     *     and remember acquire fences for the HW VIC bridge path. NvBlit
+     *     can't fire here because the Vulkan submit fence doesn't exist
+     *     yet — we need it to chain "scratch written" → "NvBlit reads".
+     *  2. endFrame() submits Vulkan + exports the submit fence.
+     *  3. For each output the processOne pass deferred, run NvBlit with
+     *     a dup of the submit fence as src wait + the framework
+     *     acquire_fence as dst wait. NvBlit returns a release sync_fd
+     *     that becomes the output's release_fence to the framework.
+     *
+     * sbs[] keeps acquire_fence ownership alive across the endFrame
+     * boundary — the local sb in the loop would otherwise have dropped
+     * out of scope before we get to call processYuvNvBlit. */
+    std::vector<camera3_stream_buffer> sbs(n);
+    std::vector<bool> deferredYuv(n, false);
+
     for (size_t i = 0; i < n; ++i) {
         CaptureRequest::Buffer &outBuf = ctx.request.outputBuffers[i];
 
-        camera3_stream_buffer sb;
-        sb.stream        = outBuf.stream;
-        sb.buffer        = outBuf.buffer;
-        sb.status        = CAMERA3_BUFFER_STATUS_OK;
-        sb.acquire_fence = outBuf.acquireFence.release();
-        sb.release_fence = -1;
+        sbs[i].stream        = outBuf.stream;
+        sbs[i].buffer        = outBuf.buffer;
+        sbs[i].status        = CAMERA3_BUFFER_STATUS_OK;
+        sbs[i].acquire_fence = outBuf.acquireFence.release();
+        sbs[i].release_fence = -1;
 
         BufferProcessor::OutputState state;
-        status_t e = deps.bufferProcessor->processOne(sb, fctx, ctx.request.settings,
+        status_t e = deps.bufferProcessor->processOne(sbs[i], fctx, ctx.request.settings,
                                                      ctx.request.frameNumber,
                                                      &state,
                                                      &ctx.outputReleaseFences[i],
@@ -78,6 +94,15 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
                     ctx.outputReleaseFences[j] = -1;
                 }
             }
+            /* Close acquire fences we already took ownership of via
+             * outBuf.acquireFence.release() but haven't yet handed off
+             * (NvBlit / acquire-fence semaphore import). */
+            for (size_t j = 0; j <= i; ++j) {
+                if (sbs[j].acquire_fence >= 0) {
+                    ::close(sbs[j].acquire_fence);
+                    sbs[j].acquire_fence = -1;
+                }
+            }
             ctx.outputNeedsFinalUnlock.assign(n, false);
             ctx.errorCode = (int)e;
             /* Submit the partial recording anyway so slot fences end up in a
@@ -89,6 +114,7 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
             return;
         }
         ctx.outputNeedsFinalUnlock[i] = state.needsFinalUnlock;
+        deferredYuv[i]                = state.deferredNvBlit;
     }
 
     int submitFenceFd = -1;
@@ -99,11 +125,34 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
                 ::close(ctx.outputReleaseFences[j]);
                 ctx.outputReleaseFences[j] = -1;
             }
+            /* Same cleanup as the processOne-failure path. */
+            if (sbs[j].acquire_fence >= 0) {
+                ::close(sbs[j].acquire_fence);
+                sbs[j].acquire_fence = -1;
+            }
         }
         ctx.outputNeedsFinalUnlock.assign(n, false);
         ctx.errorCode = NO_INIT;
         return;
     }
+
+    /* Pass 3 — fire HW VIC blits for the outputs processOne deferred.
+     * processYuvNvBlit owns the dup of submitFenceFd and sbs[i].acquire_fence
+     * on success (NvBlit consumes them); on failure it closes them
+     * itself and returns NO_INIT, in which case we just mark the output
+     * as error. The original submitFenceFd stays in pendingFenceFds for
+     * PipelineThread's slot-completion poll. */
+    for (size_t i = 0; i < n; ++i) {
+        if (!deferredYuv[i]) continue;
+        status_t e = deps.bufferProcessor->processYuvNvBlit(
+            sbs[i], fctx, ctx.request.frameNumber,
+            submitFenceFd, &ctx.outputReleaseFences[i]);
+        sbs[i].acquire_fence = -1;   /* processYuvNvBlit took it over */
+        if (e != NO_ERROR) {
+            ctx.outputStatuses[i] = CAMERA3_BUFFER_STATUS_ERROR;
+        }
+    }
+
     if (submitFenceFd >= 0)
         ctx.pendingFenceFds.push_back(submitFenceFd);
 }

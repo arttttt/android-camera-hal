@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include <hardware/gralloc.h>
+
 #include "CropRect.h"
 #include "JpegSnapshot.h"
 
@@ -120,6 +122,15 @@ public:
      * the GPU write sees coherent data. Called by the consumer right before
      * libyuv reads the buffer. */
     virtual void invalidateYuvForCpu() {}
+
+    /* gralloc buffer_handle_t of the demosaiced RGBA scratch image, or
+     * nullptr if the backend doesn't expose it. Used by the encoder-stream
+     * path to feed the same memory into a HW VIC blit (libnvblit) for
+     * RGBA → tiled NV12 conversion without a CPU repack. Valid only
+     * after the most recent endFrame's submit fence has signalled — that
+     * is, callers must use it with a sync_fd derived from the submit
+     * fence as the NvBlit src wait. */
+    virtual buffer_handle_t scratchHandle() const { return nullptr; }
 
     /* Submit the recorded command buffer. Must be called once per matching
      * beginFrame, after all blitTo* calls.

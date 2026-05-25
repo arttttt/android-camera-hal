@@ -50,6 +50,7 @@ public:
 
     const uint8_t *yuvHostBuffer() const override { return mYuvEncoder.mappedBuffer(); }
     void           invalidateYuvForCpu() override { mYuvEncoder.invalidateForCpu(); }
+    buffer_handle_t scratchHandle() const override;
 
     int    inputBufferCount() const override { return mInputRing.slotCount(); }
     size_t inputBufferSize()  const override { return mInputRing.slotSize(); }

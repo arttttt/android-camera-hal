@@ -16,6 +16,7 @@
 #include <libyuv.h>
 
 #include "IspPipeline.h"
+#include "NvBlitContext.h"
 #include "PostProcessor.h"
 #include "PipelineContext.h"
 #include "DbgUtils.h"
@@ -195,6 +196,51 @@ void BufferProcessor::finalizeCpuOutputs(PipelineContext &ctx) {
     }
 }
 
+status_t BufferProcessor::processYuvNvBlit(const camera3_stream_buffer &srcBuf,
+                                            const FrameContext &fctx,
+                                            uint32_t frameNumber,
+                                            int submitFenceFd,
+                                            int *releaseFenceOut) {
+    if (releaseFenceOut) *releaseFenceOut = -1;
+    if (!mDeps.nvblit || !mDeps.isp) {
+        ALOGE("processYuvNvBlit: no nvblit/isp dep");
+        if (srcBuf.acquire_fence >= 0) ::close(srcBuf.acquire_fence);
+        return NO_INIT;
+    }
+    buffer_handle_t srcHandle = mDeps.isp->scratchHandle();
+    buffer_handle_t dstHandle = (srcBuf.buffer != nullptr) ? *srcBuf.buffer : nullptr;
+    if (!srcHandle || !dstHandle) {
+        ALOGE("processYuvNvBlit: src=%p dst=%p frame %u",
+              srcHandle, dstHandle, frameNumber);
+        if (srcBuf.acquire_fence >= 0) ::close(srcBuf.acquire_fence);
+        return NO_INIT;
+    }
+
+    /* The crop applies to the demosaiced scratch image (active capture
+     * area). VIC writes the full dst surface, scaling internally. */
+    NvBlitContext::Rect srcRect = { fctx.cropX, fctx.cropY,
+                                     fctx.cropW, fctx.cropH };
+
+    /* dup the Vulkan submit fence — each output owns its own fd so
+     * NvBlit consumes them independently. -1 stays -1. */
+    int srcFenceDup = (submitFenceFd >= 0) ? ::dup(submitFenceFd) : -1;
+    int dstFence    = srcBuf.acquire_fence;   /* ownership moves to NvBlit on success */
+
+    int releaseFd = -1;
+    bool ok = mDeps.nvblit->blit(srcHandle, &srcRect, srcFenceDup,
+                                  dstHandle, nullptr, dstFence,
+                                  &releaseFd);
+    if (!ok) {
+        ALOGE("processYuvNvBlit: NvBlit failed for frame %u", frameNumber);
+        if (srcFenceDup >= 0) ::close(srcFenceDup);
+        if (dstFence    >= 0) ::close(dstFence);
+        return NO_INIT;
+    }
+    /* NvBlit consumed srcFenceDup + dstFence on success. */
+    if (releaseFenceOut) *releaseFenceOut = releaseFd;
+    return NO_ERROR;
+}
+
 void BufferProcessor::releaseJpegSnapshots(PipelineContext &ctx) {
     for (size_t i = 0; i < ctx.outputJpegSnapshots.size(); ++i) {
         if (ctx.outputJpegSnapshots[i].ringSlot >= 0) {
@@ -279,6 +325,7 @@ status_t BufferProcessor::processOne(const camera3_stream_buffer &srcBuf,
                                       JpegSnapshot *jpegSnapshot) {
     (void)cm;
     state->needsFinalUnlock = true;
+    state->deferredNvBlit   = false;
     if (releaseFenceOut) *releaseFenceOut = -1;
     if (jpegSnapshot) {
         jpegSnapshot->rgba     = nullptr;
@@ -302,11 +349,21 @@ status_t BufferProcessor::processOne(const camera3_stream_buffer &srcBuf,
             }
             return NO_ERROR;
         case HAL_PIXEL_FORMAT_YCbCr_420_888: {
-            /* GPU encode dispatch is recorded now; libyuv repack into the
-             * gralloc happens in finalizeCpuOutputs after the frame's
-             * fence has been reaped. needsFinalUnlock=false — finalize
-             * does its own lock/unlock and releaseFenceOut stays -1
-             * (CPU finalize is synchronous). */
+            /* HW VIC fast path: NvBlit reads the ISP scratch (gralloc-
+             * backed RGBA) and writes tiled NV12 directly into the
+             * encoder gralloc. The dispatch has to wait for the Vulkan
+             * submit fence — which isn't available until endFrame —
+             * so defer here and let DemosaicBlitStage call
+             * processYuvNvBlit after isp->endFrame. acquire_fence stays
+             * owned by the caller (in srcBuf) until that call. */
+            if (mDeps.nvblit && mDeps.nvblit->isReady() &&
+                mDeps.isp && mDeps.isp->scratchHandle()) {
+                state->needsFinalUnlock = false;
+                state->deferredNvBlit   = true;
+                return NO_ERROR;
+            }
+            /* Fallback: GPU NV12 encode now, libyuv repack in
+             * finalizeCpuOutputs after the fence reaps. */
             status_t e = recordYuvOutput(srcBuf, ctx, frameNumber);
             if (e != NO_ERROR) return e;
             state->needsFinalUnlock = false;

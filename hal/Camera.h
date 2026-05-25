@@ -36,6 +36,7 @@ class ResultThread;
 class JpegWorker;
 class BayerSource;
 class EventFd;
+class NvBlitContext;
 template <typename T> class EventQueue;
 
 class Camera: public camera3_device {
@@ -85,6 +86,7 @@ private:
     AutoFocusController *mAf;
     JpegEncoder *mJpeg;
     BufferProcessor *mBufferProcessor;
+    std::unique_ptr<NvBlitContext> mNvBlit;
     Mutex mMutex;
 
     std::unique_ptr<CameraCallbackEmitter>        mPartialEmitter;

@@ -45,6 +45,7 @@
 #include "metadata/RequestTemplateBuilder.h"
 #include "metadata/ResultMetadataBuilder.h"
 #include "IspPipeline.h"
+#include "nvblit/NvBlitContext.h"
 
 #include "BayerSource.h"
 #include "V4l2Source.h"
@@ -625,10 +626,18 @@ void Camera::buildInfrastructure() {
 
     mJpeg = new JpegEncoder();
 
+    /* HW VIC bridge (libnvblit) — initialised lazily; isReady()==false
+     * is non-fatal, BufferProcessor falls back to the libyuv path. */
+    mNvBlit.reset(new NvBlitContext());
+    if (!mNvBlit->init()) {
+        ALOGW("NvBlit init failed — encoder-stream YUV will use libyuv repack");
+    }
+
     BufferProcessor::Deps bpDeps;
     bpDeps.isp            = mIsp;
     bpDeps.jpeg           = mJpeg;
     bpDeps.jpegBufferSize = &mJpegBufferSize;
+    bpDeps.nvblit         = mNvBlit.get();
     mBufferProcessor = new BufferProcessor(bpDeps);
 
     mPartialEmitter.reset(new CameraCallbackEmitter(&mCallbackOps));
@@ -781,6 +790,9 @@ void Camera::destroyInfrastructure() {
     mBayerSource.reset();
 
     delete mBufferProcessor; mBufferProcessor = NULL;
+    /* mBufferProcessor held a raw pointer into mNvBlit — release the
+     * blit context only after the consumer is gone. */
+    mNvBlit.reset();
     delete mAf;              mAf = NULL;
     delete mJpeg;            mJpeg = NULL;
     if (mIsp) { mIsp->destroy(); delete mIsp; mIsp = NULL; }
