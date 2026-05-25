@@ -136,3 +136,16 @@ LOCAL_SRC_FILES    := tuning/ov5693_sunny.json
 LOCAL_MODULE_PATH  := $(TARGET_OUT_VENDOR_ETC)/camera/tuning
 include $(BUILD_PREBUILT)
 
+#-----------------------------------------------------------------------------
+# Diagnostic standalone: libnvblit smoke test
+#-----------------------------------------------------------------------------
+
+include $(CLEAR_VARS)
+LOCAL_MODULE      := nvblit_probe
+LOCAL_MODULE_TAGS := optional
+LOCAL_CFLAGS      += -std=c++14 -Wno-unused-parameter
+LOCAL_SRC_FILES   := tools/nvblit_probe/nvblit_probe.cpp
+LOCAL_SHARED_LIBRARIES := liblog libutils libcutils libui
+LOCAL_C_INCLUDES  += frameworks/native/include
+include $(BUILD_EXECUTABLE)
+
