@@ -149,3 +149,18 @@ LOCAL_SHARED_LIBRARIES := liblog libutils libcutils libui
 LOCAL_C_INCLUDES  += frameworks/native/include
 include $(BUILD_EXECUTABLE)
 
+#-----------------------------------------------------------------------------
+# Diagnostic standalone: STORAGE_BIT VkImage over gralloc import
+#-----------------------------------------------------------------------------
+
+include $(CLEAR_VARS)
+LOCAL_MODULE      := vk_storage_probe
+LOCAL_MODULE_TAGS := optional
+LOCAL_CFLAGS      += -std=c++14 -Wno-unused-parameter
+LOCAL_SRC_FILES   := tools/vk_storage_probe/vk_storage_probe.cpp
+LOCAL_SHARED_LIBRARIES := liblog libutils libcutils libui libdl
+LOCAL_C_INCLUDES  += \
+    frameworks/native/include \
+    prebuilts/ndk/current/platforms/android-24/arch-arm/usr/include
+include $(BUILD_EXECUTABLE)
+
