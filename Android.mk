@@ -58,6 +58,7 @@ LOCAL_C_INCLUDES += \
     $(LOCAL_PATH)/hal/pipeline/stages \
     $(LOCAL_PATH)/v4l2 \
     $(LOCAL_PATH)/isp \
+    $(LOCAL_PATH)/isp/nvblit \
     $(LOCAL_PATH)/isp/vulkan \
     $(LOCAL_PATH)/isp/vulkan/encode \
     $(LOCAL_PATH)/util
@@ -100,6 +101,7 @@ LOCAL_SRC_FILES += \
     v4l2/V4l2Source.cpp \
     isp/IspPipeline.cpp \
     isp/IspParams.cpp \
+    isp/nvblit/NvBlitContext.cpp \
     isp/sensor/DelayedControls.cpp \
     isp/sensor/Pwl.cpp \
     isp/sensor/SensorTuning.cpp \
