@@ -15,10 +15,24 @@ static inline int64_t nowMs() {
 }
 
 #include <system/window.h>
+#include <ui/GraphicBuffer.h>
 #include "VulkanIspPipeline.h"
 #include "runtime/loader/VulkanPfn.h"
 #include "shaders/DemosaicCompute.h"
 #include "shaders/Blit.h"
+
+/* VK_ANDROID_native_buffer — duplicated here because the android-24
+ * vulkan.h doesn't expose it. Same layout as in VulkanGrallocCache.cpp;
+ * keep in sync if either copy is updated. */
+#define VK_STRUCTURE_TYPE_NATIVE_BUFFER_ANDROID ((VkStructureType)1000010000)
+typedef struct VkNativeBufferANDROID {
+    VkStructureType    sType;
+    const void        *pNext;
+    const void        *handle;
+    int                stride;
+    int                format;
+    int                usage;
+} VkNativeBufferANDROID;
 
 namespace android {
 
@@ -32,7 +46,7 @@ VulkanIspPipeline::VulkanIspPipeline()
     , mDescPool(VK_NULL_HANDLE)
     , mScratchSampler(VK_NULL_HANDLE)
     , mCmdPool(VK_NULL_HANDLE)
-    , mScratchImg(VK_NULL_HANDLE), mScratchMem(VK_NULL_HANDLE), mScratchView(VK_NULL_HANDLE)
+    , mScratchImg(VK_NULL_HANDLE), mScratchView(VK_NULL_HANDLE)
     , mNextSlot(0)
     , mGrallocCache(mDeviceState)
     , mYuvEncoder(mDeviceState)
@@ -1011,17 +1025,51 @@ void VulkanIspPipeline::releaseScratchResources() {
         mDeviceState.pfn()->DestroyImage(mDeviceState.device(), mScratchImg, NULL);
         mScratchImg = VK_NULL_HANDLE;
     }
-    if (mScratchMem) {
-        mDeviceState.pfn()->FreeMemory(mDeviceState.device(), mScratchMem, NULL);
-        mScratchMem = VK_NULL_HANDLE;
-    }
+    /* Drop the gralloc backing — releasing the last sp<> drops the
+     * underlying nvmap allocation. Memory came from gralloc, not from
+     * vkAllocateMemory, so no FreeMemory call here. */
+    mScratchGb.clear();
     /* JPEG ring is sized to the scratch dimensions; rebuild on resize. */
     releaseJpegRing();
 }
 
 bool VulkanIspPipeline::createScratchImage(unsigned width, unsigned height) {
+    /* Allocate scratch storage as a gralloc-backed RGBA buffer rather
+     * than a pure vkAllocateMemory VkImage. The image is then imported
+     * into Vulkan via VK_ANDROID_native_buffer (vkCreateImage with
+     * VkNativeBufferANDROID in pNext), so the demosaic compute shader
+     * still writes into it as a storage image, but the same handle can
+     * be handed to HW VIC blitters (libnvblit) that take buffer_handle_t
+     * sources — that's the read path used by the encoder-stream YUV
+     * conversion without a CPU repack.
+     *
+     * Usage flags requested from gralloc:
+     *   HW_RENDER  — Vulkan writes through this image (storage + sampled).
+     *   HW_2D      — VIC / nvblit reads from this image.
+     *   HW_TEXTURE — vkCmdCopyImageToBuffer (BLOB path) reads via the
+     *                same image view; HW_TEXTURE keeps the layout
+     *                compatible with sampled reads.
+     * No SW flag — the HAL never CPU-touches scratch. */
+    mScratchGb = new GraphicBuffer(width, height,
+        HAL_PIXEL_FORMAT_RGBA_8888,
+        GRALLOC_USAGE_HW_RENDER | GRALLOC_USAGE_HW_2D | GRALLOC_USAGE_HW_TEXTURE);
+    if (mScratchGb->initCheck() != NO_ERROR) {
+        ALOGE("Scratch GraphicBuffer alloc failed %ux%u", width, height);
+        mScratchGb.clear();
+        return false;
+    }
+    ANativeWindowBuffer *anwb = mScratchGb->getNativeBuffer();
+
+    VkNativeBufferANDROID nb = {};
+    nb.sType  = VK_STRUCTURE_TYPE_NATIVE_BUFFER_ANDROID;
+    nb.handle = anwb->handle;
+    nb.stride = anwb->stride;
+    nb.format = anwb->format;
+    nb.usage  = anwb->usage;
+
     VkImageCreateInfo ici = {};
     ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ici.pNext         = &nb;
     ici.imageType     = VK_IMAGE_TYPE_2D;
     ici.format        = VK_FORMAT_R8G8B8A8_UNORM;
     ici.extent.width  = width;
@@ -1037,26 +1085,10 @@ bool VulkanIspPipeline::createScratchImage(unsigned width, unsigned height) {
     ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (mDeviceState.pfn()->CreateImage(mDeviceState.device(), &ici, NULL, &mScratchImg) != VK_SUCCESS) {
-        ALOGE("Scratch vkCreateImage failed %ux%u", width, height);
+        ALOGE("Scratch vkCreateImage failed %ux%u (gralloc-imported)", width, height);
+        mScratchGb.clear();
         return false;
     }
-
-    VkMemoryRequirements req;
-    mDeviceState.pfn()->GetImageMemoryRequirements(mDeviceState.device(), mScratchImg, &req);
-
-    VkMemoryAllocateInfo ai = {};
-    ai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    ai.allocationSize  = req.size;
-    ai.memoryTypeIndex = mDeviceState.findMemoryType(req.memoryTypeBits,
-                                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (ai.memoryTypeIndex == UINT32_MAX)
-        ai.memoryTypeIndex = mDeviceState.findMemoryType(req.memoryTypeBits, 0);
-    if (ai.memoryTypeIndex == UINT32_MAX ||
-        mDeviceState.pfn()->AllocateMemory(mDeviceState.device(), &ai, NULL, &mScratchMem) != VK_SUCCESS) {
-        ALOGE("Scratch vkAllocateMemory failed");
-        return false;
-    }
-    mDeviceState.pfn()->BindImageMemory(mDeviceState.device(), mScratchImg, mScratchMem, 0);
 
     VkImageViewCreateInfo vci = {};
     vci.sType                        = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -1225,10 +1257,7 @@ void VulkanIspPipeline::destroy() {
             mDeviceState.pfn()->DestroyImage(mDeviceState.device(), mScratchImg, NULL);
             mScratchImg = VK_NULL_HANDLE;
         }
-        if (mScratchMem) {
-            mDeviceState.pfn()->FreeMemory(mDeviceState.device(), mScratchMem, NULL);
-            mScratchMem = VK_NULL_HANDLE;
-        }
+        mScratchGb.clear();
 
         for (size_t s = 0; s < SLOT_COUNT; s++) {
             mDeviceState.destroyBuffer(mParamBuf[s], mParamMem[s]);

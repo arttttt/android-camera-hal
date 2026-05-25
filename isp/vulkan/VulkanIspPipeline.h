@@ -13,9 +13,13 @@
 #define VK_USE_PLATFORM_ANDROID_KHR
 #include <vulkan/vulkan.h>
 
+#include <utils/RefBase.h>
+
 struct ANativeWindowBuffer;
 
 namespace android {
+
+class GraphicBuffer;
 
 class VulkanIspPipeline : public IspPipeline {
 public:
@@ -164,10 +168,15 @@ private:
     void          *mParamMap[SLOT_COUNT];
 
     /* Shader output image — sampled by the produce-once blits and
-     * read by vkCmdCopyImageToBuffer for the JPEG ring. */
-    VkImage        mScratchImg;
-    VkDeviceMemory mScratchMem;
-    VkImageView    mScratchView;
+     * read by vkCmdCopyImageToBuffer for the JPEG ring. Backed by a
+     * gralloc-allocated RGBA buffer and imported through
+     * VK_ANDROID_native_buffer so the same handle can be reused as the
+     * source for HW VIC blits (libnvblit) into encoder-side gralloc
+     * targets — Vulkan owns the writes, NvBlit reads the same memory
+     * for format conversion without a CPU repack. */
+    sp<GraphicBuffer> mScratchGb;
+    VkImage           mScratchImg;
+    VkImageView       mScratchView;
 
     VkFence mFence[SLOT_COUNT];
     /* sync_fd exported from the slot's fence via vkGetFenceFdKHR; -1
