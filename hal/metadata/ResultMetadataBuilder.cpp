@@ -29,6 +29,11 @@ void ResultMetadataBuilder::buildBaseMetadata(CameraMetadata &cm,
     static const float reportFocalLength = 3.30f;
     cm.update(ANDROID_LENS_APERTURE,     &reportAperture,    1);
     cm.update(ANDROID_LENS_FOCAL_LENGTH, &reportFocalLength, 1);
+
+    /* Dynamic-only key — never present in the request echo, so it
+     * must be written here. No flash unit → always UNAVAILABLE. */
+    static const uint8_t flashState = ANDROID_FLASH_STATE_UNAVAILABLE;
+    cm.update(ANDROID_FLASH_STATE, &flashState, 1);
 }
 
 void ResultMetadataBuilder::buildAfMetadata(CameraMetadata &cm,

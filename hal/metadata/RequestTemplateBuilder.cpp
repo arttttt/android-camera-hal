@@ -128,6 +128,14 @@ void writeControlDefaults(CameraMetadata &cm, int type, V4l2Device *dev, int fac
     static const uint8_t controlAwbLock = ANDROID_CONTROL_AWB_LOCK_OFF;
     cm.update(ANDROID_CONTROL_AWB_LOCK, &controlAwbLock, 1);
 
+    /* No flash unit on mocha, but android.flash.mode is required in
+     * every request/result regardless (hwlevel=legacy). Seeding the
+     * templates is enough: the request→result echo carries it into
+     * every capture result. Camera2's ExifUtil unboxes it without a
+     * null check. */
+    static const uint8_t flashMode = ANDROID_FLASH_MODE_OFF;
+    cm.update(ANDROID_FLASH_MODE, &flashMode, 1);
+
     uint8_t controlAfMode = (facing == CAMERA_FACING_BACK) ?
         ANDROID_CONTROL_AF_MODE_AUTO : ANDROID_CONTROL_AF_MODE_OFF;
     cm.update(ANDROID_CONTROL_AF_MODE, &controlAfMode, 1);
