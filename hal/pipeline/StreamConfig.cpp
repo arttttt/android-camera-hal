@@ -17,11 +17,6 @@ namespace {
  * request-queue refactor (Tier 3) introduces real pipelining. */
 constexpr uint32_t kMaxBuffersPerStream = 4;
 
-/* The encoder stream allocates tiled NV12 (~12 MB per 1080p buffer);
- * three dequeued buffers (fill / encode / in-flight) keep the nvmap
- * cost within ~24 MB of the old linear×4 config that didn't OOM. */
-constexpr uint32_t kMaxBuffersVideoStream = 3;
-
 } /* namespace */
 
 status_t StreamConfig::normalize(camera3_stream_configuration_t *streamList,
@@ -74,15 +69,21 @@ status_t StreamConfig::normalize(camera3_stream_configuration_t *streamList,
             inStream = newStream;
         }
 
-        /* IMPLEMENTATION_DEFINED is a framework-side alias. For video-
-         * encoder consumers we KEEP it: gralloc then allocates its
-         * native tiled NV12 (the only layout NVENC fast-paths; it
-         * EINVALs flexible YUV without SW usage bits, and SW bits
-         * force linear, which NVENC ingests through a ~5 fps "mode 1"
-         * pre-blit). The HW VIC bridge writes the tiled layout
-         * directly. Everything else gets RGBA. */
+        /* IMPLEMENTATION_DEFINED is a framework-side alias — we pick the
+         * concrete format based on stream intent. Video-encoder consumers
+         * get explicit YCbCr_420_888 + SW_WRITE_OFTEN below, which makes
+         * gralloc allocate PITCH-linear NV12. That layout is a hard
+         * correctness requirement, not a leftover: NVENC's metadata-mode
+         * input always treats the buffer as pitch (its internal "mode 1"
+         * tiling pre-blit runs unconditionally), so a tiled allocation
+         * (fmt 34 kept as-is) encodes as tile-scrambled garbage. The
+         * pre-blit is fast — the historical ~5 fps cap was the UART
+         * console printk per msenc/vic job (see BoardConfig loglevel=4),
+         * not the pitch ingest. */
         if (newStream->format == HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED) {
-            if (!(newStream->usage & GRALLOC_USAGE_HW_VIDEO_ENCODER))
+            if (newStream->usage & GRALLOC_USAGE_HW_VIDEO_ENCODER)
+                newStream->format = HAL_PIXEL_FORMAT_YCbCr_420_888;
+            else
                 newStream->format = HAL_PIXEL_FORMAT_RGBA_8888;
         }
 
@@ -113,15 +114,12 @@ status_t StreamConfig::normalize(camera3_stream_configuration_t *streamList,
          * For BLOB the HAL CPU-writes the encoded JPEG, so add
          * SW_WRITE_OFTEN.
          *
-         * Explicit YCbCr_420_888 (flexible YUV, e.g. an app
-         * ImageReader) gets SW_WRITE_OFTEN: gralloc0 here EINVALs
-         * fmt 35 with pure-HW usage (misreported upstream as "Out of
-         * memory"), and with SW bits it allocates linear NV12 the
-         * libyuv path can fill. The encoder stream never takes this
-         * branch any more — it stays IMPLEMENTATION_DEFINED above, so
-         * gralloc picks its native tiled NV12 and NVENC fast-paths
-         * (linear input would go through the ~5 fps "mode 1" pre-blit
-         * that collapsed recordings to 1.5 fps).
+         * YCbCr_420_888 (the encoder stream after the rewrite above,
+         * or an app ImageReader) gets SW_WRITE_OFTEN: gralloc0 here
+         * EINVALs fmt 35 with pure-HW usage (misreported upstream as
+         * "Out of memory"), and with SW bits it allocates the
+         * pitch-linear NV12 that both NVENC's input stage and the
+         * libyuv fallback expect.
          *
          * Same SW-flag rationale for INPUT / BIDIRECTIONAL once ZSL
          * reprocess lands: Vulkan reads the input, so SW flags only
@@ -134,8 +132,7 @@ status_t StreamConfig::normalize(camera3_stream_configuration_t *streamList,
         else               newStream->usage = origUsage;
 
         const bool isVideoStream = (origUsage & GRALLOC_USAGE_HW_VIDEO_ENCODER) != 0;
-        newStream->max_buffers = isVideoStream ? kMaxBuffersVideoStream
-                                               : kMaxBuffersPerStream;
+        newStream->max_buffers = kMaxBuffersPerStream;
 
         /* V4L2 resolution selection:
          *   - HW_VIDEO_ENCODER stream wins (sensor switches to matching

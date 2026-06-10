@@ -379,37 +379,15 @@ status_t BufferProcessor::processOne(const camera3_stream_buffer &srcBuf,
                 return NO_INIT;
             }
             return NO_ERROR;
-        case HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED:
-            /* Encoder stream (StreamConfig keeps fmt 34 for
-             * HW_VIDEO_ENCODER consumers): gralloc allocated its
-             * native tiled NV12, which only the HW VIC bridge can
-             * write — there is no CPU fallback for the tiled layout.
-             * Same deferral contract as the fmt-35 NvBlit path. */
-            if (mDeps.nvblit && mDeps.nvblit->isReady() &&
-                mDeps.isp && mDeps.isp->scratchHandle()) {
-                state->needsFinalUnlock = false;
-                state->deferredNvBlit   = true;
-                return NO_ERROR;
-            }
-            ALOGE("buffer %p  frame %-4u  tiled NV12 needs NvBlit and it "
-                  "is unavailable", srcBuf.buffer, frameNumber);
-            return NO_INIT;
         case HAL_PIXEL_FORMAT_YCbCr_420_888: {
-            /* HW VIC fast path: NvBlit reads the ISP scratch (gralloc-
-             * backed RGBA) and writes NV12 directly into the consumer
-             * gralloc. The dispatch has to wait for the Vulkan
-             * submit fence — which isn't available until endFrame —
-             * so defer here and let DemosaicBlitStage call
-             * processYuvNvBlit after isp->endFrame. acquire_fence stays
-             * owned by the caller (in srcBuf) until that call. */
-            if (mDeps.nvblit && mDeps.nvblit->isReady() &&
-                mDeps.isp && mDeps.isp->scratchHandle()) {
-                state->needsFinalUnlock = false;
-                state->deferredNvBlit   = true;
-                return NO_ERROR;
-            }
-            /* Fallback: GPU NV12 encode now, libyuv repack in
-             * finalizeCpuOutputs after the fence reaps. */
+            /* GPU NV12 encode now, libyuv repack into the (pitch-
+             * linear) gralloc in finalizeCpuOutputs after the fence
+             * reaps. The HW VIC bridge (processYuvNvBlit) is NOT used
+             * here: in every tested surface combination (tiled dst,
+             * pitch dst, pitch scratch) NvBlit produced tile-scrambled
+             * output — it does not appear to honour the handles'
+             * surface-kind descriptors on this blob. Re-evaluate only
+             * with evidence the blob ABI is being driven correctly. */
             status_t e = recordYuvOutput(srcBuf, ctx, frameNumber);
             if (e != NO_ERROR) return e;
             state->needsFinalUnlock = false;

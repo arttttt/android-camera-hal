@@ -1054,7 +1054,9 @@ bool VulkanIspPipeline::createScratchImage(unsigned width, unsigned height) {
      *   HW_TEXTURE — vkCmdCopyImageToBuffer (BLOB path) reads via the
      *                same image view; HW_TEXTURE keeps the layout
      *                compatible with sampled reads.
-     * No SW flag — the HAL never CPU-touches scratch. */
+     * No SW flag — the HAL never CPU-touches scratch. (A pitch-forcing
+     * SW_WRITE variant was tried while chasing the VIC tile-scramble;
+     * it changed nothing — see processOne's YCbCr note.) */
     mScratchGb = new GraphicBuffer(width, height,
         HAL_PIXEL_FORMAT_RGBA_8888,
         GRALLOC_USAGE_HW_RENDER | GRALLOC_USAGE_HW_2D | GRALLOC_USAGE_HW_TEXTURE);
