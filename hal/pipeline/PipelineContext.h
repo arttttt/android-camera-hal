@@ -41,6 +41,9 @@ struct PipelineContext {
     std::vector<int>  outputReleaseFences;
     std::vector<int>  outputStatuses;
     std::vector<bool> outputNeedsFinalUnlock;
+    /* true → output was written by the HW VIC bridge; CPU finalize
+     * must leave it alone. */
+    std::vector<bool> outputDeferredNvBlit;
 
     /* JPEG snapshots for BLOB outputs — only populated for output indices
      * whose stream format is HAL_PIXEL_FORMAT_BLOB. ringSlot < 0 means

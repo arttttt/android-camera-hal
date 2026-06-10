@@ -28,6 +28,9 @@ namespace {
 /* Timeout for acquire_fence wait — preserves the pre-existing magic
  * number; revisit when fence semantics are formalised. */
 constexpr int kAcquireFenceTimeoutMs = 1000;
+/* VIC blits are single-digit ms; anything beyond this is a stuck
+ * engine and the frame is better failed than stalled on. */
+constexpr int kNvBlitFenceTimeoutMs  = 100;
 
 } /* namespace */
 
@@ -190,6 +193,10 @@ void BufferProcessor::finalizeCpuOutputs(PipelineContext &ctx) {
     for (size_t i = 0; i < ctx.request.outputBuffers.size(); ++i) {
         const CaptureRequest::Buffer &ob = ctx.request.outputBuffers[i];
         if (ctx.outputStatuses[i] != CAMERA3_BUFFER_STATUS_OK) continue;
+        /* Deferred-NvBlit outputs were written by the VIC — CPU must
+         * not stomp them with the (stale) host YUV buffer. */
+        if (i < ctx.outputDeferredNvBlit.size() && ctx.outputDeferredNvBlit[i])
+            continue;
         /* BLOB encode runs on JpegWorker — handled out of band. */
         if (ob.stream->format == HAL_PIXEL_FORMAT_YCbCr_420_888)
             finalizeYuvOutput(ob, ctx.request.frameNumber);
@@ -236,8 +243,32 @@ status_t BufferProcessor::processYuvNvBlit(const camera3_stream_buffer &srcBuf,
         if (dstFence    >= 0) ::close(dstFence);
         return NO_INIT;
     }
-    /* NvBlit consumed srcFenceDup + dstFence on success. */
-    if (releaseFenceOut) *releaseFenceOut = releaseFd;
+    /* NvBlit consumed srcFenceDup + dstFence on success.
+     *
+     * Reap the VIC completion here and hand the framework a clean
+     * buffer (release_fence = -1). Passing NvBlit's ReleaseSync
+     * through instead throttles recording to ~5 fps: every consumer
+     * hop (BufferQueue → CameraSource → OMX) runs its own wait on
+     * that fd against timeouts, and CameraSource's 200 ms memory-base
+     * pool timeout turns the per-frame wait into dropped frames. The
+     * VIC blit itself is single-digit ms, so a CPU wait here is
+     * cheap and keeps the fence semantics inside the HAL. */
+    if (releaseFd >= 0) {
+        int64_t t0 = systemTime();
+        sp<Fence> releaseFence = new Fence(releaseFd);  /* adopts fd */
+        status_t e = releaseFence->wait(kNvBlitFenceTimeoutMs);
+        int64_t waitMs = (systemTime() - t0) / 1000000;
+        if (waitMs > 5) {
+            ALOGD("nvblit release wait %lldms  frame %u", (long long)waitMs,
+                  frameNumber);
+        }
+        if (e != NO_ERROR) {
+            ALOGE("processYuvNvBlit: VIC release fence wait failed (%d) "
+                  "for frame %u", (int)e, frameNumber);
+            return NO_INIT;
+        }
+    }
+    if (releaseFenceOut) *releaseFenceOut = -1;
     return NO_ERROR;
 }
 
@@ -348,10 +379,25 @@ status_t BufferProcessor::processOne(const camera3_stream_buffer &srcBuf,
                 return NO_INIT;
             }
             return NO_ERROR;
+        case HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED:
+            /* Encoder stream (StreamConfig keeps fmt 34 for
+             * HW_VIDEO_ENCODER consumers): gralloc allocated its
+             * native tiled NV12, which only the HW VIC bridge can
+             * write — there is no CPU fallback for the tiled layout.
+             * Same deferral contract as the fmt-35 NvBlit path. */
+            if (mDeps.nvblit && mDeps.nvblit->isReady() &&
+                mDeps.isp && mDeps.isp->scratchHandle()) {
+                state->needsFinalUnlock = false;
+                state->deferredNvBlit   = true;
+                return NO_ERROR;
+            }
+            ALOGE("buffer %p  frame %-4u  tiled NV12 needs NvBlit and it "
+                  "is unavailable", srcBuf.buffer, frameNumber);
+            return NO_INIT;
         case HAL_PIXEL_FORMAT_YCbCr_420_888: {
             /* HW VIC fast path: NvBlit reads the ISP scratch (gralloc-
-             * backed RGBA) and writes tiled NV12 directly into the
-             * encoder gralloc. The dispatch has to wait for the Vulkan
+             * backed RGBA) and writes NV12 directly into the consumer
+             * gralloc. The dispatch has to wait for the Vulkan
              * submit fence — which isn't available until endFrame —
              * so defer here and let DemosaicBlitStage call
              * processYuvNvBlit after isp->endFrame. acquire_fence stays

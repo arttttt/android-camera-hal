@@ -17,6 +17,11 @@ namespace {
  * request-queue refactor (Tier 3) introduces real pipelining. */
 constexpr uint32_t kMaxBuffersPerStream = 4;
 
+/* The encoder stream allocates tiled NV12 (~12 MB per 1080p buffer);
+ * three dequeued buffers (fill / encode / in-flight) keep the nvmap
+ * cost within ~24 MB of the old linear×4 config that didn't OOM. */
+constexpr uint32_t kMaxBuffersVideoStream = 3;
+
 } /* namespace */
 
 status_t StreamConfig::normalize(camera3_stream_configuration_t *streamList,
@@ -69,13 +74,15 @@ status_t StreamConfig::normalize(camera3_stream_configuration_t *streamList,
             inStream = newStream;
         }
 
-        /* IMPLEMENTATION_DEFINED is a framework-side alias — we pick the
-         * concrete format based on stream intent. Video-encoder consumers
-         * need planar YUV; everything else gets RGBA. */
+        /* IMPLEMENTATION_DEFINED is a framework-side alias. For video-
+         * encoder consumers we KEEP it: gralloc then allocates its
+         * native tiled NV12 (the only layout NVENC fast-paths; it
+         * EINVALs flexible YUV without SW usage bits, and SW bits
+         * force linear, which NVENC ingests through a ~5 fps "mode 1"
+         * pre-blit). The HW VIC bridge writes the tiled layout
+         * directly. Everything else gets RGBA. */
         if (newStream->format == HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED) {
-            if (newStream->usage & GRALLOC_USAGE_HW_VIDEO_ENCODER)
-                newStream->format = HAL_PIXEL_FORMAT_YCbCr_420_888;
-            else
+            if (!(newStream->usage & GRALLOC_USAGE_HW_VIDEO_ENCODER))
                 newStream->format = HAL_PIXEL_FORMAT_RGBA_8888;
         }
 
@@ -106,18 +113,15 @@ status_t StreamConfig::normalize(camera3_stream_configuration_t *streamList,
          * For BLOB the HAL CPU-writes the encoded JPEG, so add
          * SW_WRITE_OFTEN.
          *
-         * For YCbCr_420_888 the consumer (MediaCodec / NVENC) sets
-         * HW_VIDEO_ENCODER, which on NVIDIA gralloc maps to a
-         * height-padded tiled NV12 (~12 MB per 1080p buffer instead
-         * of ~3 MB). Since the HAL writes YUV via the Vulkan ROP
-         * path — not the NVENC HW read path — the tiled layout is
-         * pure waste on us, and across `kMaxBuffersPerStream`
-         * buffers the surplus is enough to push framework gralloc
-         * allocations into nvmap-pool OOM during video record on
-         * Mocha. Adding SW_WRITE_OFTEN forces gralloc to pick a
-         * CPU-writable (= linear-or-near-linear) layout that still
-         * satisfies HW_VIDEO_ENCODER consumption; encoder reads from
-         * linear NV12 just fine, only marginal HW efficiency cost.
+         * Explicit YCbCr_420_888 (flexible YUV, e.g. an app
+         * ImageReader) gets SW_WRITE_OFTEN: gralloc0 here EINVALs
+         * fmt 35 with pure-HW usage (misreported upstream as "Out of
+         * memory"), and with SW bits it allocates linear NV12 the
+         * libyuv path can fill. The encoder stream never takes this
+         * branch any more — it stays IMPLEMENTATION_DEFINED above, so
+         * gralloc picks its native tiled NV12 and NVENC fast-paths
+         * (linear input would go through the ~5 fps "mode 1" pre-blit
+         * that collapsed recordings to 1.5 fps).
          *
          * Same SW-flag rationale for INPUT / BIDIRECTIONAL once ZSL
          * reprocess lands: Vulkan reads the input, so SW flags only
@@ -128,15 +132,17 @@ status_t StreamConfig::normalize(camera3_stream_configuration_t *streamList,
                                     || newStream->format == HAL_PIXEL_FORMAT_YCbCr_420_888);
         if (needsCpuWrite) newStream->usage = origUsage | GRALLOC_USAGE_SW_WRITE_OFTEN;
         else               newStream->usage = origUsage;
-        newStream->max_buffers = kMaxBuffersPerStream;
+
+        const bool isVideoStream = (origUsage & GRALLOC_USAGE_HW_VIDEO_ENCODER) != 0;
+        newStream->max_buffers = isVideoStream ? kMaxBuffersVideoStream
+                                               : kMaxBuffersPerStream;
 
         /* V4L2 resolution selection:
          *   - HW_VIDEO_ENCODER stream wins (sensor switches to matching
          *     FPS mode, e.g. 720p@90fps).
          *   - Otherwise the largest non-BLOB stream. */
         if (newStream->format != HAL_PIXEL_FORMAT_BLOB) {
-            bool isVideo = (origUsage & GRALLOC_USAGE_HW_VIDEO_ENCODER) != 0;
-            if (isVideo) {
+            if (isVideoStream) {
                 width  = newStream->width;
                 height = newStream->height;
                 ALOGD("Video stream detected: %ux%u", width, height);

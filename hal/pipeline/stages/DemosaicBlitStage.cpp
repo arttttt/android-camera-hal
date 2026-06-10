@@ -38,6 +38,7 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
     ctx.outputReleaseFences.assign(n, -1);
     ctx.outputStatuses.assign(n, CAMERA3_BUFFER_STATUS_OK);
     ctx.outputNeedsFinalUnlock.assign(n, true);
+    ctx.outputDeferredNvBlit.assign(n, false);
     ctx.outputJpegSnapshots.assign(n, JpegSnapshot{nullptr, 0, 0, 0, -1});
 
     /* Open the ISP recording for this frame — demosaic gets recorded once;
@@ -114,6 +115,7 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
             return;
         }
         ctx.outputNeedsFinalUnlock[i] = state.needsFinalUnlock;
+        ctx.outputDeferredNvBlit[i]   = state.deferredNvBlit;
         deferredYuv[i]                = state.deferredNvBlit;
     }
 
