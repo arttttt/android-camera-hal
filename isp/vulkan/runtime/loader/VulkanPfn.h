@@ -15,8 +15,10 @@ typedef VkResult (VKAPI_PTR *PFN_vkQueueSignalReleaseImageANDROID)(
     const VkSemaphore *pWaitSemaphores, VkImage image, int *pNativeFenceFd);
 #endif
 
-/* VK_KHR_external_memory + VK_KHR_external_memory_fd — also absent in android-24 */
-#ifndef VK_KHR_EXTERNAL_MEMORY_FD_FALLBACK
+/* VK_KHR_external_memory + VK_KHR_external_memory_fd — absent in the
+ * android-24 NDK header; O+ platform vulkan.h ships them (and defines
+ * VK_KHR_external_memory_fd), so polyfill only when it doesn't. */
+#if !defined(VK_KHR_external_memory_fd) && !defined(VK_KHR_EXTERNAL_MEMORY_FD_FALLBACK)
 #define VK_KHR_EXTERNAL_MEMORY_FD_FALLBACK
 typedef enum VkExternalMemoryHandleTypeFlagBitsKHR {
     VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR         = 0x00000001,
@@ -77,7 +79,7 @@ typedef VkResult (VKAPI_PTR *PFN_vkGetMemoryFdKHR)(
 /* VK_KHR_external_fence + VK_KHR_external_fence_fd — also absent in android-24.
  * SYNC_FD_BIT lets a submit's VkFence be exported as an Android sync_fd, which
  * can then sit in a poll() set just like eventfd / V4L2 fd. */
-#ifndef VK_KHR_EXTERNAL_FENCE_FD_FALLBACK
+#if !defined(VK_KHR_external_fence_fd) && !defined(VK_KHR_EXTERNAL_FENCE_FD_FALLBACK)
 #define VK_KHR_EXTERNAL_FENCE_FD_FALLBACK
 typedef enum VkExternalFenceHandleTypeFlagBitsKHR {
     VK_EXTERNAL_FENCE_HANDLE_TYPE_OPAQUE_FD_BIT_KHR        = 0x00000001,
@@ -110,7 +112,7 @@ typedef VkResult (VKAPI_PTR *PFN_vkGetFenceFdKHR)(
  * android-24. SYNC_FD_BIT lets a framework acquire_fence (sync_fd) be imported
  * as a binary VkSemaphore that the next submit waits on, so the recording
  * thread never blocks on framework backpressure. */
-#ifndef VK_KHR_EXTERNAL_SEMAPHORE_FD_FALLBACK
+#if !defined(VK_KHR_external_semaphore_fd) && !defined(VK_KHR_EXTERNAL_SEMAPHORE_FD_FALLBACK)
 #define VK_KHR_EXTERNAL_SEMAPHORE_FD_FALLBACK
 typedef enum VkExternalSemaphoreHandleTypeFlagBitsKHR {
     VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT_KHR        = 0x00000001,
