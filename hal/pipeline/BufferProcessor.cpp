@@ -75,11 +75,17 @@ bool BufferProcessor::tryZeroCopy(const camera3_stream_buffer &srcBuf,
     unsigned streamW = srcBuf.stream->width;
     unsigned streamH = srcBuf.stream->height;
 
-    sp<GraphicBuffer> gb = new GraphicBuffer(streamW, streamH,
+    /* O wrap form: WRAP_HANDLE = no ownership, handle already
+     * registered by the framework — same semantics as the N-era
+     * (w,h,fmt,usage,stride,handle,keepOwnership=false) ctor. */
+    sp<GraphicBuffer> gb = new GraphicBuffer(
+        const_cast<native_handle_t *>(*srcBuf.buffer),
+        GraphicBuffer::WRAP_HANDLE,
+        streamW, streamH,
         HAL_PIXEL_FORMAT_RGBA_8888,
-        GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_COMPOSER,
-        streamW, const_cast<native_handle_t *>(*srcBuf.buffer),
-        false);
+        1 /* layerCount */,
+        (uint64_t)(GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_COMPOSER),
+        streamW);
     bool zcOk = false;
     BENCHMARK_SECTION("Raw->RGBA") {
         CropRect crop = { ctx.cropX, ctx.cropY, ctx.cropW, ctx.cropH };
