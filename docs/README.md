@@ -16,6 +16,7 @@ Design notes, architectural analysis, and a roadmap for the Tegra K1
 | [libcamera-steal-list.md](libcamera-steal-list.md) | Ranked, scoped TODO list of concrete patterns to lift from libcamera, with file paths on both sides |
 | [awb-bayes.md](awb-bayes.md) | Migration plan: gray-world AWB → RPi-style Bayesian AWB with lux-conditioned priors. Transient; deleted on completion. |
 | [vic-encoder-path.md](vic-encoder-path.md) | The dormant HW VIC encoder-stream writer: tile-scramble evidence matrix, the UART-printk 5 fps post-mortem, and the ABI-first re-enable roadmap |
+| [platform-abstraction.md](platform-abstraction.md) | Target core/adapter split (libmochacam.so + camera3 / native-HIDL adapters): dependency seams, branch matrix, HIDL type mapping, migration order |
 | [roadmap.md](roadmap.md) | Done items + open work |
 | [bugs.md](bugs.md) | Known bugs (deferred or won't-fix), each with location and likely cause |
 
