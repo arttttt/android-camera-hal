@@ -47,6 +47,7 @@ LOCAL_C_INCLUDES += \
     external/skia/include/core/ \
     frameworks/base/core/jni/android/graphics \
     frameworks/native/include \
+    frameworks/native/vulkan/include \
     prebuilts/ndk/current/platforms/android-24/arch-arm/usr/include
 
 # Module-internal include dirs
@@ -163,6 +164,7 @@ LOCAL_SRC_FILES   := tools/vk_storage_probe/vk_storage_probe.cpp
 LOCAL_SHARED_LIBRARIES := liblog libutils libcutils libui libdl
 LOCAL_C_INCLUDES  += \
     frameworks/native/include \
+    frameworks/native/vulkan/include \
     prebuilts/ndk/current/platforms/android-24/arch-arm/usr/include
 include $(BUILD_EXECUTABLE)
 
