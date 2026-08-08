@@ -9,6 +9,11 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := camera.$(TARGET_BOARD_PLATFORM)
 LOCAL_MODULE_RELATIVE_PATH := hw
 
+# Install to /vendor/lib/hw. This is a hardware module: since O it belongs on
+# the vendor side, next to the tuning profiles below and to the HIDL provider
+# that dlopens it, which is itself a vendor binary.
+LOCAL_PROPRIETARY_MODULE := true
+
 LOCAL_CFLAGS += -std=c++14
 LOCAL_CFLAGS += -fno-short-enums
 LOCAL_CFLAGS += -Wno-unused-parameter -Wno-missing-field-initializers
