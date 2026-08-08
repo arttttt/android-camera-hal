@@ -19,6 +19,10 @@ SystemVulkanLoader::~SystemVulkanLoader() {
 }
 
 bool SystemVulkanLoader::load() {
+    /* Idempotent, for the same reason as in HalHmiVulkanLoader: the factory
+     * probes by loading and the caller loads again. */
+    if (mDso && mGetInstanceProcAddr) return true;
+
     /* By soname, not by path: the linker namespace resolves it to the copy
      * that matches this process, which is what lets a vendor process reach
      * the system loader at all. An absolute path would pin one ABI. */

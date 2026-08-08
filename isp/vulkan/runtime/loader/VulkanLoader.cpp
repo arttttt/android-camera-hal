@@ -1,4 +1,5 @@
-#include <cutils/properties.h>
+#define LOG_TAG "Cam-VkLoader"
+#include <utils/Log.h>
 
 #include "VulkanLoader.h"
 #include "VulkanPfn.h"
@@ -7,13 +8,34 @@
 
 namespace android {
 
-static const int API_OREO = 26;
-
+/* Pick by what the driver actually offers, not by OS version.
+ *
+ * The split used to be "API 26+ means the system loader", on the assumption
+ * that a modern libvulkan brings the gralloc interop the ISP needs. On this
+ * device it does not, and the deciding factor turned out to be the driver
+ * rather than the platform: through the system loader Android reports
+ *
+ *   External memory device ext: KHR_external_memory=1 fd=1 dma_buf=0 NV=0
+ *   VK_ANDROID_native_buffer: absent
+ *
+ * VK_EXT_external_memory_dma_buf is missing, so a gralloc dmabuf cannot be
+ * imported (only memory Vulkan itself exported, as OPAQUE_FD), and
+ * VK_ANDROID_native_buffer is deliberately hidden by the loader -- it is
+ * reserved for the loader's own swapchain implementation and never surfaces
+ * to a client. Both are visible when the HAL module is opened directly,
+ * which is exactly what the zero-copy path needs, so try that first.
+ *
+ * The system loader stays as the fallback: it is the correct path wherever
+ * the driver does expose the interop extensions, and it is what a device
+ * without a Tegra HAL module would use. */
 VulkanLoader *createVulkanLoader() {
-    int sdk = property_get_int32("ro.build.version.sdk", 0);
-    if (sdk >= API_OREO)
-        return new SystemVulkanLoader();
-    return new HalHmiVulkanLoader();
+    VulkanLoader *hmi = new HalHmiVulkanLoader();
+    if (hmi->load())
+        return hmi;
+
+    ALOGD("HAL-module Vulkan unavailable, falling back to the system loader");
+    delete hmi;
+    return new SystemVulkanLoader();
 }
 
 void VulkanLoader::loadInstancePfns(VkInstance instance, VulkanPfn *pfn) const {

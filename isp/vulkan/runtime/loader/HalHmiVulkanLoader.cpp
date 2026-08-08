@@ -61,6 +61,11 @@ HalHmiVulkanLoader::~HalHmiVulkanLoader() {
 }
 
 bool HalHmiVulkanLoader::load() {
+    /* Idempotent: createVulkanLoader() probes by loading, and the caller
+     * calls load() again on whatever it gets back. Opening the HAL device
+     * twice would leak both the handle and the device. */
+    if (mDevice) return true;
+
     mDso = dlopen("/system/vendor/lib/hw/vulkan.tegra.so",
                   RTLD_NOW | RTLD_LOCAL);
     if (!mDso) {
