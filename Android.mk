@@ -37,9 +37,7 @@ LOCAL_SHARED_LIBRARIES := \
     libcamera_client \
     libui \
     libjpeg \
-    libcamera_metadata \
-    libskia \
-    libandroid_runtime
+    libcamera_metadata
 
 LOCAL_C_INCLUDES += \
     external/jpeg \
@@ -49,8 +47,6 @@ LOCAL_C_INCLUDES += \
     $(call include-path-for, camera)
 
 LOCAL_C_INCLUDES += \
-    external/skia/include/core/ \
-    frameworks/base/core/jni/android/graphics \
     frameworks/native/include \
     frameworks/native/vulkan/include \
     prebuilts/ndk/current/platforms/android-24/arch-arm/usr/include
