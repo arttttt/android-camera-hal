@@ -51,6 +51,15 @@ LOCAL_C_INCLUDES += \
     frameworks/native/vulkan/include \
     prebuilts/ndk/current/platforms/android-24/arch-arm/usr/include
 
+# ANativeWindow and the gralloc usage bits: system/window.h sits in
+# system/core/include on the oldest branch we build against and moved into
+# the nativewindow library on the newer ones. Both paths are listed rather
+# than picked with a conditional -- an include directory that does not exist
+# is ignored, so one line covers every branch. It used to arrive by accident
+# through libandroid_runtime's exported headers, which this module no longer
+# links.
+LOCAL_C_INCLUDES += frameworks/native/libs/nativewindow/include
+
 # Module-internal include dirs
 LOCAL_C_INCLUDES += \
     $(LOCAL_PATH)/base \
