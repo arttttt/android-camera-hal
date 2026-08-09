@@ -7,16 +7,16 @@ namespace android {
 
 /* A minimal stand-in for std::optional.
  *
- * The HAL used std::experimental::optional until Android P removed the
- * header outright -- including it there now yields
+ * The HAL used std::experimental::optional until the platform dropped it:
+ * the header still exists, but its entire body is
  *   #error "<experimental/optional> has been removed. Use <optional> instead."
- * The standard <optional> is not a portable replacement for us: Android N
- * does not ship it at all, and where it does exist libcxx gates it behind
- * `_LIBCPP_STD_VER > 14`, so reaching it means compiling this module as
- * C++17 on some platform versions and C++14 on others. That is two forks --
- * one in the build flags, one in the includes -- for a type we use in eight
- * places. This header is the third option: same surface, no forks, one
- * language standard across N, O and P.
+ * The standard <optional> is not a portable replacement here. The oldest
+ * platform branch we build against ships no such header at all, and where
+ * it does exist libcxx gates the contents behind `_LIBCPP_STD_VER > 14`, so
+ * reaching it means compiling this module as C++17 against some branches
+ * and C++14 against others -- a fork in the build flags and a second one in
+ * the includes, for a type used in eight places. This header is the third
+ * option: same surface, no forks, one language standard everywhere.
  *
  * Deliberately simpler than the standard type. The value is stored inline
  * and always constructed, so `T` must be default constructible; every type

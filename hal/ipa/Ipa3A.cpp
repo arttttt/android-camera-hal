@@ -1,6 +1,6 @@
 /* Ahead of every include: one of the platform camera headers defines
- * LOG_TAG itself on P, and defining ours afterwards is a redefinition
- * that -Werror rejects. Same placement as BufferProcessor.cpp. */
+ * LOG_TAG itself, so defining ours afterwards is a redefinition that
+ * -Werror rejects. Same placement as BufferProcessor.cpp. */
 #define LOG_TAG "Cam-Ipa3A"
 
 #include "Ipa3A.h"
