@@ -9,6 +9,7 @@
 #include "BufferProcessor.h"
 #include "PipelineContext.h"
 
+#undef  LOG_TAG
 #define LOG_TAG "Cam-JpegWorker"
 
 namespace android {

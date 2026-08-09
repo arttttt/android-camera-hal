@@ -15,6 +15,7 @@
 #include "sensor/DelayedControls.h"
 #include "sensor/SensorConfig.h"
 
+#undef  LOG_TAG
 #define LOG_TAG "Cam-StatsProcessStage"
 
 namespace android {

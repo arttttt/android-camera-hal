@@ -4,6 +4,7 @@
 #include "GrayWorldAwbController.h"
 #include "sensor/SensorTuning.h"
 
+#undef  LOG_TAG
 #define LOG_TAG "Cam-AwbFactory"
 #include <utils/Log.h>
 

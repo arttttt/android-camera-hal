@@ -1,8 +1,3 @@
-/* Ahead of every include: one of the platform camera headers defines
- * LOG_TAG itself, so defining ours afterwards is a redefinition that
- * -Werror rejects. Same placement as BufferProcessor.cpp. */
-#define LOG_TAG "Cam-Ipa3A"
-
 #include "Ipa3A.h"
 
 #include <math.h>
@@ -28,6 +23,11 @@
 #include "sensor/SensorConfig.h"
 #include "sensor/SensorTuning.h"
 
+/* liblog defines LOG_TAG as NULL for anyone who has not set it by the time
+ * log.h is reached, and the platform camera headers above pull log.h in. So
+ * the tag has to be undefined before it can be set, in every file that names
+ * it after its includes. */
+#undef  LOG_TAG
 #define LOG_TAG "Cam-Ipa3A"
 #include <utils/Log.h>
 

@@ -8,6 +8,7 @@
 #include "Pipeline.h"
 #include "InFlightTracker.h"
 
+#undef  LOG_TAG
 #define LOG_TAG "Cam-RequestThread"
 
 namespace android {

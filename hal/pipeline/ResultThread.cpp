@@ -11,6 +11,7 @@
 #include "InFlightTracker.h"
 #include "BayerSource.h"
 
+#undef  LOG_TAG
 #define LOG_TAG "Cam-ResultThread"
 
 namespace android {

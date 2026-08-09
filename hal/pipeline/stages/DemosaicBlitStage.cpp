@@ -14,6 +14,7 @@
 #include "BayerSource.h"
 #include "IspPipeline.h"
 
+#undef  LOG_TAG
 #define LOG_TAG "Cam-DemosaicBlitStage"
 
 namespace android {

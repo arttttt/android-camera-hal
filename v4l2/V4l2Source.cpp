@@ -8,6 +8,7 @@
 #include "V4l2Device.h"
 #include "V4l2CaptureThread.h"
 
+#undef  LOG_TAG
 #define LOG_TAG "Cam-V4l2Source"
 
 namespace android {

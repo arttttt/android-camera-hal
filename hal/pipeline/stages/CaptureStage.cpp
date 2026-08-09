@@ -9,6 +9,7 @@
 #include "IspPipeline.h"
 #include "3a/AutoFocusController.h"
 
+#undef  LOG_TAG
 #define LOG_TAG "Cam-CaptureStage"
 
 namespace android {

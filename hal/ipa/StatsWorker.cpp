@@ -7,6 +7,7 @@
 #include <utils/Log.h>
 #include <utils/Timers.h>
 
+#undef  LOG_TAG
 #define LOG_TAG "Cam-StatsWorker"
 
 namespace android {

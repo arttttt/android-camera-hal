@@ -18,6 +18,7 @@
 #include "pipeline/PartialEmitter.h"
 #include "sensor/SensorConfig.h"
 
+#undef  LOG_TAG
 #define LOG_TAG "Cam-ResultDispatchStage"
 
 namespace android {
