@@ -199,8 +199,12 @@ int main() {
         FAIL("gralloc alloc");
     }
     ANativeWindowBuffer *anwb = gb->getNativeBuffer();
-    P("gralloc alloc ok handle=%p stride=%u usage=0x%x format=%d\n",
-      anwb->handle, anwb->stride, anwb->usage, anwb->format);
+    /* usage widened from int to uint64_t at some point along the branches
+     * this builds against, so print it through a fixed width rather than
+     * matching whichever type is in scope. */
+    P("gralloc alloc ok handle=%p stride=%u usage=0x%llx format=%d\n",
+      anwb->handle, anwb->stride,
+      (unsigned long long) anwb->usage, anwb->format);
 
     /* --- the test: VkCreateImage with STORAGE | SAMPLED usage over
      *     gralloc handle. --- */
