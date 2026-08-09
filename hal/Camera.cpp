@@ -123,8 +123,8 @@ namespace android {
 
 Camera::Camera(const char *devNode, int facing)
     : mStaticCharacteristics(NULL)
-    , mCallbackOps(NULL)
     , mFacing(facing)
+    , mCallbackOps(NULL)
     , mJpegBufferSize(0)
     , mSoftIspEnabled(true)
     , mInfrastructureBuilt(false) {

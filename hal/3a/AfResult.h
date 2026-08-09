@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#include <experimental/optional>
+#include "Optional.h"
 
 namespace android {
 
@@ -32,7 +32,7 @@ namespace android {
  * (false on most frames during a scan) with "AF in scan mode" (true
  * for the whole scan duration). */
 struct AfResult {
-    std::experimental::optional<int32_t>  vcmPosition;
+    Optional<int32_t>  vcmPosition;
     bool                                  startSweep    = false;
     bool                                  sweepComplete = false;
     uint8_t                               state         = 0;

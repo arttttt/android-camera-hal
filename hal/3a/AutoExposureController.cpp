@@ -188,7 +188,7 @@ AutoExposureController::AutoExposureController(const SensorConfig &cfg,
           tuning && tuning->awbParams().cStatsMinThreshold > 0.f
           ? tuning->awbParams().cStatsMinThreshold : 0.f),
       luxAnchor(tuning ? tuning->aeParams().luxAnchor
-                       : std::experimental::optional<LuxAnchor>()),
+                       : Optional<LuxAnchor>()),
       filteredTotalUs((float)cfg.exposureDefault * (float)cfg.gainDefault
                       / (float)cfg.gainUnit),
       smoothedLuma(0.f),

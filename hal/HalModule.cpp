@@ -66,9 +66,6 @@ static void enumerateCameras() {
     if (sNumCameras > 0)
         return;
 
-    int backCount = 0;
-    int frontCount = 0;
-
     for (int i = 0; i < MAX_VIDEO_NODES && sNumCameras < MAX_CAMERAS; i++) {
         char path[32];
         snprintf(path, sizeof(path), "/dev/video%d", i);

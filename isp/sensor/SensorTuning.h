@@ -6,7 +6,7 @@
 #include <utility>
 #include <vector>
 
-#include <experimental/optional>
+#include "Optional.h"
 
 #include "LuxAnchor.h"
 #include "Pwl.h"
@@ -241,7 +241,7 @@ public:
          * parser found a complete `active.ae.luxAnchor` block.
          * Consumers (the AE controller) check by `if (luxAnchor)`
          * and fall back to publishing `luxIndex = 0` when absent. */
-        std::experimental::optional<LuxAnchor> luxAnchor;
+        Optional<LuxAnchor> luxAnchor;
 
         AeParams()
             : loaded(false),
@@ -332,7 +332,7 @@ public:
     /* Optional surface — `engaged()` true iff the parser saw a
      * minimum-viable bayes block. Callers route by checking
      * presence: `if (auto &b = tuning->bayesParams()) { ... }`. */
-    const std::experimental::optional<BayesParams>& bayesParams() const {
+    const Optional<BayesParams>& bayesParams() const {
         return mBayesParams;
     }
 
@@ -417,7 +417,7 @@ private:
     AwbParams    mAwbParams;
     AeParams     mAeParams;
     AwbAlgorithm                              mAwbAlgorithm = AwbAlgorithm::GrayWorld;
-    std::experimental::optional<BayesParams>  mBayesParams;
+    Optional<BayesParams>  mBayesParams;
     std::string  mBayerPattern;
 };
 

@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#include <experimental/optional>
+#include "Optional.h"
 
 #include <camera/CameraMetadata.h>
 
@@ -12,7 +12,7 @@
 
 namespace android {
 
-class IpaFrameMeta;
+struct IpaFrameMeta;
 class SensorTuning;
 struct IpaStats;
 struct SensorConfig;
@@ -135,7 +135,7 @@ private:
      * `computeLuxIndex` to back-compute scene lux from the current
      * AE state; absent → `AeResult::luxIndex = 0`, downstream Bayes
      * AWB falls back to a fixed prior. */
-    std::experimental::optional<LuxAnchor> luxAnchor;
+    Optional<LuxAnchor> luxAnchor;
 
     /* AE state — total exposure at unity gain (µs), absolute EV
      * space. Each frame: target = filteredTotalUs × ratio (clamped),

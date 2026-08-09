@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#include <experimental/optional>
+#include "Optional.h"
 
 #include "CcmQ10.h"
 #include "WbGains.h"
@@ -30,8 +30,8 @@ namespace android {
  * skipped this tick — manual mode, lock, or AF sweep. Coordinator
  * routes it by doing nothing. */
 struct AwbResult {
-    std::experimental::optional<WbGains>  gains;
-    std::experimental::optional<CcmQ10>   ccm;
+    Optional<WbGains>  gains;
+    Optional<CcmQ10>   ccm;
     int                                   estCct = 0;
     uint8_t                               state  = 0;
     /* Number of patches that passed the saturation / noise-floor
