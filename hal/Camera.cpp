@@ -734,8 +734,7 @@ void Camera::buildInfrastructure() {
 
     mRequestThread.reset(new RequestThread(mRequestQueue.get(),
                                            mRequestPipeline.get(),
-                                           mPipelineQueue.get(),
-                                           mTracker.get()));
+                                           mPipelineQueue.get()));
     {
         PipelineThread::Deps d;
         d.queue           = mPipelineQueue.get();

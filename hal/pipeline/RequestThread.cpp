@@ -6,7 +6,6 @@
 #include <utils/Log.h>
 
 #include "Pipeline.h"
-#include "InFlightTracker.h"
 
 #undef  LOG_TAG
 #define LOG_TAG "Cam-RequestThread"
@@ -15,12 +14,10 @@ namespace android {
 
 RequestThread::RequestThread(EventQueue<PipelineContext*> *in,
                              Pipeline *p,
-                             EventQueue<PipelineContext*> *out,
-                             InFlightTracker *t)
+                             EventQueue<PipelineContext*> *out)
     : inQueue(in),
       pipeline(p),
-      outQueue(out),
-      tracker(t) {}
+      outQueue(out) {}
 
 RequestThread::~RequestThread() {
     stop();

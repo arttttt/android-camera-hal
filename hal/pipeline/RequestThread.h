@@ -8,7 +8,6 @@
 namespace android {
 
 class Pipeline;
-class InFlightTracker;
 
 /* Worker thread that drives a Pipeline against PipelineContexts pulled
  * from a bounded queue, then hands the context off to a downstream
@@ -16,14 +15,17 @@ class InFlightTracker;
  * class just marshals raw pointers between queues. pushBlocking
  * paces the upstream at the downstream's maxInFlight capacity.
  *
- * The queues, pipeline, and tracker are all owned by Camera; this
- * class holds non-owning references. */
+ * It takes no tracker of its own, by design: a context stays registered
+ * for the whole hop, and on stop it is left there for closeDevice's
+ * drainAll to error-complete rather than being retired here.
+ *
+ * The queues and the pipeline are owned by Camera; this class holds
+ * non-owning references. */
 class RequestThread : public ThreadBase {
 public:
     RequestThread(EventQueue<PipelineContext*> *inQueue,
                   Pipeline *pipeline,
-                  EventQueue<PipelineContext*> *outQueue,
-                  InFlightTracker *tracker);
+                  EventQueue<PipelineContext*> *outQueue);
     ~RequestThread() override;
 
 protected:
@@ -33,7 +35,6 @@ private:
     EventQueue<PipelineContext*> *inQueue;
     Pipeline                     *pipeline;
     EventQueue<PipelineContext*> *outQueue;
-    InFlightTracker              *tracker;
 };
 
 } /* namespace android */
