@@ -5,7 +5,7 @@
 
 #include <system/camera_metadata.h>
 
-#include <camera/CameraMetadata.h>
+#include "CameraMetadataCompat.h"
 
 #include "3a/AeResult.h"
 #include "3a/AfResult.h"

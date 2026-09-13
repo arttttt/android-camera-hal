@@ -7,7 +7,7 @@
 #include <hardware/camera_common.h>
 #include "V4l2Device.h"
 #include <hardware/camera3.h>
-#include <camera/CameraMetadata.h>
+#include "CameraMetadataCompat.h"
 #include <utils/Mutex.h>
 
 #include "sensor/SensorConfig.h"

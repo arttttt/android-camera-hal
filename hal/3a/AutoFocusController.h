@@ -5,7 +5,7 @@
 #include <mutex>
 #include <vector>
 
-#include <camera/CameraMetadata.h>
+#include "CameraMetadataCompat.h"
 
 #include "AfResult.h"
 #include "ipa/IpaStats.h"

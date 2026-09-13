@@ -5,7 +5,7 @@
 #include <memory>
 #include <vector>
 
-#include <camera/CameraMetadata.h>
+#include "CameraMetadataCompat.h"
 #include <hardware/camera3.h>
 
 #include "UniqueFd.h"

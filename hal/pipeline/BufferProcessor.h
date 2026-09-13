@@ -6,7 +6,7 @@
 
 #include <utils/Errors.h>
 #include <hardware/camera3.h>
-#include <camera/CameraMetadata.h>
+#include "CameraMetadataCompat.h"
 
 #include "CaptureRequest.h"
 #include "JpegSnapshot.h"

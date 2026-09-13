@@ -10,7 +10,7 @@
 
 #include <hardware/camera3.h>
 #include <hardware/camera_common.h>
-#include <camera/CameraMetadata.h>
+#include "CameraMetadataCompat.h"
 #include <utils/misc.h>
 
 #include "V4l2Device.h"

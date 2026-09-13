@@ -18,7 +18,7 @@
 #define LOG_NDEBUG NDEBUG
 
 #include <hardware/camera3.h>
-#include <camera/CameraMetadata.h>
+#include "CameraMetadataCompat.h"
 #include <utils/misc.h>
 #include <utils/Log.h>
 #include <hardware/gralloc.h>

@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#include <camera/CameraMetadata.h>
+#include "CameraMetadataCompat.h"
 
 #include "IpaFrameMeta.h"
 #include "sensor/DelayedControls.h"

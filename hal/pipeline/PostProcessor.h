@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <camera/CameraMetadata.h>
+#include "CameraMetadataCompat.h"
 
 #include "JpegSnapshot.h"
 

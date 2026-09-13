@@ -5,7 +5,7 @@
 
 #include "Optional.h"
 
-#include <camera/CameraMetadata.h>
+#include "CameraMetadataCompat.h"
 
 #include "AeResult.h"
 #include "sensor/LuxAnchor.h"

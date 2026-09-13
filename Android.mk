@@ -26,15 +26,19 @@ LOCAL_CFLAGS += -DV4L2DEVICE_BUF_COUNT=8
 #LOCAL_CFLAGS += -UNDEBUG -DDEBUG
 
 
+# android.hardware.camera.common@1.0-helper carries AOSP's own copy of
+# CameraMetadata.cpp, built vendor_available for camera HALs. It replaces
+# libcamera_client below, which is a framework library and unreachable from a
+# vendor namespace -- see base/CameraMetadataCompat.h.
 LOCAL_STATIC_LIBRARIES := \
     libyuv_static \
-    libjsoncpp
+    libjsoncpp \
+    android.hardware.camera.common@1.0-helper
 
 LOCAL_SHARED_LIBRARIES := \
     liblog \
     libutils \
     libcutils \
-    libcamera_client \
     libui \
     libjpeg \
     libcamera_metadata

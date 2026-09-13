@@ -2,7 +2,7 @@
 #define HAL_METADATA_RESULT_METADATA_BUILDER_H
 
 #include <stdint.h>
-#include <camera/CameraMetadata.h>
+#include "CameraMetadataCompat.h"
 
 #include "3a/AutoFocusController.h"
 

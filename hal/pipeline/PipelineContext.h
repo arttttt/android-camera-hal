@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include <vector>
 
-#include <camera/CameraMetadata.h>
+#include "CameraMetadataCompat.h"
 
 #include "CaptureRequest.h"
 #include "JpegSnapshot.h"
