@@ -14,7 +14,7 @@ LOCAL_MODULE_RELATIVE_PATH := hw
 # that dlopens it, which is itself a vendor binary.
 LOCAL_PROPRIETARY_MODULE := true
 
-LOCAL_CFLAGS += -std=c++14
+LOCAL_CFLAGS += -std=c++17
 LOCAL_CFLAGS += -fno-short-enums
 LOCAL_CFLAGS += -Wno-unused-parameter -Wno-missing-field-initializers
 LOCAL_CFLAGS += -pthread
@@ -160,7 +160,7 @@ include $(BUILD_PREBUILT)
 include $(CLEAR_VARS)
 LOCAL_MODULE      := nvblit_probe
 LOCAL_MODULE_TAGS := optional
-LOCAL_CFLAGS      += -std=c++14 -Wno-unused-parameter
+LOCAL_CFLAGS      += -std=c++17 -Wno-unused-parameter
 LOCAL_SRC_FILES   := tools/nvblit_probe/nvblit_probe.cpp
 LOCAL_SHARED_LIBRARIES := liblog libutils libcutils libui
 LOCAL_C_INCLUDES  += frameworks/native/include
@@ -173,7 +173,7 @@ include $(BUILD_EXECUTABLE)
 include $(CLEAR_VARS)
 LOCAL_MODULE      := vk_storage_probe
 LOCAL_MODULE_TAGS := optional
-LOCAL_CFLAGS      += -std=c++14 -Wno-unused-parameter
+LOCAL_CFLAGS      += -std=c++17 -Wno-unused-parameter
 LOCAL_SRC_FILES   := tools/vk_storage_probe/vk_storage_probe.cpp
 LOCAL_SHARED_LIBRARIES := liblog libutils libcutils libui libdl
 LOCAL_C_INCLUDES  += \
