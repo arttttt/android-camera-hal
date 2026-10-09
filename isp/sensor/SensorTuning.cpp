@@ -34,10 +34,11 @@ bool readJson(const std::string &path, Json::Value *out) {
         ALOGW("tuning file not found: %s", path.c_str());
         return false;
     }
-    Json::Reader reader;
-    if (!reader.parse(ifs, *out)) {
+    Json::CharReaderBuilder builder;
+    std::string errs;
+    if (!Json::parseFromStream(builder, ifs, out, &errs)) {
         ALOGE("tuning JSON parse failed (%s): %s",
-              path.c_str(), reader.getFormattedErrorMessages().c_str());
+              path.c_str(), errs.c_str());
         return false;
     }
     return true;
