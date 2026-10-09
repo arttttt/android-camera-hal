@@ -176,6 +176,7 @@ LOCAL_MODULE_TAGS := optional
 LOCAL_CFLAGS      += -std=c++17 -Wno-unused-parameter
 LOCAL_SRC_FILES   := tools/vk_storage_probe/vk_storage_probe.cpp
 LOCAL_SHARED_LIBRARIES := liblog libutils libcutils libui libdl
+LOCAL_HEADER_LIBRARIES := vulkan_headers
 LOCAL_C_INCLUDES  += \
     frameworks/native/include \
     frameworks/native/vulkan/include \
