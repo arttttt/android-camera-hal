@@ -194,6 +194,13 @@ void PipelineThread::threadLoop() {
             }
         }
 
+        /* Work already queued with room to take it: don't sleep. The
+         * queue's eventfd may be clear while items sit in it — they
+         * stayed behind when the in-flight cap stopped the admission
+         * loop below — and nothing else would wake this poll. */
+        if (inFlight.size() < deps.maxInFlight && deps.queue->size() > 0)
+            timeoutMs = 0;
+
         int n = ::poll(pfds.data(), pfds.size(), timeoutMs);
         if (n < 0) {
             if (errno == EINTR) continue;
@@ -202,18 +209,20 @@ void PipelineThread::threadLoop() {
         }
         if (pfds[1].revents & POLLIN) break;
 
-        /* Accept new submits up to the in-flight cap. Drain the queue
-         * eventfd only after tryPop confirms "queue empty" — draining
-         * up front when the cap is about to block pop means the
-         * eventfd counter goes to zero while the queue still has
-         * items, and the next poll waits forever even though work is
-         * already queued. */
+        /* Accept new submits up to the in-flight cap. The eventfd is
+         * drained BEFORE popping: a push landing after the drain sets
+         * it again and wakes the next poll. Draining after an empty
+         * tryPop instead lost the wake of a push that slipped in
+         * between the two — RequestThread then sat in pushBlocking
+         * with the queue full and this thread slept in poll with
+         * nothing in flight, for good (the hangs of 20.10, 03:05 and
+         * 23:03). Items left behind by the cap are picked up through
+         * the size() check before the poll. */
+        deps.queue->drain();
         while (inFlight.size() < deps.maxInFlight) {
             PipelineContext *ctx = nullptr;
-            if (!deps.queue->tryPop(ctx)) {
-                deps.queue->drain();
+            if (!deps.queue->tryPop(ctx))
                 break;
-            }
             if (!ctx) continue;
 
             /* DemosaicBlitStage is not alwaysRun — a context that
