@@ -9,10 +9,10 @@ namespace android {
 
 /* Per-frame output of `AutoFocusController::process`.
  *
- * - `vcmPosition` (when present) — VCM position in driver units,
- *   written via `V4l2Device::setControl(V4L2_CID_FOCUS_ABSOLUTE,
- *   ...)` against the focuser subdev. Most frames carry no write —
- *   VCM is moved only at scan steps.
+ * - `vcmPosition` (when present) — VCM position in driver units the
+ *   lens has to move to now; the coordinator writes it on the same
+ *   tick. Most frames carry none — the lens moves at sweep starts and
+ *   steps, at the commit, and for manual focus.
  * - `startSweep` flips true on the frame the controller transitions
  *   into an active scan; the coordinator uses this to suppress
  *   subsequent AE / AWB controller invocations until the matching

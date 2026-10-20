@@ -7,7 +7,6 @@ namespace android {
 
 class BayerSource;
 class IspPipeline;
-class AutoFocusController;
 
 /* Acquires a Bayer frame from the BayerSource and parses the
  * per-request crop region (digital zoom). The source's own thread
@@ -16,9 +15,8 @@ class AutoFocusController;
 class CaptureStage : public PipelineStage {
 public:
     struct Deps {
-        BayerSource         *bayerSource;
-        IspPipeline         *isp;
-        AutoFocusController *af;          /* may be null */
+        BayerSource *bayerSource;
+        IspPipeline *isp;
     };
 
     explicit CaptureStage(const Deps &deps);

@@ -7,7 +7,6 @@
 #include <utils/Log.h>
 #include <system/camera_metadata.h>
 
-#include "V4l2Device.h"
 #include "sensor/SensorTuning.h"
 
 namespace android {
@@ -95,9 +94,10 @@ void growToMin(int *lo, int *hi, int gridLimit, int minSpan) {
 
 } /* namespace */
 
-AutoFocusController::AutoFocusController(V4l2Device *dev,
-                                         const SensorTuning *tuning)
-    : mDev(dev)
+AutoFocusController::AutoFocusController(const SensorTuning *tuning,
+                                         int sensorWidth, int sensorHeight)
+    : mSensorWidth(sensorWidth)
+    , mSensorHeight(sensorHeight)
     , mPendingStartSweep(false)
     , mPendingSweepComplete(false)
     , mVcmInfinity(0)
@@ -194,6 +194,7 @@ AutoFocusController::AutoFocusController(V4l2Device *dev,
 
     mFocusPosition = mVcmInfinity;
     mSweepBestPos  = mVcmInfinity;
+    publishReport();
 }
 
 int32_t AutoFocusController::clampVcm(int32_t pos) const {
@@ -265,6 +266,10 @@ void AutoFocusController::startSweep(uint8_t afMode) {
         beginCoarseFromCurrent(afMode);
         mSweepBestPos   = mSweepPos;
     }
+
+    /* Put the lens on the first sweep position now; the samples are
+     * taken from the next tick on. */
+    moveLens(mSweepPos);
 
     ALOGD("AF sweep started (mode=%u, start=%d step=%d state=%s)",
           afMode, mSweepPos, mSweepStep,
@@ -458,7 +463,7 @@ void AutoFocusController::commitSweep(bool focused) {
     const int32_t finalPos = (fineSamples >= 3)
                              ? mSweepPos
                              : mSweepBestPos;
-    mDev->setFocusPosition(finalPos);
+    moveLens(finalPos);
     mFocusPosition = finalPos;
     mPendingSweepComplete = true;
     /* Force the next idle onStats to capture a fresh scene snapshot
@@ -480,22 +485,26 @@ void AutoFocusController::commitSweep(bool focused) {
 
 void AutoFocusController::onSettings(const CameraMetadata &cm,
                                      uint32_t /*frameNumber*/) {
-    uint8_t afMode = ANDROID_CONTROL_AF_MODE_OFF;
+    Command cmd;
+    cmd.afMode = ANDROID_CONTROL_AF_MODE_OFF;
     if (cm.exists(ANDROID_CONTROL_AF_MODE))
-        afMode = *cm.find(ANDROID_CONTROL_AF_MODE).data.u8;
+        cmd.afMode = *cm.find(ANDROID_CONTROL_AF_MODE).data.u8;
+    cmd.hasFocusDistance = cmd.afMode == ANDROID_CONTROL_AF_MODE_OFF &&
+                           cm.exists(ANDROID_LENS_FOCUS_DISTANCE);
+    cmd.focusDistance = cmd.hasFocusDistance
+        ? *cm.find(ANDROID_LENS_FOCUS_DISTANCE).data.f : 0.f;
+    cmd.trigger = ANDROID_CONTROL_AF_TRIGGER_IDLE;
+    if (cm.exists(ANDROID_CONTROL_AF_TRIGGER))
+        cmd.trigger = *cm.find(ANDROID_CONTROL_AF_TRIGGER).data.u8;
 
-    if (afMode == ANDROID_CONTROL_AF_MODE_OFF && mState != ScanState::Idle)
-        cancelSweep();
-    mAfMode = afMode;
-
-    /* Manual focus: LENS_FOCUS_DISTANCE (diopters) -> VCM. */
-    if (afMode == ANDROID_CONTROL_AF_MODE_OFF &&
-        cm.exists(ANDROID_LENS_FOCUS_DISTANCE)) {
-        float diopter = *cm.find(ANDROID_LENS_FOCUS_DISTANCE).data.f;
-        int32_t pos = mVcmInfinity + (int32_t)(diopter * mVcmPerDiopter);
-        pos = clampVcm(pos);
-        mDev->setFocusPosition(pos);
-        mFocusPosition = pos;
+    {
+        std::lock_guard<std::mutex> lock(mCommandMutex);
+        if (cmd.trigger == ANDROID_CONTROL_AF_TRIGGER_IDLE &&
+            !mCommands.empty() &&
+            mCommands.back().trigger == ANDROID_CONTROL_AF_TRIGGER_IDLE)
+            mCommands.back() = cmd;
+        else
+            mCommands.push_back(cmd);
     }
 
     /* Tap-to-focus / zonal AF. Camera2 ships AF_REGIONS as 5 ints
@@ -516,9 +525,8 @@ void AutoFocusController::onSettings(const CameraMetadata &cm,
                 const int32_t yMin = e.data.i32[1];
                 const int32_t xMax = e.data.i32[2];
                 const int32_t yMax = e.data.i32[3];
-                const auto sensorRes = mDev->sensorResolution();
-                const int sw = (int)sensorRes.width;
-                const int sh = (int)sensorRes.height;
+                const int sw = mSensorWidth;
+                const int sh = mSensorHeight;
                 /* Apps routinely send "no specific subject" as a near-
                  * full-frame rectangle (Camera2's `Camera.Region` weight
                  * doesn't map cleanly onto our patch grid, so the
@@ -571,28 +579,45 @@ void AutoFocusController::onSettings(const CameraMetadata &cm,
         std::lock_guard<std::mutex> lock(mFocusRoiMutex);
         mFocusRoi = roi;
     }
+}
+
+void AutoFocusController::applyCommand(const Command &cmd) {
+    if (cmd.afMode == ANDROID_CONTROL_AF_MODE_OFF && mState != ScanState::Idle)
+        cancelSweep();
+    mAfMode = cmd.afMode;
+
+    /* Manual focus: LENS_FOCUS_DISTANCE (diopters) -> VCM. */
+    if (cmd.hasFocusDistance) {
+        int32_t pos = mVcmInfinity + (int32_t)(cmd.focusDistance * mVcmPerDiopter);
+        pos = clampVcm(pos);
+        moveLens(pos);
+        mFocusPosition = pos;
+    }
 
     /* AF_TRIGGER_START kicks off a sweep. Only valid when AF_MODE
      * is AUTO / MACRO / CONTINUOUS_PICTURE. */
-    if (cm.exists(ANDROID_CONTROL_AF_TRIGGER)) {
-        uint8_t trigger = *cm.find(ANDROID_CONTROL_AF_TRIGGER).data.u8;
-        if (trigger == ANDROID_CONTROL_AF_TRIGGER_START &&
-            mState == ScanState::Idle &&
-            afMode != ANDROID_CONTROL_AF_MODE_OFF) {
-            startSweep(afMode);
-        } else if (trigger == ANDROID_CONTROL_AF_TRIGGER_CANCEL) {
-            cancelSweep();
-        }
+    if (cmd.trigger == ANDROID_CONTROL_AF_TRIGGER_START &&
+        mState == ScanState::Idle &&
+        cmd.afMode != ANDROID_CONTROL_AF_MODE_OFF) {
+        startSweep(cmd.afMode);
+    } else if (cmd.trigger == ANDROID_CONTROL_AF_TRIGGER_CANCEL) {
+        cancelSweep();
     }
-}
-
-void AutoFocusController::onFrameStart() {
-    if (mState == ScanState::Idle) return;
-    mDev->setFocusPosition(mSweepPos);
 }
 
 AfResult AutoFocusController::process(const IpaStats &stats, bool aeConverged) {
     AfResult out;
+
+    /* Apply what the requests since the last tick asked for, in
+     * order, before the sweep advances. */
+    {
+        std::vector<Command> cmds;
+        {
+            std::lock_guard<std::mutex> lock(mCommandMutex);
+            cmds.swap(mCommands);
+        }
+        for (const Command &cmd : cmds) applyCommand(cmd);
+    }
 
     /* Snapshot the AF region once for the whole tick so all sums and
      * the scene-change snapshot agree. Must match the rectangle the
@@ -742,7 +767,7 @@ AfResult AutoFocusController::process(const IpaStats &stats, bool aeConverged) {
             goto finish;  /* Idle / Pdaf — unreachable here */
     }
 
-    mDev->setFocusPosition(mSweepPos);
+    moveLens(mSweepPos);
 
 finish:
     /* Harvest pending edge signals into the result; clear so the
@@ -753,9 +778,11 @@ finish:
     mPendingStartSweep    = false;
     mPendingSweepComplete = false;
 
-    const Report r = report();
-    out.state       = r.afState;
-    if (mState != ScanState::Idle) out.vcmPosition = mSweepPos;
+    out.vcmPosition = mLensTarget;
+    mLensTarget.reset();
+
+    publishReport();
+    out.state = buildReport().afState;
     return out;
 }
 
@@ -783,11 +810,28 @@ void AutoFocusController::reset() {
     mSceneRgbSnapshot[2]    = 0.f;
     mSceneChangeCount   = 0;
     mFramesSinceLastSweep = UINT32_MAX;
+    mLensTarget.reset();
+    {
+        std::lock_guard<std::mutex> lock(mCommandMutex);
+        mCommands.clear();
+    }
     /* mFocusPosition kept — it reflects the physical VCM state,
      * not session state. */
+    publishReport();
 }
 
 AutoFocusController::Report AutoFocusController::report() const {
+    std::lock_guard<std::mutex> lock(mReportMutex);
+    return mPublished;
+}
+
+void AutoFocusController::publishReport() {
+    const Report r = buildReport();
+    std::lock_guard<std::mutex> lock(mReportMutex);
+    mPublished = r;
+}
+
+AutoFocusController::Report AutoFocusController::buildReport() const {
     Report r;
     r.afMode = mAfMode;
     r.afState = (mState != ScanState::Idle)

@@ -7,7 +7,6 @@
 #include "PipelineContext.h"
 #include "BayerSource.h"
 #include "IspPipeline.h"
-#include "3a/AutoFocusController.h"
 
 #undef  LOG_TAG
 #define LOG_TAG "Cam-CaptureStage"
@@ -40,7 +39,6 @@ void CaptureStage::process(PipelineContext &ctx) {
     ctx.bayerFrame = frame;
     ctx.hasBayer.store(true, std::memory_order_release);
 
-    if (deps.af) deps.af->onFrameStart();
 
     Resolution res    = deps.bayerSource->resolution();
     Resolution sensor = deps.bayerSource->sensorResolution();

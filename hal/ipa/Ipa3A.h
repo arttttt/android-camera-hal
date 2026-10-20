@@ -2,6 +2,7 @@
 #define HAL_IPA_BASIC_IPA_H
 
 #include <stdint.h>
+#include <functional>
 #include <memory>
 
 #include "Ipa.h"
@@ -56,6 +57,10 @@ public:
      * include cycle between Ipa3A and the controllers it owns. */
     ~Ipa3A() override;
 
+    /* How the lens is moved to the position AF asks for. Set before
+     * the first processStats; called on the IPA's thread. */
+    void setLensWriter(std::function<void(int32_t)> w) { lensWriter = std::move(w); }
+
     DelayedControls::Batch processStats(const IpaProcessParams &params) override;
     void reset() override;
     bool isAeConverged() const override;
@@ -65,6 +70,7 @@ private:
     const SensorConfig  &sensorCfg;
     IspPipeline         *isp;
     AutoFocusController *af;          /* not owned — lifetime ≤ Camera */
+    std::function<void(int32_t)> lensWriter;
     const SensorTuning  *tuning;
     int16_t             *ccmBufferQ10;
 

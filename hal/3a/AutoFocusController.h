@@ -12,14 +12,21 @@
 
 namespace android {
 
-class V4l2Device;
 class SensorTuning;
 
 /* Contrast-detect autofocus for a single-VCM sensor.
  *
- * Drives the V4L2 focus subdev through a coarse-to-fine sweep
- * around the current lens position, then validates the result
- * before reporting Focused / Failed. The ISP's AWB lock is held
+ * Drives the lens through a coarse-to-fine sweep around its current
+ * position, then validates the result before reporting Focused /
+ * Failed. It does not touch the lens itself: process() returns the
+ * position to move to, and the coordinator writes it.
+ *
+ * Threading: the sweep's state belongs to the thread that calls
+ * process() (PipelineThread) and changes nowhere else. onSettings
+ * runs on RequestThread and only queues what the request asks for;
+ * process() applies the queue at the start of its tick. report()
+ * hands out the state process() last published, so the result
+ * thread never reads fields another thread is writing. The ISP's AWB lock is held
  * across a sweep so brightness drift can't distort the score
  * curve. In CONTINUOUS_PICTURE the controller idles between
  * sweeps and re-triggers only when scene-statistics depart far
@@ -68,17 +75,17 @@ public:
      * `AfResult::startSweep` / `sweepComplete` edge flags — the
      * coordinator decides which back-ends (Ipa::setAeLock,
      * IspPipeline::setAwbLock) to nudge. */
-    AutoFocusController(V4l2Device *dev, const SensorTuning *tuning);
+    /* `sensorWidth` / `sensorHeight` are the active array AF_REGIONS
+     * come in. */
+    AutoFocusController(const SensorTuning *tuning,
+                        int sensorWidth, int sensorHeight);
 
-    /* Drive the state machine from request metadata. Reads AF_MODE,
-     * LENS_FOCUS_DISTANCE, AF_TRIGGER. Continuous-mode re-triggering
-     * is driven by scene statistics in onSharpnessStats, not by a
-     * frame counter here. */
+    /* Queue what the request asks of AF: AF_MODE, LENS_FOCUS_DISTANCE,
+     * AF_TRIGGER. Applied in request order at the start of the next
+     * process() tick. The AF region is parsed here and published at
+     * once (see currentFocusRoi). Continuous-mode re-triggering is
+     * driven by scene statistics in process(), not from here. */
     void onSettings(const CameraMetadata &cm, uint32_t frameNumber);
-
-    /* If a sweep is active, move the VCM to the current sweep position.
-     * Called right after V4L2 dequeue, before CPU/GPU processing. */
-    void onFrameStart();
 
     /* Advance the sweep against the IPA stats grid for the current
      * frame, or evaluate scene-change in continuous-AF idle. Reads
@@ -96,13 +103,14 @@ public:
      *
      * Returned AfResult.startSweep / sweepComplete are edge signals
      * the coordinator latches: on startSweep the coordinator should
-     * lock AE / AWB until sweepComplete fires. State-machine internal
-     * VCM writes still happen in this call via mDev (timing matters);
-     * `vcmPosition` in the result is informational only. */
+     * lock AE / AWB until sweepComplete fires. `vcmPosition`, when
+     * set, is where the lens has to go now; the coordinator writes it
+     * on this same tick, which keeps a sweep step on the frame the
+     * state machine decided it. */
     AfResult process(const IpaStats &stats, bool aeConverged);
 
+    /* The state as of the last process() tick. Safe from any thread. */
     Report report() const;
-    bool   isSweeping() const { return mState != ScanState::Idle; }
 
     /* Snapshot the AF region the StatsWorker should restrict its
      * Sobel / greenSq accumulation to. Updated from the framework's
@@ -114,9 +122,10 @@ public:
     FocusRoi currentFocusRoi() const;
 
     /* Reset the state-machine to the initial post-construction
-     * state. Used at camera close so a stale sweep doesn't leak
-     * into the next session. Calibration (VCM positions, settle
-     * frames) and the last focus position stay. */
+     * state. Used at camera close, with the threads stopped, so a
+     * stale sweep doesn't leak into the next session. Calibration
+     * (VCM positions, settle frames) and the last focus position
+     * stay. */
     void reset();
 
 private:
@@ -166,7 +175,35 @@ private:
      * stop where it stops responding. */
     int32_t clampVcm(int32_t pos) const;
 
-    V4l2Device  *mDev;
+    /* What one request asked of AF, queued by onSettings. */
+    struct Command {
+        uint8_t afMode;
+        bool    hasFocusDistance;  /* manual focus: AF_MODE_OFF + LENS_FOCUS_DISTANCE */
+        float   focusDistance;     /* diopters */
+        uint8_t trigger;           /* ANDROID_CONTROL_AF_TRIGGER_* */
+    };
+    void applyCommand(const Command &cmd);
+
+    /* Ask for the lens to move to `pos` on this tick. */
+    void moveLens(int32_t pos) { mLensTarget = pos; }
+    void publishReport();
+    Report buildReport() const;
+
+    int          mSensorWidth;
+    int          mSensorHeight;
+
+    /* RequestThread → process(): requests not yet applied, in order.
+     * Consecutive requests without a trigger collapse into the last
+     * one, so the queue stays short however far the pipeline lags. */
+    std::mutex           mCommandMutex;
+    std::vector<Command> mCommands;
+
+    /* Lens move decided on the current tick; harvested into AfResult. */
+    Optional<int32_t>    mLensTarget;
+
+    /* process() → report(). */
+    mutable std::mutex   mReportMutex;
+    Report               mPublished;
 
     /* Edge signals the coordinator latches into AfResult on the
      * frame they fire. Set inside startSweep / commitSweep / cancel

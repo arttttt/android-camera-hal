@@ -304,12 +304,14 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
      * harvests pending edge signals (startSweep / sweepComplete);
      * the coordinator translates them into AE / AWB lock toggles
      * since the controllers themselves are decoupled from each other.
-     * VCM writes still happen inside AutoFocusController via mDev
-     * (timing matters — sweep-step VCM writes need to land on the
-     * frame the state machine decides; threading them through
-     * the result would add a frame of latency). */
+     * The lens move AF asks for is written here, on this tick: a
+     * sweep step lands on the frame the state machine decided it
+     * (going through DelayedControls like exposure would cost a
+     * sweep step several frames). */
     if (af) {
         const AfResult afResult = af->process(stats, aeResult.converged);
+        if (afResult.vcmPosition && lensWriter)
+            lensWriter(*afResult.vcmPosition);
         if (afResult.startSweep) {
             if (isp) isp->setAwbLock(true);
             mAe->setLock(true);

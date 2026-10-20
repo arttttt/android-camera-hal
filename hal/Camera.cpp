@@ -642,11 +642,20 @@ void Camera::buildInfrastructure() {
      * from Ipa3A::processStats and its result drives the AE / AWB
      * lock toggles via the coordinator). */
     if (mSoftIspEnabled) {
-        mAf = new AutoFocusController(mDev, &mTuning);
+        const Resolution sensorRes = mDev->sensorResolution();
+        mAf = new AutoFocusController(&mTuning, (int)sensorRes.width,
+                                      (int)sensorRes.height);
     }
 
-    mIpa.reset(new Ipa3A(mSensorCfg, mIsp, mAf, &mTuning,
-                            wbGainPrior, mCcmQ10));
+    {
+        Ipa3A *ipa = new Ipa3A(mSensorCfg, mIsp, mAf, &mTuning,
+                               wbGainPrior, mCcmQ10);
+        /* The one place the lens is moved from: AF decides, the IPA
+         * coordinator writes, on the IPA's own thread. */
+        V4l2Device *dev = mDev;
+        ipa->setLensWriter([dev](int32_t pos) { dev->setFocusPosition(pos); });
+        mIpa.reset(ipa);
+    }
 
     mJpeg = new JpegEncoder();
 
@@ -726,7 +735,6 @@ void Camera::buildInfrastructure() {
         CaptureStage::Deps d;
         d.bayerSource = mBayerSource.get();
         d.isp         = mIsp;
-        d.af          = mAf;
         mRequestPipeline->appendStage(
             std::unique_ptr<PipelineStage>(new CaptureStage(d)));
     }
