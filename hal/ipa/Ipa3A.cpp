@@ -81,7 +81,10 @@ Ipa3A::Ipa3A(const SensorConfig &cfg, IspPipeline *ispPipeline,
       mAe(new AutoExposureController(cfg, sensorTuning)),
       mAwb(createAwb(sensorTuning, wbGainPrior)),
       frameCount(0),
-      lastLuxIndex(0.f) {
+      lastLuxIndex(0.f),
+      haveStatsSeq(false),
+      lastStatsSeq(0),
+      lastAeResult() {
     ALOGD("3A knobs: awbSceneLightFloor=%.4f wbPrior=(%.3f,%.3f) "
           "gainMax=%d gainUnit=%d maxExpDef=%d tuningLoaded=%d",
           (double)awbSceneLightFloor,
@@ -104,6 +107,8 @@ Ipa3A::~Ipa3A() = default;
 void Ipa3A::reset() {
     mAe->reset();
     mAwb->reset();
+    haveStatsSeq = false;
+    lastAeResult = AeResult();
 
     /* Re-seed the shader with the priors so the next session starts
      * from the sensor's calibrated daylight anchor even if the first
@@ -215,9 +220,37 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
      * highlight-protection candidate. */
     AeResult aeResult;
     if (meta.aeMode != ANDROID_CONTROL_AE_MODE_OFF) {
-        aeResult = mAe->process(stats, meta,
-                                mAwb->currentWbR(),
-                                mAwb->currentWbB());
+        const bool fresh = !haveStatsSeq
+                        || params.inputSequence != lastStatsSeq;
+        if (fresh) {
+            int elapsed = haveStatsSeq
+                        ? (int)(params.inputSequence - lastStatsSeq) : 1;
+            if (elapsed < 1) elapsed = 1;
+            if (elapsed > 8) elapsed = 8;
+
+            /* What the sensor was really running when the frame these
+             * stats came from was exposed. */
+            float appliedTotalUs = 0.f;
+            if (params.delayedControls) {
+                const DelayedControls::Batch a =
+                    params.delayedControls->applyControls(params.inputSequence);
+                const int32_t e = a.val[DelayedControls::EXPOSURE];
+                const int32_t g = a.val[DelayedControls::GAIN];
+                if (e > 0 && g > 0 && sensorCfg.gainUnit > 0)
+                    appliedTotalUs = (float)e * (float)g
+                                   / (float)sensorCfg.gainUnit;
+            }
+
+            aeResult = mAe->process(stats, meta,
+                                    mAwb->currentWbR(),
+                                    mAwb->currentWbB(),
+                                    appliedTotalUs, elapsed);
+            lastAeResult = aeResult;
+            lastStatsSeq = params.inputSequence;
+            haveStatsSeq = true;
+        } else {
+            aeResult = lastAeResult;
+        }
     }
 
     /* Cache the post-AE lux index. AWB on the next tick reads this

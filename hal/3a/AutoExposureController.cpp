@@ -174,6 +174,13 @@ float top2pcMaxPostWbMean(const IpaStats &stats, const IpaFrameMeta &meta,
 
 constexpr int32_t kAeConvergedFramesRequired = 5;
 
+/* A per-frame smoothing coefficient applied once over `frames` frames:
+ * leaving (1 - k) of the error per frame leaves (1 - k)^n over n. */
+inline float overFrames(float perFrame, int frames) {
+    if (frames <= 1) return perFrame;
+    return 1.0f - powf(1.0f - perFrame, (float)frames);
+}
+
 } /* namespace */
 
 AutoExposureController::AutoExposureController(const SensorConfig &cfg,
@@ -291,7 +298,10 @@ ExposureWriteValues AutoExposureController::parseManualSettings(
 AeResult AutoExposureController::process(const IpaStats     &stats,
                                           const IpaFrameMeta &meta,
                                           float               currentWbR,
-                                          float               currentWbB) {
+                                          float               currentWbB,
+                                          float               appliedTotalUs,
+                                          int                 framesElapsed) {
+    const float damping = overFrames(aeDamping, framesElapsed);
     AeResult out;
     DelayedControls::Batch &batch = out.batch;
     for (int i = 0; i < DelayedControls::COUNT; ++i) {
@@ -336,8 +346,8 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
         if (lockedBiasedTotalUs <= 0.f) {
             lockedBiasedTotalUs = biasedTarget;
         } else {
-            lockedBiasedTotalUs = aeDamping * biasedTarget
-                                + (1.0f - aeDamping) * lockedBiasedTotalUs;
+            lockedBiasedTotalUs = damping * biasedTarget
+                                + (1.0f - damping) * lockedBiasedTotalUs;
         }
 
         int32_t heldExposureUs, heldExtraGainQ8;
@@ -372,8 +382,8 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
      * dead-band is wide. Seed on first hit so the filter doesn't
      * spend its start-up ramp dragging from zero. */
     if (smoothedLuma <= 0.f) smoothedLuma = meanLuma;
-    else                     smoothedLuma = aeDamping * meanLuma
-                                           + (1.0f - aeDamping) * smoothedLuma;
+    else                     smoothedLuma = damping * meanLuma
+                                           + (1.0f - damping) * smoothedLuma;
     meanLuma = smoothedLuma;
 
     /* Apply the framework's exposure compensation (1/3-stop units)
@@ -411,7 +421,14 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
     const float   maxTotal = (float)sensorCfg.maxExposureUsDefault()
                            * (float)sensorCfg.gainMax / (float)gainUnit;
     const float   minTotal = (float)sensorCfg.lineTimeUs * 2.0f;
-    float targetTotalUs = filteredTotalUs * ratio;
+    /* The correction was measured on a frame exposed at
+     * `appliedTotalUs`, so it applies to that, not to whatever the
+     * controller has commanded since. Using the latest command here
+     * re-applied the same stale correction on every frame of the
+     * ~5-frame control latency and overshot — the dark/bright
+     * swinging after a sudden scene change. */
+    const float base = appliedTotalUs > 0.f ? appliedTotalUs : filteredTotalUs;
+    float targetTotalUs = base * ratio;
     if (targetTotalUs < minTotal) targetTotalUs = minTotal;
     if (targetTotalUs > maxTotal) targetTotalUs = maxTotal;
 
@@ -448,10 +465,11 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
      * settling tail. Per-sensor zone width via
      * active.hal_overrides.ae.close_speed_zone — zero disables the
      * boost (no resonance risk on noisy sensors). */
-    const float speed = (aeCloseSpeedZone > 0.f
-                      && absDeviation < aeCloseSpeedZone)
-                       ? sqrtf(aeDamping)
-                       : aeDamping;
+    const float speed = overFrames((aeCloseSpeedZone > 0.f
+                                    && absDeviation < aeCloseSpeedZone)
+                                       ? sqrtf(aeDamping)
+                                       : aeDamping,
+                                   framesElapsed);
     filteredTotalUs = speed * targetTotalUs
                     + (1.0f - speed) * filteredTotalUs;
     lastEvComp = meta.aeExposureCompensation;

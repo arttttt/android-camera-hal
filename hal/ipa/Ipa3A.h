@@ -5,6 +5,7 @@
 #include <memory>
 
 #include "Ipa.h"
+#include "3a/AeResult.h"
 
 namespace android {
 
@@ -92,6 +93,14 @@ private:
      * previous frame's brightness estimate; one-frame staleness is
      * a non-issue since lux changes slowly relative to AWB's EMA. */
     float lastLuxIndex;
+
+    /* Stats arrive every other frame, and the frames in between
+     * reuse the previous stats. AE runs only on fresh stats and the
+     * frames in between republish its last decision, so one
+     * measurement is never acted on twice. */
+    bool     haveStatsSeq;
+    uint32_t lastStatsSeq;
+    AeResult lastAeResult;
 };
 
 } /* namespace android */

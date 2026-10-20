@@ -66,10 +66,24 @@ public:
 
     /* Auto-mode tick. Computes the new target, runs the dead-band /
      * LPF math, returns batch + state + convergence flag. */
+    /* `appliedTotalUs` is the exposure (µs at unity gain) that was in
+     * effect on the frame these stats were computed from — exposure ×
+     * gain / gainUnit as DelayedControls recorded it. The target is
+     * that times the measured correction, so a decision cannot be
+     * applied twice while the sensor is still catching up with it.
+     * 0 means "not known yet" (cold start): fall back to the
+     * controller's own filtered state.
+     *
+     * `framesElapsed` is how many frames these stats are newer than
+     * the previous call's. Stats are computed every other frame, and
+     * the caller only calls on fresh stats, so smoothing constants
+     * (which are per frame) are rescaled to the elapsed span. */
     AeResult process(const IpaStats     &stats,
                      const IpaFrameMeta &meta,
                      float               currentWbR,
-                     float               currentWbB);
+                     float               currentWbB,
+                     float               appliedTotalUs,
+                     int                 framesElapsed);
 
     /* Drop the smoothed luma + locked-bias EMA so the next session
      * starts from a clean slate. Other state (`filteredTotalUs`,
