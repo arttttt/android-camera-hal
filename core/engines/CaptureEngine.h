@@ -25,10 +25,10 @@
 #include "EventFd.h"
 #include "Frame.h"
 #include "PermitPool.h"
+#include "mochacamera/ports/FrameSource.h"
 
 namespace android {
 class AutoFocusController;
-class BayerSource;
 class DeviceErrorReporter;
 class IspPipeline;
 class Pipeline;
@@ -67,7 +67,7 @@ class StatsEngine;
 class CaptureEngine {
 public:
     struct Deps {
-        android::BayerSource         *source;
+        FrameSource                  *source;
         android::IspPipeline         *isp;         /* CPU view of a slot, for stats */
         android::AutoFocusController *af;          /* may be null: focus ROI */
         android::Pipeline            *settings;    /* ApplySettings, ShutterNotify */

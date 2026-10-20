@@ -118,6 +118,12 @@ struct MeteringRegion {
     int32_t    weight = 0;
 };
 
+/* A width and a height, in pixels. */
+struct Size {
+    uint32_t width  = 0;
+    uint32_t height = 0;
+};
+
 /* An exact fraction, for steps Camera2 states as rationals. */
 struct Rational {
     int32_t numerator   = 0;

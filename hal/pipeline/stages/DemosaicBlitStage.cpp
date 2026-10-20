@@ -9,7 +9,7 @@
 
 #include "Frame.h"
 #include "BufferProcessor.h"
-#include "BayerSource.h"
+#include "mochacamera/ports/FrameSource.h"
 #include "IspPipeline.h"
 #include "DeviceErrorReporter.h"
 
@@ -26,13 +26,13 @@ void DemosaicBlitStage::reportIfDeviceLost() {
 }
 
 UniqueFd DemosaicBlitStage::process(mocha::camera::Frame &ctx) {
-    Resolution res = deps.bayerSource->resolution();
-    const V4l2Device::VBuffer *bayer = ctx.bayer.buffer();
+    const mocha::camera::Size res = deps.source->resolution();
+    const mocha::camera::BayerFrame &bayer = ctx.bayer.frame();
 
     BufferProcessor::FrameContext fctx;
-    fctx.frameBuf       = bayer->buf;
-    fctx.frameSlotIdx   = (bayer->buf == nullptr) ? bayer->index : -1;
-    fctx.pixFmt         = bayer->pixFmt;
+    fctx.frameBuf       = bayer.cpu;
+    fctx.frameSlotIdx   = (bayer.cpu == nullptr) ? bayer.slot : -1;
+    fctx.pixFmt         = bayer.pixFmt;
     fctx.resW           = res.width;
     fctx.resH           = res.height;
     fctx.cropX          = ctx.cropX;

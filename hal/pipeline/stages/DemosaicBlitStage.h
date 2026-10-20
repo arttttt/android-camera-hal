@@ -5,12 +5,14 @@
 
 #include "UniqueFd.h"
 
-namespace mocha::camera { struct Frame; }
+namespace mocha::camera {
+struct Frame;
+class FrameSource;
+}
 
 namespace android {
 
 class BufferProcessor;
-class BayerSource;
 class DeviceErrorReporter;
 class IspPipeline;
 
@@ -25,7 +27,7 @@ class DemosaicBlitStage {
 public:
     struct Deps {
         BufferProcessor     *bufferProcessor;
-        BayerSource         *bayerSource;   /* for resolution() */
+        mocha::camera::FrameSource *source;  /* for resolution() */
         IspPipeline         *isp;
         DeviceErrorReporter *deviceError;   /* may be null */
     };

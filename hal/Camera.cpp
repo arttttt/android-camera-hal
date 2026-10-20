@@ -46,7 +46,6 @@
 #include "metadata/ResultMetadataBuilder.h"
 #include "IspPipeline.h"
 
-#include "BayerSource.h"
 #include "V4l2Source.h"
 #include "Camera3Request.h"
 #include "Camera3ResultSink.h"
@@ -364,7 +363,7 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
     mLastConfigWidth  = width;
     mLastConfigHeight = height;
 
-    /* Infrastructure (ISP, 3A, BufferProcessor, BayerSource, pipeline,
+    /* Infrastructure (ISP, 3A, BufferProcessor, frame source, pipeline,
      * request thread) was built on the first openDevice and lives for
      * the Camera instance's lifetime. This function only (1) stops
      * the workers, (2) reconfigures V4L2 + ISP for the new stream
@@ -663,7 +662,7 @@ void Camera::buildInfrastructure() {
     mBufferProcessor = new BufferProcessor(bpDeps);
 
     mResultSink.reset(new Camera3ResultSink(&mCallbackOps, mSensorCfg.focalLengthMm));
-    mBayerSource.reset(new V4l2Source(mDev));
+    mFrameSource.reset(new V4l2Source(mDev));
     mRegistry.reset(new mocha::camera::FrameRegistry(kFrameCeiling));
     mDeviceError.reset(new DeviceErrorReporter(mResultSink.get()));
     mStatsEngine.reset(new mocha::camera::StatsEngine());
@@ -704,7 +703,7 @@ void Camera::buildInfrastructure() {
     {
         DemosaicBlitStage::Deps d;
         d.bufferProcessor = mBufferProcessor;
-        d.bayerSource     = mBayerSource.get();
+        d.source          = mFrameSource.get();
         d.isp             = mIsp;
         d.deviceError     = mDeviceError.get();
         mDemosaicBlitStage.reset(new DemosaicBlitStage(d));
@@ -754,7 +753,7 @@ void Camera::buildInfrastructure() {
     }
     {
         mocha::camera::CaptureEngine::Deps d;
-        d.source      = mBayerSource.get();
+        d.source      = mFrameSource.get();
         d.isp         = mIsp;
         d.af          = mAf;
         d.settings    = mSettingsPipeline.get();
@@ -784,7 +783,7 @@ void Camera::destroyInfrastructure() {
     mRegistry.reset();
     mDeviceError.reset();
     mResultSink.reset();
-    mBayerSource.reset();
+    mFrameSource.reset();
 
     delete mBufferProcessor; mBufferProcessor = NULL;
     delete mAf;              mAf = NULL;
@@ -826,7 +825,7 @@ void Camera::stopEngines() {
     for (const mocha::camera::FrameRef &frame : mRegistry->takeAll())
         mResultEngine->dispatchFailed(*frame);
 
-    mBayerSource->stop();
+    mFrameSource->stop();
 }
 
 bool Camera::startEngines() {
@@ -835,7 +834,7 @@ bool Camera::startEngines() {
 
     /* Downstream first, so no engine hands work to one not yet
      * running; the source before the capture engine that drives it. */
-    const bool started = mBayerSource->start()
+    const bool started = mFrameSource->start()
                       && mResultEngine->start()
                       && mJpegEngine->start()
                       && mFinishEngine->start()

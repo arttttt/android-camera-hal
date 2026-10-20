@@ -23,7 +23,6 @@
 #include <utils/Timers.h>
 
 #include "3a/AutoFocusController.h"
-#include "BayerSource.h"
 #include "DeviceErrorReporter.h"
 #include "IspEngine.h"
 #include "IspPipeline.h"
@@ -60,7 +59,7 @@ bool CaptureEngine::start() {
             [this](Eng::Id, Job &job) { return advance(job); },
             EngineOptions{.maxRunning = 1, .stopGrace = std::chrono::milliseconds(0)});
 
-    android::BayerSource *source = deps.source;
+    FrameSource *source = deps.source;
     android::EventFd *wake = &wakeFd;
     engine->watch(source->fd(), [source, wake](short revents) {
         if (source->drainToLatest(revents))
@@ -129,8 +128,8 @@ Engine<CaptureEngine::Job, std::monostate>::Step CaptureEngine::advance(Job &job
 }
 
 void CaptureEngine::crop(Frame &f) {
-    const android::Resolution res    = deps.source->resolution();
-    const android::Resolution sensor = deps.source->sensorResolution();
+    const Size res    = deps.source->resolution();
+    const Size sensor = deps.source->sensorResolution();
 
     int cropX = 0;
     int cropY = 0;
@@ -161,12 +160,12 @@ void CaptureEngine::dispatchStats(Frame &f) {
     if (!deps.stats || !deps.isp) return;
 
     /* Every frame: the stats engine paces itself, a phase per job. */
-    const int slot = f.bayer.index();
+    const int slot = f.bayer.frame().slot;
     deps.isp->invalidateBayer(slot);
     const void *data = deps.isp->bayerHost(slot);
     if (!data) return;
 
-    const android::Resolution res = deps.source->resolution();
+    const Size res = deps.source->resolution();
 
     StatsEngine::Job job;
     /* The stats read the frame past the frame's own demosaic (the
@@ -176,9 +175,9 @@ void CaptureEngine::dispatchStats(Frame &f) {
     job.data            = data;
     job.width           = res.width;
     job.height          = res.height;
-    job.pixFmt          = f.bayer.buffer()->pixFmt;
+    job.pixFmt          = f.bayer.frame().pixFmt;
     job.sequence        = f.frameNumber;
-    job.exposureStartNs = f.bayer.buffer()->exposureStartNs();
+    job.exposureStartNs = f.bayer.frame().exposureStartNs();
 
     /* The AF region of the request; without AF, the
      * compile-time centre rectangle. */

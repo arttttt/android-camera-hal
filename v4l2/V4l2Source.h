@@ -7,19 +7,19 @@
 #include <optional>
 #include <vector>
 
-#include "BayerSource.h"
 #include "EventFd.h"
+#include "V4l2Device.h"
+#include "mochacamera/ports/FrameSource.h"
 
 namespace android {
 
-class V4l2Device;
-
-/* BayerSource backed by a V4L2 capture device. It has no thread of its
+/* FrameSource backed by a V4L2 capture device. It has no thread of its
  * own: the capture engine polls the device and calls in, and only that
  * thread dequeues or queues a buffer, so V4l2Device's slots have a
  * single writer. Leases give slots back through returnSlot() from any
  * thread; the slot is queued again on the capture thread. */
-class V4l2Source : public BayerSource, public mocha::camera::SlotReturn {
+class V4l2Source : public mocha::camera::FrameSource,
+                   public mocha::camera::SlotReturn {
 public:
     explicit V4l2Source(V4l2Device *dev);
     ~V4l2Source() override;
@@ -38,10 +38,10 @@ public:
     std::optional<mocha::camera::BayerLease> takeLatest() override;
     void requeueReturned() override;
 
-    void returnSlot(int index, uint32_t generation) override;
+    void returnSlot(int slot, uint32_t generation) override;
 
-    Resolution resolution()       const override;
-    Resolution sensorResolution() const override;
+    mocha::camera::Size resolution()       const override;
+    mocha::camera::Size sensorResolution() const override;
 
 private:
     /* vb2 reports POLLERR while the queue is not streaming or holds no

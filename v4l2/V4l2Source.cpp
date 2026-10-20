@@ -140,9 +140,14 @@ std::optional<BayerLease> V4l2Source::takeLatest() {
         std::lock_guard<std::mutex> lock(mutex);
         gen = generation;
     }
-    BayerLease lease(latest, gen, this);
+    mocha::camera::BayerFrame frame;
+    frame.slot       = latest->index;
+    frame.cpu        = latest->buf;
+    frame.pixFmt     = latest->pixFmt;
+    frame.dequeuedNs = latest->dequeuedNs;
+    frame.intervalNs = latest->intervalNs;
     latest = nullptr;
-    return lease;
+    return BayerLease(frame, gen, this);
 }
 
 void V4l2Source::requeueReturned() {
@@ -160,21 +165,23 @@ void V4l2Source::requeueReturned() {
     }
 }
 
-void V4l2Source::returnSlot(int index, uint32_t gen) {
+void V4l2Source::returnSlot(int slot, uint32_t gen) {
     {
         std::lock_guard<std::mutex> lock(mutex);
         if (!running || gen != generation) return;
-        returned.push_back(index);
+        returned.push_back(slot);
     }
     returnedWake.notify();
 }
 
-Resolution V4l2Source::resolution() const {
-    return dev->resolution();
+mocha::camera::Size V4l2Source::resolution() const {
+    const Resolution r = dev->resolution();
+    return mocha::camera::Size{r.width, r.height};
 }
 
-Resolution V4l2Source::sensorResolution() const {
-    return dev->sensorResolution();
+mocha::camera::Size V4l2Source::sensorResolution() const {
+    const Resolution r = dev->sensorResolution();
+    return mocha::camera::Size{r.width, r.height};
 }
 
 } /* namespace android */

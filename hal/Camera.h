@@ -49,7 +49,6 @@ class DemosaicBlitStage;
 class StatsProcessStage;
 class ResultDispatchStage;
 class DeviceErrorReporter;
-class BayerSource;
 class Camera3ResultSink;
 
 class Camera: public camera3_device {
@@ -108,7 +107,7 @@ private:
     Camera3GrallocPort                            mGralloc;
     /* The configured streams, by StreamId (their index here). */
     std::vector<std::pair<camera3_stream_t *, mocha::camera::StreamSpec>> mStreams;
-    std::unique_ptr<BayerSource>                  mBayerSource;
+    std::unique_ptr<mocha::camera::FrameSource>   mFrameSource;
     std::unique_ptr<mocha::camera::FrameRegistry> mRegistry;
     std::unique_ptr<DeviceErrorReporter>          mDeviceError;
     /* ApplySettings + ShutterNotify, run by the capture engine. */
@@ -153,7 +152,7 @@ private:
     static constexpr int                          kFlushTimeoutMs = 1000;
 
     /* Build the long-lived per-camera infrastructure (ISP, 3A,
-     * BufferProcessor, BayerSource, registry, stages, engines). Called
+     * BufferProcessor, frame source, registry, stages, engines). Called
      * lazily from openDevice on first open; survives close/reopen
      * cycles and is torn down only in the destructor. */
     void buildInfrastructure();

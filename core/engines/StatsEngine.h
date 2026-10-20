@@ -22,7 +22,7 @@
 #include <mutex>
 #include <variant>
 
-#include "BayerLease.h"
+#include "mochacamera/ports/FrameSource.h"
 #include "Engine.h"
 #include "IpaStats.h"
 #include "NeonStatsEncoder.h"

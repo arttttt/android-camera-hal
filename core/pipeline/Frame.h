@@ -23,13 +23,13 @@
 #include <utility>
 #include <vector>
 
-#include "BayerLease.h"
 #include "EventFd.h"
 #include "FrameStatus.h"
 #include "JpegSnapshot.h"
 #include "UniqueFd.h"
 #include "mochacamera/Buffers.h"
 #include "mochacamera/FrameSettings.h"
+#include "mochacamera/ports/FrameSource.h"
 
 namespace android { class IspPipeline; }
 
