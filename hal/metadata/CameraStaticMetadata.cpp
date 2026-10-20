@@ -364,8 +364,11 @@ void writeControlInfo(CameraMetadata &cm, int facing,
     };
     cm.update(ANDROID_CONTROL_MAX_REGIONS, controlMaxRegions, NELEM(controlMaxRegions));
 
+    /* ON: the IPA's auto exposure. OFF: the request's own exposure
+     * time / sensitivity (the manual path in ApplySettingsStage). */
     static const uint8_t controlAeAvailableModes[] = {
-            ANDROID_CONTROL_AE_MODE_OFF
+            ANDROID_CONTROL_AE_MODE_OFF,
+            ANDROID_CONTROL_AE_MODE_ON,
     };
     cm.update(ANDROID_CONTROL_AE_AVAILABLE_MODES, controlAeAvailableModes, NELEM(controlAeAvailableModes));
 

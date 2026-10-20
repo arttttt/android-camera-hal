@@ -86,16 +86,24 @@ void writeControlDefaults(CameraMetadata &cm, int type, V4l2Device *dev, int fac
     }
     cm.update(ANDROID_CONTROL_CAPTURE_INTENT, &controlCaptureIntent, 1);
 
-    static const uint8_t controlMode = ANDROID_CONTROL_MODE_OFF;
+    /* 3A on by default (AUTO / AE ON / AWB AUTO), as camera3.h asks of
+     * every template but MANUAL, which hands 3A to the app: an app
+     * that takes a template as is gets a preview that adapts to the
+     * scene. */
+    const bool manual = (type == CAMERA3_TEMPLATE_MANUAL);
+    const uint8_t controlMode = manual ? ANDROID_CONTROL_MODE_OFF
+                                       : ANDROID_CONTROL_MODE_AUTO;
     cm.update(ANDROID_CONTROL_MODE, &controlMode, 1);
 
     static const uint8_t controlEffectMode = ANDROID_CONTROL_EFFECT_MODE_OFF;
     cm.update(ANDROID_CONTROL_EFFECT_MODE, &controlEffectMode, 1);
 
-    static const uint8_t controlSceneMode = ANDROID_CONTROL_SCENE_MODE_FACE_PRIORITY;
+    /* The only scene mode the static metadata advertises. */
+    static const uint8_t controlSceneMode = ANDROID_CONTROL_SCENE_MODE_DISABLED;
     cm.update(ANDROID_CONTROL_SCENE_MODE, &controlSceneMode, 1);
 
-    static const uint8_t controlAeMode = ANDROID_CONTROL_AE_MODE_OFF;
+    const uint8_t controlAeMode = manual ? ANDROID_CONTROL_AE_MODE_OFF
+                                         : ANDROID_CONTROL_AE_MODE_ON;
     cm.update(ANDROID_CONTROL_AE_MODE, &controlAeMode, 1);
 
     static const uint8_t controlAeLock = ANDROID_CONTROL_AE_LOCK_OFF;
@@ -122,7 +130,8 @@ void writeControlDefaults(CameraMetadata &cm, int type, V4l2Device *dev, int fac
     static const uint8_t controlAeAntibandingMode = ANDROID_CONTROL_AE_ANTIBANDING_MODE_OFF;
     cm.update(ANDROID_CONTROL_AE_ANTIBANDING_MODE, &controlAeAntibandingMode, 1);
 
-    static const uint8_t controlAwbMode = ANDROID_CONTROL_AWB_MODE_OFF;
+    const uint8_t controlAwbMode = manual ? ANDROID_CONTROL_AWB_MODE_OFF
+                                          : ANDROID_CONTROL_AWB_MODE_AUTO;
     cm.update(ANDROID_CONTROL_AWB_MODE, &controlAwbMode, 1);
 
     static const uint8_t controlAwbLock = ANDROID_CONTROL_AWB_LOCK_OFF;
