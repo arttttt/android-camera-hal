@@ -6,6 +6,7 @@
 
 #include "IspPipeline.h"
 #include "IspParams.h"
+#include "runtime/VkOwned.h"
 #include "runtime/VulkanDeviceState.h"
 #include "io/VulkanInputRing.h"
 #include "io/VulkanGrallocCache.h"
@@ -80,7 +81,7 @@ private:
 
     /* init() sub-steps. Each returns false on Vulkan failure; init() calls
      * destroy() on any false return so a partial state is never left behind. */
-    bool compileShader(const char *glsl, VkShaderModule *out);
+    bool compileShader(const char *glsl, VkOwned<VkShaderModule> *out);
     bool createShaders();
     bool createDescriptorLayouts();
     bool createComputePipeline();
@@ -181,18 +182,18 @@ private:
     bool mReady;
     unsigned mBufWidth, mBufHeight;
 
-    VkShaderModule mShader;
-    VkShaderModule mVertShader;
-    VkShaderModule mFragShader;
-    VkDescriptorSetLayout mDescLayout;
-    VkPipelineLayout mPipeLayout;
-    VkPipeline mPipeline;          /* compute: Bayer → scratch image */
-    VkPipeline mBlitPipeline;      /* graphics: scratch → gralloc via ROP */
-    VkRenderPass mRenderPass;      /* 1 color attachment, RGBA8, DONT_CARE→STORE */
-    VkDescriptorPool mDescPool;
+    VkOwned<VkShaderModule>        mShader;
+    VkOwned<VkShaderModule>        mVertShader;
+    VkOwned<VkShaderModule>        mFragShader;
+    VkOwned<VkDescriptorSetLayout> mDescLayout;
+    VkOwned<VkPipelineLayout>      mPipeLayout;
+    VkOwned<VkPipeline>            mPipeline;       /* compute: Bayer → scratch image */
+    VkOwned<VkPipeline>            mBlitPipeline;   /* graphics: scratch → gralloc via ROP */
+    VkOwned<VkRenderPass>          mRenderPass;     /* 1 color attachment, RGBA8, DONT_CARE→STORE */
+    VkOwned<VkDescriptorPool>      mDescPool;
     VkDescriptorSet mDescSet[SLOT_COUNT];
-    VkSampler mScratchSampler;   /* linear/clamp-to-edge, bound at binding=3 */
-    VkCommandPool mCmdPool;
+    VkOwned<VkSampler>             mScratchSampler; /* linear/clamp-to-edge, bound at binding=3 */
+    VkOwned<VkCommandPool>         mCmdPool;
     VkCommandBuffer mCmdBuf[SLOT_COUNT];
 
     /* One param buffer per slot — the compute shader dispatches of two
@@ -205,11 +206,11 @@ private:
      * read by vkCmdCopyImageToBuffer for the JPEG ring. Backed by a
      * gralloc-allocated RGBA buffer and imported through
      * VK_ANDROID_native_buffer (see createScratchImage). */
-    sp<GraphicBuffer> mScratchGb;
-    VkImage           mScratchImg;
-    VkImageView       mScratchView;
+    sp<GraphicBuffer>      mScratchGb;
+    VkOwned<VkImage>       mScratchImg;
+    VkOwned<VkImageView>   mScratchView;
 
-    VkFence mFence[SLOT_COUNT];
+    VkOwned<VkFence> mFence[SLOT_COUNT];
     /* sync_fd exported from the slot's fence via vkGetFenceFdKHR; -1
      * when the slot has no pending async submit. vkGetFenceFdKHR with
      * SYNC_FD implicitly resets the fence, so the reused fence goes

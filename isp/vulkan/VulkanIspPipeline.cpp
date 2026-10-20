@@ -27,14 +27,6 @@ namespace android {
 VulkanIspPipeline::VulkanIspPipeline()
     : mInputRing(mDeviceState)
     , mReady(false), mBufWidth(0), mBufHeight(0)
-    , mShader(VK_NULL_HANDLE), mVertShader(VK_NULL_HANDLE), mFragShader(VK_NULL_HANDLE)
-    , mDescLayout(VK_NULL_HANDLE)
-    , mPipeLayout(VK_NULL_HANDLE), mPipeline(VK_NULL_HANDLE)
-    , mBlitPipeline(VK_NULL_HANDLE), mRenderPass(VK_NULL_HANDLE)
-    , mDescPool(VK_NULL_HANDLE)
-    , mScratchSampler(VK_NULL_HANDLE)
-    , mCmdPool(VK_NULL_HANDLE)
-    , mScratchImg(VK_NULL_HANDLE), mScratchView(VK_NULL_HANDLE)
     , mNextSlot(0)
     , mGrallocCache(mDeviceState)
     , mYuvEncoder(mDeviceState)
@@ -54,7 +46,6 @@ VulkanIspPipeline::VulkanIspPipeline()
         mParamBuf[s]    = VK_NULL_HANDLE;
         mParamMem[s]    = VK_NULL_HANDLE;
         mParamMap[s]    = NULL;
-        mFence[s]       = VK_NULL_HANDLE;
         mSlotSyncFd[s]  = -1;
     }
 }
@@ -103,7 +94,7 @@ void VulkanIspPipeline::fillParams(IspParams *p, unsigned w, unsigned h,
 
 void VulkanIspPipeline::waitFenceInline(int slot, int timeoutMs) {
     const VkResult r = mDeviceState.pfn()->WaitForFences(
-        mDeviceState.device(), 1, &mFence[slot], VK_TRUE,
+        mDeviceState.device(), 1, mFence[slot].addr(), VK_TRUE,
         (uint64_t)timeoutMs * 1000000ull);
     if (r == VK_TIMEOUT) {
         ALOGE("slot %d fence not signalled after %d ms — GPU hung",
@@ -112,7 +103,7 @@ void VulkanIspPipeline::waitFenceInline(int slot, int timeoutMs) {
         return;
     }
     if (vkOk(r, "vkWaitForFences"))
-        mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[slot]);
+        mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, mFence[slot].addr());
 }
 
 bool VulkanIspPipeline::waitSlotFence(int slot) {
@@ -736,13 +727,15 @@ bool VulkanIspPipeline::init() {
     return true;
 }
 
-bool VulkanIspPipeline::compileShader(const char *glsl, VkShaderModule *out) {
+bool VulkanIspPipeline::compileShader(const char *glsl, VkOwned<VkShaderModule> *out) {
     VkShaderModuleCreateInfo smi = {};
     smi.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     smi.codeSize = strlen(glsl);
     smi.pCode    = (const uint32_t *)glsl;
     return mDeviceState.pfn()->CreateShaderModule(
-               mDeviceState.device(), &smi, NULL, out) == VK_SUCCESS;
+               mDeviceState.device(), &smi, NULL,
+               out->receive(mDeviceState.device(),
+                            mDeviceState.pfn()->DestroyShaderModule)) == VK_SUCCESS;
 }
 
 bool VulkanIspPipeline::createShaders() {
@@ -790,7 +783,8 @@ bool VulkanIspPipeline::createDescriptorLayouts() {
     dslci.bindingCount = 4;
     dslci.pBindings    = bindings;
     if (mDeviceState.pfn()->CreateDescriptorSetLayout(
-            mDeviceState.device(), &dslci, NULL, &mDescLayout) != VK_SUCCESS) {
+            mDeviceState.device(), &dslci, NULL,
+            mDescLayout.receive(mDeviceState.device(), mDeviceState.pfn()->DestroyDescriptorSetLayout)) != VK_SUCCESS) {
         ALOGE("vkCreateDescriptorSetLayout failed");
         return false;
     }
@@ -807,11 +801,12 @@ bool VulkanIspPipeline::createDescriptorLayouts() {
     VkPipelineLayoutCreateInfo plci = {};
     plci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     plci.setLayoutCount         = 1;
-    plci.pSetLayouts            = &mDescLayout;
+    plci.pSetLayouts            = mDescLayout.addr();
     plci.pushConstantRangeCount = 1;
     plci.pPushConstantRanges    = &blitPc;
     if (mDeviceState.pfn()->CreatePipelineLayout(
-            mDeviceState.device(), &plci, NULL, &mPipeLayout) != VK_SUCCESS) {
+            mDeviceState.device(), &plci, NULL,
+            mPipeLayout.receive(mDeviceState.device(), mDeviceState.pfn()->DestroyPipelineLayout)) != VK_SUCCESS) {
         ALOGE("vkCreatePipelineLayout failed");
         return false;
     }
@@ -829,7 +824,8 @@ bool VulkanIspPipeline::createDescriptorLayouts() {
     sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sci.unnormalizedCoordinates = VK_FALSE;
     if (mDeviceState.pfn()->CreateSampler(
-            mDeviceState.device(), &sci, NULL, &mScratchSampler) != VK_SUCCESS) {
+            mDeviceState.device(), &sci, NULL,
+            mScratchSampler.receive(mDeviceState.device(), mDeviceState.pfn()->DestroySampler)) != VK_SUCCESS) {
         ALOGE("vkCreateSampler failed");
         return false;
     }
@@ -846,7 +842,8 @@ bool VulkanIspPipeline::createComputePipeline() {
     cpci.layout       = mPipeLayout;
 
     if (mDeviceState.pfn()->CreateComputePipelines(
-            mDeviceState.device(), VK_NULL_HANDLE, 1, &cpci, NULL, &mPipeline) != VK_SUCCESS) {
+            mDeviceState.device(), VK_NULL_HANDLE, 1, &cpci, NULL,
+            mPipeline.receive(mDeviceState.device(), mDeviceState.pfn()->DestroyPipeline)) != VK_SUCCESS) {
         ALOGE("vkCreateComputePipelines failed");
         return false;
     }
@@ -884,7 +881,8 @@ bool VulkanIspPipeline::createGraphicsPipeline() {
     rpci.subpassCount    = 1;
     rpci.pSubpasses      = &subpass;
     if (mDeviceState.pfn()->CreateRenderPass(
-            mDeviceState.device(), &rpci, NULL, &mRenderPass) != VK_SUCCESS) {
+            mDeviceState.device(), &rpci, NULL,
+            mRenderPass.receive(mDeviceState.device(), mDeviceState.pfn()->DestroyRenderPass)) != VK_SUCCESS) {
         ALOGE("vkCreateRenderPass failed");
         return false;
     }
@@ -954,7 +952,8 @@ bool VulkanIspPipeline::createGraphicsPipeline() {
     gpci.subpass             = 0;
 
     if (mDeviceState.pfn()->CreateGraphicsPipelines(
-            mDeviceState.device(), VK_NULL_HANDLE, 1, &gpci, NULL, &mBlitPipeline) != VK_SUCCESS) {
+            mDeviceState.device(), VK_NULL_HANDLE, 1, &gpci, NULL,
+            mBlitPipeline.receive(mDeviceState.device(), mDeviceState.pfn()->DestroyPipeline)) != VK_SUCCESS) {
         ALOGE("vkCreateGraphicsPipelines failed");
         return false;
     }
@@ -979,7 +978,8 @@ bool VulkanIspPipeline::allocateDescriptorSet() {
     dpci.poolSizeCount = 3;
     dpci.pPoolSizes    = poolSizes;
     if (mDeviceState.pfn()->CreateDescriptorPool(
-            mDeviceState.device(), &dpci, NULL, &mDescPool) != VK_SUCCESS) {
+            mDeviceState.device(), &dpci, NULL,
+            mDescPool.receive(mDeviceState.device(), mDeviceState.pfn()->DestroyDescriptorPool)) != VK_SUCCESS) {
         ALOGE("vkCreateDescriptorPool failed");
         return false;
     }
@@ -1005,7 +1005,8 @@ bool VulkanIspPipeline::createCommandObjects() {
     cpi.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     cpi.queueFamilyIndex = mDeviceState.queueFamily();
     cpi.flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    mDeviceState.pfn()->CreateCommandPool(mDeviceState.device(), &cpi, NULL, &mCmdPool);
+    mDeviceState.pfn()->CreateCommandPool(mDeviceState.device(), &cpi, NULL,
+            mCmdPool.receive(mDeviceState.device(), mDeviceState.pfn()->DestroyCommandPool));
 
     VkCommandBufferAllocateInfo cbai = {};
     cbai.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -1039,7 +1040,8 @@ bool VulkanIspPipeline::createCommandObjects() {
 
     for (size_t s = 0; s < SLOT_COUNT; s++) {
         if (mDeviceState.pfn()->CreateFence(
-                mDeviceState.device(), &fci, NULL, &mFence[s]) != VK_SUCCESS) {
+                mDeviceState.device(), &fci, NULL,
+                mFence[s].receive(mDeviceState.device(), mDeviceState.pfn()->DestroyFence)) != VK_SUCCESS) {
             ALOGE("vkCreateFence failed for slot %zu", s);
             return false;
         }
@@ -1080,14 +1082,8 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
 }
 
 void VulkanIspPipeline::releaseScratchResources() {
-    if (mScratchView) {
-        mDeviceState.pfn()->DestroyImageView(mDeviceState.device(), mScratchView, NULL);
-        mScratchView = VK_NULL_HANDLE;
-    }
-    if (mScratchImg) {
-        mDeviceState.pfn()->DestroyImage(mDeviceState.device(), mScratchImg, NULL);
-        mScratchImg = VK_NULL_HANDLE;
-    }
+    mScratchView.reset();
+    mScratchImg.reset();
     /* Drop the gralloc backing — releasing the last sp<> drops the
      * underlying nvmap allocation. Memory came from gralloc, not from
      * vkAllocateMemory, so no FreeMemory call here. */
@@ -1149,7 +1145,8 @@ bool VulkanIspPipeline::createScratchImage(unsigned width, unsigned height) {
                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    if (mDeviceState.pfn()->CreateImage(mDeviceState.device(), &ici, NULL, &mScratchImg) != VK_SUCCESS) {
+    if (mDeviceState.pfn()->CreateImage(mDeviceState.device(), &ici, NULL,
+            mScratchImg.receive(mDeviceState.device(), mDeviceState.pfn()->DestroyImage)) != VK_SUCCESS) {
         ALOGE("Scratch vkCreateImage failed %ux%u (gralloc-imported)", width, height);
         mScratchGb.clear();
         return false;
@@ -1163,7 +1160,8 @@ bool VulkanIspPipeline::createScratchImage(unsigned width, unsigned height) {
     vci.subresourceRange.aspectMask  = VK_IMAGE_ASPECT_COLOR_BIT;
     vci.subresourceRange.levelCount  = 1;
     vci.subresourceRange.layerCount  = 1;
-    if (mDeviceState.pfn()->CreateImageView(mDeviceState.device(), &vci, NULL, &mScratchView) != VK_SUCCESS) {
+    if (mDeviceState.pfn()->CreateImageView(mDeviceState.device(), &vci, NULL,
+            mScratchView.receive(mDeviceState.device(), mDeviceState.pfn()->DestroyImageView)) != VK_SUCCESS) {
         ALOGE("Scratch vkCreateImageView failed");
         return false;
     }
@@ -1315,14 +1313,8 @@ void VulkanIspPipeline::destroy() {
         mInputRing.destroy();
         releaseJpegRing();
 
-        if (mScratchView) {
-            mDeviceState.pfn()->DestroyImageView(mDeviceState.device(), mScratchView, NULL);
-            mScratchView = VK_NULL_HANDLE;
-        }
-        if (mScratchImg) {
-            mDeviceState.pfn()->DestroyImage(mDeviceState.device(), mScratchImg, NULL);
-            mScratchImg = VK_NULL_HANDLE;
-        }
+        mScratchView.reset();
+        mScratchImg.reset();
         mScratchGb.clear();
 
         for (size_t s = 0; s < SLOT_COUNT; s++) {
@@ -1332,10 +1324,7 @@ void VulkanIspPipeline::destroy() {
         }
 
         for (size_t s = 0; s < SLOT_COUNT; s++) {
-            if (mFence[s]) {
-                mDeviceState.pfn()->DestroyFence(mDeviceState.device(), mFence[s], NULL);
-                mFence[s] = VK_NULL_HANDLE;
-            }
+            mFence[s].reset();
             for (VkSemaphore sem : mSlotAcquireSemaphores[s]) {
                 if (sem != VK_NULL_HANDLE)
                     mDeviceState.pfn()->DestroySemaphore(mDeviceState.device(), sem, NULL);
@@ -1352,50 +1341,19 @@ void VulkanIspPipeline::destroy() {
                 mDeviceState.pfn()->DestroySemaphore(mDeviceState.device(), sem, NULL);
         }
         mRec.reset();
-        if (mCmdPool) {
-            mDeviceState.pfn()->DestroyCommandPool(mDeviceState.device(), mCmdPool, NULL);
-            mCmdPool = VK_NULL_HANDLE;
-        }
-        if (mDescPool) {
-            mDeviceState.pfn()->DestroyDescriptorPool(mDeviceState.device(), mDescPool, NULL);
-            mDescPool = VK_NULL_HANDLE;
-        }
-        if (mBlitPipeline) {
-            mDeviceState.pfn()->DestroyPipeline(mDeviceState.device(), mBlitPipeline, NULL);
-            mBlitPipeline = VK_NULL_HANDLE;
-        }
-        if (mPipeline) {
-            mDeviceState.pfn()->DestroyPipeline(mDeviceState.device(), mPipeline, NULL);
-            mPipeline = VK_NULL_HANDLE;
-        }
-        if (mRenderPass) {
-            mDeviceState.pfn()->DestroyRenderPass(mDeviceState.device(), mRenderPass, NULL);
-            mRenderPass = VK_NULL_HANDLE;
-        }
-        if (mPipeLayout) {
-            mDeviceState.pfn()->DestroyPipelineLayout(mDeviceState.device(), mPipeLayout, NULL);
-            mPipeLayout = VK_NULL_HANDLE;
-        }
-        if (mDescLayout) {
-            mDeviceState.pfn()->DestroyDescriptorSetLayout(mDeviceState.device(), mDescLayout, NULL);
-            mDescLayout = VK_NULL_HANDLE;
-        }
-        if (mScratchSampler) {
-            mDeviceState.pfn()->DestroySampler(mDeviceState.device(), mScratchSampler, NULL);
-            mScratchSampler = VK_NULL_HANDLE;
-        }
-        if (mFragShader) {
-            mDeviceState.pfn()->DestroyShaderModule(mDeviceState.device(), mFragShader, NULL);
-            mFragShader = VK_NULL_HANDLE;
-        }
-        if (mVertShader) {
-            mDeviceState.pfn()->DestroyShaderModule(mDeviceState.device(), mVertShader, NULL);
-            mVertShader = VK_NULL_HANDLE;
-        }
-        if (mShader) {
-            mDeviceState.pfn()->DestroyShaderModule(mDeviceState.device(), mShader, NULL);
-            mShader = VK_NULL_HANDLE;
-        }
+        /* Children before their parents: pools and pipelines, then the
+         * layouts, sampler and shaders they were built from. */
+        mCmdPool.reset();
+        mDescPool.reset();
+        mBlitPipeline.reset();
+        mPipeline.reset();
+        mRenderPass.reset();
+        mPipeLayout.reset();
+        mDescLayout.reset();
+        mScratchSampler.reset();
+        mFragShader.reset();
+        mVertShader.reset();
+        mShader.reset();
     }
 
     mDeviceState.destroy();
