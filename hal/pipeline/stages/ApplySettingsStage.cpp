@@ -1,4 +1,9 @@
+#undef  LOG_TAG
+#define LOG_TAG "Cam-ApplySettings"
+
 #include "ApplySettingsStage.h"
+
+#include <log/log.h>
 
 #include <linux/videodev2.h>
 
@@ -22,8 +27,31 @@ namespace {
 #ifndef V4L2_CID_FRAME_LENGTH
 #define V4L2_CID_FRAME_LENGTH (V4L2_CTRL_CLASS_CAMERA | 0x2000)
 #endif
+#ifndef V4L2_CID_GROUP_HOLD
+#define V4L2_CID_GROUP_HOLD   (V4L2_CTRL_CLASS_CAMERA | 0x2003)
+#endif
 
-void writeAeTriple(V4l2Device *dev, const ExposureWriteValues &v) {
+/* Brackets a set of sensor writes with the driver's group hold, so the
+ * sensor latches them on the same frame. Without it exposure and gain
+ * of one decision can land a frame apart. The driver enters the hold
+ * on the first register write after GROUP_HOLD=1 and releases it,
+ * committing all held registers at once, on GROUP_HOLD=0. */
+class GroupHold {
+public:
+    GroupHold(V4l2Device *d, bool on) : dev(d), active(on) {
+        if (active) dev->setControl(V4L2_CID_GROUP_HOLD, 1);
+    }
+    ~GroupHold() {
+        if (active) dev->setControl(V4L2_CID_GROUP_HOLD, 0);
+    }
+private:
+    V4l2Device *dev;
+    bool        active;
+};
+
+void writeAeTriple(V4l2Device *dev, const ExposureWriteValues &v,
+                   bool groupHold) {
+    GroupHold hold(dev, groupHold);
     /* Single VIDIOC_S_EXT_CTRLS — frame_length must reach the sensor
      * before / together with the exposure that needs it, otherwise
      * the driver clamps the exposure into the old (smaller) frame
@@ -35,7 +63,9 @@ void writeAeTriple(V4l2Device *dev, const ExposureWriteValues &v) {
     dev->setControls(ctrls);
 }
 
-void writeAeBatch(V4l2Device *dev, const DelayedControls::Batch &batch) {
+void writeAeBatch(V4l2Device *dev, const DelayedControls::Batch &batch,
+                  bool groupHold) {
+    GroupHold hold(dev, groupHold);
     V4l2Controls ctrls;
     if (batch.has[DelayedControls::EXPOSURE])
         ctrls.add(V4L2_CID_EXPOSURE, batch.val[DelayedControls::EXPOSURE]);
@@ -50,7 +80,15 @@ ApplySettingsStage::ApplySettingsStage(const Deps &d)
     : deps(d),
       lastAutoValid(false),
       lastAutoExposureUs(0),
-      lastAutoGain(0) {}
+      lastAutoGain(0),
+      groupHold(false) {
+    if (deps.dev) {
+        int32_t mn = 0, mx = 0, df = 0;
+        groupHold = deps.dev->queryControl(V4L2_CID_GROUP_HOLD, &mn, &mx, &df)
+                 && mx >= 1;
+        ALOGI("sensor group hold %s", groupHold ? "supported" : "not supported");
+    }
+}
 
 void ApplySettingsStage::process(PipelineContext &ctx) {
     if (deps.sensorCfg) {
@@ -87,7 +125,7 @@ void ApplySettingsStage::process(PipelineContext &ctx) {
                     batch.has[DelayedControls::GAIN] = true;
                     batch.val[DelayedControls::GAIN] = lastAutoGain;
                 }
-                writeAeBatch(deps.dev, batch);
+                writeAeBatch(deps.dev, batch, groupHold);
                 if (batch.has[DelayedControls::EXPOSURE])
                     ctx.appliedExposureUs = batch.val[DelayedControls::EXPOSURE];
                 if (batch.has[DelayedControls::GAIN])
@@ -107,7 +145,7 @@ void ApplySettingsStage::process(PipelineContext &ctx) {
             const ExposureWriteValues v =
                 AutoExposureController::parseManualSettings(
                     ctx.request.settings, *deps.sensorCfg);
-            writeAeTriple(deps.dev, v);
+            writeAeTriple(deps.dev, v, groupHold);
             ctx.appliedExposureUs = v.exposureUs;
             ctx.appliedGain       = v.gain;
 

@@ -56,6 +56,10 @@ private:
     bool    lastAutoValid;
     int32_t lastAutoExposureUs;
     int32_t lastAutoGain;
+
+    /* Whether the sensor driver exposes V4L2_CID_GROUP_HOLD. Queried
+     * once at construction; writes are bracketed with it when true. */
+    bool    groupHold;
 };
 
 } /* namespace android */
