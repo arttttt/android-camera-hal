@@ -107,16 +107,8 @@ public:
 
     bool queryControl(uint32_t id, int32_t *min, int32_t *max, int32_t *def);
 
-    /* Focuser subdev control. Discovered via the media controller:
-     * the HAL walks /dev/media0, finds the SENSOR entity that owns
-     * our /dev/videoN data plane, follows its incoming sink link to
-     * the paired LENS entity, and opens the matching
-     * /dev/v4l-subdev. Zero string matching, zero hardcoded paths;
-     * registration order doesn't affect the result and multi-sensor
-     * configurations resolve automatically. */
-    bool openFocuser();
-    bool setFocusPosition(int32_t position);
-    void closeFocuser();
+    /* The capture node's path, for the media graph walk. */
+    const char *devNode() const { return mDevNode; }
 
 private:
     bool iocStreamOff();
@@ -143,7 +135,6 @@ private:
     Vector<int32_t>    mAvailableFps;
     struct v4l2_format mFormat;
     VBuffer mBuf[V4L2DEVICE_BUF_COUNT];
-    int mFocuserFd;
 };
 
 }; /* namespace android */

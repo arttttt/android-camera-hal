@@ -211,7 +211,7 @@ int Camera::openDevice(hw_device_t **device) {
      * no paths or hardware ids in user config. */
     ALOGI("openDevice: facing=%d hasAf=%d", mFacing, (int)mTuning.hasAf());
     if (mTuning.hasAf()) {
-        if (!mDev->openFocuser())
+        if (!mFocuser.open(mDev->devNode()))
             ALOGW("openDevice: focuser open failed; AF will be inactive");
     }
 
@@ -665,8 +665,8 @@ void Camera::buildInfrastructure() {
                                wbGainPrior, mCcmQ10, capability().ae.evStep);
         /* The one place the lens is moved from: AF decides, the IPA
          * coordinator writes, on the IPA's own thread. */
-        V4l2Device *dev = mDev;
-        ipa->setLensWriter([dev](int32_t pos) { dev->setFocusPosition(pos); });
+        Focuser *focuser = &mFocuser;
+        ipa->setLensWriter([focuser](int32_t pos) { focuser->setPosition(pos); });
         mIpa.reset(ipa);
     }
 

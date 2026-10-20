@@ -11,6 +11,7 @@
 #include <utils/Errors.h>
 #include <hardware/camera_common.h>
 #include "V4l2Device.h"
+#include "Focuser.h"
 #include <hardware/camera3.h>
 #include "CameraMetadataCompat.h"
 #include <utils/Mutex.h>
@@ -80,6 +81,8 @@ protected:
     CameraMetadata mLastRequestSettings;
 
     V4l2Device *mDev;
+    /* The lens VCM, when the module has one (the tuning says). */
+    Focuser     mFocuser;
     bool mValid;
     int mFacing;
     const camera3_callback_ops_t *mCallbackOps;

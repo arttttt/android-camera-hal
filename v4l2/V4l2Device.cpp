@@ -21,11 +21,8 @@
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <linux/videodev2.h>
-#include <linux/media.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/sysmacros.h>
-#include <dirent.h>
 #include <limits.h>
 
 #include <utils/Log.h>
@@ -82,7 +79,6 @@ V4l2Device::V4l2Device(const char *devNode)
     , mDevNode(strdup(devNode))
     , mPixelFormat(0)
     , mMemoryType(V4L2_MEMORY_MMAP)
-    , mFocuserFd(-1)
 {
     memset(&mFormat, 0, sizeof(mFormat));
     for (int i = 0; i < V4L2DEVICE_BUF_COUNT; i++) {
@@ -95,189 +91,8 @@ V4l2Device::~V4l2Device() {
     if(isStreaming()) {
         iocStreamOff();
     }
-    closeFocuser();
     cleanup();
     free((void *)mDevNode);
-}
-
-/* Find the source entity of an incoming link to `sinkId`. The kernel
- * `MEDIA_IOC_ENUM_LINKS` ioctl reports outgoing links only, so we
- * walk every entity and check which one's outgoing list contains a
- * link landing on `sinkId`. Used twice in openFocuser to step the
- * graph (video ← sensor ← lens). Returns 0 if no such link exists. */
-static uint32_t mediaSinkSource(int mediaFd, uint32_t sinkId)
-{
-    struct media_entity_desc ent;
-    uint32_t id = 0;
-    while (1) {
-        memset(&ent, 0, sizeof(ent));
-        ent.id = id | MEDIA_ENT_ID_FLAG_NEXT;
-        if (ioctl(mediaFd, MEDIA_IOC_ENUM_ENTITIES, &ent) < 0)
-            break;
-        id = ent.id;
-        if (ent.id == sinkId || ent.links == 0)
-            continue;
-
-        struct media_pad_desc  pads[16];
-        struct media_link_desc lnks[64];
-        struct media_links_enum links;
-        memset(pads, 0, sizeof(pads));
-        memset(lnks, 0, sizeof(lnks));
-        memset(&links, 0, sizeof(links));
-        links.entity = ent.id;
-        links.pads = pads;
-        links.links = lnks;
-        if (ioctl(mediaFd, MEDIA_IOC_ENUM_LINKS, &links) < 0)
-            continue;
-
-        for (unsigned i = 0; i < ent.links; i++)
-            if (lnks[i].sink.entity == sinkId)
-                return ent.id;
-    }
-    return 0;
-}
-
-bool V4l2Device::openFocuser()
-{
-    ALOGI("openFocuser: enter (mFocuserFd=%d mDevNode=%s)",
-          mFocuserFd, mDevNode ? mDevNode : "<null>");
-
-    if (mFocuserFd >= 0) {
-        ALOGI("openFocuser: already open, fd=%d", mFocuserFd);
-        return true;
-    }
-    if (!mDevNode) {
-        ALOGW("openFocuser: no video device path");
-        return false;
-    }
-
-    struct stat st;
-    if (stat(mDevNode, &st) < 0) {
-        ALOGW("openFocuser: stat(%s): %s", mDevNode, strerror(errno));
-        return false;
-    }
-    const unsigned videoMajor = major(st.st_rdev);
-    const unsigned videoMinor = minor(st.st_rdev);
-    ALOGI("openFocuser: video dev %s -> %u:%u",
-          mDevNode, videoMajor, videoMinor);
-
-    int mediaFd = open("/dev/media0", O_RDWR);
-    if (mediaFd < 0) {
-        ALOGW("openFocuser: open /dev/media0: %s", strerror(errno));
-        return false;
-    }
-
-    /* Find the entity whose dev matches our open video device. */
-    uint32_t videoId = 0;
-    struct media_entity_desc ent;
-    uint32_t id = 0;
-    while (1) {
-        memset(&ent, 0, sizeof(ent));
-        ent.id = id | MEDIA_ENT_ID_FLAG_NEXT;
-        if (ioctl(mediaFd, MEDIA_IOC_ENUM_ENTITIES, &ent) < 0)
-            break;
-        id = ent.id;
-        if (ent.v4l.major == videoMajor && ent.v4l.minor == videoMinor) {
-            videoId = ent.id;
-            break;
-        }
-    }
-    if (!videoId) {
-        ALOGW("openFocuser: no media entity for %u:%u",
-              videoMajor, videoMinor);
-        close(mediaFd);
-        return false;
-    }
-    ALOGI("openFocuser: video entity id=%u name='%s'", videoId, ent.name);
-
-    /* Walk video ← sensor ← lens. */
-    const uint32_t sensorId = mediaSinkSource(mediaFd, videoId);
-    ALOGI("openFocuser: sensor entity id=%u (from video=%u)",
-          sensorId, videoId);
-    const uint32_t lensId   = sensorId ? mediaSinkSource(mediaFd, sensorId) : 0;
-    ALOGI("openFocuser: lens entity id=%u (from sensor=%u)",
-          lensId, sensorId);
-    if (!lensId) {
-        ALOGW("openFocuser: no lens link from sensor (video=%u sensor=%u)",
-              videoId, sensorId);
-        close(mediaFd);
-        return false;
-    }
-
-    /* Read the lens entity to get its dev(major:minor). */
-    memset(&ent, 0, sizeof(ent));
-    ent.id = lensId;
-    if (ioctl(mediaFd, MEDIA_IOC_ENUM_ENTITIES, &ent) < 0) {
-        ALOGW("openFocuser: ENUM_ENTITIES(lens=%u): %s",
-              lensId, strerror(errno));
-        close(mediaFd);
-        return false;
-    }
-    close(mediaFd);
-
-    const unsigned lensMajor = ent.v4l.major;
-    const unsigned lensMinor = ent.v4l.minor;
-    ALOGI("openFocuser: lens entity '%s' dev=%u:%u",
-          ent.name, lensMajor, lensMinor);
-
-    /* Find /dev/v4l-subdev* with the lens's dev. */
-    DIR *dir = opendir("/dev");
-    if (!dir) {
-        ALOGE("openFocuser: opendir /dev: %s", strerror(errno));
-        return false;
-    }
-    struct dirent *de;
-    while ((de = readdir(dir)) != nullptr) {
-        if (strncmp(de->d_name, "v4l-subdev", 10) != 0)
-            continue;
-        char path[64];
-        snprintf(path, sizeof(path), "/dev/%s", de->d_name);
-        if (stat(path, &st) < 0)
-            continue;
-        if (major(st.st_rdev) != lensMajor || minor(st.st_rdev) != lensMinor)
-            continue;
-
-        mFocuserFd = open(path, O_RDWR);
-        if (mFocuserFd < 0) {
-            ALOGW("openFocuser: open %s: %s", path, strerror(errno));
-            closedir(dir);
-            return false;
-        }
-        ALOGI("openFocuser: OPENED %s (entity %u) fd=%d",
-              path, lensId, mFocuserFd);
-        closedir(dir);
-        return true;
-    }
-    closedir(dir);
-    ALOGW("openFocuser: no /dev/v4l-subdev* with dev %u:%u",
-          lensMajor, lensMinor);
-    return false;
-}
-
-bool V4l2Device::setFocusPosition(int32_t position) {
-    if (mFocuserFd < 0) {
-        ALOGW("setFocusPosition(%d): focuser not open", position);
-        return false;
-    }
-
-    struct v4l2_control ctrl;
-    memset(&ctrl, 0, sizeof(ctrl));
-    ctrl.id = V4L2_CID_FOCUS_ABSOLUTE;
-    ctrl.value = position;
-
-    if (ioctl(mFocuserFd, VIDIOC_S_CTRL, &ctrl) < 0) {
-        ALOGW("setFocusPosition(%d): %s (%d)", position, strerror(errno), errno);
-        return false;
-    }
-    ALOGD("setFocusPosition: %d -> fd=%d OK", position, mFocuserFd);
-    return true;
-}
-
-void V4l2Device::closeFocuser() {
-    if (mFocuserFd >= 0) {
-        close(mFocuserFd);
-        mFocuserFd = -1;
-    }
 }
 
 /**

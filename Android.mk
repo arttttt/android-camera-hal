@@ -119,6 +119,8 @@ LOCAL_SRC_FILES += \
     hal/pipeline/stages/ResultDispatchStage.cpp \
     hal/pipeline/stages/ShutterNotifyStage.cpp \
     hal/pipeline/stages/StatsProcessStage.cpp \
+    v4l2/Focuser.cpp \
+    v4l2/MediaGraph.cpp \
     v4l2/V4l2Device.cpp \
     v4l2/V4l2Source.cpp \
     isp/IspPipeline.cpp \
