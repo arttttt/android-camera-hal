@@ -52,6 +52,13 @@ public:
      * still reading from it. */
     virtual void releaseFrame(const V4l2Device::VBuffer*) = 0;
 
+    /* Take one more reference on an acquired frame, for a second
+     * consumer that outlives the first (the stats worker reads a frame
+     * across two pipeline frames). Each retain is matched by one
+     * releaseFrame; the slot goes back to the source when the last
+     * reference is released. */
+    virtual void retainFrame(const V4l2Device::VBuffer*) = 0;
+
     /* Return all previously-released buffers to the V4L2 device.
      * The caller must guarantee the GPU (or any other consumer)
      * has finished reading from them — typically by calling

@@ -671,6 +671,12 @@ void Camera::buildInfrastructure() {
     mJpegCompletionWake.reset(new EventFd());
     mRequestPipeline.reset(new Pipeline());
     mStatsWorker.reset(new StatsWorker());
+    {
+        BayerSource *source = mBayerSource.get();
+        mStatsWorker->setReleaser([source](const void *hold) {
+            source->releaseFrame(static_cast<const V4l2Device::VBuffer *>(hold));
+        });
+    }
     if (mTuning.isLoaded())
         mStatsWorker->setBlackLevel((uint32_t)mTuning.opticalBlack().r);
 
@@ -766,6 +772,7 @@ void Camera::buildInfrastructure() {
         d.demosaicBlit    = mDemosaicBlitStage.get();
         d.statsProcess    = mStatsProcessStage.get();
         d.bufferProcessor = mBufferProcessor;
+        d.bayerSource     = mBayerSource.get();
         d.maxInFlight     = PIPELINE_MAX_IN_FLIGHT;
         mPipelineThread.reset(new PipelineThread(d));
     }

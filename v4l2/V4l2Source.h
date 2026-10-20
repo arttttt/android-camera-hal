@@ -37,6 +37,7 @@ public:
         const std::function<bool()> &abortCheck = {}) override;
     void notifyForAbort() override;
     void releaseFrame(const V4l2Device::VBuffer*) override;
+    void retainFrame(const V4l2Device::VBuffer*) override;
     void flushPendingReleases() override;
 
     Resolution resolution()       const override;
@@ -55,6 +56,11 @@ private:
     const V4l2Device::VBuffer         *latest;
     std::vector<const V4l2Device::VBuffer*> toRelease;
     bool                               stopping;
+
+    /* References held on each slot handed out by acquireNextFrame:
+     * 1 at acquire, +1 per retainFrame, -1 per releaseFrame. Guarded
+     * by `mutex`; reset when the source starts. */
+    int                                refs[V4L2DEVICE_BUF_COUNT];
 };
 
 } /* namespace android */

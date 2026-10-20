@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 
+#include <functional>
 #include <mutex>
 
 #include "EventFd.h"
@@ -49,6 +50,12 @@ class StatsWorker : public ThreadBase {
 public:
     struct Job {
         const void *bayer;
+        /* The producer's reference on the frame `bayer` lies in, taken
+         * for this job. The worker gives it back through the releaser
+         * once it is done with the frame: when the cycle that reads it
+         * publishes, or when a newer job replaces it unread. Opaque
+         * here; null when the producer took none. */
+        const void *hold;
         unsigned    width;
         unsigned    height;
         uint32_t    pixFmt;
@@ -78,6 +85,9 @@ public:
      * start() and not changed while a cycle is in flight. */
     void setBlackLevel(uint32_t bl) { blackLevel = bl; }
 
+    /* How a job's `hold` is given back. Must be set before start(). */
+    void setReleaser(std::function<void(const void *hold)> r) { releaser = std::move(r); }
+
     /* Post the latest work to the worker. Overwrites any pending but
      * not-yet-started job. Safe from any thread. */
     void submit(const Job &job);
@@ -102,6 +112,9 @@ protected:
 private:
     NeonStatsEncoder encoder;
     uint32_t         blackLevel;
+    std::function<void(const void *)> releaser;
+
+    void release(const void *hold) { if (hold && releaser) releaser(hold); }
 
     /* Producer → worker: pending latest job + a mutex-guarded "valid"
      * flag, woken via jobEvent. A separate eventfd lets the worker

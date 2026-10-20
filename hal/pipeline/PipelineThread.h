@@ -13,6 +13,7 @@ namespace android {
 
 class PipelineStage;
 class BufferProcessor;
+class BayerSource;
 
 /* GPU-submit side of the async pipeline.
  *
@@ -36,6 +37,7 @@ public:
         PipelineStage                  *demosaicBlit;
         PipelineStage                  *statsProcess;    /* may be null */
         BufferProcessor                *bufferProcessor; /* CPU finalize for YUV outputs */
+        BayerSource                    *bayerSource;     /* frame's Bayer back once the GPU is done */
         std::size_t                     maxInFlight;
     };
 

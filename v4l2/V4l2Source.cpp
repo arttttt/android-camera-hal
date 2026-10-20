@@ -16,7 +16,9 @@ namespace android {
 V4l2Source::V4l2Source(V4l2Device *d)
     : dev(d),
       latest(nullptr),
-      stopping(false) {}
+      stopping(false) {
+    for (int &r : refs) r = 0;
+}
 
 V4l2Source::~V4l2Source() {
     stop();
@@ -30,6 +32,7 @@ bool V4l2Source::start() {
         stopping = false;
         latest = nullptr;
         toRelease.clear();
+        for (int &r : refs) r = 0;
     }
 
     thread.reset(new V4l2CaptureThread(this));
@@ -64,6 +67,8 @@ const V4l2Device::VBuffer* V4l2Source::acquireNextFrame(
     if (abortCheck && abortCheck()) return nullptr;
     const V4l2Device::VBuffer *f = latest;
     latest = nullptr;
+    if (f && f->index >= 0 && f->index < V4L2DEVICE_BUF_COUNT)
+        refs[f->index] = 1;
     return f;
 }
 
@@ -77,7 +82,20 @@ void V4l2Source::notifyForAbort() {
 void V4l2Source::releaseFrame(const V4l2Device::VBuffer *f) {
     if (!f) return;
     std::lock_guard<std::mutex> lock(mutex);
+    if (f->index >= 0 && f->index < V4L2DEVICE_BUF_COUNT) {
+        /* A release with no reference left is a stale one from before
+         * the source restarted (refs were reset); the slot was
+         * requeued by the restart already. */
+        if (refs[f->index] <= 0) return;
+        if (--refs[f->index] > 0) return;
+    }
     toRelease.push_back(f);
+}
+
+void V4l2Source::retainFrame(const V4l2Device::VBuffer *f) {
+    if (!f || f->index < 0 || f->index >= V4L2DEVICE_BUF_COUNT) return;
+    std::lock_guard<std::mutex> lock(mutex);
+    ++refs[f->index];
 }
 
 void V4l2Source::flushPendingReleases() {

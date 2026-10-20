@@ -11,6 +11,7 @@
 
 #include "PipelineStage.h"
 #include "BufferProcessor.h"
+#include "BayerSource.h"
 
 #undef  LOG_TAG
 #define LOG_TAG "Cam-PipelineThread"
@@ -65,6 +66,17 @@ void PipelineThread::completeCtx(PipelineContext *ctx) {
      * frame completes normally; one that came first keeps the frame on
      * the error path below. */
     ctx->status.commit();
+
+    /* The GPU has read the frame's Bayer; nothing after this point
+     * does (the stats worker holds a reference of its own). Give the
+     * slot back now rather than at result dispatch, which may wait on
+     * a JPEG encode, so the sensor's ring does not run short behind
+     * it. */
+    if (deps.bayerSource && ctx->bayerFrame) {
+        deps.bayerSource->releaseFrame(ctx->bayerFrame);
+        ctx->bayerFrame = nullptr;
+        deps.bayerSource->flushPendingReleases();
+    }
 
     /* CPU finalize for YUV outputs (libyuv repack into the gralloc).
      * BLOB outputs are NOT finalised here — they go to JpegWorker

@@ -29,11 +29,15 @@ StatsWorker::~StatsWorker() {
 }
 
 void StatsWorker::submit(const Job &job) {
+    const void *replaced = nullptr;
     {
         std::lock_guard<std::mutex> lock(inLock);
+        if (pendingValid) replaced = pending.hold;
         pending      = job;
         pendingValid = true;
     }
+    /* Latest wins: the job it replaces will never be read. */
+    release(replaced);
     jobEvent.notify();
 }
 
@@ -47,10 +51,16 @@ bool StatsWorker::peek(IpaStats *out, uint32_t *sequence) {
 }
 
 void StatsWorker::reset() {
+    const void *pendingHold = nullptr;
     {
         std::lock_guard<std::mutex> lock(inLock);
+        if (pendingValid) pendingHold = pending.hold;
         pendingValid = false;
     }
+    release(pendingHold);
+    /* A cycle cut short still holds its frame. */
+    if (phase != 0) release(currentJob.hold);
+    currentJob.hold = nullptr;
     {
         std::lock_guard<std::mutex> lock(outLock);
         latestValid = false;
@@ -132,6 +142,9 @@ void StatsWorker::threadLoop() {
                 latestSeq   = currentJob.sequence;
                 latestValid = true;
             }
+            /* The cycle is done reading its frame. */
+            release(currentJob.hold);
+            currentJob.hold = nullptr;
             ALOGD("PERF: phase=%d/%d neon=%lldus finalize=%lldus seq=%u",
                   phaseDone + 1, StatsWorker::phaseCount,
                   (long long)((tNeon1 - tNeon0) / 1000),

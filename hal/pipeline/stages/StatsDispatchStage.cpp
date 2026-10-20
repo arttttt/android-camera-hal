@@ -30,6 +30,11 @@ void StatsDispatchStage::process(PipelineContext &ctx) {
 
     StatsWorker::Job job;
     job.bayer    = bayer;
+    /* The worker reads this frame past the pipeline frame's own life
+     * (its second phase runs on the next frame's submit): it holds a
+     * reference of its own and gives it back when done. */
+    deps.bayerSource->retainFrame(ctx.bayerFrame);
+    job.hold     = ctx.bayerFrame;
     job.width    = res.width;
     job.height   = res.height;
     job.pixFmt   = ctx.bayerFrame->pixFmt;
