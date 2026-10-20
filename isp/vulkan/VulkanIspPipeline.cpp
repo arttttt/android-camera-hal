@@ -82,18 +82,19 @@ void VulkanIspPipeline::fillParams(IspParams *p, unsigned w, unsigned h,
     p->width      = w;
     p->height     = h;
     p->is16bit    = is16 ? 1 : 0;
-    p->doIsp      = mEnabled ? 1 : 0;
-    p->wbR        = mWbR;
-    p->wbG        = mWbG;
-    p->wbB        = mWbB;
+    p->doIsp      = mEnabled.load() ? 1 : 0;
+    p->wbR        = mWbR.load();
+    p->wbG        = mWbG.load();
+    p->wbB        = mWbB.load();
     p->bayerPhase = IspParams::bayerPhaseFromFourcc(pixFmt);
-    p->blackLevel = mBlackLevel;
+    const uint32_t blackLevel = mBlackLevel.load();
+    p->blackLevel = blackLevel;
     const uint32_t maxRaw = is16 ? 1023u : 255u;
-    const uint32_t denom  = (mBlackLevel < maxRaw) ? (maxRaw - mBlackLevel) : 1u;
+    const uint32_t denom  = (blackLevel < maxRaw) ? (maxRaw - blackLevel) : 1u;
     p->denomRecip255 = 255.0f / (float)denom;
-    if (mCcm) {
+    if (const int16_t *ccm = mCcm.load()) {
         for (int i = 0; i < 9; i++)
-            p->ccm[i] = mCcm[i];
+            p->ccm[i] = ccm[i];
     }
     memcpy(p->gammaLut, mGammaLut, sizeof(mGammaLut));
 }

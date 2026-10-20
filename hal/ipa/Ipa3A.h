@@ -13,7 +13,7 @@ namespace android {
 class  AutoExposureController;
 class  AutoFocusController;
 class  Awb;
-class  IspPipeline;
+class  IspControls;
 class  SensorTuning;
 struct SensorConfig;
 
@@ -22,7 +22,7 @@ struct SensorConfig;
  * Coordination layer for the three 3A controllers — owns the AE and
  * AWB instances, runs the lock / mode / scene-floor gating, routes
  * each controller's result to the appropriate backend (DelayedControls
- * for AE, IspPipeline + ccmBufferQ10 for AWB). AF lives in
+ * for AE, IspControls + ccmBufferQ10 for AWB). AF lives in
  * AutoFocusController, accessed by Camera and StatsProcessStage
  * directly for now (folded into this coordinator in step 6).
  *
@@ -46,7 +46,7 @@ public:
      * it in place lets the next demosaic submit read fresh
      * coefficients without any extra plumbing. Pass tuning == nullptr
      * to disable the CCT drive. */
-    Ipa3A(const SensorConfig &sensorCfg, IspPipeline *isp,
+    Ipa3A(const SensorConfig &sensorCfg, IspControls *isp,
              AutoFocusController *af,
              const SensorTuning *tuning,
              const float wbGainPrior[3],
@@ -69,7 +69,7 @@ public:
 
 private:
     const SensorConfig  &sensorCfg;
-    IspPipeline         *isp;
+    IspControls         *isp;
     AutoFocusController *af;          /* not owned — lifetime ≤ Camera */
     std::function<void(int32_t)> lensWriter;
     bool                 afHoldsLocks = false;  /* AE / AWB locked for an AF sweep */

@@ -12,7 +12,7 @@ namespace android {
 
 /* Per-frame output of `Awb::process`.
  *
- * - `gains` (when present) — push to `IspPipeline::setWbGains`. The
+ * - `gains` (when present) — push to `IspControls::setWbGains`. The
  *   shader's WB stage applies on the next `vkQueueSubmit` with zero
  *   silicon delay; no DelayedControls timing dance.
  * - `ccm` (when present) — copy into the shared `Camera::mCcmQ10`

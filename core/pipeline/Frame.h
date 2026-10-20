@@ -31,7 +31,7 @@
 #include "mochacamera/FrameSettings.h"
 #include "mochacamera/ports/FrameSource.h"
 
-namespace android { class IspPipeline; }
+namespace android { class IspJpegRing; }
 
 namespace mocha::camera {
 
@@ -88,7 +88,7 @@ struct Frame {
     int cropH = 0;
 
     /* Where the outputs' JPEG snapshots come from; set by the demosaic. */
-    android::IspPipeline *jpegRing = nullptr;
+    android::IspJpegRing *jpegRing = nullptr;
 
     /* What this request wrote to the sensor. It takes effect a control
      * delay later; result metadata reports what was in effect from

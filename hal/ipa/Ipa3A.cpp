@@ -66,7 +66,7 @@ float meanLumaInRoiForLog(const IpaStats &stats, const IpaFrameMeta &meta) {
 
 } /* namespace */
 
-Ipa3A::Ipa3A(const SensorConfig &cfg, IspPipeline *ispPipeline,
+Ipa3A::Ipa3A(const SensorConfig &cfg, IspControls *ispPipeline,
                    AutoFocusController *afCtrl,
                    const SensorTuning *sensorTuning,
                    const float wbGainPrior[3],
@@ -95,7 +95,7 @@ Ipa3A::Ipa3A(const SensorConfig &cfg, IspPipeline *ispPipeline,
 
     /* Seed the shader immediately so the very first frame — before
      * any stats land — renders through the prior's WB gains instead
-     * of the IspPipeline's unity defaults. */
+     * of the ISP's unity defaults. */
     if (isp) {
         const WbGains seed = mAwb->currentGainsQ8();
         isp->setWbGains(seed.r, seed.g, seed.b);
@@ -109,7 +109,6 @@ void Ipa3A::reset() {
     mAwb->reset();
     /* A sweep cut short by close leaves no locks behind. */
     if (afHoldsLocks) {
-        if (isp) isp->setAwbLock(false);
         mAe->setLock(false);
         afHoldsLocks = false;
     }
@@ -173,7 +172,7 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
     const bool awbRun = awbModeRun
                      && !meta.awbLock
                      && (isp != nullptr)
-                     && !isp->awbLocked()
+                     && !afHoldsLocks
                      && (sceneLuma >= awbSceneLightFloor);
 
     AwbResult awbResult;
@@ -293,7 +292,6 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
             lensWriter(*afResult.vcmPosition);
         if (afResult.sweeping != afHoldsLocks) {
             afHoldsLocks = afResult.sweeping;
-            if (isp) isp->setAwbLock(afHoldsLocks);
             mAe->setLock(afHoldsLocks);
         }
     }

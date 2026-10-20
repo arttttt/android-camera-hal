@@ -30,7 +30,7 @@
 namespace android {
 class AutoFocusController;
 class DeviceErrorReporter;
-class IspPipeline;
+class IspInputRing;
 class Pipeline;
 }
 
@@ -68,7 +68,7 @@ class CaptureEngine {
 public:
     struct Deps {
         FrameSource                  *source;
-        android::IspPipeline         *isp;         /* CPU view of a slot, for stats */
+        android::IspInputRing        *inputRing;   /* CPU view of a slot, for stats */
         android::AutoFocusController *af;          /* may be null: focus ROI */
         android::Pipeline            *settings;    /* ApplySettings, ShutterNotify */
         IspEngine                    *demosaic;

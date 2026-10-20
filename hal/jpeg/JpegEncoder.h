@@ -13,7 +13,7 @@ namespace android {
  * writes a JPEG into the caller's output buffer, with an EXIF APP1
  * marker carrying the orientation and, when the request asks for one
  * (a thumbnail size in its JPEG settings), a JPEG thumbnail. The caller is responsible for calling
- * IspPipeline::invalidateJpegSnapshot before invoking process() and
+ * IspJpegRing::invalidateJpegSnapshot before invoking process() and
  * releaseJpegSnapshot afterwards.
  *
  * No ISP dependency — the snapshot is the only producer-side input. */

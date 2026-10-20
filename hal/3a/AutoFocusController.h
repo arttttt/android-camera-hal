@@ -72,11 +72,11 @@ public:
      * tuning provides AF data we consume it (inf/macro positions,
      * settle time, sweep step + scene-change knobs).
      *
-     * No IspPipeline / Ipa pointers any more. AE-converged signal
+     * No ISP / Ipa pointers any more. AE-converged signal
      * comes in as an argument to `process`; AE / AWB locking across a
      * sweep is published to the coordinator via `AfResult::sweeping`
      * — the coordinator decides which back-ends (Ipa::setAeLock,
-     * IspPipeline::setAwbLock) to nudge. */
+     * the AWB hold in Ipa3A) to nudge. */
     /* `sensorWidth` / `sensorHeight` are the active array AF_REGIONS
      * come in. */
     AutoFocusController(const SensorTuning *tuning,

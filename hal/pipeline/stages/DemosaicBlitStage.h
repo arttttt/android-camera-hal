@@ -14,7 +14,8 @@ namespace android {
 
 class BufferProcessor;
 class DeviceErrorReporter;
-class IspPipeline;
+class IspFrameRecorder;
+class IspJpegRing;
 
 /* Opens the ISP recording for the frame, runs BufferProcessor::processOne
  * for every output buffer (each appending a per-output blit / encode to
@@ -28,7 +29,8 @@ public:
     struct Deps {
         BufferProcessor     *bufferProcessor;
         mocha::camera::FrameSource *source;  /* for resolution() */
-        IspPipeline         *isp;
+        IspFrameRecorder    *recorder;
+        IspJpegRing         *jpegRing;   /* the frame's JPEG snapshots */
         DeviceErrorReporter *deviceError;   /* may be null */
     };
 

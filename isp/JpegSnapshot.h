@@ -9,13 +9,13 @@ namespace android {
 /* Handle to a host-mapped RGBA8 copy of the ISP scratch image, captured
  * at endFrame time inside the same submit as preview / video blits. The
  * `rgba` pointer becomes valid for CPU read once the frame's submit
- * fence has signalled and IspPipeline::invalidateJpegSnapshot has been
+ * fence has signalled and IspJpegRing::invalidateJpegSnapshot has been
  * called; it stays valid until releaseJpegSnapshot is invoked.
  *
  * The backend owns a small ring of these buffers; a JPEG job holds a
  * snapshot for the duration of one libjpeg encode and releases it
  * afterwards so the slot rotates back. ringSlot is opaque to
- * consumers — pass the snapshot back to IspPipeline unchanged. */
+ * consumers — pass the snapshot back to the IspJpegRing unchanged. */
 struct JpegSnapshot {
     const uint8_t *rgba;
     unsigned       width;

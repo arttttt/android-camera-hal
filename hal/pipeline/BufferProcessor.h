@@ -14,7 +14,9 @@ namespace mocha::camera { class GrallocPort; }
 
 namespace android {
 
-class IspPipeline;
+class IspFrameRecorder;
+class IspJpegRing;
+class IspYuvReadback;
 class PostProcessor;
 
 /* Per-output-buffer processing. Records each output's GPU work on the
@@ -32,7 +34,9 @@ public:
     using Output = mocha::camera::Frame::Output;
 
     struct Deps {
-        IspPipeline                *isp;
+        IspFrameRecorder           *recorder;
+        IspJpegRing                *jpegRing;
+        IspYuvReadback             *yuv;
         PostProcessor              *jpeg;
         mocha::camera::GrallocPort *gralloc;
         const size_t  *jpegBufferSize;  /* single value per session, set at configureStreams */

@@ -85,7 +85,7 @@ bool BufferProcessor::tryZeroCopy(Output &out, const FrameContext &ctx) {
     bool zcOk = false;
     BENCHMARK_SECTION("Raw->RGBA") {
         CropRect crop = { ctx.cropX, ctx.cropY, ctx.cropW, ctx.cropH };
-        zcOk = mDeps.isp->blitToGralloc(out.buffer,
+        zcOk = mDeps.recorder->blitToGralloc(out.buffer,
                                          out.stream.width, out.stream.height,
                                          crop,
                                          out.acquireFence.release(),
@@ -109,7 +109,7 @@ status_t BufferProcessor::recordYuvOutput(Output &out,
     CropRect crop = { ctx.cropX, ctx.cropY, ctx.cropW, ctx.cropH };
     bool ok = false;
     BENCHMARK_SECTION("Raw->NV12") {
-        ok = mDeps.isp->blitToYuv(out.buffer, out.stream.width, out.stream.height,
+        ok = mDeps.recorder->blitToYuv(out.buffer, out.stream.width, out.stream.height,
                                   crop, -1, &releaseFd);
     }
     if (!ok) {
@@ -123,8 +123,8 @@ void BufferProcessor::finalizeYuvOutput(Output &out, uint32_t frameNumber) {
     unsigned w = out.stream.width;
     unsigned h = out.stream.height;
 
-    mDeps.isp->invalidateYuvForCpu();
-    const uint8_t *nv12 = mDeps.isp->yuvHostBuffer();
+    mDeps.yuv->invalidateYuvForCpu();
+    const uint8_t *nv12 = mDeps.yuv->yuvHostBuffer();
     if (!nv12) {
         ALOGE("buffer %p  frame %-4u  yuvHostBuffer null at finalize",
               out.buffer, frameNumber);
@@ -181,7 +181,7 @@ void BufferProcessor::releaseJpegSnapshot(Frame &frame, size_t i) {
     if (i >= frame.outputs.size()) return;
     Output &out = frame.outputs[i];
     if (out.jpeg.ringSlot >= 0) {
-        mDeps.isp->releaseJpegSnapshot(out.jpeg);
+        mDeps.jpegRing->releaseJpegSnapshot(out.jpeg);
         out.jpeg.ringSlot = -1;
     }
 }
@@ -193,7 +193,7 @@ status_t BufferProcessor::recordBlobOutput(Output &out, uint32_t frameNumber) {
     if (e != NO_ERROR)
         return e;
 
-    if (!mDeps.isp->blitToJpegCpu(&out.jpeg)) {
+    if (!mDeps.recorder->blitToJpegCpu(&out.jpeg)) {
         ALOGE("buffer %p  frame %-4u  blitToJpegCpu failed", out.buffer, frameNumber);
         return NO_INIT;
     }
@@ -214,7 +214,7 @@ bool BufferProcessor::finalizeBlobOutput(Output &out,
     if (blobCapacity <= sizeof(JpegBlobTrailer)) {
         ALOGE("buffer %p  frame %-4u  BLOB capacity %zu too small",
               out.buffer, frameNumber, blobCapacity);
-        mDeps.isp->releaseJpegSnapshot(snap);
+        mDeps.jpegRing->releaseJpegSnapshot(snap);
         return false;
     }
     const size_t maxImageSize = blobCapacity - sizeof(JpegBlobTrailer);
@@ -222,11 +222,11 @@ bool BufferProcessor::finalizeBlobOutput(Output &out,
     uint8_t *dst = NULL;
     if (!mDeps.gralloc->lock(out.buffer, out.stream, &dst)) {
         ALOGE("buffer %p  frame %-4u  BLOB lock failed", out.buffer, frameNumber);
-        mDeps.isp->releaseJpegSnapshot(snap);
+        mDeps.jpegRing->releaseJpegSnapshot(snap);
         return false;
     }
 
-    mDeps.isp->invalidateJpegSnapshot(snap);
+    mDeps.jpegRing->invalidateJpegSnapshot(snap);
     size_t written = 0;
     int64_t t0 = systemTime();
     bool ok = mDeps.jpeg->process(snap, dst, maxImageSize, jpeg, &written);
@@ -243,7 +243,7 @@ bool BufferProcessor::finalizeBlobOutput(Output &out,
     }
 
     mDeps.gralloc->unlock(out.buffer);
-    mDeps.isp->releaseJpegSnapshot(snap);
+    mDeps.jpegRing->releaseJpegSnapshot(snap);
     return ok;
 }
 

@@ -53,16 +53,31 @@ public:
     void           invalidateYuvForCpu() override { mYuvEncoder.invalidateForCpu(); }
 
     int    inputBufferCount() const override { return mInputRing.slotCount(); }
-    size_t inputBufferSize()  const override { return mInputRing.slotSize(); }
     int    exportInputBufferFd(int idx) override { return mInputRing.exportFd(idx); }
-    void   waitForPreviousFrame() override;
     bool   deviceLost() const override { return mDeviceLost.load(); }
+
+    /* Taken by the next fillParams; the 3A tick writes them while the
+     * demosaic engine records. */
+    void setWbGains(unsigned r, unsigned g, unsigned b) override {
+        mWbR.store(r); mWbG.store(g); mWbB.store(b);
+    }
+    void setCcm(const int16_t *ccm) override { mCcm.store(ccm); }
+    void setBlackLevel(uint32_t v) override  { mBlackLevel.store(v); }
+    void setEnabled(bool en) override        { mEnabled.store(en); }
     void   onSessionClose() override;
 
     const void *bayerHost(int slot)   const override { return mInputRing.mapped(slot); }
     void        invalidateBayer(int slot) override   { mInputRing.invalidateFromGpu(slot); }
 
 private:
+    /* Block until the GPU work of the previous submit has completed. */
+    void waitForPreviousFrame();
+
+    std::atomic<unsigned>        mWbR{256}, mWbG{256}, mWbB{256};
+    std::atomic<const int16_t *> mCcm{nullptr};
+    std::atomic<uint32_t>        mBlackLevel{0};
+    std::atomic<bool>            mEnabled{true};
+
     /* init() sub-steps. Each returns false on Vulkan failure; init() calls
      * destroy() on any false return so a partial state is never left behind. */
     bool compileShader(const char *glsl, VkShaderModule *out);

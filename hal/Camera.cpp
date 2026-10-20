@@ -673,7 +673,9 @@ void Camera::buildInfrastructure() {
     mJpeg = new JpegEncoder();
 
     BufferProcessor::Deps bpDeps;
-    bpDeps.isp            = mIsp;
+    bpDeps.recorder       = mIsp;
+    bpDeps.jpegRing       = mIsp;
+    bpDeps.yuv            = mIsp;
     bpDeps.jpeg           = mJpeg;
     bpDeps.gralloc        = &mGralloc;
     bpDeps.jpegBufferSize = &mJpegBufferSize;
@@ -722,7 +724,8 @@ void Camera::buildInfrastructure() {
         DemosaicBlitStage::Deps d;
         d.bufferProcessor = mBufferProcessor;
         d.source          = mFrameSource.get();
-        d.isp             = mIsp;
+        d.recorder        = mIsp;
+        d.jpegRing        = mIsp;
         d.deviceError     = mDeviceError.get();
         mDemosaicBlitStage.reset(new DemosaicBlitStage(d));
     }
@@ -772,7 +775,7 @@ void Camera::buildInfrastructure() {
     {
         mocha::camera::CaptureEngine::Deps d;
         d.source      = mFrameSource.get();
-        d.isp         = mIsp;
+        d.inputRing   = mIsp;
         d.af          = mAf;
         d.settings    = mSettingsPipeline.get();
         d.demosaic    = mIspEngine.get();

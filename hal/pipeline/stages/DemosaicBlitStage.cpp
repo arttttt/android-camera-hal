@@ -21,7 +21,7 @@ namespace android {
 DemosaicBlitStage::DemosaicBlitStage(const Deps &d) : deps(d) {}
 
 void DemosaicBlitStage::reportIfDeviceLost() {
-    if (deps.deviceError && deps.isp->deviceLost())
+    if (deps.deviceError && deps.recorder->deviceLost())
         deps.deviceError->report("ISP GPU device lost");
 }
 
@@ -40,12 +40,12 @@ UniqueFd DemosaicBlitStage::process(mocha::camera::Frame &ctx) {
     fctx.cropW          = ctx.cropW;
     fctx.cropH          = ctx.cropH;
 
-    ctx.jpegRing = deps.isp;
+    ctx.jpegRing = deps.jpegRing;
 
     /* Open the ISP recording for this frame — demosaic gets recorded once;
      * each blitTo* call inside the loop appends a per-output operation to
      * the same command buffer; endFrame submits the lot. */
-    if (!deps.isp->beginFrame(res.width, res.height, fctx.pixFmt, fctx.frameSlotIdx)) {
+    if (!deps.recorder->beginFrame(res.width, res.height, fctx.pixFmt, fctx.frameSlotIdx)) {
         ALOGE("beginFrame failed for frame %u", ctx.frameNumber);
         ctx.status.fail(NO_INIT);
         reportIfDeviceLost();
@@ -71,7 +71,7 @@ UniqueFd DemosaicBlitStage::process(mocha::camera::Frame &ctx) {
     }
 
     int submitFenceFd = -1;
-    if (!deps.isp->endFrame(&submitFenceFd)) {
+    if (!deps.recorder->endFrame(&submitFenceFd)) {
         ALOGE("endFrame failed for frame %u", ctx.frameNumber);
         for (mocha::camera::Frame::Output &out : ctx.outputs) {
             if (out.releaseFence >= 0) {

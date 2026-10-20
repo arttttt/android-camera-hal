@@ -157,12 +157,12 @@ void CaptureEngine::crop(Frame &f) {
 }
 
 void CaptureEngine::dispatchStats(Frame &f) {
-    if (!deps.stats || !deps.isp) return;
+    if (!deps.stats || !deps.inputRing) return;
 
     /* Every frame: the stats engine paces itself, a phase per job. */
     const int slot = f.bayer.frame().slot;
-    deps.isp->invalidateBayer(slot);
-    const void *data = deps.isp->bayerHost(slot);
+    deps.inputRing->invalidateBayer(slot);
+    const void *data = deps.inputRing->bayerHost(slot);
     if (!data) return;
 
     const Size res = deps.source->resolution();

@@ -15,7 +15,7 @@ struct IpaStats;
  * Pure math: the controller never reaches into the ISP, never pushes
  * to DelayedControls, never calls V4L2. Inputs are stats / metadata
  * arguments; outputs are an AwbResult struct the coordinator routes
- * to backends (`IspPipeline::setWbGains`, `Camera::mCcmQ10`, result
+ * to backends (`IspControls::setWbGains`, `Camera::mCcmQ10`, result
  * metadata builder).
  *
  * Coordinator-side gating:
