@@ -94,7 +94,9 @@ void ResultMetadataBuilder::buildAwbMetadata(CameraMetadata &cm,
 
     uint8_t reportAwbState = ANDROID_CONTROL_AWB_STATE_INACTIVE;
     if (reportAwbMode == ANDROID_CONTROL_AWB_MODE_AUTO) {
-        bool awbLocked = (fs.af.afState == ANDROID_CONTROL_AF_STATE_ACTIVE_SCAN);
+        /* AF holds AWB locked through any sweep, triggered or passive. */
+        bool awbLocked = (fs.af.afState == ANDROID_CONTROL_AF_STATE_ACTIVE_SCAN ||
+                          fs.af.afState == ANDROID_CONTROL_AF_STATE_PASSIVE_SCAN);
         if (cm.exists(ANDROID_CONTROL_AWB_LOCK))
             awbLocked = awbLocked || (*cm.find(ANDROID_CONTROL_AWB_LOCK).data.u8
                                       == ANDROID_CONTROL_AWB_LOCK_ON);

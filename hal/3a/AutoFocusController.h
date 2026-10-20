@@ -70,10 +70,9 @@ public:
      * settle time, sweep step + scene-change knobs).
      *
      * No IspPipeline / Ipa pointers any more. AE-converged signal
-     * comes in as an argument to `process`; AE / AWB lock toggling
-     * across a sweep is published to the coordinator via
-     * `AfResult::startSweep` / `sweepComplete` edge flags — the
-     * coordinator decides which back-ends (Ipa::setAeLock,
+     * comes in as an argument to `process`; AE / AWB locking across a
+     * sweep is published to the coordinator via `AfResult::sweeping`
+     * — the coordinator decides which back-ends (Ipa::setAeLock,
      * IspPipeline::setAwbLock) to nudge. */
     /* `sensorWidth` / `sensorHeight` are the active array AF_REGIONS
      * come in. */
@@ -101,9 +100,8 @@ public:
      * catching up would look like scene changes). The coordinator
      * passes the AE controller's current convergence flag.
      *
-     * Returned AfResult.startSweep / sweepComplete are edge signals
-     * the coordinator latches: on startSweep the coordinator should
-     * lock AE / AWB until sweepComplete fires. `vcmPosition`, when
+     * Returned AfResult.sweeping tells the coordinator to hold AE / AWB
+     * locked for as long as it is true. `vcmPosition`, when
      * set, is where the lens has to go now; the coordinator writes it
      * on this same tick, which keeps a sweep step on the frame the
      * state machine decided it. */
@@ -146,8 +144,22 @@ private:
         float   score;
     };
 
-    void   startSweep(uint8_t afMode);
+    /* A passive sweep is CONTINUOUS_PICTURE refocusing on its own on
+     * a scene change (PASSIVE_SCAN); a triggered one answers
+     * AF_TRIGGER_START (ACTIVE_SCAN) and ends locked. */
+    enum class SweepKind { Passive, Triggered };
+
+    void   startSweep(uint8_t afMode, SweepKind kind);
     void   cancelSweep();
+    /* CONTINUOUS_PICTURE lock: report the last sweep's verdict as
+     * FOCUSED_LOCKED / NOT_FOCUSED_LOCKED and stop refocusing until
+     * CANCEL or a mode change. */
+    void   lockOnVerdict();
+    /* Highest VCM position a sweep in the current mode may reach:
+     * the calibrated macro end for MACRO, macroPos capped by it
+     * otherwise. Every range check uses this, so a scan always ends
+     * at a position clampVcm lets it reach. */
+    int32_t sweepUpperLimit() const;
     /* AUTO / MACRO start a single-pass forward Coarse2 scan from
      * focusMin every time — full range, no direction-selection
      * mistakes possible. CONTINUOUS_PICTURE keeps the bidirectional
@@ -205,11 +217,21 @@ private:
     mutable std::mutex   mReportMutex;
     Report               mPublished;
 
-    /* Edge signals the coordinator latches into AfResult on the
-     * frame they fire. Set inside startSweep / commitSweep / cancel
-     * helpers; harvested at the end of process() and cleared. */
-    bool         mPendingStartSweep;
-    bool         mPendingSweepComplete;
+    /* Camera2 AF state machine (ANDROID_CONTROL_AF_STATE_*), set on
+     * every transition: mode change, trigger, sweep start, commit. */
+    uint8_t      mAfState;
+    SweepKind    mSweepKind;
+    /* CONTINUOUS_PICTURE: locked by a trigger; no passive sweeps. */
+    bool         mCafLocked;
+    /* CONTINUOUS_PICTURE: START arrived during a passive sweep; lock
+     * when it ends. */
+    bool         mLockPending;
+    /* Verdict of the last sweep, for locking without a new one. */
+    bool         mHaveVerdict;
+    bool         mLastFocused;
+    /* AF region the last sweep focused on; a trigger with another one
+     * refocuses before locking. */
+    FocusRoi     mLastSweepRoi;
 
     /* Calibrated VCM positions — resolved from SensorTuning at
      * construction when available, otherwise compile-time defaults. */

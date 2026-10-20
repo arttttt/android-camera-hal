@@ -13,29 +13,17 @@ namespace android {
  *   lens has to move to now; the coordinator writes it on the same
  *   tick. Most frames carry none — the lens moves at sweep starts and
  *   steps, at the commit, and for manual focus.
- * - `startSweep` flips true on the frame the controller transitions
- *   into an active scan; the coordinator uses this to suppress
- *   subsequent AE / AWB controller invocations until the matching
- *   `sweepComplete` arrives. Implicit lock — replaces the explicit
- *   `setAeLock(true)` / `setAwbLocked(true)` cross-controller calls
- *   the previous design used.
- * - `sweepComplete` flips true on the frame the scan reaches its
- *   terminal state (Settle entry); coordinator resumes AE / AWB
- *   from the next tick.
+ * - `sweeping` is true on every tick a sweep is running, passive or
+ *   triggered. The coordinator holds AE / AWB locked while it is: a
+ *   level, not a pair of start / complete edges, so a sweep cancelled
+ *   and restarted within one tick keeps the locks instead of handing
+ *   the coordinator "locked" and "unlocked" at once.
  * - `state` is one of `ANDROID_CONTROL_AF_STATE_*` for result
- *   metadata. Reported every tick the controller runs.
- *
- * `startSweep` and `sweepComplete` are edge signals, not levels —
- * the coordinator latches phase based on them rather than re-
- * reading state every frame. Avoids the "state == ACTIVE_SCAN"
- * polling pattern that conflates "AF moving the lens this frame"
- * (false on most frames during a scan) with "AF in scan mode" (true
- * for the whole scan duration). */
+ *   metadata. Reported every tick the controller runs. */
 struct AfResult {
     Optional<int32_t>  vcmPosition;
-    bool                                  startSweep    = false;
-    bool                                  sweepComplete = false;
-    uint8_t                               state         = 0;
+    bool               sweeping = false;
+    uint8_t            state    = 0;
 };
 
 } /* namespace android */

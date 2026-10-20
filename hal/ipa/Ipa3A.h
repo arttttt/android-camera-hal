@@ -71,6 +71,7 @@ private:
     IspPipeline         *isp;
     AutoFocusController *af;          /* not owned — lifetime ≤ Camera */
     std::function<void(int32_t)> lensWriter;
+    bool                 afHoldsLocks = false;  /* AE / AWB locked for an AF sweep */
     const SensorTuning  *tuning;
     int16_t             *ccmBufferQ10;
 

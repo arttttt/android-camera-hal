@@ -107,6 +107,12 @@ Ipa3A::~Ipa3A() = default;
 void Ipa3A::reset() {
     mAe->reset();
     mAwb->reset();
+    /* A sweep cut short by close leaves no locks behind. */
+    if (afHoldsLocks) {
+        if (isp) isp->setAwbLock(false);
+        mAe->setLock(false);
+        afHoldsLocks = false;
+    }
     haveStatsSeq = false;
     lastAeResult = AeResult();
 
@@ -300,10 +306,9 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
         aeMd.unlock(aeBlob);
     }
 
-    /* AF — runs every tick the controller is wired in. process()
-     * harvests pending edge signals (startSweep / sweepComplete);
-     * the coordinator translates them into AE / AWB lock toggles
-     * since the controllers themselves are decoupled from each other.
+    /* AF — runs every tick the controller is wired in. The
+     * coordinator holds AE / AWB locked while a sweep runs, since the
+     * controllers themselves are decoupled from each other.
      * The lens move AF asks for is written here, on this tick: a
      * sweep step lands on the frame the state machine decided it
      * (going through DelayedControls like exposure would cost a
@@ -312,13 +317,10 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
         const AfResult afResult = af->process(stats, aeResult.converged);
         if (afResult.vcmPosition && lensWriter)
             lensWriter(*afResult.vcmPosition);
-        if (afResult.startSweep) {
-            if (isp) isp->setAwbLock(true);
-            mAe->setLock(true);
-        }
-        if (afResult.sweepComplete) {
-            if (isp) isp->setAwbLock(false);
-            mAe->setLock(false);
+        if (afResult.sweeping != afHoldsLocks) {
+            afHoldsLocks = afResult.sweeping;
+            if (isp) isp->setAwbLock(afHoldsLocks);
+            mAe->setLock(afHoldsLocks);
         }
     }
 

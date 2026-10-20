@@ -98,8 +98,14 @@ AutoFocusController::AutoFocusController(const SensorTuning *tuning,
                                          int sensorWidth, int sensorHeight)
     : mSensorWidth(sensorWidth)
     , mSensorHeight(sensorHeight)
-    , mPendingStartSweep(false)
-    , mPendingSweepComplete(false)
+    , mAfState(ANDROID_CONTROL_AF_STATE_INACTIVE)
+    , mSweepKind(SweepKind::Passive)
+    , mCafLocked(false)
+    , mLockPending(false)
+    , mHaveVerdict(false)
+    , mLastFocused(false)
+    , mLastSweepRoi{IpaStats::FOCUS_ROI_PY_LO, IpaStats::FOCUS_ROI_PY_HI,
+                    IpaStats::FOCUS_ROI_PX_LO, IpaStats::FOCUS_ROI_PX_HI}
     , mVcmInfinity(0)
     , mVcmMacroStart(0)
     , mVcmMacroEnd(0)
@@ -197,6 +203,11 @@ AutoFocusController::AutoFocusController(const SensorTuning *tuning,
     publishReport();
 }
 
+int32_t AutoFocusController::sweepUpperLimit() const {
+    if (mAfMode == ANDROID_CONTROL_AF_MODE_MACRO) return mVcmMacroEnd;
+    return mVcmAutoEnd < mVcmMacroEnd ? mVcmAutoEnd : mVcmMacroEnd;
+}
+
 int32_t AutoFocusController::clampVcm(int32_t pos) const {
     if (pos < mVcmInfinity) return mVcmInfinity;
     if (pos > mVcmMacroEnd) return mVcmMacroEnd;
@@ -224,8 +235,8 @@ void AutoFocusController::beginCoarseFromCurrent(uint8_t /*afMode*/) {
         mSweepStep      = mStepCoarse;
         mState          = ScanState::Coarse2;
         mCoarseReversed = true;
-    } else if (nearLimit(mFocusPosition, mVcmAutoEnd)) {
-        mSweepPos       = mVcmAutoEnd;
+    } else if (nearLimit(mFocusPosition, sweepUpperLimit())) {
+        mSweepPos       = sweepUpperLimit();
         mSweepStep      = -mStepCoarse;
         mState          = ScanState::Coarse2;
         mCoarseReversed = true;
@@ -238,14 +249,18 @@ void AutoFocusController::beginCoarseFromCurrent(uint8_t /*afMode*/) {
     mSweepPos = clampVcm(mSweepPos);
 }
 
-void AutoFocusController::startSweep(uint8_t afMode) {
-    /* Signal coordinator to lock AE / AWB across the sweep. The
-     * focus score is already exposure-invariant by construction
-     * (focusMetric = grad²/pixel²), but locking removes residual
-     * brightness drift from sensor-side gain ladders and stops the
-     * AE controller from chasing scene changes the sweep itself
-     * provokes. Released on commit / cancel via mPendingSweepComplete. */
-    mPendingStartSweep = true;
+void AutoFocusController::startSweep(uint8_t afMode, SweepKind kind) {
+    /* The coordinator locks AE / AWB while a sweep runs (AfResult::
+     * sweeping). The focus score is already exposure-invariant by
+     * construction (focusMetric = grad²/pixel²), but locking removes
+     * residual brightness drift from sensor-side gain ladders and
+     * stops the AE controller from chasing scene changes the sweep
+     * itself provokes. */
+    mSweepKind    = kind;
+    mAfState      = (kind == SweepKind::Triggered)
+                    ? ANDROID_CONTROL_AF_STATE_ACTIVE_SCAN
+                    : ANDROID_CONTROL_AF_STATE_PASSIVE_SCAN;
+    mLastSweepRoi = currentFocusRoi();
     mSettleFrames     = 0;
     mSweepBestScore   = 0.f;
     mScanData.clear();
@@ -277,9 +292,20 @@ void AutoFocusController::startSweep(uint8_t afMode) {
 }
 
 void AutoFocusController::cancelSweep() {
-    if (mState == ScanState::Idle) return;
-    mPendingSweepComplete = true;
-    mState = ScanState::Idle;
+    /* Back to INACTIVE, sweep or no sweep: CANCEL also releases a
+     * lock (AUTO's locked result, CONTINUOUS_PICTURE's lock). */
+    mState       = ScanState::Idle;
+    mAfState     = ANDROID_CONTROL_AF_STATE_INACTIVE;
+    mCafLocked   = false;
+    mLockPending = false;
+}
+
+void AutoFocusController::lockOnVerdict() {
+    mAfState = (mHaveVerdict && mLastFocused)
+               ? ANDROID_CONTROL_AF_STATE_FOCUSED_LOCKED
+               : ANDROID_CONTROL_AF_STATE_NOT_FOCUSED_LOCKED;
+    mCafLocked   = true;
+    mLockPending = false;
 }
 
 void AutoFocusController::recordSample(int32_t pos, float score) {
@@ -356,7 +382,7 @@ void AutoFocusController::advanceCoarse(float score) {
         mSweepBestScore > 0.f &&
         score < mContrastRatio * mSweepBestScore;
     const bool atLimit =
-        (mSweepStep > 0 && mSweepPos >= mVcmAutoEnd) ||
+        (mSweepStep > 0 && mSweepPos >= sweepUpperLimit()) ||
         (mSweepStep < 0 && mSweepPos <= mVcmInfinity);
 
     /* Coarse1 fast-path: one big step downwards on the second
@@ -465,7 +491,24 @@ void AutoFocusController::commitSweep(bool focused) {
                              : mSweepBestPos;
     moveLens(finalPos);
     mFocusPosition = finalPos;
-    mPendingSweepComplete = true;
+
+    /* The verdict goes into the state: a triggered sweep (or a passive
+     * one a trigger is waiting on) ends locked, a passive one reports
+     * whether it found focus and keeps watching the scene. */
+    mHaveVerdict = true;
+    mLastFocused = focused;
+    if (mSweepKind == SweepKind::Triggered || mLockPending) {
+        if (mAfMode == ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE) {
+            lockOnVerdict();
+        } else {
+            mAfState = focused ? ANDROID_CONTROL_AF_STATE_FOCUSED_LOCKED
+                               : ANDROID_CONTROL_AF_STATE_NOT_FOCUSED_LOCKED;
+        }
+    } else {
+        mAfState = focused ? ANDROID_CONTROL_AF_STATE_PASSIVE_FOCUSED
+                           : ANDROID_CONTROL_AF_STATE_PASSIVE_UNFOCUSED;
+    }
+    mLockPending = false;
     /* Force the next idle onStats to capture a fresh scene snapshot
      * — at commit time we don't yet have a stats frame for the
      * just-committed lens position; better to read it on the next
@@ -582,9 +625,12 @@ void AutoFocusController::onSettings(const CameraMetadata &cm,
 }
 
 void AutoFocusController::applyCommand(const Command &cmd) {
-    if (cmd.afMode == ANDROID_CONTROL_AF_MODE_OFF && mState != ScanState::Idle)
+    /* A mode change drops whatever the old mode was doing: any sweep,
+     * any lock. Camera2 starts every mode from INACTIVE. */
+    if (cmd.afMode != mAfMode) {
         cancelSweep();
-    mAfMode = cmd.afMode;
+        mAfMode = cmd.afMode;
+    }
 
     /* Manual focus: LENS_FOCUS_DISTANCE (diopters) -> VCM. */
     if (cmd.hasFocusDistance) {
@@ -594,15 +640,38 @@ void AutoFocusController::applyCommand(const Command &cmd) {
         mFocusPosition = pos;
     }
 
-    /* AF_TRIGGER_START kicks off a sweep. Only valid when AF_MODE
-     * is AUTO / MACRO / CONTINUOUS_PICTURE. */
-    if (cmd.trigger == ANDROID_CONTROL_AF_TRIGGER_START &&
-        mState == ScanState::Idle &&
-        cmd.afMode != ANDROID_CONTROL_AF_MODE_OFF) {
-        startSweep(cmd.afMode);
-    } else if (cmd.trigger == ANDROID_CONTROL_AF_TRIGGER_CANCEL) {
+    if (cmd.trigger == ANDROID_CONTROL_AF_TRIGGER_CANCEL) {
         cancelSweep();
+        return;
     }
+    if (cmd.trigger != ANDROID_CONTROL_AF_TRIGGER_START ||
+        cmd.afMode == ANDROID_CONTROL_AF_MODE_OFF)
+        return;
+
+    if (cmd.afMode == ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE) {
+        /* START locks the current result rather than scanning again —
+         * except when the tap moved the AF region, or nothing has been
+         * focused yet: then a triggered sweep focuses there and ends
+         * locked. A passive sweep in progress locks when it ends. */
+        if (mState != ScanState::Idle) {
+            mLockPending = true;
+            return;
+        }
+        const FocusRoi roi = currentFocusRoi();
+        const bool roiMoved =
+            roi.pyLo != mLastSweepRoi.pyLo || roi.pyHi != mLastSweepRoi.pyHi ||
+            roi.pxLo != mLastSweepRoi.pxLo || roi.pxHi != mLastSweepRoi.pxHi;
+        if (roiMoved || !mHaveVerdict)
+            startSweep(cmd.afMode, SweepKind::Triggered);
+        else
+            lockOnVerdict();
+        return;
+    }
+
+    /* AUTO / MACRO: START scans, from INACTIVE or from a previous
+     * locked result; one already scanning is left to finish. */
+    if (mState == ScanState::Idle)
+        startSweep(cmd.afMode, SweepKind::Triggered);
 }
 
 AfResult AutoFocusController::process(const IpaStats &stats, bool aeConverged) {
@@ -639,7 +708,7 @@ AfResult AutoFocusController::process(const IpaStats &stats, bool aeConverged) {
          * holds still, the ratio test starts passing, the counter
          * ticks up, and a fresh sweep launches once stability has
          * persisted for `mRetriggerDelay` frames. */
-        if (mAfMode != ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+        if (mAfMode != ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE || mCafLocked)
             goto finish;
 
         float curRgb[3];
@@ -701,7 +770,7 @@ AfResult AutoFocusController::process(const IpaStats &stats, bool aeConverged) {
             ALOGD("AF: scene stabilised after change, starting sweep "
                   "(snap_sh=%.0f cur_sh=%.0f)",
                   (double)mSceneFocusSnapshot, (double)score);
-            startSweep(mAfMode);
+            startSweep(mAfMode, SweepKind::Passive);
         }
         goto finish;
     }
@@ -770,13 +839,8 @@ AfResult AutoFocusController::process(const IpaStats &stats, bool aeConverged) {
     moveLens(mSweepPos);
 
 finish:
-    /* Harvest pending edge signals into the result; clear so the
-     * coordinator only sees them on the frame they fire. State,
-     * VCM position, focus distance reported every tick. */
-    out.startSweep    = mPendingStartSweep;
-    out.sweepComplete = mPendingSweepComplete;
-    mPendingStartSweep    = false;
-    mPendingSweepComplete = false;
+    /* State, sweep level and lens move reported every tick. */
+    out.sweeping = (mState != ScanState::Idle);
 
     out.vcmPosition = mLensTarget;
     mLensTarget.reset();
@@ -787,13 +851,17 @@ finish:
 }
 
 void AutoFocusController::reset() {
-    if (mState != ScanState::Idle) {
-        /* Mid-sweep reset: signal coordinator to release any locks
-         * that startSweep had requested, even if the harvest never
-         * actually happened (camera close mid-sweep). */
-        mPendingSweepComplete = true;
-    }
+    /* A sweep cut short leaves its AE / AWB locks to the coordinator's
+     * own reset (Ipa3A::reset). */
     mState              = ScanState::Idle;
+    mAfState            = ANDROID_CONTROL_AF_STATE_INACTIVE;
+    mSweepKind          = SweepKind::Passive;
+    mCafLocked          = false;
+    mLockPending        = false;
+    mHaveVerdict        = false;
+    mLastFocused        = false;
+    mLastSweepRoi       = FocusRoi{IpaStats::FOCUS_ROI_PY_LO, IpaStats::FOCUS_ROI_PY_HI,
+                                   IpaStats::FOCUS_ROI_PX_LO, IpaStats::FOCUS_ROI_PX_HI};
     mAfMode             = ANDROID_CONTROL_AF_MODE_OFF;
     mSweepPos           = 0;
     mSweepStep          = 0;
@@ -833,10 +901,8 @@ void AutoFocusController::publishReport() {
 
 AutoFocusController::Report AutoFocusController::buildReport() const {
     Report r;
-    r.afMode = mAfMode;
-    r.afState = (mState != ScanState::Idle)
-        ? ANDROID_CONTROL_AF_STATE_ACTIVE_SCAN
-        : ANDROID_CONTROL_AF_STATE_FOCUSED_LOCKED;
+    r.afMode  = mAfMode;
+    r.afState = mAfState;
     float diopter = (mVcmPerDiopter > 0.f)
                   ? (mFocusPosition - mVcmInfinity) / mVcmPerDiopter
                   : 0.f;
