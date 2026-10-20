@@ -51,9 +51,9 @@ public:
         bool moduleCalEnable;
 
         /* Contrast-detect AF tunables. NVIDIA's stock .isp does not
-         * carry these — they're HAL-side knobs, defaulted to RPi
-         * libcamera's working values (see reference_af_projects.md)
-         * and overridable per-sensor via `active.af.*` JSON keys. */
+         * carry these — they're HAL-side knobs under
+         * `active.hal_overrides.af`, all required (values started from
+         * RPi libcamera's, see reference_af_projects.md). */
         int   stepCoarse;       /* coarse sweep step (VCM units)        */
         int   stepFine;         /* fine refinement step (VCM units)     */
         float contrastRatio;    /* sharpness drop fraction that confirms
@@ -81,11 +81,21 @@ public:
          * needs noticeably longer to physically settle than a
          * 5-unit nudge. NVIDIA's tuning ships only `settle_time` in
          * milliseconds (which always rounds to one frame at 30 fps)
-         * and doesn't distinguish step magnitudes; these knobs are
-         * HAL-side additions defaulted to working values when the
-         * JSON omits them. */
+         * and doesn't distinguish step magnitudes. The coarse count
+         * also absorbs the stats pipeline's lag behind the lens (see
+         * task-757), which is why settle_time is not converted into
+         * these. */
         int settleFramesCoarse;
         int settleFramesFine;
+
+        /* Nuisance-scan rate limit: no new sweep within this many
+         * frames of the last one committing. */
+        int minFramesBetweenSweeps;
+
+        /* Smallest AF region, in stats patches per axis, a tap region
+         * is grown to: one patch is too little Sobel signal for a
+         * stable peak. */
+        int minFocusRoiPatches;
     };
 
     struct CcmSet {

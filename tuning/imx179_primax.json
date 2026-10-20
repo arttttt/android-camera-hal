@@ -36,6 +36,19 @@
       "_comment": "HAL-specific knobs not present in NVIDIA .isp; preserve verbatim across isp_to_json.py regenerations.",
       "ae": {
         "close_speed_zone": 0.0
+      },
+      "af": {
+        "_comment": "Contrast-detect AF. All required: a missing key disables AF. Values started from RPi libcamera's.",
+        "step_coarse": 25,
+        "step_fine": 5,
+        "contrast_ratio": 0.75,
+        "retrigger_ratio": 0.75,
+        "retrigger_delay_frames": 10,
+        "pdaf_enabled": false,
+        "settle_frames_coarse": 2,
+        "settle_frames_fine": 1,
+        "min_frames_between_sweeps": 30,
+        "min_focus_roi_patches": 5
       }
     },
     "af": {

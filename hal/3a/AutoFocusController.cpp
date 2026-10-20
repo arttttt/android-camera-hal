@@ -22,15 +22,15 @@ namespace {
  * member at zero and the AF state machine self-disables (mHasAf
  * stays false on the SensorTuning side, AfMode stays OFF here). */
 
-/* Minimum AF region size in patches per axis. Camera apps frequently
- * ship narrow tap regions (Open Camera + native have both been
- * observed sending ~5% of frame width), which collapses to one
- * patch on the 16×16 grid. One patch is ~1/64 of the centre default's
- * Sobel signal — too noisy for the contrast-detect peak search to
- * lock on. Expanding around the tap centre to 5×5 (≈10% of frame
- * area, RPi libcamera convention) keeps the tap location's intent
- * while restoring enough Sobel signal for stable peak detection. */
-constexpr int kMinFocusRoiPatches = 5;
+/* Minimum AF region size (tuning: min_focus_roi_patches) in patches
+ * per axis. Camera apps frequently ship narrow tap regions (Open
+ * Camera + native have both been observed sending ~5% of frame width),
+ * which collapses to one patch on the 16×16 grid. One patch is ~1/64
+ * of the centre default's Sobel signal — too noisy for the
+ * contrast-detect peak search to lock on. Expanding around the tap
+ * centre to 5×5 (≈10% of frame area, RPi libcamera convention) keeps
+ * the tap location's intent while restoring enough Sobel signal for
+ * stable peak detection. */
 
 float sumFocusInRoi(
     const float metric[IpaStats::PATCH_Y][IpaStats::PATCH_X],
@@ -112,6 +112,8 @@ AutoFocusController::AutoFocusController(V4l2Device *dev,
     , mPdafEnabled(false)
     , mSettleFramesCoarse(0)
     , mSettleFramesFine(0)
+    , mMinFramesBetweenSweeps(0)
+    , mMinFocusRoiPatches(0)
     , mVcmPerDiopter(0.f)
     , mAfMode(ANDROID_CONTROL_AF_MODE_OFF)
     , mFocusPosition(0)
@@ -154,6 +156,8 @@ AutoFocusController::AutoFocusController(V4l2Device *dev,
         mSettleFramesCoarse = af.settleFramesCoarse;
         mSettleFramesFine   = af.settleFramesFine;
         mPdafEnabled        = af.pdafEnabled;
+        mMinFramesBetweenSweeps = (uint32_t)af.minFramesBetweenSweeps;
+        mMinFocusRoiPatches     = af.minFocusRoiPatches;
 
         /* VCM units per diopter are derived from the calibrated VCM
          * range and the module's min focus distance. Doing it from
@@ -545,15 +549,15 @@ void AutoFocusController::onSettings(const CameraMetadata &cm,
                     if (pxHi > IpaStats::PATCH_X) pxHi = IpaStats::PATCH_X;
                     if (pyHi > IpaStats::PATCH_Y) pyHi = IpaStats::PATCH_Y;
                     if (pxHi > pxLo && pyHi > pyLo) {
-                        /* Enforce a minimum 5×5 footprint around the
+                        /* Enforce the minimum footprint around the
                          * tap centre. Apps routinely send narrow
                          * regions that collapse to one patch on the
                          * 16×16 grid; the AF metric needs a wider
                          * Sobel sum to find a stable peak. */
                         growToMin(&pxLo, &pxHi, IpaStats::PATCH_X,
-                                   kMinFocusRoiPatches);
+                                   mMinFocusRoiPatches);
                         growToMin(&pyLo, &pyHi, IpaStats::PATCH_Y,
-                                   kMinFocusRoiPatches);
+                                   mMinFocusRoiPatches);
                         roi.pxLo = pxLo; roi.pxHi = pxHi;
                         roi.pyLo = pyLo; roi.pyHi = pyHi;
                         ALOGD("AF_REGIONS sensor=(%d,%d-%d,%d) -> patches "
@@ -651,13 +655,12 @@ AfResult AutoFocusController::process(const IpaStats &stats, bool aeConverged) {
 
         /* Nuisance-scan rate limit. Even if the scene-change gate
          * fires legitimately, refuse to start another sweep within
-         * `kMinFramesBetweenSweeps` of the last commit — keeps a
+         * `mMinFramesBetweenSweeps` of the last commit — keeps a
          * jittery scene from chain-triggering sweep-after-sweep
          * while AE / AWB keep readjusting and the controller never
-         * lands on a stable focus. ~1 second at 30 fps. */
-        constexpr uint32_t kMinFramesBetweenSweeps = 30u;
+         * lands on a stable focus. 30 = ~1 second at 30 fps. */
         const bool sweepCooldownDone =
-            mFramesSinceLastSweep >= kMinFramesBetweenSweeps;
+            mFramesSinceLastSweep >= mMinFramesBetweenSweeps;
 
         /* Hold the retrigger off until AE has actually converged
          * on the new scene. Without this gate the AF re-fires while

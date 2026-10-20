@@ -190,6 +190,8 @@ private:
     bool     mPdafEnabled;
     int32_t  mSettleFramesCoarse;
     int32_t  mSettleFramesFine;
+    uint32_t mMinFramesBetweenSweeps;   /* tuning */
+    int      mMinFocusRoiPatches;       /* tuning */
 
     /* VCM units per diopter, derived at construction from the
      * calibrated VCM range and SensorTuning's
@@ -251,7 +253,7 @@ private:
     /* Frames since the last sweep committed. Used as a nuisance-
      * scan rate limiter — even if the scene-change gate fires
      * legitimately, we don't run another sweep within
-     * `kMinFramesBetweenSweeps` of the previous one. Stops the
+     * `mMinFramesBetweenSweeps` of the previous one. Stops the
      * controller from cycle-locking on a moving / jittering scene
      * where each retrigger triggers the next. */
     uint32_t  mFramesSinceLastSweep;

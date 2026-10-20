@@ -103,26 +103,41 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
         mAf.settleTimeMs     = af["settle_time"].asInt();
         mAf.moduleCalEnable  = af["module_cal_enable"].asInt() != 0;
 
-        /* HAL-side CDAF knobs. Defaults match the reference values
-         * RPi libcamera ships in their per-module tuning; overridable
-         * via JSON when a sensor needs different settle / step. */
-        mAf.stepCoarse =
-            af.get("step_coarse", 25).asInt();
-        mAf.stepFine =
-            af.get("step_fine", 5).asInt();
-        mAf.contrastRatio =
-            af.get("contrast_ratio", 0.75f).asFloat();
-        mAf.retriggerRatio =
-            af.get("retrigger_ratio", 0.75f).asFloat();
-        mAf.retriggerDelay =
-            af.get("retrigger_delay_frames", 10).asInt();
-        mAf.pdafEnabled =
-            af.get("pdaf_enabled", false).asBool();
-        mAf.settleFramesCoarse =
-            af.get("settle_frames_coarse", 2).asInt();
-        mAf.settleFramesFine =
-            af.get("settle_frames_fine", 1).asInt();
-        mHasAf = true;
+        /* HAL-side CDAF knobs live under active.hal_overrides.af,
+         * next to the other knobs NVIDIA's .isp does not carry. No
+         * compile-time fallbacks: a tuning missing any of them leaves
+         * AF disabled rather than running on values nobody chose for
+         * this module. */
+        const Json::Value &cdaf = active["hal_overrides"]["af"];
+        static const char *const kCdafKeys[] = {
+            "step_coarse", "step_fine", "contrast_ratio",
+            "retrigger_ratio", "retrigger_delay_frames", "pdaf_enabled",
+            "settle_frames_coarse", "settle_frames_fine",
+            "min_frames_between_sweeps", "min_focus_roi_patches",
+        };
+        bool cdafComplete = cdaf.isObject();
+        for (const char *key : kCdafKeys) {
+            if (cdafComplete && !cdaf.isMember(key)) {
+                ALOGE("tuning %s: hal_overrides.af.%s missing — AF disabled",
+                      fn.c_str(), key);
+                cdafComplete = false;
+            }
+        }
+        if (!cdaf.isObject())
+            ALOGE("tuning %s: hal_overrides.af missing — AF disabled", fn.c_str());
+        if (cdafComplete) {
+            mAf.stepCoarse             = cdaf["step_coarse"].asInt();
+            mAf.stepFine               = cdaf["step_fine"].asInt();
+            mAf.contrastRatio          = cdaf["contrast_ratio"].asFloat();
+            mAf.retriggerRatio         = cdaf["retrigger_ratio"].asFloat();
+            mAf.retriggerDelay         = cdaf["retrigger_delay_frames"].asInt();
+            mAf.pdafEnabled            = cdaf["pdaf_enabled"].asBool();
+            mAf.settleFramesCoarse     = cdaf["settle_frames_coarse"].asInt();
+            mAf.settleFramesFine       = cdaf["settle_frames_fine"].asInt();
+            mAf.minFramesBetweenSweeps = cdaf["min_frames_between_sweeps"].asInt();
+            mAf.minFocusRoiPatches     = cdaf["min_focus_roi_patches"].asInt();
+            mHasAf = true;
+        }
     }
 
     const Json::Value &cc = active["colorCorrection"]["Set"];
