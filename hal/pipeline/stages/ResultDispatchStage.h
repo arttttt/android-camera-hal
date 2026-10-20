@@ -17,8 +17,9 @@ struct SensorConfig;
  * that stages left locked, emits the final partial via
  * PartialEmitter (carrying buffer pointers), releases the Bayer
  * frame to the source. On the error path: emits notify(ERROR_REQUEST)
- * via the framework callback and does the minimum cleanup required
- * to leave the HAL in a consistent state.
+ * via the framework callback, then returns every output buffer with
+ * CAMERA3_BUFFER_STATUS_ERROR and no metadata, as camera3.h requires
+ * after ERROR_REQUEST.
  *
  * `notify` (shutter, error) still goes through the raw
  * camera3_callback_ops_t pointer — partial-emit abstraction covers
@@ -40,6 +41,8 @@ public:
     bool alwaysRun() const override { return true; }
 
 private:
+    void returnBuffersInError(PipelineContext &context);
+
     Deps deps;
 };
 

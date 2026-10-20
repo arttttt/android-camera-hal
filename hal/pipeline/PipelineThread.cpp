@@ -180,7 +180,7 @@ void PipelineThread::threadLoop() {
         /* Reap contexts in submission order. An errored ctx with
          * empty pendingFenceFds is done at once and travels on to
          * ResultThread like any other; ResultDispatchStage reports it
-         * as ERROR_REQUEST. */
+         * as ERROR_REQUEST and returns its buffers in error. */
         while (!inFlight.empty()) {
             PipelineContext *head = inFlight.front();
             if (!reapFences(head)) break;
@@ -191,8 +191,8 @@ void PipelineThread::threadLoop() {
 
     /* Stop drain: blocking wait on each remaining ctx's fences with a
      * per-fence timeout, then cancel them (a failed ctx keeps its
-     * failure) and hand them on, so ResultDispatch completes them as
-     * errors. */
+     * failure) and hand them on, so ResultDispatch returns their
+     * buffers to the framework in error rather than leak them. */
     while (!inFlight.empty()) {
         PipelineContext *head = inFlight.front();
         drainFences(head, stopDrainTimeoutMs);

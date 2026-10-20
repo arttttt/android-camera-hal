@@ -1005,7 +1005,8 @@ int Camera::flush() {
      * cancelAll cancels every tracked context (one that already
      * failed keeps its failure); pipeline stages check the status at
      * entry and short-circuit to ResultDispatch, which emits
-     * notify(ERROR_REQUEST). notifyForAbort wakes any RequestThread
+     * notify(ERROR_REQUEST) and returns the framework's output buffers
+     * in error. notifyForAbort wakes any RequestThread
      * blocked inside CaptureStage::acquireNextFrame waiting on a long
      * manual exposure — the abortCheck callback registered there sees
      * the status and the acquire returns null instead of holding the

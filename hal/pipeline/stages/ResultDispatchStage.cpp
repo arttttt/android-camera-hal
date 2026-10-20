@@ -25,6 +25,50 @@ namespace android {
 
 ResultDispatchStage::ResultDispatchStage(const Deps &d) : deps(d) {}
 
+void ResultDispatchStage::returnBuffersInError(PipelineContext &ctx) {
+    /* The per-output vectors are filled by DemosaicBlitStage; a frame
+     * that failed or was cancelled before it has them empty. */
+    const size_t n = ctx.request.outputBuffers.size();
+    Vector<camera3_stream_buffer> buffers;
+    buffers.setCapacity(n);
+    for (size_t i = 0; i < n; ++i) {
+        CaptureRequest::Buffer &ob = ctx.request.outputBuffers[i];
+        if (i < ctx.outputNeedsFinalUnlock.size() && ctx.outputNeedsFinalUnlock[i]) {
+            GraphicBufferMapper::get().unlock(*ob.buffer);
+        }
+        /* camera3.h: the release fence of a failed buffer is the
+         * acquire fence the framework gave us if we still hold it,
+         * else -1. An output the GPU or the VIC was already told to
+         * write carries their release fence instead, so the buffer is
+         * not handed on while it is still being written. */
+        int releaseFence = ob.acquireFence.release();
+        if (i < ctx.outputReleaseFences.size() && ctx.outputReleaseFences[i] >= 0) {
+            if (releaseFence >= 0) ::close(releaseFence);
+            releaseFence = ctx.outputReleaseFences[i];
+            ctx.outputReleaseFences[i] = -1;
+        }
+        camera3_stream_buffer sb;
+        sb.stream        = ob.stream;
+        sb.buffer        = ob.buffer;
+        sb.status        = CAMERA3_BUFFER_STATUS_ERROR;
+        sb.acquire_fence = -1;
+        sb.release_fence = releaseFence;
+        buffers.push_back(sb);
+    }
+    if (buffers.isEmpty()) return;
+
+    if (deps.emitter) {
+        /* After ERROR_REQUEST only buffers in error may follow: no
+         * metadata, partial_result 0. */
+        deps.emitter->emit(ctx.request.frameNumber, 0, nullptr,
+                           buffers.size(), buffers.array());
+    } else {
+        for (const camera3_stream_buffer &sb : buffers) {
+            if (sb.release_fence >= 0) ::close(sb.release_fence);
+        }
+    }
+}
+
 void ResultDispatchStage::process(PipelineContext &ctx) {
     const camera3_callback_ops_t *ops = *deps.callbackOps;
 
@@ -48,6 +92,7 @@ void ResultDispatchStage::process(PipelineContext &ctx) {
             msg.message.error.error_code   = CAMERA3_MSG_ERROR_REQUEST;
             ops->notify(ops, &msg);
         }
+        returnBuffersInError(ctx);
         if (ctx.bayerFrame) deps.bayerSource->releaseFrame(ctx.bayerFrame);
         return;
     }
