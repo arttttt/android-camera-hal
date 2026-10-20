@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include "PipelineStage.h"
+#include "mochacamera/Controls.h"
 
 namespace android {
 
@@ -14,15 +15,15 @@ struct SensorConfig;
 /* Applies per-request exposure + AF settings to the sensor/VCM.
  *
  * AE branch:
- *   ANDROID_CONTROL_AE_MODE == OFF  → manual path.
- *     AutoExposureController::parseManualSettings turns the request
- *     metadata into an (exposureUs, gain, frameLen) triple; the
+ *   AE Off → manual path.
+ *     AutoExposureController::parseManualSettings turns the frame's
+ *     settings into an (exposureUs, gain, frameLen) triple; the
  *     stage writes V4L2 directly via V4l2Device::setControls. The
  *     applied (exposure, gain) pair is also published into
- *     DelayedControls::push at slot request.frameNumber so result
+ *     DelayedControls::push at slot frameNumber so result
  *     metadata reporting sees the same trajectory.
- *   ANDROID_CONTROL_AE_MODE != OFF → auto path.
- *     DelayedControls::pendingWrite(request.frameNumber) yields the
+ *   AE On → auto path.
+ *     DelayedControls::pendingWrite(frameNumber) yields the
  *     IPA-decided batch; the stage pushes it through V4L2 in one
  *     VIDIOC_S_EXT_CTRLS call. If the ring is empty for this slot —
  *     cold start, or StubIpa — we fall back to the manual path so
@@ -37,6 +38,7 @@ public:
         AutoFocusController *af;               /* may be null            */
         const SensorConfig  *sensorCfg;
         DelayedControls     *delayedControls;  /* may be null            */
+        mocha::camera::Rational evStep;        /* Capability::ae.evStep  */
     };
 
     explicit ApplySettingsStage(const Deps &deps);

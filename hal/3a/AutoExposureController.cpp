@@ -4,8 +4,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#include <system/camera_metadata.h>
-
 #include "ipa/IpaFrameMeta.h"
 #include "ipa/IpaStats.h"
 #include "sensor/DelayedControls.h"
@@ -16,26 +14,14 @@ namespace android {
 
 namespace {
 
-/* EV compensation step: each stop scales exposure by 5/4 up or 4/5
- * down. Matches the ANDROID_CONTROL_AE_COMPENSATION_STEP = 1/3
- * advertised in static characteristics (three 5/4 steps ≈ √2 factor,
- * i.e. one stop). Used by the manual / cold-start helper below; the
- * auto-AE path does its EV compensation against the floating-point
- * setpoint via aeCompFactor() and never touches these. */
-constexpr int32_t kEvStepUpNum     = 5;
-constexpr int32_t kEvStepUpDenom   = 4;
-constexpr int32_t kEvStepDownNum   = 4;
-constexpr int32_t kEvStepDownDenom = 5;
-
-inline int32_t applyManualEvComp(int32_t exposureUs, int32_t evComp) {
-    if (evComp > 0) {
-        for (int i = 0; i < evComp; i++)
-            exposureUs = exposureUs * kEvStepUpNum / kEvStepUpDenom;
-    } else {
-        for (int i = 0; i < -evComp; i++)
-            exposureUs = exposureUs * kEvStepDownNum / kEvStepDownDenom;
-    }
-    return exposureUs;
+/* Translate an EV compensation count into a multiplier on exposure:
+ * 2^(count x step), the step being Capability::ae.evStep (1/3 stop
+ * today). Zero stays exactly 1.0 so the unmodified path does not
+ * introduce a powf rounding. The auto path scales its setpoint by it,
+ * the manual path the requested shutter time. */
+float evCompFactor(int32_t evCompSteps, mocha::camera::Rational step) {
+    if (evCompSteps == 0) return 1.0f;
+    return powf(2.0f, (float)evCompSteps * step.value());
 }
 
 inline int32_t clampInt(int32_t v, int32_t lo, int32_t hi) {
@@ -85,13 +71,6 @@ float deriveAeCloseSpeedZone(const SensorTuning *t) {
     return t->aeParams().closeSpeedZone;
 }
 
-/* Translate the framework's 1/3-stop EV compensation count into a
- * multiplier on the AE target. Zero stays exactly 1.0 so the
- * unmodified path doesn't introduce a powf rounding. */
-float aeCompFactor(int32_t evCompUnits) {
-    if (evCompUnits == 0) return 1.0f;
-    return powf(2.0f, (float)evCompUnits / 3.0f);
-}
 
 /* Plain mean of the per-patch green channel from IpaStats::rgbMean
  * over the active focus ROI. Same linear pre-WB / pre-CCM domain as
@@ -184,8 +163,10 @@ inline float overFrames(float perFrame, int frames) {
 } /* namespace */
 
 AutoExposureController::AutoExposureController(const SensorConfig &cfg,
-                                                const SensorTuning *tuning)
+                                                const SensorTuning *tuning,
+                                                mocha::camera::Rational evStep)
     : sensorCfg(cfg),
+      evStep(evStep),
       aeSetpoint(deriveAeSetpoint(tuning)),
       aeDamping(deriveAeDamping(tuning)),
       aeRatioMin(deriveAeRatioMin(tuning)),
@@ -244,36 +225,30 @@ float AutoExposureController::computeLuxIndex(float currentTotalUs,
 }
 
 ExposureWriteValues AutoExposureController::parseManualSettings(
-        const CameraMetadata &cm,
-        const SensorConfig   &cfg) {
+        const mocha::camera::FrameSettings &settings,
+        const SensorConfig                 &cfg,
+        mocha::camera::Rational             evStep) {
     int32_t exposureUs = cfg.exposureDefault;
-    if (cm.exists(ANDROID_SENSOR_EXPOSURE_TIME)) {
-        const int64_t exposureNs =
-            *cm.find(ANDROID_SENSOR_EXPOSURE_TIME).data.i64;
-        exposureUs = (int32_t)(exposureNs / 1000);
-    }
+    if (settings.sensor.exposureTimeNs)
+        exposureUs = (int32_t)(*settings.sensor.exposureTimeNs / 1000);
 
     /* EV compensation applied on top of the requested exposure. */
-    if (cm.exists(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION)) {
-        const int32_t evComp =
-            *cm.find(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION).data.i32;
-        exposureUs = applyManualEvComp(exposureUs, evComp);
+    if (settings.ae.evCompensationSteps != 0) {
+        exposureUs = (int32_t)lroundf(
+                (float)exposureUs
+                * evCompFactor(settings.ae.evCompensationSteps, evStep));
     }
 
     /* Driver-queried envelope; populateSensorConfigFromDriver fills
      * exposureMin / exposureMax from V4L2_CID_EXPOSURE QUERYCTRL. */
     exposureUs = clampInt(exposureUs, cfg.exposureMin, cfg.exposureMax);
 
-    uint8_t aeMode = ANDROID_CONTROL_AE_MODE_ON;
-    if (cm.exists(ANDROID_CONTROL_AE_MODE))
-        aeMode = *cm.find(ANDROID_CONTROL_AE_MODE).data.u8;
-
     int32_t gain = cfg.gainUnit;  /* 1.0x baseline */
-    if (cm.exists(ANDROID_SENSOR_SENSITIVITY))
-        gain = cfg.isoToGain(*cm.find(ANDROID_SENSOR_SENSITIVITY).data.i32);
+    if (settings.sensor.sensitivityIso)
+        gain = cfg.isoToGain(*settings.sensor.sensitivityIso);
 
     ExposureWriteValues out;
-    if (aeMode == ANDROID_CONTROL_AE_MODE_OFF) {
+    if (settings.ae.mode == mocha::camera::AeMode::Off) {
         /* Manual AE: app told us exactly what to do. Honour the
          * requested exposure verbatim; if it doesn't fit the default
          * frame_length, grow frame_length so it does (FPS drops
@@ -334,9 +309,9 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
      * ratio `factor(current) / factor(lastEvComp)` so dragging the
      * EV slider while locked moves exposure proportionally instead
      * of being silently latched. */
-    if (meta.aeLock == ANDROID_CONTROL_AE_LOCK_ON || aeLockHeld) {
-        const float lockedFactor  = aeCompFactor(lastEvComp);
-        const float currentFactor = aeCompFactor(meta.aeExposureCompensation);
+    if (meta.aeLock || aeLockHeld) {
+        const float lockedFactor  = evCompFactor(lastEvComp, evStep);
+        const float currentFactor = evCompFactor(meta.aeExposureCompensation, evStep);
         const float biasedTarget  = filteredTotalUs * (currentFactor / lockedFactor);
 
         /* EMA toward the new biased target. First locked frame
@@ -406,7 +381,7 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
      * by shifting the AE target. evComp == 0 → factor 1.0 → identical
      * to the unbiased setpoint. */
     const float effectiveSetpoint = aeSetpoint
-                                  * aeCompFactor(meta.aeExposureCompensation);
+                                  * evCompFactor(meta.aeExposureCompensation, evStep);
 
     /* Two-candidate AE — mean target + highlight protection,
      * strictest wins (RPi / libcamera convention). Cap = 0.8: top

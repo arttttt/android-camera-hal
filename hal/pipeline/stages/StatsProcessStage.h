@@ -3,14 +3,16 @@
 
 #include "PipelineStage.h"
 
-namespace mocha::camera { class StatsEngine; }
+namespace mocha::camera {
+class ResultSink;
+class StatsEngine;
+}
 
 namespace android {
 
 class  AutoFocusController;
 class  DelayedControls;
 class  Ipa;
-class  PartialEmitter;
 struct SensorConfig;
 
 /* Runs on the finish engine once the frame's submit fence has
@@ -44,9 +46,9 @@ public:
         mocha::camera::StatsEngine *stats;
         AutoFocusController *af;          /* may be null — used for
                                            * currentFocusRoi() only       */
-        PartialEmitter      *emitter;     /* threaded into the IPA tick so
-                                           * AWB / AE partials hit the
-                                           * framework on this stage      */
+        mocha::camera::ResultSink *sink;  /* threaded into the IPA tick so
+                                           * the AWB / AE partial results
+                                           * go out on this stage         */
     };
 
     explicit StatsProcessStage(const Deps &deps);

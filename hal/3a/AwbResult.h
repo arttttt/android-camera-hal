@@ -20,20 +20,16 @@ namespace android {
  *   gated on the same conditions as gain updates (no CCM drift
  *   while WB is frozen would otherwise produce visible hue shifts
  *   without matching gain change).
- * - `estCct` (Kelvin) — diagnostic / metadata only, not consumed
- *   by any downstream stage. Reported as `ANDROID_SENSOR_REFERENCE_*`-
- *   adjacent metadata in the future (currently unused).
- * - `state` is one of `ANDROID_CONTROL_AWB_STATE_*` for result
- *   metadata.
+ * - `estCct` (Kelvin) — diagnostic only, not consumed by any
+ *   downstream stage.
  *
- * Empty result (no `gains`, no `ccm`, `state == 0`) means AWB
+ * Empty result (no `gains`, no `ccm`) means AWB
  * skipped this tick — manual mode, lock, or AF sweep. Coordinator
  * routes it by doing nothing. */
 struct AwbResult {
     Optional<WbGains>  gains;
     Optional<CcmQ10>   ccm;
     int                                   estCct = 0;
-    uint8_t                               state  = 0;
     /* Number of patches that passed the saturation / noise-floor
      * filter on this tick. -1 = controller didn't run (manual mode,
      * lock, or scene below floor); >= 0 = ran, value matches the

@@ -14,8 +14,6 @@ namespace android {
  *   coordinator pushes this into `DelayedControls` at slot
  *   `request.frameNumber + sensorCfg.controlDelay[id]` so the write
  *   lands on the right future frame.
- * - `state` is one of `ANDROID_CONTROL_AE_STATE_*` for direct
- *   placement into result metadata.
  * - `converged` is the boolean signal AF reads to gate continuous-
  *   mode retriggers (don't retrigger while AE is still chasing
  *   exposure — brightness changes from AE catching up would look
@@ -26,14 +24,13 @@ namespace android {
  *   the two semantically distinct so each consumer reads what it
  *   actually wants.
  *
- * An empty result (`!batch.has[*]` and `state == 0`) is the
+ * An empty result (`!batch.has[*]`) is the
  * "controller did not run this tick" sentinel — happens when AE is
  * locked or AF is sweeping. The coordinator routes a non-result by
  * doing nothing (no DelayedControls push, no state metadata
  * override). */
 struct AeResult {
     DelayedControls::Batch  batch;
-    uint8_t                 state;
     bool                    converged;
     /* Diagnostic-only — IQM of the top 2% post-WB max-of-channels
      * patches inside the AE focus ROI on this tick. The highlight-
@@ -52,7 +49,7 @@ struct AeResult {
     float                   luxIndex;
 
     AeResult()
-        : batch{}, state(0), converged(false),
+        : batch{}, converged(false),
           iqmHighlight(0.f), luxIndex(0.f) {}
 };
 

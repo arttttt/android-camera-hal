@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "Optional.h"
+#include "mochacamera/Controls.h"
 
 namespace android {
 
@@ -18,12 +19,12 @@ namespace android {
  *   level, not a pair of start / complete edges, so a sweep cancelled
  *   and restarted within one tick keeps the locks instead of handing
  *   the coordinator "locked" and "unlocked" at once.
- * - `state` is one of `ANDROID_CONTROL_AF_STATE_*` for result
- *   metadata. Reported every tick the controller runs. */
+ * - `state` is the Camera2 AF state, reported every tick the
+ *   controller runs. */
 struct AfResult {
     Optional<int32_t>  vcmPosition;
     bool               sweeping = false;
-    uint8_t            state    = 0;
+    mocha::camera::AfState state = mocha::camera::AfState::Inactive;
 };
 
 } /* namespace android */

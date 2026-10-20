@@ -3,8 +3,6 @@
 #include <math.h>
 #include <stdint.h>
 
-#include <system/camera_metadata.h>
-
 #include "ipa/IpaStats.h"
 
 namespace android {
@@ -124,16 +122,16 @@ float evalPriorBlend(const PriorBlend &pb, float ct) {
  * curve domain by default); a tuning *may* override it to clip
  * AUTO to a narrower band. Returns nullptr for unknown / OFF
  * modes — caller skips the mode clip. */
-const char *awbModeToName(uint8_t awbMode) {
+const char *awbModeToName(mocha::camera::AwbMode awbMode) {
     switch (awbMode) {
-    case ANDROID_CONTROL_AWB_MODE_AUTO:             return "AUTO";
-    case ANDROID_CONTROL_AWB_MODE_INCANDESCENT:     return "INCANDESCENT";
-    case ANDROID_CONTROL_AWB_MODE_FLUORESCENT:      return "FLUORESCENT";
-    case ANDROID_CONTROL_AWB_MODE_WARM_FLUORESCENT: return "WARM_FLUORESCENT";
-    case ANDROID_CONTROL_AWB_MODE_DAYLIGHT:         return "DAYLIGHT";
-    case ANDROID_CONTROL_AWB_MODE_CLOUDY_DAYLIGHT:  return "CLOUDY_DAYLIGHT";
-    case ANDROID_CONTROL_AWB_MODE_TWILIGHT:         return "TWILIGHT";
-    case ANDROID_CONTROL_AWB_MODE_SHADE:            return "SHADE";
+    case mocha::camera::AwbMode::Auto:             return "AUTO";
+    case mocha::camera::AwbMode::Incandescent:     return "INCANDESCENT";
+    case mocha::camera::AwbMode::Fluorescent:      return "FLUORESCENT";
+    case mocha::camera::AwbMode::WarmFluorescent: return "WARM_FLUORESCENT";
+    case mocha::camera::AwbMode::Daylight:         return "DAYLIGHT";
+    case mocha::camera::AwbMode::CloudyDaylight:  return "CLOUDY_DAYLIGHT";
+    case mocha::camera::AwbMode::Twilight:         return "TWILIGHT";
+    case mocha::camera::AwbMode::Shade:            return "SHADE";
     default:                                        return nullptr;
     }
 }
@@ -182,7 +180,7 @@ void BayesianAwbController::attachCcm(float targetCct, float speed,
 
 AwbResult BayesianAwbController::process(const IpaStats &stats,
                                           float luxIndex,
-                                          uint8_t awbMode) {
+                                          mocha::camera::AwbMode awbMode) {
     AwbResult out;
 
     /* Defensive — the AwbFactory only routes us when bayesParams

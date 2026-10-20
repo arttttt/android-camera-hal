@@ -50,7 +50,8 @@ public:
              AutoFocusController *af,
              const SensorTuning *tuning,
              const float wbGainPrior[3],
-             int16_t *ccmBufferQ10);
+             int16_t *ccmBufferQ10,
+             mocha::camera::Rational evStep);
     /* Out-of-line because mAe / mAwb are unique_ptrs to forward-
      * declared types — implicit destructor would need the full
      * definitions here, which we deliberately keep out to break the

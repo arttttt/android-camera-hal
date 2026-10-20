@@ -2,7 +2,6 @@
 
 #include <stdint.h>
 
-#include <system/camera_metadata.h>
 #include <utils/Log.h>
 #include <utils/Timers.h>
 
@@ -35,26 +34,18 @@ void StatsProcessStage::process(mocha::camera::Frame &ctx) {
 
     const nsecs_t tPeek = systemTime();
 
-    /* Carry the framework's per-frame 3A mode / lock flags into the
-     * IPA. Missing keys default to "auto" in IpaFrameMeta's ctor,
-     * matching camera3 metadata semantics. Gating per control (skip
-     * exposure / gain push when AE is OFF, skip WB push when AWB is
-     * OFF or LOCKED) lives inside the IPA, so AE and AWB can be
-     * driven independently — AE_OFF with AWB_AUTO still lets WB
-     * update, and vice versa. */
+    /* The frame's 3A modes and locks. Gating per control (skip
+     * exposure / gain push when AE is Off, skip WB push when AWB is
+     * Off or locked) lives inside the IPA, so AE and AWB can be driven
+     * independently — AE Off with AWB Auto still lets WB update, and
+     * vice versa. */
+    const mocha::camera::FrameSettings &s = ctx.settings;
     IpaFrameMeta meta;
-    const CameraMetadata &s = ctx.request.settings;
-    if (s.exists(ANDROID_CONTROL_AE_MODE))
-        meta.aeMode  = *s.find(ANDROID_CONTROL_AE_MODE).data.u8;
-    if (s.exists(ANDROID_CONTROL_AE_LOCK))
-        meta.aeLock  = *s.find(ANDROID_CONTROL_AE_LOCK).data.u8;
-    if (s.exists(ANDROID_CONTROL_AWB_MODE))
-        meta.awbMode = *s.find(ANDROID_CONTROL_AWB_MODE).data.u8;
-    if (s.exists(ANDROID_CONTROL_AWB_LOCK))
-        meta.awbLock = *s.find(ANDROID_CONTROL_AWB_LOCK).data.u8;
-    if (s.exists(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION))
-        meta.aeExposureCompensation =
-            *s.find(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION).data.i32;
+    meta.aeMode                 = s.ae.mode;
+    meta.aeLock                 = s.ae.lock;
+    meta.awbMode                = s.awb.mode;
+    meta.awbLock                = s.awb.lock;
+    meta.aeExposureCompensation = s.ae.evCompensationSteps;
 
     /* Pull the live AF region into meta so AE / AWB metering follow
      * the user's tap instead of always centring on the frame middle.
@@ -69,21 +60,14 @@ void StatsProcessStage::process(mocha::camera::Frame &ctx) {
         meta.focusRoiPxHi = roi.pxHi;
     }
 
-    /* Manual WB: only honour the request's gains when AWB_MODE == OFF.
-     * In AUTO mode the framework still rounds-trips the last-published
-     * gains into the next request, so reading them in AUTO would freeze
-     * AWB at the IPA's first publish. Camera2 layout is [R, Geven, Godd, B];
-     * collapse the two greens (calibrated equal on this sensor). */
-    if (meta.awbMode == ANDROID_CONTROL_AWB_MODE_OFF
-        && s.exists(ANDROID_COLOR_CORRECTION_GAINS)) {
-        camera_metadata_ro_entry_t e =
-            s.find(ANDROID_COLOR_CORRECTION_GAINS);
-        if (e.count == 4) {
-            meta.manualWbValid = true;
-            meta.manualWbR = e.data.f[0];
-            meta.manualWbG = 0.5f * (e.data.f[1] + e.data.f[2]);
-            meta.manualWbB = e.data.f[3];
-        }
+    /* Manual WB: the request's gains, which the frontend passes on for
+     * AWB Off only (in Auto the framework round-trips the published
+     * gains, and reading them would freeze AWB). */
+    if (s.awb.manualGains) {
+        meta.manualWbValid = true;
+        meta.manualWbR = s.awb.manualGains->r;
+        meta.manualWbG = s.awb.manualGains->g;
+        meta.manualWbB = s.awb.manualGains->b;
     }
 
     /* Pass the frame-of-stats sequence to the IPA so it can correlate
@@ -95,20 +79,20 @@ void StatsProcessStage::process(mocha::camera::Frame &ctx) {
      * refactor) — the coordinator calls af->process(stats, ...) and
      * routes its result, so this stage no longer touches AF.
      *
-     * IpaProcessParams carries everything the AWB / AE partial emits
+     * IpaProcessParams carries everything the AWB / AE partial results
      * inside the tick need (frameNumber, timestampNs, applied-state
-     * lookup via DelayedControls, the request-settings seed). */
+     * lookup via DelayedControls, the frame's settings). */
     IpaProcessParams params = {
         statsSeq,
         statsStartNs,
-        ctx.request.frameNumber,
+        ctx.frameNumber,
         ctx.tShutter ? ctx.tShutter : ctx.tAccepted,
         stats,
         meta,
-        ctx.request.settings,
+        ctx.settings,
         *deps.sensorCfg,
         deps.delayedControls,
-        deps.emitter,
+        deps.sink,
     };
     DelayedControls::Batch batch = deps.ipa->processStats(params);
     ctx.aeConverged = deps.ipa->isAeConverged();
@@ -140,7 +124,7 @@ void StatsProcessStage::process(mocha::camera::Frame &ctx) {
           (long long)((tIpa  - tPeek) / 1000),
           (long long)((tEnd  - tIpa)  / 1000),
           (long long)((tEnd  - t0)    / 1000),
-          ctx.request.frameNumber);
+          ctx.frameNumber);
 }
 
 } /* namespace android */

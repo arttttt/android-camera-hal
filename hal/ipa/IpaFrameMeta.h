@@ -3,53 +3,40 @@
 
 #include <stdint.h>
 
-#include <system/camera_metadata.h>
 
 #include "IpaStats.h"
+#include "mochacamera/Controls.h"
 
 namespace android {
 
-/* Per-frame framework control state the IPA needs to decide what to
- * update. Extracted from ctx.request.settings in StatsProcessStage so
- * the IPA stays ignorant of CameraMetadata parsing.
+/* Per-frame control state the IPA needs to decide what to update,
+ * taken from the frame's settings in StatsProcessStage.
  *
- * Each field defaults to the camera3 spec's "auto" value when the
- * request does not set the corresponding key, so an IPA can treat a
- * missing key as permission to run. */
+ * Each field defaults to Camera2's "auto" value, so an IPA can treat a
+ * request that says nothing as permission to run. */
 struct IpaFrameMeta {
-    /* ANDROID_CONTROL_AE_MODE — OFF means the framework controls
-     * exposure / gain directly; the IPA must not push either. */
-    uint8_t aeMode;
+    /* Off means the framework controls exposure / gain directly; the
+     * IPA must not push either. */
+    mocha::camera::AeMode aeMode;
 
-    /* ANDROID_CONTROL_AE_LOCK — ON means the IPA must hold the last
-     * exposure / gain decision. */
-    uint8_t aeLock;
+    /* The IPA must hold the last exposure / gain decision. */
+    bool aeLock;
 
-    /* ANDROID_CONTROL_AWB_MODE — OFF means the framework controls
-     * colour-correction gains directly; presets (INCANDESCENT etc.)
-     * eventually map to pre-tuned WB priors but today every non-AUTO
-     * value freezes the gains at their last auto decision. */
-    uint8_t awbMode;
+    /* Off means the framework controls colour-correction gains
+     * directly; presets clip the Bayesian AWB's CT search. */
+    mocha::camera::AwbMode awbMode;
 
-    /* ANDROID_CONTROL_AWB_LOCK — ON means the IPA must hold the last
-     * WB gains. */
-    uint8_t awbLock;
+    /* The IPA must hold the last WB gains. */
+    bool awbLock;
 
-    /* ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION — signed step count in
-     * units of ANDROID_CONTROL_AE_COMPENSATION_STEP (1/3 stop in our
-     * static metadata). The IPA scales its target by 2^(value/3)
-     * before driving the AE controller; the manual-mode equivalent
-     * lives in AutoExposureController::parseManualSettings, which
-     * applies the same EV scaling against the requested shutter time. */
+    /* Signed step count in units of Capability::ae.evStep. The IPA
+     * scales its target by 2^(steps x step) before driving the AE
+     * controller; the manual path applies the same scaling against the
+     * requested shutter time (AutoExposureController::parseManualSettings). */
     int32_t aeExposureCompensation;
 
-    /* ANDROID_COLOR_CORRECTION_GAINS, decoded as the per-channel
-     * multipliers the IPA pushes into the demosaic shader. Camera2
-     * orders the array as (R, Geven, Godd, B); IpaFrameMeta collapses
-     * the two greens into one (they're calibrated equal). manualWbValid
-     * gates the path: the field is set only when the request actually
-     * carries the key AND awbMode == OFF, so AUTO frames keep the IPA's
-     * gray-world output unchanged. */
+    /* The manual colour-correction gains, set only for AWB Off when the
+     * request carries them, so auto frames keep the IPA's own gains. */
     bool  manualWbValid;
     float manualWbR;
     float manualWbG;
@@ -70,10 +57,10 @@ struct IpaFrameMeta {
     int focusRoiPxHi;
 
     IpaFrameMeta()
-        : aeMode(ANDROID_CONTROL_AE_MODE_ON),
-          aeLock(ANDROID_CONTROL_AE_LOCK_OFF),
-          awbMode(ANDROID_CONTROL_AWB_MODE_AUTO),
-          awbLock(ANDROID_CONTROL_AWB_LOCK_OFF),
+        : aeMode(mocha::camera::AeMode::On),
+          aeLock(false),
+          awbMode(mocha::camera::AwbMode::Auto),
+          awbLock(false),
           aeExposureCompensation(0),
           manualWbValid(false),
           manualWbR(1.0f), manualWbG(1.0f), manualWbB(1.0f),

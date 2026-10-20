@@ -84,7 +84,7 @@ void GrayWorldAwbController::reset() {
 
 AwbResult GrayWorldAwbController::process(const IpaStats &stats,
                                             float /*luxIndex*/,
-                                            uint8_t /*awbMode*/) {
+                                            mocha::camera::AwbMode /*awbMode*/) {
     AwbResult out;
 
     /* Gray-world over rgbMean patches, with saturated / near-black

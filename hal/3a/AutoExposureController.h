@@ -5,7 +5,8 @@
 
 #include "Optional.h"
 
-#include "CameraMetadataCompat.h"
+#include "mochacamera/Controls.h"
+#include "mochacamera/FrameSettings.h"
 
 #include "AeResult.h"
 #include "sensor/LuxAnchor.h"
@@ -61,8 +62,10 @@ struct ExposureWriteValues {
  * smoothed locked-bias EMA), `aeLockHeld`, `aeConvergedFrames`. */
 class AutoExposureController {
 public:
+    /* `evStep` is one EV compensation step (Capability::ae.evStep). */
     AutoExposureController(const SensorConfig &cfg,
-                           const SensorTuning *tuning);
+                           const SensorTuning *tuning,
+                           mocha::camera::Rational evStep);
 
     /* Auto-mode tick. Computes the new target, runs the dead-band /
      * LPF math, returns batch + state + convergence flag. */
@@ -105,19 +108,20 @@ public:
     float currentFilteredTotalUs() const { return filteredTotalUs; }
 
     /* Manual-AE / cold-start parsing. Stateless deterministic mapping
-     * from request metadata to the V4L2 triple. Reads
-     * ANDROID_SENSOR_EXPOSURE_TIME, ANDROID_SENSOR_SENSITIVITY,
-     * ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION, ANDROID_CONTROL_AE_MODE
-     * (clamped, EV-comp applied, then split based on AE_MODE: manual
-     * grows frame_length to fit a long shutter, auto-cold-start
-     * splits via SensorConfig::splitExposureGain to keep FPS).
+     * from the frame's settings to the V4L2 triple: exposure time and
+     * sensitivity, clamped, EV compensation applied (2^(steps x
+     * evStep)), then split by AE mode: manual grows frame_length to fit
+     * a long shutter, auto cold-start splits via
+     * SensorConfig::splitExposureGain to keep FPS).
      *
      * Static because there is no inter-frame state to preserve — the
      * call is pure. ApplySettingsStage uses it on the capture engine
      * for both the AE_MODE_OFF path and the auto-mode cold-start
      * fallback when the IPA hasn't pushed yet. */
-    static ExposureWriteValues parseManualSettings(const CameraMetadata &cm,
-                                                   const SensorConfig   &cfg);
+    static ExposureWriteValues parseManualSettings(
+            const mocha::camera::FrameSettings &settings,
+            const SensorConfig                 &cfg,
+            mocha::camera::Rational             evStep);
 
 private:
     /* Back-compute scene lux from the current AE state against the
@@ -126,6 +130,7 @@ private:
     float computeLuxIndex(float currentTotalUs, float currentLuma) const;
 
     const SensorConfig &sensorCfg;
+    const mocha::camera::Rational evStep;
 
     /* Tuning-derived knobs, resolved at construction. No silent
      * fallbacks — missing keys leave the corresponding knob at zero,

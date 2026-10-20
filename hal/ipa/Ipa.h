@@ -3,24 +3,23 @@
 
 #include <stdint.h>
 
-#include "CameraMetadataCompat.h"
-
 #include "IpaFrameMeta.h"
+#include "mochacamera/FrameSettings.h"
 #include "sensor/DelayedControls.h"
+
+namespace mocha::camera { class ResultSink; }
 
 namespace android {
 
-class PartialEmitter;
 struct IpaStats;
 struct SensorConfig;
 
-/* Per-frame inputs to Ipa::processStats. Carries the stats / metadata
- * the controllers consume plus the contextual identity (frameNumber,
- * timestamp) and emit channel (PartialEmitter) the IPA tick uses to
- * publish per-controller partial results to the framework before the
- * final buffer-bearing result lands. SensorConfig stays a const ref
- * because gainToIso/maxExposureUs and friends drive the AE-partial
- * metadata derivation.
+/* Per-frame inputs to Ipa::processStats. Carries the stats and the
+ * frame's settings the controllers consume, the frame's identity
+ * (frameNumber, timestamp), and the result sink the IPA tick sends the
+ * per-controller partial results to before the final buffer-bearing
+ * result lands. SensorConfig stays a const ref because
+ * gainToIso/maxExposureUs and friends drive the AE partial.
  *
  * Pass-by-struct because StubIpa and Ipa3A share the signature; an
  * argument list this wide gets unwieldy fast. */
@@ -35,11 +34,10 @@ struct IpaProcessParams {
     int64_t                  timestampNs;
     const IpaStats          &stats;
     const IpaFrameMeta      &meta;
-    const CameraMetadata    &requestSettings;  /* request metadata, used as
-                                                * partial-CameraMetadata seed
-                                                * so AE/AWB state echoes pick
-                                                * up the request's *_MODE /
-                                                * *_LOCK keys                */
+    const mocha::camera::FrameSettings &settings;  /* the frame's modes and
+                                                    * locks the partial
+                                                    * results' states derive
+                                                    * from                 */
     const SensorConfig      &sensorCfg;
     DelayedControls         *delayedControls;  /* applyControls(frameNumber)
                                                 * yields what's physically on
@@ -50,7 +48,7 @@ struct IpaProcessParams {
                                                 * applied values rather than
                                                 * the IPA's just-decided
                                                 * future-frame batch).      */
-    PartialEmitter          *emitter;     /* nullable on cold start */
+    mocha::camera::ResultSink *sink;      /* partial results; may be null */
 };
 
 /* Image Processing Algorithms — the 3A brain.
@@ -83,10 +81,10 @@ public:
      * the control batch the scheduler should publish. Batch entries
      * with has[i] == false mean "no change for this control on
      * this frame" — DelayedControls leaves the matching cell
-     * untouched. The IPA tick may also emit per-controller partial
-     * result metadata via `params.emitter` between controller calls
-     * — apps that gate UI on AE / AWB state see them earlier than
-     * the buffer-bearing final partial. */
+     * untouched. The IPA tick also sends the per-controller partial
+     * results to `params.sink` between controller calls — apps that
+     * gate UI on AE / AWB state see them earlier than the
+     * buffer-bearing final result. */
     virtual DelayedControls::Batch processStats(const IpaProcessParams &params) = 0;
 
     /* Drops any internal averaging / peak-tracking state. Called

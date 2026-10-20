@@ -6,11 +6,15 @@
 
 #include <utils/Log.h>
 #include <utils/Timers.h>
-#include <system/camera_metadata.h>
 
 #include "sensor/SensorTuning.h"
 
 namespace android {
+
+using mocha::camera::AfMode;
+using mocha::camera::AfState;
+using mocha::camera::AfTrigger;
+using mocha::camera::FrameSettings;
 
 namespace {
 
@@ -99,7 +103,7 @@ AutoFocusController::AutoFocusController(const SensorTuning *tuning,
                                          int sensorWidth, int sensorHeight)
     : mSensorWidth(sensorWidth)
     , mSensorHeight(sensorHeight)
-    , mAfState(ANDROID_CONTROL_AF_STATE_INACTIVE)
+    , mAfState(AfState::Inactive)
     , mSweepKind(SweepKind::Passive)
     , mCafLocked(false)
     , mLockPending(false)
@@ -121,7 +125,7 @@ AutoFocusController::AutoFocusController(const SensorTuning *tuning,
     , mMinFramesBetweenSweeps(0)
     , mMinFocusRoiPatches(0)
     , mVcmPerDiopter(0.f)
-    , mAfMode(ANDROID_CONTROL_AF_MODE_OFF)
+    , mAfMode(AfMode::Off)
     , mFocusPosition(0)
     , mState(ScanState::Idle)
     , mSweepPos(0)
@@ -203,7 +207,7 @@ AutoFocusController::AutoFocusController(const SensorTuning *tuning,
 }
 
 int32_t AutoFocusController::sweepUpperLimit() const {
-    if (mAfMode == ANDROID_CONTROL_AF_MODE_MACRO) return mVcmMacroEnd;
+    if (mAfMode == AfMode::Macro) return mVcmMacroEnd;
     return mVcmAutoEnd < mVcmMacroEnd ? mVcmAutoEnd : mVcmMacroEnd;
 }
 
@@ -223,7 +227,7 @@ bool AutoFocusController::nearLimit(int32_t pos, int32_t limit) const {
     return diff <= 2 * mStepCoarse;
 }
 
-void AutoFocusController::beginCoarseFromCurrent(uint8_t /*afMode*/) {
+void AutoFocusController::beginCoarseFromCurrent(AfMode /*afMode*/) {
     /* Anchor at the current lens position when there's room on
      * both sides; clamp to the nearer limit otherwise. Same shape
      * for AUTO and CONTINUOUS — the focusMin-only AUTO start was
@@ -248,7 +252,7 @@ void AutoFocusController::beginCoarseFromCurrent(uint8_t /*afMode*/) {
     mSweepPos = clampVcm(mSweepPos);
 }
 
-void AutoFocusController::startSweep(uint8_t afMode, SweepKind kind) {
+void AutoFocusController::startSweep(AfMode afMode, SweepKind kind) {
     /* The coordinator locks AE / AWB while a sweep runs (AfResult::
      * sweeping). The focus score is already exposure-invariant by
      * construction (focusMetric = grad²/pixel²), but locking removes
@@ -257,8 +261,8 @@ void AutoFocusController::startSweep(uint8_t afMode, SweepKind kind) {
      * itself provokes. */
     mSweepKind    = kind;
     mAfState      = (kind == SweepKind::Triggered)
-                    ? ANDROID_CONTROL_AF_STATE_ACTIVE_SCAN
-                    : ANDROID_CONTROL_AF_STATE_PASSIVE_SCAN;
+                    ? AfState::ActiveScan
+                    : AfState::PassiveScan;
     mLastSweepRoi = currentFocusRoi();
     mSweepBestScore   = 0.f;
     mScanData.clear();
@@ -266,7 +270,7 @@ void AutoFocusController::startSweep(uint8_t afMode, SweepKind kind) {
     mFinePhaseStart   = 0;
     mSceneChangeCount = 0;
 
-    if (afMode == ANDROID_CONTROL_AF_MODE_MACRO) {
+    if (afMode == AfMode::Macro) {
         /* Macro is a half-range scan from the midpoint to the macro
          * end. Skip the directional probe — we already know which
          * way the lens has to go. */
@@ -285,7 +289,7 @@ void AutoFocusController::startSweep(uint8_t afMode, SweepKind kind) {
     moveLens(mSweepPos);
 
     ALOGD("AF sweep started (mode=%u, start=%d step=%d state=%s)",
-          afMode, mSweepPos, mSweepStep,
+          (unsigned)afMode, mSweepPos, mSweepStep,
           mState == ScanState::Coarse1 ? "Coarse1" : "Coarse2");
 }
 
@@ -293,15 +297,15 @@ void AutoFocusController::cancelSweep() {
     /* Back to INACTIVE, sweep or no sweep: CANCEL also releases a
      * lock (AUTO's locked result, CONTINUOUS_PICTURE's lock). */
     mState       = ScanState::Idle;
-    mAfState     = ANDROID_CONTROL_AF_STATE_INACTIVE;
+    mAfState     = AfState::Inactive;
     mCafLocked   = false;
     mLockPending = false;
 }
 
 void AutoFocusController::lockOnVerdict() {
     mAfState = (mHaveVerdict && mLastFocused)
-               ? ANDROID_CONTROL_AF_STATE_FOCUSED_LOCKED
-               : ANDROID_CONTROL_AF_STATE_NOT_FOCUSED_LOCKED;
+               ? AfState::FocusedLocked
+               : AfState::NotFocusedLocked;
     mCafLocked   = true;
     mLockPending = false;
 }
@@ -477,15 +481,15 @@ void AutoFocusController::commitSweep(bool focused) {
     mHaveVerdict = true;
     mLastFocused = focused;
     if (mSweepKind == SweepKind::Triggered || mLockPending) {
-        if (mAfMode == ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE) {
+        if (mAfMode == AfMode::ContinuousPicture) {
             lockOnVerdict();
         } else {
-            mAfState = focused ? ANDROID_CONTROL_AF_STATE_FOCUSED_LOCKED
-                               : ANDROID_CONTROL_AF_STATE_NOT_FOCUSED_LOCKED;
+            mAfState = focused ? AfState::FocusedLocked
+                               : AfState::NotFocusedLocked;
         }
     } else {
-        mAfState = focused ? ANDROID_CONTROL_AF_STATE_PASSIVE_FOCUSED
-                           : ANDROID_CONTROL_AF_STATE_PASSIVE_UNFOCUSED;
+        mAfState = focused ? AfState::PassiveFocused
+                           : AfState::PassiveUnfocused;
     }
     mLockPending = false;
     /* Force the next idle onStats to capture a fresh scene snapshot
@@ -505,33 +509,28 @@ void AutoFocusController::commitSweep(bool focused) {
           focused ? "Focused" : "Failed");
 }
 
-void AutoFocusController::onSettings(const CameraMetadata &cm,
+void AutoFocusController::onSettings(const FrameSettings &settings,
                                      uint32_t /*frameNumber*/) {
     Command cmd;
-    cmd.afMode = ANDROID_CONTROL_AF_MODE_OFF;
-    if (cm.exists(ANDROID_CONTROL_AF_MODE))
-        cmd.afMode = *cm.find(ANDROID_CONTROL_AF_MODE).data.u8;
-    cmd.hasFocusDistance = cmd.afMode == ANDROID_CONTROL_AF_MODE_OFF &&
-                           cm.exists(ANDROID_LENS_FOCUS_DISTANCE);
-    cmd.focusDistance = cmd.hasFocusDistance
-        ? *cm.find(ANDROID_LENS_FOCUS_DISTANCE).data.f : 0.f;
-    cmd.trigger = ANDROID_CONTROL_AF_TRIGGER_IDLE;
-    if (cm.exists(ANDROID_CONTROL_AF_TRIGGER))
-        cmd.trigger = *cm.find(ANDROID_CONTROL_AF_TRIGGER).data.u8;
+    cmd.afMode           = settings.af.mode;
+    cmd.hasFocusDistance = cmd.afMode == AfMode::Off &&
+                           settings.af.focusDistanceDiopters.has_value();
+    cmd.focusDistance    = cmd.hasFocusDistance
+        ? *settings.af.focusDistanceDiopters : 0.f;
+    cmd.trigger          = settings.af.trigger;
 
     {
         std::lock_guard<std::mutex> lock(mCommandMutex);
-        if (cmd.trigger == ANDROID_CONTROL_AF_TRIGGER_IDLE &&
+        if (cmd.trigger == AfTrigger::Idle &&
             !mCommands.empty() &&
-            mCommands.back().trigger == ANDROID_CONTROL_AF_TRIGGER_IDLE)
+            mCommands.back().trigger == AfTrigger::Idle)
             mCommands.back() = cmd;
         else
             mCommands.push_back(cmd);
     }
 
-    /* Tap-to-focus / zonal AF. Camera2 ships AF_REGIONS as 5 ints
-     * (xMin, yMin, xMax, yMax, weight) in active-array coordinates
-     * (== sensor capture resolution for our HAL). The default request
+    /* Tap-to-focus / zonal AF. The region is in active-array
+     * coordinates (== sensor capture resolution for our HAL). The default request
      * template fills the whole sensor rect; treat that as "no region,
      * use centre defaults". A real region from a tap shrinks the
      * stats integration window so AF locks onto whatever the user
@@ -540,61 +539,58 @@ void AutoFocusController::onSettings(const CameraMetadata &cm,
     {
         FocusRoi roi{IpaStats::FOCUS_ROI_PY_LO, IpaStats::FOCUS_ROI_PY_HI,
                      IpaStats::FOCUS_ROI_PX_LO, IpaStats::FOCUS_ROI_PX_HI};
-        if (cm.exists(ANDROID_CONTROL_AF_REGIONS)) {
-            const camera_metadata_ro_entry e = cm.find(ANDROID_CONTROL_AF_REGIONS);
-            if (e.count >= 4) {
-                const int32_t xMin = e.data.i32[0];
-                const int32_t yMin = e.data.i32[1];
-                const int32_t xMax = e.data.i32[2];
-                const int32_t yMax = e.data.i32[3];
-                const int sw = mSensorWidth;
-                const int sh = mSensorHeight;
-                /* Apps routinely send "no specific subject" as a near-
-                 * full-frame rectangle (Camera2's `Camera.Region` weight
-                 * doesn't map cleanly onto our patch grid, so the
-                 * convention is to either set zero regions or hand back
-                 * almost the whole frame). The exact-full check (xMax >=
-                 * sw) misses the off-by-one variants apps use — (sw-1)
-                 * is common — and would parse them as a real region
-                 * spanning the full 16×16 grid, neutralising both the
-                 * AF spatial restrict and the AE / AWB region weighting.
-                 * Treat anything within one pixel of the sensor edges as
-                 * full-frame. */
-                const bool isFullFrame =
-                    (xMin <= 1 && yMin <= 1
-                     && xMax >= sw - 1 && yMax >= sh - 1);
-                if (sw > 0 && sh > 0 && !isFullFrame
-                    && xMax > xMin && yMax > yMin) {
-                    /* Sensor coords → patch grid (16×16). Floor on Lo,
-                     * ceil on Hi so a tiny tap still spans at least one
-                     * patch column / row. */
-                    const float wPerPatch = (float)sw / IpaStats::PATCH_X;
-                    const float hPerPatch = (float)sh / IpaStats::PATCH_Y;
-                    int pxLo = (int)((float)xMin / wPerPatch);
-                    int pyLo = (int)((float)yMin / hPerPatch);
-                    int pxHi = (int)((float)xMax / wPerPatch + 0.999f);
-                    int pyHi = (int)((float)yMax / hPerPatch + 0.999f);
-                    if (pxLo < 0) pxLo = 0;
-                    if (pyLo < 0) pyLo = 0;
-                    if (pxHi > IpaStats::PATCH_X) pxHi = IpaStats::PATCH_X;
-                    if (pyHi > IpaStats::PATCH_Y) pyHi = IpaStats::PATCH_Y;
-                    if (pxHi > pxLo && pyHi > pyLo) {
-                        /* Enforce the minimum footprint around the
-                         * tap centre. Apps routinely send narrow
-                         * regions that collapse to one patch on the
-                         * 16×16 grid; the AF metric needs a wider
-                         * Sobel sum to find a stable peak. */
-                        growToMin(&pxLo, &pxHi, IpaStats::PATCH_X,
-                                   mMinFocusRoiPatches);
-                        growToMin(&pyLo, &pyHi, IpaStats::PATCH_Y,
-                                   mMinFocusRoiPatches);
-                        roi.pxLo = pxLo; roi.pxHi = pxHi;
-                        roi.pyLo = pyLo; roi.pyHi = pyHi;
-                        ALOGD("AF_REGIONS sensor=(%d,%d-%d,%d) -> patches "
-                              "py[%d,%d) px[%d,%d)",
-                              xMin, yMin, xMax, yMax,
-                              roi.pyLo, roi.pyHi, roi.pxLo, roi.pxHi);
-                    }
+        if (settings.af.region) {
+            const int32_t xMin = settings.af.region->rect.xMin;
+            const int32_t yMin = settings.af.region->rect.yMin;
+            const int32_t xMax = settings.af.region->rect.xMax;
+            const int32_t yMax = settings.af.region->rect.yMax;
+            const int sw = mSensorWidth;
+            const int sh = mSensorHeight;
+            /* Apps routinely send "no specific subject" as a near-
+             * full-frame rectangle (Camera2's `Camera.Region` weight
+             * doesn't map cleanly onto our patch grid, so the
+             * convention is to either set zero regions or hand back
+             * almost the whole frame). The exact-full check (xMax >=
+             * sw) misses the off-by-one variants apps use — (sw-1)
+             * is common — and would parse them as a real region
+             * spanning the full 16×16 grid, neutralising both the
+             * AF spatial restrict and the AE / AWB region weighting.
+             * Treat anything within one pixel of the sensor edges as
+             * full-frame. */
+            const bool isFullFrame =
+                (xMin <= 1 && yMin <= 1
+                 && xMax >= sw - 1 && yMax >= sh - 1);
+            if (sw > 0 && sh > 0 && !isFullFrame
+                && xMax > xMin && yMax > yMin) {
+                /* Sensor coords → patch grid (16×16). Floor on Lo,
+                 * ceil on Hi so a tiny tap still spans at least one
+                 * patch column / row. */
+                const float wPerPatch = (float)sw / IpaStats::PATCH_X;
+                const float hPerPatch = (float)sh / IpaStats::PATCH_Y;
+                int pxLo = (int)((float)xMin / wPerPatch);
+                int pyLo = (int)((float)yMin / hPerPatch);
+                int pxHi = (int)((float)xMax / wPerPatch + 0.999f);
+                int pyHi = (int)((float)yMax / hPerPatch + 0.999f);
+                if (pxLo < 0) pxLo = 0;
+                if (pyLo < 0) pyLo = 0;
+                if (pxHi > IpaStats::PATCH_X) pxHi = IpaStats::PATCH_X;
+                if (pyHi > IpaStats::PATCH_Y) pyHi = IpaStats::PATCH_Y;
+                if (pxHi > pxLo && pyHi > pyLo) {
+                    /* Enforce the minimum footprint around the
+                     * tap centre. Apps routinely send narrow
+                     * regions that collapse to one patch on the
+                     * 16×16 grid; the AF metric needs a wider
+                     * Sobel sum to find a stable peak. */
+                    growToMin(&pxLo, &pxHi, IpaStats::PATCH_X,
+                               mMinFocusRoiPatches);
+                    growToMin(&pyLo, &pyHi, IpaStats::PATCH_Y,
+                               mMinFocusRoiPatches);
+                    roi.pxLo = pxLo; roi.pxHi = pxHi;
+                    roi.pyLo = pyLo; roi.pyHi = pyHi;
+                    ALOGD("AF_REGIONS sensor=(%d,%d-%d,%d) -> patches "
+                          "py[%d,%d) px[%d,%d)",
+                          xMin, yMin, xMax, yMax,
+                          roi.pyLo, roi.pyHi, roi.pxLo, roi.pxHi);
                 }
             }
         }
@@ -619,15 +615,15 @@ void AutoFocusController::applyCommand(const Command &cmd) {
         mFocusPosition = pos;
     }
 
-    if (cmd.trigger == ANDROID_CONTROL_AF_TRIGGER_CANCEL) {
+    if (cmd.trigger == AfTrigger::Cancel) {
         cancelSweep();
         return;
     }
-    if (cmd.trigger != ANDROID_CONTROL_AF_TRIGGER_START ||
-        cmd.afMode == ANDROID_CONTROL_AF_MODE_OFF)
+    if (cmd.trigger != AfTrigger::Start ||
+        cmd.afMode == AfMode::Off)
         return;
 
-    if (cmd.afMode == ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE) {
+    if (cmd.afMode == AfMode::ContinuousPicture) {
         /* START locks the current result rather than scanning again —
          * except when the tap moved the AF region, or nothing has been
          * focused yet: then a triggered sweep focuses there and ends
@@ -689,7 +685,7 @@ AfResult AutoFocusController::process(const IpaStats &stats, bool fresh,
          * holds still, the ratio test starts passing, the counter
          * ticks up, and a fresh sweep launches once stability has
          * persisted for `mRetriggerDelay` frames. */
-        if (mAfMode != ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE || mCafLocked)
+        if (mAfMode != AfMode::ContinuousPicture || mCafLocked)
             goto finish;
 
         float curRgb[3];
@@ -839,7 +835,7 @@ void AutoFocusController::reset() {
     /* A sweep cut short leaves its AE / AWB locks to the coordinator's
      * own reset (Ipa3A::reset). */
     mState              = ScanState::Idle;
-    mAfState            = ANDROID_CONTROL_AF_STATE_INACTIVE;
+    mAfState            = AfState::Inactive;
     mSweepKind          = SweepKind::Passive;
     mCafLocked          = false;
     mLockPending        = false;
@@ -847,7 +843,7 @@ void AutoFocusController::reset() {
     mLastFocused        = false;
     mLastSweepRoi       = FocusRoi{IpaStats::FOCUS_ROI_PY_LO, IpaStats::FOCUS_ROI_PY_HI,
                                    IpaStats::FOCUS_ROI_PX_LO, IpaStats::FOCUS_ROI_PX_HI};
-    mAfMode             = ANDROID_CONTROL_AF_MODE_OFF;
+    mAfMode             = AfMode::Off;
     mSweepPos           = 0;
     mSweepStep          = 0;
     mSweepBestPos       = mVcmInfinity;

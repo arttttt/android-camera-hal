@@ -7,7 +7,8 @@
 
 #include <utils/Timers.h>
 
-#include "CameraMetadataCompat.h"
+#include "mochacamera/Controls.h"
+#include "mochacamera/FrameSettings.h"
 
 #include "AfResult.h"
 #include "ipa/IpaStats.h"
@@ -50,9 +51,9 @@ class SensorTuning;
 class AutoFocusController {
 public:
     struct Report {
-        uint8_t afState;       /* ANDROID_CONTROL_AF_STATE_*             */
-        uint8_t afMode;        /* last observed ANDROID_CONTROL_AF_MODE  */
-        float   focusDiopter;  /* 0 .. ~10, for ANDROID_LENS_FOCUS_DISTANCE */
+        mocha::camera::AfState afState;
+        mocha::camera::AfMode  afMode;        /* last observed */
+        float   focusDiopter;  /* 0 .. ~10, the lens focus distance */
     };
 
     /* AF region of interest in IpaStats patch grid coordinates.
@@ -86,7 +87,7 @@ public:
      * process() tick. The AF region is parsed here and published at
      * once (see currentFocusRoi). Continuous-mode re-triggering is
      * driven by scene statistics in process(), not from here. */
-    void onSettings(const CameraMetadata &cm, uint32_t frameNumber);
+    void onSettings(const mocha::camera::FrameSettings &settings, uint32_t frameNumber);
 
     /* Advance the sweep against the IPA stats grid for the current
      * frame, or evaluate scene-change in continuous-AF idle. Reads
@@ -120,7 +121,7 @@ public:
 
     /* Snapshot the AF region the stats engine should restrict its
      * Sobel / greenSq accumulation to. Updated from the framework's
-     * ANDROID_CONTROL_AF_REGIONS in onSettings; defaults to the
+     * the request's AF region in onSettings; defaults to the
      * compile-time FOCUS_ROI_* centre rectangle when no app sets a
      * region (or when the region is the default full-frame one).
      * Thread-safe — onSettings runs on the capture engine, as does
@@ -158,7 +159,7 @@ private:
      * AF_TRIGGER_START (ACTIVE_SCAN) and ends locked. */
     enum class SweepKind { Passive, Triggered };
 
-    void   startSweep(uint8_t afMode, SweepKind kind);
+    void   startSweep(mocha::camera::AfMode afMode, SweepKind kind);
     void   cancelSweep();
     /* CONTINUOUS_PICTURE lock: report the last sweep's verdict as
      * FOCUSED_LOCKED / NOT_FOCUSED_LOCKED and stop refocusing until
@@ -175,7 +176,7 @@ private:
      * logic (Coarse1 from current with Coarse2 reversal as fallback)
      * because the cost of a full sweep on every retrigger would be
      * visually disruptive. RPi libcamera makes the same split. */
-    void   beginCoarseFromCurrent(uint8_t afMode);
+    void   beginCoarseFromCurrent(mocha::camera::AfMode afMode);
     void   advanceCoarse(float score);
     void   advanceFine(float score);
     void   commitSweep(bool focused);
@@ -197,10 +198,10 @@ private:
 
     /* What one request asked of AF, queued by onSettings. */
     struct Command {
-        uint8_t afMode;
+        mocha::camera::AfMode afMode;
         bool    hasFocusDistance;  /* manual focus: AF_MODE_OFF + LENS_FOCUS_DISTANCE */
         float   focusDistance;     /* diopters */
-        uint8_t trigger;           /* ANDROID_CONTROL_AF_TRIGGER_* */
+        mocha::camera::AfTrigger trigger;
     };
     void applyCommand(const Command &cmd);
 
@@ -228,9 +229,9 @@ private:
     mutable std::mutex   mReportMutex;
     Report               mPublished;
 
-    /* Camera2 AF state machine (ANDROID_CONTROL_AF_STATE_*), set on
+    /* Camera2 AF state machine, set on
      * every transition: mode change, trigger, sweep start, commit. */
-    uint8_t      mAfState;
+    mocha::camera::AfState mAfState;
     SweepKind    mSweepKind;
     /* CONTINUOUS_PICTURE: locked by a trigger; no passive sweeps. */
     bool         mCafLocked;
@@ -269,7 +270,7 @@ private:
      * keeps the lens at infinity. */
     float    mVcmPerDiopter;
 
-    uint8_t  mAfMode;
+    mocha::camera::AfMode  mAfMode;
     int32_t  mFocusPosition;
 
     /* Sweep state — only meaningful when mState != Idle. */

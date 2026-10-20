@@ -54,7 +54,7 @@ public:
      * specific CT-range support; the Bayesian impl consumes both. */
     AwbResult process(const IpaStats &stats,
                        float luxIndex,
-                       uint8_t awbMode) override;
+                       mocha::camera::AwbMode awbMode) override;
 
     AwbResult applyManualGains(float rGainAbs, float gGainAbs,
                                 float bGainAbs) override;

@@ -7,7 +7,6 @@
 
 #include <linux/videodev2.h>
 
-#include <system/camera_metadata.h>
 
 #include "Frame.h"
 #include "3a/AutoExposureController.h"
@@ -103,20 +102,16 @@ void ApplySettingsStage::process(mocha::camera::Frame &ctx) {
     }
 
     if (deps.dev && deps.sensorCfg) {
-        uint8_t aeMode = ANDROID_CONTROL_AE_MODE_ON;
-        if (ctx.request.settings.exists(ANDROID_CONTROL_AE_MODE)) {
-            aeMode = *ctx.request.settings.find(ANDROID_CONTROL_AE_MODE).data.u8;
-        }
-
         bool appliedFromRing = false;
-        if (aeMode != ANDROID_CONTROL_AE_MODE_OFF && deps.delayedControls) {
+        if (ctx.settings.ae.mode != mocha::camera::AeMode::Off &&
+            deps.delayedControls) {
             /* Auto AE — consume the IPA's decision if it has landed
              * for this frame. The ring is empty on cold start and
              * whenever the IPA returns empty batches; fall through
              * to the manual path so the sensor keeps a valid
              * exposure / gain rather than freezing. */
             DelayedControls::Batch batch =
-                deps.delayedControls->pendingWrite(ctx.request.frameNumber);
+                deps.delayedControls->pendingWrite(ctx.frameNumber);
             const bool landed = batch.has[DelayedControls::EXPOSURE]
                              || batch.has[DelayedControls::GAIN];
             if (landed || lastAutoValid) {
@@ -139,7 +134,7 @@ void ApplySettingsStage::process(mocha::camera::Frame &ctx) {
                 lastAutoExposureUs = ctx.appliedExposureUs;
                 lastAutoGain       = ctx.appliedGain;
                 lastAutoValid      = true;
-                deps.delayedControls->commit(ctx.request.frameNumber, batch);
+                deps.delayedControls->commit(ctx.frameNumber, batch);
                 appliedFromRing = true;
             }
         }
@@ -150,13 +145,13 @@ void ApplySettingsStage::process(mocha::camera::Frame &ctx) {
              * and write V4L2 directly. */
             const ExposureWriteValues v =
                 AutoExposureController::parseManualSettings(
-                    ctx.request.settings, *deps.sensorCfg);
+                    ctx.settings, *deps.sensorCfg, deps.evStep);
             writeAeTriple(deps.dev, v, groupHold);
             ctx.appliedExposureUs = v.exposureUs;
             ctx.appliedGain       = v.gain;
 
             /* Record the value physically written at slot
-             * request.frameNumber so applyControls() reports what the
+             * frameNumber so applyControls() reports what the
              * sensor really got, and a late IPA push cannot overwrite
              * it. The auto path records its own write above. */
             if (deps.delayedControls) {
@@ -169,13 +164,13 @@ void ApplySettingsStage::process(mocha::camera::Frame &ctx) {
                 published.val[DelayedControls::EXPOSURE] = v.exposureUs;
                 published.has[DelayedControls::GAIN]     = true;
                 published.val[DelayedControls::GAIN]     = v.gain;
-                deps.delayedControls->commit(ctx.request.frameNumber, published);
+                deps.delayedControls->commit(ctx.frameNumber, published);
             }
         }
     }
 
     if (deps.af) {
-        deps.af->onSettings(ctx.request.settings, ctx.request.frameNumber);
+        deps.af->onSettings(ctx.settings, ctx.frameNumber);
     }
 }
 
