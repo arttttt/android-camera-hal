@@ -91,6 +91,14 @@ private:
         int   estCct;
     };
     State current;
+
+    /* The CCT the colour matrix is interpolated at: estCct smoothed
+     * at the gains' own rate, in mireds (CCT differences are
+     * perceptually even there), so the matrix follows the light
+     * without jumping between ticks the way the raw search result
+     * can. 0 until the first estimate. */
+    float ccmMired;
+    void  attachCcm(float targetCct, float speed, AwbResult *out);
 };
 
 } /* namespace android */

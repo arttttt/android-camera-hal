@@ -149,7 +149,8 @@ BayesianAwbController::BayesianAwbController(const SensorTuning *t,
       wbBPrior(wbGainPrior[1] > 0.02f
                ? wbGainPrior[2] / wbGainPrior[1] : 1.0f),
       frameCounter(0),
-      current{wbRPrior, wbBPrior, 0} {
+      current{wbRPrior, wbBPrior, 0},
+      ccmMired(0.f) {
 }
 
 WbGains BayesianAwbController::currentGainsQ8() const {
@@ -165,6 +166,18 @@ void BayesianAwbController::reset() {
     current.wbB    = wbBPrior;
     current.estCct = 0;
     frameCounter   = 0;
+    ccmMired       = 0.f;
+}
+
+void BayesianAwbController::attachCcm(float targetCct, float speed,
+                                      AwbResult *out) {
+    if (!tuning || targetCct <= 0.f) return;
+    const float target = 1e6f / targetCct;
+    ccmMired = (ccmMired > 0.f) ? speed * target + (1.0f - speed) * ccmMired
+                                : target;
+    CcmQ10 ccm;
+    tuning->ccmForCctLerpQ10((int)(1e6f / ccmMired + 0.5f), ccm.v);
+    out->ccm = ccm;
 }
 
 AwbResult BayesianAwbController::process(const IpaStats &stats,
@@ -413,6 +426,11 @@ AwbResult BayesianAwbController::process(const IpaStats &stats,
     gainsQ8.b = (uint16_t)toQ8(current.wbB);
     out.gains  = gainsQ8;
     out.estCct = current.estCct;
+    /* The colour matrix follows the light too, interpolated from the
+     * tuning's calibrated sets at the estimated CCT — the gray-world
+     * path always did; this one left the boot-time daylight matrix in
+     * place for good. */
+    attachCcm(bestT, speed, &out);
     return out;
 }
 
