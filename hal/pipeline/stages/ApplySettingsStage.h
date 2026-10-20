@@ -1,6 +1,7 @@
 #ifndef HAL_PIPELINE_STAGES_APPLY_SETTINGS_STAGE_H
 #define HAL_PIPELINE_STAGES_APPLY_SETTINGS_STAGE_H
 
+#include <stdint.h>
 #include "PipelineStage.h"
 
 namespace android {
@@ -45,6 +46,16 @@ public:
 
 private:
     Deps deps;
+
+    /* Last exposure / gain the auto path actually wrote. When the
+     * IPA's decision for a request has not landed yet, auto mode
+     * repeats this instead of falling back to the request's own
+     * sensor settings — those are framework template values, ~1x
+     * gain, and writing them mid-stream drops a frame to near black.
+     * Invalid until the first auto write of the stage's lifetime. */
+    bool    lastAutoValid;
+    int32_t lastAutoExposureUs;
+    int32_t lastAutoGain;
 };
 
 } /* namespace android */

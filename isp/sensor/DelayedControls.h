@@ -60,6 +60,13 @@ public:
      * flagged in the batch leave the corresponding cell untouched. */
     void push(uint32_t seq, const Batch &batch);
 
+    /* Records what was ACTUALLY written to the sensor for request
+     * `seq` and seals the slot: a push() for the same seq arriving
+     * after this is dropped. Without the seal a late IPA push would
+     * overwrite the record, and applyControls() would then report a
+     * value the sensor never received. */
+    void commit(uint32_t seq, const Batch &batch);
+
     /* Reports the value that was written for slot (seq - delay[id]).
      * Returns Config.defaultValue[id] if no matching write exists (the
      * cell was never touched, or the tagged sequence doesn't match
@@ -80,6 +87,7 @@ private:
 
     struct Cell {
         bool     has;
+        bool     written;  /* sealed by commit() — reflects the sensor */
         uint32_t seq;
         int32_t  val;
     };

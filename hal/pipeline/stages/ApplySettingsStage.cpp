@@ -46,7 +46,11 @@ void writeAeBatch(V4l2Device *dev, const DelayedControls::Batch &batch) {
 
 } /* namespace */
 
-ApplySettingsStage::ApplySettingsStage(const Deps &d) : deps(d) {}
+ApplySettingsStage::ApplySettingsStage(const Deps &d)
+    : deps(d),
+      lastAutoValid(false),
+      lastAutoExposureUs(0),
+      lastAutoGain(0) {}
 
 void ApplySettingsStage::process(PipelineContext &ctx) {
     if (deps.sensorCfg) {
@@ -67,22 +71,39 @@ void ApplySettingsStage::process(PipelineContext &ctx) {
              * whenever the IPA returns empty batches; fall through
              * to the manual path so the sensor keeps a valid
              * exposure / gain rather than freezing. */
-            const DelayedControls::Batch batch =
+            DelayedControls::Batch batch =
                 deps.delayedControls->pendingWrite(ctx.request.frameNumber);
-            if (batch.has[DelayedControls::EXPOSURE]
-             || batch.has[DelayedControls::GAIN]) {
+            const bool landed = batch.has[DelayedControls::EXPOSURE]
+                             || batch.has[DelayedControls::GAIN];
+            if (landed || lastAutoValid) {
+                /* Fill whatever the IPA did not decide for this
+                 * request from the last auto write, so the sensor
+                 * stays on the auto operating point either way. */
+                if (!batch.has[DelayedControls::EXPOSURE] && lastAutoValid) {
+                    batch.has[DelayedControls::EXPOSURE] = true;
+                    batch.val[DelayedControls::EXPOSURE] = lastAutoExposureUs;
+                }
+                if (!batch.has[DelayedControls::GAIN] && lastAutoValid) {
+                    batch.has[DelayedControls::GAIN] = true;
+                    batch.val[DelayedControls::GAIN] = lastAutoGain;
+                }
                 writeAeBatch(deps.dev, batch);
                 if (batch.has[DelayedControls::EXPOSURE])
                     ctx.appliedExposureUs = batch.val[DelayedControls::EXPOSURE];
                 if (batch.has[DelayedControls::GAIN])
                     ctx.appliedGain       = batch.val[DelayedControls::GAIN];
+                lastAutoExposureUs = ctx.appliedExposureUs;
+                lastAutoGain       = ctx.appliedGain;
+                lastAutoValid      = true;
+                deps.delayedControls->commit(ctx.request.frameNumber, batch);
                 appliedFromRing = true;
             }
         }
 
         if (!appliedFromRing) {
-            /* Manual AE, or auto-with-no-IPA-push: parse the request
-             * deterministically and write V4L2 directly. */
+            /* Manual AE, or auto before the first IPA decision of the
+             * stage's lifetime: parse the request deterministically
+             * and write V4L2 directly. */
             const ExposureWriteValues v =
                 AutoExposureController::parseManualSettings(
                     ctx.request.settings, *deps.sensorCfg);
@@ -90,12 +111,10 @@ void ApplySettingsStage::process(PipelineContext &ctx) {
             ctx.appliedExposureUs = v.exposureUs;
             ctx.appliedGain       = v.gain;
 
-            /* Publish the value physically written at slot
-             * request.frameNumber so ResultMetadataBuilder's
-             * applyControls(frame + delay) query returns the same
-             * numbers we just wrote. Skipped when the auto path
-             * already applied from the ring — IPA's push is already
-             * there. */
+            /* Record the value physically written at slot
+             * request.frameNumber so applyControls() reports what the
+             * sensor really got, and a late IPA push cannot overwrite
+             * it. The auto path records its own write above. */
             if (deps.delayedControls) {
                 DelayedControls::Batch published;
                 for (int i = 0; i < DelayedControls::COUNT; ++i) {
@@ -106,7 +125,7 @@ void ApplySettingsStage::process(PipelineContext &ctx) {
                 published.val[DelayedControls::EXPOSURE] = v.exposureUs;
                 published.has[DelayedControls::GAIN]     = true;
                 published.val[DelayedControls::GAIN]     = v.gain;
-                deps.delayedControls->push(ctx.request.frameNumber, published);
+                deps.delayedControls->commit(ctx.request.frameNumber, published);
             }
         }
     }
