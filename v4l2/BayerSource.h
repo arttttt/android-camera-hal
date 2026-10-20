@@ -1,82 +1,60 @@
 #ifndef V4L2_BAYER_SOURCE_H
 #define V4L2_BAYER_SOURCE_H
 
-#include <functional>
+#include <stdint.h>
 
+#include <optional>
+
+#include "BayerLease.h"
 #include "Resolution.h"
-#include "V4l2Device.h"
 
 namespace android {
 
-/* Abstract producer of Bayer frames for the HAL pipeline. The concrete
- * V4l2Source pulls frames from a V4L2 capture device on its own
- * thread; future implementations could serve a ZSL ring buffer, a
- * test pattern, or a playback file. Consumers see only this
- * interface. */
+/* Producer of Bayer frames for the camera core, driven by the capture
+ * engine's thread: the engine polls fd() and returnedFd() with its own
+ * work and calls back here, so every V4L2 ioctl (DQBUF, QBUF) happens
+ * on that one thread. A frame is handed out as a lease; the lease
+ * brings its slot back when its last holder lets go, from any thread,
+ * and the slot is requeued on the capture thread. */
 class BayerSource {
 public:
     virtual ~BayerSource() {}
 
-    /* Begin producing frames. Preconditions (e.g. V4L2 streaming on)
-     * are the caller's responsibility. Safe to call after stop(). */
+    /* A new run. Preconditions (V4L2 streaming on) are the caller's.
+     * Called while the capture engine is not running. */
     virtual bool start() = 0;
 
-    /* Stop producing, release any held buffers, join any worker
-     * threads. Safe to call when not running. */
+    /* End of the run: the slot held as latest and the slots returned
+     * since the last requeue go back to V4L2; leases still out return
+     * nothing (their run is over). Called while the capture engine is
+     * not running. */
     virtual void stop() = 0;
 
-    /* True iff start() has succeeded and stop() has not yet been
-     * called. Lets the owner gate start() on idempotency. */
     virtual bool isRunning() const = 0;
 
-    /* Block until the next Bayer frame is available, the source stops,
-     * or the optional `abortCheck` callback returns true. Returns null
-     * on stop or abort. The caller owns the frame for the duration of
-     * its use and must hand it back via releaseFrame() before the
-     * source may reuse the underlying V4L2 slot. The abort callback is
-     * intended for per-ctx cancellation from flush() — combined with
-     * notifyForAbort() it lets a blocked acquire wake up and re-check
-     * cancellation without a full source teardown. */
-    virtual const V4l2Device::VBuffer* acquireNextFrame(
-        const std::function<bool()> &abortCheck = {}) = 0;
+    /* The V4L2 node, for the capture engine to watch. */
+    virtual int fd() const = 0;
 
-    /* Wake every thread currently blocked in acquireNextFrame so the
-     * abort callback (if any) gets re-evaluated. No-op when nothing is
-     * waiting. */
-    virtual void notifyForAbort() = 0;
+    /* Readable when leases have returned slots since requeueReturned(). */
+    virtual int returnedFd() const = 0;
 
-    /* Hand a previously-acquired frame back to the source. Safe to
-     * call from any thread. Released buffers are not returned to the
-     * underlying V4L2 device until flushPendingReleases() is called —
-     * this avoids handing a slot back to the sensor while the GPU is
-     * still reading from it. */
-    virtual void releaseFrame(const V4l2Device::VBuffer*) = 0;
+    /* On the capture thread, with the revents of fd(): dequeue what is
+     * ready and keep only the newest good frame, requeueing the rest.
+     * True when a new frame is waiting for takeLatest(). */
+    virtual bool drainToLatest(short revents) = 0;
 
-    /* Take one more reference on an acquired frame, for a second
-     * consumer that outlives the first (the stats worker reads a frame
-     * across two pipeline frames). Each retain is matched by one
-     * releaseFrame; the slot goes back to the source when the last
-     * reference is released. */
-    virtual void retainFrame(const V4l2Device::VBuffer*) = 0;
+    /* On the capture thread: the newest frame not yet taken, as a
+     * lease; nothing if none came since the last take. */
+    virtual std::optional<mocha::camera::BayerLease> takeLatest() = 0;
 
-    /* Called, from the source's own thread, when it has produced no
-     * frame for longer than any frame the sensor can take: the sensor
-     * or the capture hardware has stopped. Called once per stall; a
-     * frame arriving afterwards rearms it. Set before start(). */
-    virtual void setStallHandler(std::function<void()> handler) = 0;
+    /* On the capture thread: requeue the slots leases returned. */
+    virtual void requeueReturned() = 0;
 
-    /* Return all previously-released buffers to the V4L2 device.
-     * The caller must guarantee the GPU (or any other consumer)
-     * has finished reading from them — typically by calling
-     * IspPipeline::waitForPreviousFrame() first. */
-    virtual void flushPendingReleases() = 0;
-
-    /* The source's output resolution (what it's currently capturing
-     * at). For a V4L2 source, tracks V4l2Device::resolution(). */
+    /* The source's output resolution (what it is capturing at). */
     virtual Resolution resolution() const = 0;
 
-    /* The raw sensor's native resolution, used to map crop regions
-     * received in sensor coordinates back to V4L2 coordinates. */
+    /* The sensor's native resolution, to map crop regions given in
+     * sensor coordinates to capture coordinates. */
     virtual Resolution sensorResolution() const = 0;
 };
 

@@ -1,28 +1,25 @@
 #ifndef V4L2_V4L2_SOURCE_H
 #define V4L2_V4L2_SOURCE_H
 
-#include <condition_variable>
-#include <memory>
+#include <stdint.h>
+
 #include <mutex>
+#include <optional>
 #include <vector>
 
 #include "BayerSource.h"
+#include "EventFd.h"
 
 namespace android {
 
 class V4l2Device;
-class V4l2CaptureThread;
 
-/* BayerSource implementation backed by V4L2. Owns a V4l2CaptureThread
- * that continuously dequeues the freshest frame and makes it available
- * to acquireNextFrame() via a condition-variable-guarded handoff.
- *
- * All V4L2 ioctls (DQBUF / QBUF) are performed on the capture thread
- * so V4l2Device's internal state (pending-QBUF list, buffer slots)
- * has a single writer. Consumers push buffers back via releaseFrame()
- * which queues them for the capture thread to return on its next
- * iteration. */
-class V4l2Source : public BayerSource {
+/* BayerSource backed by a V4L2 capture device. It has no thread of its
+ * own: the capture engine polls the device and calls in, and only that
+ * thread dequeues or queues a buffer, so V4l2Device's slots have a
+ * single writer. Leases give slots back through returnSlot() from any
+ * thread; the slot is queued again on the capture thread. */
+class V4l2Source : public BayerSource, public mocha::camera::SlotReturn {
 public:
     explicit V4l2Source(V4l2Device *dev);
     ~V4l2Source() override;
@@ -31,40 +28,42 @@ public:
     V4l2Source& operator=(const V4l2Source&) = delete;
 
     bool start() override;
-    void stop()  override;
+    void stop() override;
+    bool isRunning() const override;
 
-    const V4l2Device::VBuffer* acquireNextFrame(
-        const std::function<bool()> &abortCheck = {}) override;
-    void notifyForAbort() override;
-    void releaseFrame(const V4l2Device::VBuffer*) override;
-    void retainFrame(const V4l2Device::VBuffer*) override;
-    void setStallHandler(std::function<void()> handler) override {
-        onStall = std::move(handler);
-    }
-    void flushPendingReleases() override;
+    int fd() const override;
+    int returnedFd() const override { return returnedWake.fd(); }
+
+    bool drainToLatest(short revents) override;
+    std::optional<mocha::camera::BayerLease> takeLatest() override;
+    void requeueReturned() override;
+
+    void returnSlot(int index, uint32_t generation) override;
 
     Resolution resolution()       const override;
     Resolution sensorResolution() const override;
 
-    bool isRunning() const override;
-
 private:
-    friend class V4l2CaptureThread;
+    /* vb2 reports POLLERR while the queue is not streaming or holds no
+     * buffer, and keeps reporting it; the capture thread backs off this
+     * long rather than spin. */
+    static constexpr int kErrorBackoffMs = 20;
 
-    V4l2Device                        *dev;
-    std::unique_ptr<V4l2CaptureThread> thread;
-    std::function<void()>              onStall;
+    V4l2Device *dev;
+    EventFd     returnedWake;
 
-    std::mutex                         mutex;
-    std::condition_variable            frameReady;
-    const V4l2Device::VBuffer         *latest;
-    std::vector<const V4l2Device::VBuffer*> toRelease;
-    bool                               stopping;
+    /* Guards generation, running and returned: leases return slots
+     * from any thread. */
+    mutable std::mutex mutex;
+    uint32_t           generation;
+    bool               running;
+    std::vector<int>   returned;
 
-    /* References held on each slot handed out by acquireNextFrame:
-     * 1 at acquire, +1 per retainFrame, -1 per releaseFrame. Guarded
-     * by `mutex`; reset when the source starts. */
-    int                                refs[V4L2DEVICE_BUF_COUNT];
+    /* The capture thread's own (and start/stop's, which run while it
+     * does not): the newest frame not yet taken, and the dequeue time
+     * of the previous good frame. */
+    const V4l2Device::VBuffer *latest;
+    int64_t                    prevGoodNs;
 };
 
 } /* namespace android */
