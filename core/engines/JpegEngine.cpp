@@ -16,8 +16,6 @@
 
 #include "JpegEngine.h"
 
-#include <hardware/camera3.h>
-
 #include "BufferProcessor.h"
 
 namespace mocha::camera {
@@ -50,15 +48,13 @@ JpegEngine::Job::~Job() {
 
 void JpegEngine::Job::encode() {
     Frame &f = *frame;
-    const bool encoded = processor->finalizeBlobOutput(
-            f.request.outputBuffers[output], f.request.settings,
-            f.outputJpegSnapshots[output], f.request.frameNumber);
-    /* finalizeBlobOutput lets the snapshot go either way. A BLOB with
+    /* finalizeBlobOutput uses the snapshot up either way. A BLOB with
      * no image in it goes back as a failed buffer. The result engine
      * reads the status only once this job's token is gone. */
-    f.outputJpegSnapshots[output].ringSlot = -1;
+    const bool encoded = processor->finalizeBlobOutput(
+            f.outputs[output], f.settings.jpeg, f.frameNumber);
     if (!encoded)
-        f.outputStatuses[output] = CAMERA3_BUFFER_STATUS_ERROR;
+        f.outputs[output].status = BufferStatus::Error;
     finished = true;
 }
 
@@ -67,7 +63,7 @@ void JpegEngine::Job::giveUp() {
     if (!frame)
         return;
     processor->releaseJpegSnapshot(*frame, output);
-    frame->outputStatuses[output] = CAMERA3_BUFFER_STATUS_ERROR;
+    frame->outputs[output].status = BufferStatus::Error;
 }
 
 JpegEngine::~JpegEngine() {

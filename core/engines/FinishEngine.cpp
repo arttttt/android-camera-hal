@@ -78,15 +78,14 @@ void FinishEngine::finish(FrameToken &token) {
     if (deps.statsProcess)
         deps.statsProcess->process(f);
 
-    for (size_t i = 0; i < f.request.outputBuffers.size(); ++i) {
-        if (f.request.outputBuffers[i].stream->format != HAL_PIXEL_FORMAT_BLOB)
-            continue;
-        if (i >= f.outputJpegSnapshots.size() || f.outputJpegSnapshots[i].ringSlot < 0)
+    for (size_t i = 0; i < f.outputs.size(); ++i) {
+        if (f.outputs[i].stream.format != PixelFormat::Blob ||
+            f.outputs[i].jpeg.ringSlot < 0)
             continue;
         /* A job the engine refuses gives its output up as it goes. */
         if (!deps.jpeg->submit(JpegEngine::Job(token.share(), i, deps.bufferProcessor)))
             ALOGE("frame %u output %zu: the JPEG engine is stopped",
-                  f.request.frameNumber, i);
+                  f.frameNumber, i);
     }
 }
 

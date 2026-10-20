@@ -137,14 +137,12 @@ void CaptureEngine::crop(Frame &f) {
     int cropW = res.width;
     int cropH = res.height;
 
-    if (f.request.settings.exists(ANDROID_SCALER_CROP_REGION)) {
-        camera_metadata_entry_t entry =
-            f.request.settings.find(ANDROID_SCALER_CROP_REGION);
-        const int32_t *c = entry.data.i32;
-        cropX = c[0] * (int)res.width  / (int)sensor.width;
-        cropY = c[1] * (int)res.height / (int)sensor.height;
-        cropW = c[2] * (int)res.width  / (int)sensor.width;
-        cropH = c[3] * (int)res.height / (int)sensor.height;
+    if (f.settings.crop) {
+        const CropRegion &c = *f.settings.crop;
+        cropX = c.left   * (int)res.width  / (int)sensor.width;
+        cropY = c.top    * (int)res.height / (int)sensor.height;
+        cropW = c.width  * (int)res.width  / (int)sensor.width;
+        cropH = c.height * (int)res.height / (int)sensor.height;
         if (cropX < 0) cropX = 0;
         if (cropY < 0) cropY = 0;
         if (cropW < 16) cropW = 16;
@@ -182,7 +180,7 @@ void CaptureEngine::dispatchStats(Frame &f) {
     job.sequence        = f.frameNumber;
     job.exposureStartNs = f.bayer.buffer()->exposureStartNs();
 
-    /* The AF region from ANDROID_CONTROL_AF_REGIONS; without AF, the
+    /* The AF region of the request; without AF, the
      * compile-time centre rectangle. */
     if (deps.af) {
         const android::AutoFocusController::FocusRoi roi = deps.af->currentFocusRoi();

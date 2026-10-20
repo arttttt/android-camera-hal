@@ -3,7 +3,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include "CameraMetadataCompat.h"
 
 #include "PostProcessor.h"
 
@@ -13,7 +12,7 @@ namespace android {
  * already populated by the ISP into one of the JPEG ring slots) and
  * writes a JPEG into the caller's output buffer, with an EXIF APP1
  * marker carrying the orientation and, when the request asks for one
- * (ANDROID_JPEG_THUMBNAIL_SIZE), a JPEG thumbnail. The caller is responsible for calling
+ * (a thumbnail size in its JPEG settings), a JPEG thumbnail. The caller is responsible for calling
  * IspPipeline::invalidateJpegSnapshot before invoking process() and
  * releaseJpegSnapshot afterwards.
  *
@@ -24,7 +23,7 @@ public:
 
     bool process(const JpegSnapshot &src,
                   uint8_t *dst, size_t dstCapacity,
-                  const CameraMetadata &metadata,
+                  const mocha::camera::FrameSettings::Jpeg &settings,
                   size_t *bytesWritten) override;
 };
 

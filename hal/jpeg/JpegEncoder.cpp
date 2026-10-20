@@ -11,8 +11,6 @@
 
 #include <jpeglib.h>
 
-#include <hardware/camera3.h>
-#include <system/camera_metadata.h>
 #include <utils/Log.h>
 
 namespace android {
@@ -37,7 +35,7 @@ void jpegErrorExit(j_common_ptr cinfo) {
     longjmp(err->jump, 1);
 }
 
-/* Map ANDROID_JPEG_ORIENTATION (CW degrees) to EXIF Orientation tag:
+/* Map the JPEG orientation (CW degrees) to EXIF Orientation tag:
  *   0°  → 1 (normal)
  *   90° → 6 (rotate 90 CW on display)
  *   180°→ 3
@@ -239,28 +237,17 @@ constexpr size_t kExifOverhead   = 6 + 8 + (2 + 12 + 4) + (2 + 12 * 3 + 4);
 
 bool JpegEncoder::process(const JpegSnapshot &src,
                            uint8_t *dst, size_t dstCapacity,
-                           const CameraMetadata &metadata,
+                           const mocha::camera::FrameSettings::Jpeg &settings,
                            size_t *bytesWritten) {
     if (bytesWritten) *bytesWritten = 0;
     if (!src.rgba || !dst || !bytesWritten) return false;
 
-    uint8_t jpegQuality = kDefaultJpegQuality;
-    if (metadata.exists(ANDROID_JPEG_QUALITY))
-        jpegQuality = *metadata.find(ANDROID_JPEG_QUALITY).data.u8;
-
-    int32_t jpegOri = 0;
-    if (metadata.exists(ANDROID_JPEG_ORIENTATION))
-        jpegOri = *metadata.find(ANDROID_JPEG_ORIENTATION).data.i32;
-
+    const uint8_t jpegQuality  = settings.quality.value_or(kDefaultJpegQuality);
+    const int32_t jpegOri      = settings.orientationDegrees;
     /* Thumbnail, when the request asks for one (0x0 means none). */
-    int32_t thumbW = 0, thumbH = 0;
-    if (metadata.exists(ANDROID_JPEG_THUMBNAIL_SIZE)) {
-        const camera_metadata_ro_entry e = metadata.find(ANDROID_JPEG_THUMBNAIL_SIZE);
-        if (e.count >= 2) { thumbW = e.data.i32[0]; thumbH = e.data.i32[1]; }
-    }
-    uint8_t thumbQuality = 90;
-    if (metadata.exists(ANDROID_JPEG_THUMBNAIL_QUALITY))
-        thumbQuality = *metadata.find(ANDROID_JPEG_THUMBNAIL_QUALITY).data.u8;
+    const int32_t thumbW       = (int32_t)settings.thumbnailWidth;
+    const int32_t thumbH       = (int32_t)settings.thumbnailHeight;
+    const uint8_t thumbQuality = settings.thumbnailQuality.value_or(90);
 
     std::vector<uint8_t> thumb;
     if (thumbW > 0 && thumbH > 0) {

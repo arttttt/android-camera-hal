@@ -8,6 +8,7 @@
 
 #include "CropRect.h"
 #include "JpegSnapshot.h"
+#include "mochacamera/Buffers.h"
 
 namespace android {
 
@@ -55,30 +56,31 @@ public:
         return false;
     }
 
-    /* Record a sampler-blit of the scratch image into the gralloc nativeBuffer
+    /* Record a sampler-blit of the scratch image into the output buffer
      * (RGBA8 stream). Identity dst==src uses texelFetch in the shader; otherwise
      * hardware bilinear via sampler2D. acquireFence ownership transfers to the
-     * impl on success (closed/imported). */
-    virtual bool blitToGralloc(void *nativeBuffer,
+     * impl whatever the outcome (closed/imported). The buffer is the
+     * frontend's NativeBuffer; the backend knows what it is. */
+    virtual bool blitToGralloc(mocha::camera::NativeBuffer *buffer,
                                 unsigned dstW, unsigned dstH,
                                 const CropRect &crop,
                                 int acquireFence,
                                 int *releaseFenceOut) {
-        (void)nativeBuffer; (void)dstW; (void)dstH; (void)crop;
+        (void)buffer; (void)dstW; (void)dstH; (void)crop;
         (void)acquireFence;
         *releaseFenceOut = -1;
         return false;
     }
 
-    /* Record a compute NV12 encode of the scratch image into the gralloc
-     * nativeBuffer (YCbCr_420_888 stream). Width must be a multiple of 4 and
+    /* Record a compute NV12 encode of the scratch image for the output
+     * buffer (YCbCr_420_888 stream). Width must be a multiple of 4 and
      * height a multiple of 2. acquireFence semantics match blitToGralloc. */
-    virtual bool blitToYuv(void *nativeBuffer,
+    virtual bool blitToYuv(mocha::camera::NativeBuffer *buffer,
                             unsigned dstW, unsigned dstH,
                             const CropRect &crop,
                             int acquireFence,
                             int *releaseFenceOut) {
-        (void)nativeBuffer; (void)dstW; (void)dstH; (void)crop;
+        (void)buffer; (void)dstW; (void)dstH; (void)crop;
         (void)acquireFence;
         *releaseFenceOut = -1;
         return false;

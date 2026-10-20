@@ -24,10 +24,12 @@
 #include <vector>
 
 #include "BayerLease.h"
-#include "CaptureRequest.h"
 #include "EventFd.h"
 #include "FrameStatus.h"
 #include "JpegSnapshot.h"
+#include "UniqueFd.h"
+#include "mochacamera/Buffers.h"
+#include "mochacamera/FrameSettings.h"
 
 namespace android { class IspPipeline; }
 
@@ -48,13 +50,29 @@ namespace mocha::camera {
  *
  * All time fields are CLOCK_MONOTONIC nanoseconds (systemTime()). */
 struct Frame {
-    uint32_t                frameNumber = 0;
-    android::CaptureRequest request;
+    /* One output buffer of the request, and what became of it. */
+    struct Output {
+        StreamSpec    stream;
+        NativeBuffer *buffer = nullptr;
+        /* The frontend's acquire fence, until the demosaic waits on it,
+         * imports it or closes it. */
+        android::UniqueFd acquireFence;
+        /* Signalled when the GPU is done writing the buffer; -1 when
+         * the buffer is ready as it is. Handed back with the buffer. */
+        int           releaseFence = -1;
+        BufferStatus  status = BufferStatus::Ok;
+        /* The JPEG snapshot of a BLOB output; ringSlot < 0 for any
+         * other output, or when the snapshot could not be taken.
+         * Whoever uses one up -- the encode, or the finish engine giving
+         * the frame's up -- sets its ringSlot to -1; any still held when
+         * the frame goes is given back to the frame's jpegRing then, so
+         * a frame dropped on its way cannot keep a slot of the ring. */
+        android::JpegSnapshot jpeg{nullptr, 0, 0, 0, -1};
+    };
 
-    /* Set from the request on acceptance: a snapshot (still capture,
-     * video snapshot or ZSL intent, or a BLOB output) is never given up
-     * by the AE mode switch. */
-    bool stillCapture = false;
+    uint32_t      frameNumber = 0;
+    FrameSettings settings;
+    std::vector<Output> outputs;
 
     /* Set by the capture engine once the frame has its Bayer. Read
      * without a lock by the AE mode switch, which only gives up frames
@@ -69,20 +87,8 @@ struct Frame {
     int cropW = 0;
     int cropH = 0;
 
-    /* Filled by the demosaic. Indexed in lockstep with
-     * request.outputBuffers -- element i is output i. */
-    std::vector<int>  outputReleaseFences;
-    /* Written by the JPEG engine for a BLOB it could not encode; read
-     * by the result engine only once every token is gone. */
-    std::vector<int>  outputStatuses;
-    /* JPEG snapshots for BLOB outputs; ringSlot < 0 for any other
-     * output, or when the snapshot could not be taken. Whoever uses one
-     * up -- the encode, or the finish engine giving the frame's up --
-     * sets its ringSlot to -1; any still held when the frame goes are
-     * given back to `jpegRing` then, so a frame dropped on its way (an
-     * engine stopping with it queued) cannot keep a slot of the ring. */
-    std::vector<android::JpegSnapshot> outputJpegSnapshots;
-    android::IspPipeline              *jpegRing = nullptr;
+    /* Where the outputs' JPEG snapshots come from; set by the demosaic. */
+    android::IspPipeline *jpegRing = nullptr;
 
     /* What this request wrote to the sensor. It takes effect a control
      * delay later; result metadata reports what was in effect from

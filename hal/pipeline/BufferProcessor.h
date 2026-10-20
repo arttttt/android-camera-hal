@@ -5,30 +5,36 @@
 #include <stdint.h>
 
 #include <utils/Errors.h>
-#include <hardware/camera3.h>
-#include "CameraMetadataCompat.h"
 
-#include "CaptureRequest.h"
+#include "Frame.h"
 #include "JpegSnapshot.h"
+#include "mochacamera/FrameSettings.h"
 
-namespace mocha::camera { struct Frame; }
+namespace mocha::camera { class GrallocPort; }
 
 namespace android {
 
 class IspPipeline;
 class PostProcessor;
 
-/* Per-output-buffer processing. Takes a just-dequeued V4L2 Bayer
- * frame and emits either a zero-copy RGBA gralloc (preview) or a
- * libjpeg-encoded BLOB (still capture).
+/* Per-output-buffer processing. Records each output's GPU work on the
+ * frame's open ISP recording -- a zero-copy blit for RGBA, an NV12
+ * encode for YUV, a copy into the JPEG ring for a BLOB -- and finishes
+ * the CPU half once the GPU is done: the YUV repack, the JPEG encode.
  *
- * A BufferProcessor instance is reused across frames; per-frame state
- * is passed through FrameContext. */
+ * CPU access to the output buffers goes through the gralloc port; the
+ * GPU imports them inside the ISP backend. A BufferProcessor instance
+ * is reused across frames; per-frame state is passed through
+ * FrameContext. */
 class BufferProcessor {
 public:
+    using Frame  = mocha::camera::Frame;
+    using Output = mocha::camera::Frame::Output;
+
     struct Deps {
-        IspPipeline   *isp;
-        PostProcessor *jpeg;
+        IspPipeline                *isp;
+        PostProcessor              *jpeg;
+        mocha::camera::GrallocPort *gralloc;
         const size_t  *jpegBufferSize;  /* single value per session, set at configureStreams */
     };
 
@@ -44,95 +50,48 @@ public:
         int            cropH;
     };
 
-
     explicit BufferProcessor(const Deps &deps);
 
-    /* Process one output buffer of a frame whose ISP recording is open
-     * (DemosaicBlitStage has called isp->beginFrame). On NO_ERROR the
-     * output's blit / encode has been recorded; the actual GPU work is
-     * kicked off later by isp->endFrame.
-     *
-     * releaseFenceOut: address of the slot in ctx.outputReleaseFences for
-     *                  this output. RGBA outputs stash the address inside
-     *                  the ISP and endFrame writes the per-output sync_fd
-     *                  there. YUV / BLOB leave it -1 (CPU finalize is
-     *                  synchronous in the consumer thread).
-     * jpegSnapshot:    [out, may be NULL] address where this output's
-     *                  JpegSnapshot lands, populated for BLOB outputs
-     *                  via blitToJpegCpu. Other formats leave it
-     *                  default-initialised (ringSlot == -1). */
-    status_t processOne(const camera3_stream_buffer &srcBuf,
-                        const FrameContext &ctx,
-                        const CameraMetadata &cm,
-                        uint32_t frameNumber,
-                        int *releaseFenceOut,
-                        JpegSnapshot *jpegSnapshot);
+    /* Record one output of a frame whose ISP recording is open
+     * (DemosaicBlitStage has called isp->beginFrame); the GPU work is
+     * kicked off later by isp->endFrame. The output's acquire fence is
+     * used up whatever the outcome: waited on, imported, or closed.
+     * An RGBA output gets its release fence from endFrame; a BLOB
+     * output its JPEG snapshot. */
+    status_t processOne(Output &out, const FrameContext &ctx,
+                        uint32_t frameNumber);
 
-    /* Post-fence-reap CPU finalize for outputs whose GPU half ran into a
-     * host-mapped backend buffer. YUV outputs are libyuv-repacked here;
-     * BLOB outputs are encoded asynchronously by the JPEG engine so this
-     * function does NOT touch them on the success path. Called by
-     * the finish engine on a committed frame, before stats and the
-     * JPEG hand-off. No-op when no YUV output is in the
-     * request. */
-    void finalizeCpuOutputs(mocha::camera::Frame &ctx);
+    /* The CPU half of a committed frame once its GPU work is done: YUV
+     * outputs are libyuv-repacked here. BLOB outputs are the JPEG
+     * engine's. */
+    void finalizeCpuOutputs(Frame &frame);
 
-    /* Release every BLOB output's JpegSnapshot so the ISP ring rotates
-     * without an encode. Called by the finish engine on the error path
-     * (where no JPEG job is posted). */
-    void releaseJpegSnapshots(mocha::camera::Frame &ctx);
+    /* Give every BLOB output's JPEG snapshot back so the ISP ring
+     * rotates without an encode (a frame that failed or was
+     * cancelled). */
+    void releaseJpegSnapshots(Frame &frame);
 
-    /* The same for one output, whose job could not be posted. */
-    void releaseJpegSnapshot(mocha::camera::Frame &ctx, size_t outputIndex);
+    /* The same for one output, whose encode will not run. */
+    void releaseJpegSnapshot(Frame &frame, size_t outputIndex);
 
-    /* Lock the BLOB gralloc, libjpeg-encode from the snapshot, write the
-     * camera3_jpeg_blob trailer, unlock, release the snapshot. Called
-     * by the JPEG engine on its own thread once the frame's submit fence has
-     * signalled. False when the BLOB holds no image: the snapshot is
-     * released either way. */
-    bool finalizeBlobOutput(const CaptureRequest::Buffer &outBuf,
-                             const CameraMetadata &metadata,
-                             const JpegSnapshot &snap,
-                             uint32_t frameNumber);
+    /* Lock the BLOB, encode its snapshot into it with the request's
+     * JPEG settings, write the camera3_jpeg_blob trailer, unlock, and
+     * give the snapshot back. False when the BLOB holds no image; the
+     * snapshot is given back either way. */
+    bool finalizeBlobOutput(Output &out,
+                            const mocha::camera::FrameSettings::Jpeg &jpeg,
+                            uint32_t frameNumber);
 
 private:
-    /* Block until the consumer releases srcBuf for writing. */
-    status_t waitAcquireFence(const camera3_stream_buffer &srcBuf,
-                              uint32_t frameNumber);
+    /* Block until the consumer releases the buffer for writing; uses
+     * the fence up. */
+    status_t waitAcquireFence(Output &out, uint32_t frameNumber);
 
-    /* Record an RGBA blit on the open ISP recording. acquireFence
-     * (sync_fd from srcBuf) is imported as a binary VkSemaphore so the
-     * eventual submit GPU-waits on framework readiness. The releaseFenceOut
-     * pointer is stashed inside the ISP and populated by endFrame. */
-    bool     tryZeroCopy(const camera3_stream_buffer &srcBuf,
-                         const FrameContext &ctx,
-                         int *releaseFenceOut);
-
-    /* Lock the gralloc buffer for CPU write; writes the mapped pointer
-     * to *outBuf. Used by the BLOB path — libjpeg writes into it. */
-    status_t lockSwWrite(const camera3_stream_buffer &srcBuf,
-                         uint32_t frameNumber,
-                         uint8_t **outBuf);
-
-    /* Record a vkCmdCopyImageToBuffer from the ISP scratch into a JPEG
-     * ring slot. The actual encode runs in finalizeBlobOutput after the
-     * fence reaps. */
-    status_t recordBlobOutput(const camera3_stream_buffer &srcBuf,
-                               uint32_t frameNumber,
-                               JpegSnapshot *snapshotOut);
-
-    /* Record a GPU NV12 encode dispatch on the open ISP recording. CPU
-     * wait on srcBuf.acquire_fence happens here so the subsequent
-     * finalizeYuvOutput can lock the gralloc without blocking. */
-    status_t recordYuvOutput(const camera3_stream_buffer &srcBuf,
-                              const FrameContext &ctx,
-                              uint32_t frameNumber);
-
-    /* Lock the gralloc, libyuv-repack from the ISP host buffer, unlock.
-     * Called from finalizeCpuOutputs once the frame's submit fence has
-     * signalled. */
-    void     finalizeYuvOutput(const CaptureRequest::Buffer &outBuf,
-                                uint32_t frameNumber);
+    bool     tryZeroCopy(Output &out, const FrameContext &ctx);
+    status_t recordBlobOutput(Output &out, uint32_t frameNumber);
+    status_t recordYuvOutput(Output &out, const FrameContext &ctx,
+                             uint32_t frameNumber);
+    void     finalizeYuvOutput(Output &out, uint32_t frameNumber);
 
     Deps mDeps;
 };

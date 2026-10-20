@@ -2,26 +2,26 @@
 
 #include "BufferProcessor.h"
 
+#include <errno.h>
+#include <poll.h>
 #include <string.h>
 #include <unistd.h>
-#include <linux/videodev2.h>
 
-#include <hardware/gralloc.h>
-#include <system/graphics.h>
-#include <ui/Rect.h>
-#include <ui/GraphicBuffer.h>
-#include <ui/GraphicBufferMapper.h>
-#include <ui/Fence.h>
 #include <utils/Log.h>
 #include <utils/Timers.h>
 #include <libyuv.h>
 
 #include "IspPipeline.h"
 #include "PostProcessor.h"
-#include "Frame.h"
 #include "DbgUtils.h"
+#include "mochacamera/ports/GrallocPort.h"
 
 namespace android {
+
+using mocha::camera::BufferStatus;
+using mocha::camera::FrameSettings;
+using mocha::camera::GrallocPort;
+using mocha::camera::PixelFormat;
 
 namespace {
 
@@ -29,229 +29,199 @@ namespace {
  * number; revisit when fence semantics are formalised. */
 constexpr int kAcquireFenceTimeoutMs = 1000;
 
+/* The camera3 BLOB trailer, written at the very end of the buffer: the
+ * framework finds the JPEG's size there. Its layout is camera3.h's
+ * camera3_jpeg_blob, which the core does not include. */
+struct JpegBlobTrailer {
+    uint16_t jpegBlobId;
+    uint32_t jpegSize;
+};
+constexpr uint16_t kJpegBlobId = 0x00FF;
+static_assert(sizeof(JpegBlobTrailer) == 8, "camera3_jpeg_blob is 8 bytes");
+
 } /* namespace */
 
 BufferProcessor::BufferProcessor(const Deps &deps)
     : mDeps(deps) {
 }
 
-status_t BufferProcessor::waitAcquireFence(const camera3_stream_buffer &srcBuf,
-                                            uint32_t frameNumber) {
+status_t BufferProcessor::waitAcquireFence(Output &out, uint32_t frameNumber) {
     /* Acquire fence signals when the gralloc buffer is safe for the
      * HAL to write. On a backed-up compositor this is the main way the
      * framework back-pressures us — measuring it surfaces the case
      * where "GPU isn't the bottleneck, the display is". Only log when
      * the wait is meaningful (>5 ms) to keep the steady-state log
      * readable. */
+    UniqueFd fence = std::move(out.acquireFence);
+    if (!fence.valid())
+        return NO_ERROR;
     int64_t t0 = systemTime();
-    sp<Fence> acquireFence = new Fence(srcBuf.acquire_fence);
-    status_t e = acquireFence->wait(kAcquireFenceTimeoutMs);
+    struct pollfd p = { fence.get(), POLLIN, 0 };
+    int r;
+    do {
+        r = ::poll(&p, 1, kAcquireFenceTimeoutMs);
+    } while (r < 0 && errno == EINTR);
     int64_t waitMs = (systemTime() - t0) / 1000000;
     if (waitMs > 5) {
         ALOGD("acquire_fence wait %lldms  frame %u  buffer %p",
-              (long long)waitMs, frameNumber, srcBuf.buffer);
+              (long long)waitMs, frameNumber, out.buffer);
     }
-    if (e == TIMED_OUT) {
+    if (r == 0) {
         ALOGE("buffer %p  frame %-4u  Wait on acquire fence timed out",
-              srcBuf.buffer, frameNumber);
+              out.buffer, frameNumber);
+        return NO_INIT;
     }
-    if (e != NO_ERROR)
+    if (r < 0 || (p.revents & (POLLERR | POLLNVAL)))
         return NO_INIT;
     return NO_ERROR;
 }
 
-bool BufferProcessor::tryZeroCopy(const camera3_stream_buffer &srcBuf,
-                                   const FrameContext &ctx,
-                                   int *releaseFenceOut) {
+bool BufferProcessor::tryZeroCopy(Output &out, const FrameContext &ctx) {
     /* The caller guarantees this stream is RGBA_8888 (Bayer sensor =
      * the only source). The shader handles crop + rescale per push-constant.
-     * acquire_fence (sync_fd) gets imported as a binary VkSemaphore so the
-     * eventual submit GPU-waits on framework readiness without blocking
-     * this thread. */
-    unsigned streamW = srcBuf.stream->width;
-    unsigned streamH = srcBuf.stream->height;
-
-    /* O wrap form: WRAP_HANDLE = no ownership, handle already
-     * registered by the framework — same semantics as the N-era
-     * (w,h,fmt,usage,stride,handle,keepOwnership=false) ctor. */
-    sp<GraphicBuffer> gb = new GraphicBuffer(
-        const_cast<native_handle_t *>(*srcBuf.buffer),
-        GraphicBuffer::WRAP_HANDLE,
-        streamW, streamH,
-        HAL_PIXEL_FORMAT_RGBA_8888,
-        1 /* layerCount */,
-        (uint64_t)(GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_COMPOSER),
-        streamW);
+     * The acquire fence (sync_fd) gets imported as a binary VkSemaphore so
+     * the eventual submit GPU-waits on framework readiness without
+     * blocking this thread. */
     bool zcOk = false;
     BENCHMARK_SECTION("Raw->RGBA") {
         CropRect crop = { ctx.cropX, ctx.cropY, ctx.cropW, ctx.cropH };
-        zcOk = mDeps.isp->blitToGralloc(gb->getNativeBuffer(),
-                                         streamW, streamH, crop,
-                                         srcBuf.acquire_fence,
-                                         releaseFenceOut);
+        zcOk = mDeps.isp->blitToGralloc(out.buffer,
+                                         out.stream.width, out.stream.height,
+                                         crop,
+                                         out.acquireFence.release(),
+                                         &out.releaseFence);
     }
     return zcOk;
 }
 
-status_t BufferProcessor::lockSwWrite(const camera3_stream_buffer &srcBuf,
-                                       uint32_t frameNumber,
-                                       uint8_t **outBuf) {
-    unsigned streamW = srcBuf.stream->width;
-    unsigned streamH = srcBuf.stream->height;
-    const Rect rect((int)streamW, (int)streamH);
-    status_t e = GraphicBufferMapper::get().lock(*srcBuf.buffer,
-        GRALLOC_USAGE_SW_WRITE_OFTEN, rect, (void **)outBuf);
-    if (e != NO_ERROR) {
-        ALOGE("buffer %p  frame %-4u  lock failed", srcBuf.buffer, frameNumber);
-        return NO_INIT;
-    }
-    return NO_ERROR;
-}
-
-status_t BufferProcessor::recordYuvOutput(const camera3_stream_buffer &srcBuf,
+status_t BufferProcessor::recordYuvOutput(Output &out,
                                             const FrameContext &ctx,
                                             uint32_t frameNumber) {
     /* CPU-wait on the framework acquire_fence here so finalizeYuvOutput's
-     * lockYCbCr (post-fence-reap) doesn't have to block. The wait is a
-     * few ms in steady state; the GPU encode dispatch we record next
-     * runs in parallel with subsequent frames. */
-    status_t e = waitAcquireFence(srcBuf, frameNumber);
+     * lock (post-fence-reap) doesn't have to block. The wait is a few ms
+     * in steady state; the GPU encode dispatch we record next runs in
+     * parallel with subsequent frames. */
+    status_t e = waitAcquireFence(out, frameNumber);
     if (e != NO_ERROR)
         return e;
 
-    unsigned w = srcBuf.stream->width;
-    unsigned h = srcBuf.stream->height;
     int releaseFd = -1;
     CropRect crop = { ctx.cropX, ctx.cropY, ctx.cropW, ctx.cropH };
     bool ok = false;
     BENCHMARK_SECTION("Raw->NV12") {
-        ok = mDeps.isp->blitToYuv(srcBuf.buffer, w, h, crop, -1, &releaseFd);
+        ok = mDeps.isp->blitToYuv(out.buffer, out.stream.width, out.stream.height,
+                                  crop, -1, &releaseFd);
     }
     if (!ok) {
-        ALOGE("buffer %p  frame %-4u  blitToYuv failed",
-              srcBuf.buffer, frameNumber);
+        ALOGE("buffer %p  frame %-4u  blitToYuv failed", out.buffer, frameNumber);
         return NO_INIT;
     }
     return NO_ERROR;
 }
 
-void BufferProcessor::finalizeYuvOutput(const CaptureRequest::Buffer &outBuf,
-                                          uint32_t frameNumber) {
-    unsigned w = outBuf.stream->width;
-    unsigned h = outBuf.stream->height;
+void BufferProcessor::finalizeYuvOutput(Output &out, uint32_t frameNumber) {
+    unsigned w = out.stream.width;
+    unsigned h = out.stream.height;
 
     mDeps.isp->invalidateYuvForCpu();
     const uint8_t *nv12 = mDeps.isp->yuvHostBuffer();
     if (!nv12) {
         ALOGE("buffer %p  frame %-4u  yuvHostBuffer null at finalize",
-              outBuf.buffer, frameNumber);
+              out.buffer, frameNumber);
         return;
     }
     const uint8_t *srcY  = nv12;
     const uint8_t *srcUv = nv12 + (size_t)w * h;
 
-    android_ycbcr dst = {};
-    const Rect rect((int)w, (int)h);
-    status_t e = GraphicBufferMapper::get().lockYCbCr(*outBuf.buffer,
-        GRALLOC_USAGE_SW_WRITE_OFTEN, rect, &dst);
-    if (e != NO_ERROR) {
-        ALOGE("buffer %p  frame %-4u  lockYCbCr failed", outBuf.buffer, frameNumber);
+    GrallocPort::Ycbcr dst;
+    if (!mDeps.gralloc->lockYcbcr(out.buffer, out.stream, &dst)) {
+        ALOGE("buffer %p  frame %-4u  lockYCbCr failed", out.buffer, frameNumber);
         return;
     }
 
-    uint8_t *dstY  = (uint8_t *)dst.y;
-    uint8_t *dstCb = (uint8_t *)dst.cb;
-    uint8_t *dstCr = (uint8_t *)dst.cr;
-
     BENCHMARK_SECTION("NV12->gralloc") {
-        if (dst.chroma_step == 2 && dstCb + 1 == dstCr) {
-            libyuv::CopyPlane(srcY,  (int)w, dstY,  (int)dst.ystride,
+        if (dst.chromaStep == 2 && dst.cb + 1 == dst.cr) {
+            libyuv::CopyPlane(srcY,  (int)w, dst.y,  (int)dst.yStride,
                               (int)w, (int)h);
-            libyuv::CopyPlane(srcUv, (int)w, dstCb, (int)dst.cstride,
+            libyuv::CopyPlane(srcUv, (int)w, dst.cb, (int)dst.cStride,
                               (int)w, (int)h / 2);
-        } else if (dst.chroma_step == 1) {
+        } else if (dst.chromaStep == 1) {
             libyuv::NV12ToI420(srcY, (int)w, srcUv, (int)w,
-                               dstY,  (int)dst.ystride,
-                               dstCb, (int)dst.cstride,
-                               dstCr, (int)dst.cstride,
+                               dst.y,  (int)dst.yStride,
+                               dst.cb, (int)dst.cStride,
+                               dst.cr, (int)dst.cStride,
                                (int)w, (int)h);
         } else {
             ALOGE("buffer %p  frame %-4u  YUV layout not supported "
-                  "(chroma_step=%d, cb=%p, cr=%p)",
-                  outBuf.buffer, frameNumber,
-                  dst.chroma_step, dstCb, dstCr);
+                  "(chroma_step=%zu, cb=%p, cr=%p)",
+                  out.buffer, frameNumber,
+                  dst.chromaStep, dst.cb, dst.cr);
         }
     }
 
-    GraphicBufferMapper::get().unlock(*outBuf.buffer);
+    mDeps.gralloc->unlock(out.buffer);
 }
 
-void BufferProcessor::finalizeCpuOutputs(mocha::camera::Frame &ctx) {
-    if (!ctx.status.ok()) return;
-    for (size_t i = 0; i < ctx.request.outputBuffers.size(); ++i) {
-        const CaptureRequest::Buffer &ob = ctx.request.outputBuffers[i];
-        if (ctx.outputStatuses[i] != CAMERA3_BUFFER_STATUS_OK) continue;
+void BufferProcessor::finalizeCpuOutputs(Frame &frame) {
+    if (!frame.status.ok()) return;
+    for (Output &out : frame.outputs) {
+        if (out.status != BufferStatus::Ok) continue;
         /* BLOB encode runs on the JPEG engine — handled out of band. */
-        if (ob.stream->format == HAL_PIXEL_FORMAT_YCbCr_420_888)
-            finalizeYuvOutput(ob, ctx.request.frameNumber);
+        if (out.stream.format == PixelFormat::Ycbcr420)
+            finalizeYuvOutput(out, frame.frameNumber);
     }
 }
 
-void BufferProcessor::releaseJpegSnapshots(mocha::camera::Frame &ctx) {
-    for (size_t i = 0; i < ctx.outputJpegSnapshots.size(); ++i)
-        releaseJpegSnapshot(ctx, i);
+void BufferProcessor::releaseJpegSnapshots(Frame &frame) {
+    for (size_t i = 0; i < frame.outputs.size(); ++i)
+        releaseJpegSnapshot(frame, i);
 }
 
-void BufferProcessor::releaseJpegSnapshot(mocha::camera::Frame &ctx, size_t i) {
-    if (i >= ctx.outputJpegSnapshots.size()) return;
-    if (ctx.outputJpegSnapshots[i].ringSlot >= 0) {
-        mDeps.isp->releaseJpegSnapshot(ctx.outputJpegSnapshots[i]);
-        ctx.outputJpegSnapshots[i].ringSlot = -1;
+void BufferProcessor::releaseJpegSnapshot(Frame &frame, size_t i) {
+    if (i >= frame.outputs.size()) return;
+    Output &out = frame.outputs[i];
+    if (out.jpeg.ringSlot >= 0) {
+        mDeps.isp->releaseJpegSnapshot(out.jpeg);
+        out.jpeg.ringSlot = -1;
     }
 }
 
-status_t BufferProcessor::recordBlobOutput(const camera3_stream_buffer &srcBuf,
-                                            uint32_t frameNumber,
-                                            JpegSnapshot *snapshotOut) {
-    /* CPU-wait acquire_fence here so finalizeBlobOutput's lockSwWrite
-     * runs without blocking. Same pattern as YUV. */
-    status_t e = waitAcquireFence(srcBuf, frameNumber);
+status_t BufferProcessor::recordBlobOutput(Output &out, uint32_t frameNumber) {
+    /* CPU-wait acquire_fence here so finalizeBlobOutput's lock runs
+     * without blocking. Same pattern as YUV. */
+    status_t e = waitAcquireFence(out, frameNumber);
     if (e != NO_ERROR)
         return e;
 
-    if (!mDeps.isp->blitToJpegCpu(snapshotOut)) {
-        ALOGE("buffer %p  frame %-4u  blitToJpegCpu failed",
-              srcBuf.buffer, frameNumber);
+    if (!mDeps.isp->blitToJpegCpu(&out.jpeg)) {
+        ALOGE("buffer %p  frame %-4u  blitToJpegCpu failed", out.buffer, frameNumber);
         return NO_INIT;
     }
     ALOGD("BLOB record: frame=%u ringSlot=%d %ux%u",
-          frameNumber, snapshotOut->ringSlot,
-          snapshotOut->width, snapshotOut->height);
+          frameNumber, out.jpeg.ringSlot, out.jpeg.width, out.jpeg.height);
     return NO_ERROR;
 }
 
-bool BufferProcessor::finalizeBlobOutput(const CaptureRequest::Buffer &outBuf,
-                                          const CameraMetadata &metadata,
-                                          const JpegSnapshot &snap,
+bool BufferProcessor::finalizeBlobOutput(Output &out,
+                                          const FrameSettings::Jpeg &jpeg,
                                           uint32_t frameNumber) {
+    const JpegSnapshot snap = out.jpeg;
     if (snap.ringSlot < 0) return false;
+    /* The snapshot is used up here whatever happens below. */
+    out.jpeg.ringSlot = -1;
+
     const size_t blobCapacity = mDeps.jpegBufferSize ? *mDeps.jpegBufferSize : 0;
-    if (blobCapacity <= sizeof(camera3_jpeg_blob)) {
+    if (blobCapacity <= sizeof(JpegBlobTrailer)) {
         ALOGE("buffer %p  frame %-4u  BLOB capacity %zu too small",
-              outBuf.buffer, frameNumber, blobCapacity);
+              out.buffer, frameNumber, blobCapacity);
         mDeps.isp->releaseJpegSnapshot(snap);
         return false;
     }
-    const size_t maxImageSize = blobCapacity - sizeof(camera3_jpeg_blob);
+    const size_t maxImageSize = blobCapacity - sizeof(JpegBlobTrailer);
 
-    unsigned w = outBuf.stream->width;
-    unsigned h = outBuf.stream->height;
-    const Rect rect((int)w, (int)h);
     uint8_t *dst = NULL;
-    status_t e = GraphicBufferMapper::get().lock(*outBuf.buffer,
-        GRALLOC_USAGE_SW_WRITE_OFTEN, rect, (void **)&dst);
-    if (e != NO_ERROR) {
-        ALOGE("buffer %p  frame %-4u  BLOB lock failed", outBuf.buffer, frameNumber);
+    if (!mDeps.gralloc->lock(out.buffer, out.stream, &dst)) {
+        ALOGE("buffer %p  frame %-4u  BLOB lock failed", out.buffer, frameNumber);
         mDeps.isp->releaseJpegSnapshot(snap);
         return false;
     }
@@ -259,76 +229,56 @@ bool BufferProcessor::finalizeBlobOutput(const CaptureRequest::Buffer &outBuf,
     mDeps.isp->invalidateJpegSnapshot(snap);
     size_t written = 0;
     int64_t t0 = systemTime();
-    bool ok = mDeps.jpeg->process(snap, dst, maxImageSize, metadata, &written);
+    bool ok = mDeps.jpeg->process(snap, dst, maxImageSize, jpeg, &written);
     int64_t encMs = (systemTime() - t0) / 1000000;
     if (ok) {
-        camera3_jpeg_blob *blob =
-            reinterpret_cast<camera3_jpeg_blob *>(dst + maxImageSize);
-        blob->jpeg_blob_id = CAMERA3_JPEG_BLOB_ID;
-        blob->jpeg_size    = (uint32_t)written;
+        JpegBlobTrailer trailer;
+        trailer.jpegBlobId = kJpegBlobId;
+        trailer.jpegSize   = (uint32_t)written;
+        memcpy(dst + maxImageSize, &trailer, sizeof(trailer));
         ALOGD("BLOB finalize: frame=%u ringSlot=%d encode=%lldms size=%zu",
               frameNumber, snap.ringSlot, (long long)encMs, written);
     } else {
-        ALOGE("buffer %p  frame %-4u  JPEG encode failed", outBuf.buffer, frameNumber);
+        ALOGE("buffer %p  frame %-4u  JPEG encode failed", out.buffer, frameNumber);
     }
 
-    GraphicBufferMapper::get().unlock(*outBuf.buffer);
+    mDeps.gralloc->unlock(out.buffer);
     mDeps.isp->releaseJpegSnapshot(snap);
     return ok;
 }
 
-status_t BufferProcessor::processOne(const camera3_stream_buffer &srcBuf,
-                                      const FrameContext &ctx,
-                                      const CameraMetadata &cm,
-                                      uint32_t frameNumber,
-                                      int *releaseFenceOut,
-                                      JpegSnapshot *jpegSnapshot) {
-    (void)cm;
-    if (releaseFenceOut) *releaseFenceOut = -1;
-    if (jpegSnapshot) {
-        jpegSnapshot->rgba     = nullptr;
-        jpegSnapshot->width    = 0;
-        jpegSnapshot->height   = 0;
-        jpegSnapshot->size     = 0;
-        jpegSnapshot->ringSlot = -1;
-    }
+status_t BufferProcessor::processOne(Output &out, const FrameContext &ctx,
+                                      uint32_t frameNumber) {
+    out.releaseFence = -1;
+    out.jpeg = JpegSnapshot{nullptr, 0, 0, 0, -1};
 
-    switch (srcBuf.stream->format) {
-        case HAL_PIXEL_FORMAT_RGBA_8888:
+    switch (out.stream.format) {
+        case PixelFormat::Rgba8888:
             /* RGBA zero-copy: GPU writes directly into the gralloc via the
              * blit render pass, framework acquire_fence is imported as a
              * VkSemaphore on the submit, release_fence is exported per
              * output by endFrame. The gralloc is never CPU-locked. */
-            if (!tryZeroCopy(srcBuf, ctx, releaseFenceOut)) {
+            if (!tryZeroCopy(out, ctx)) {
                 ALOGE("buffer %p  frame %-4u  zero-copy failed",
-                      srcBuf.buffer, frameNumber);
+                      out.buffer, frameNumber);
                 return NO_INIT;
             }
             return NO_ERROR;
-        case HAL_PIXEL_FORMAT_YCbCr_420_888: {
+        case PixelFormat::Ycbcr420:
             /* GPU NV12 encode now, libyuv repack into the (pitch-
              * linear) gralloc in finalizeCpuOutputs after the fence
              * reaps. The HW VIC (libnvblit) was tried for this and gave
              * tile-scrambled output in every surface combination; see
              * docs/vic-encoder-path.md. */
-            return recordYuvOutput(srcBuf, ctx, frameNumber);
-        }
-        case HAL_PIXEL_FORMAT_BLOB: {
+            return recordYuvOutput(out, ctx, frameNumber);
+        case PixelFormat::Blob:
             /* GPU records vkCmdCopyImageToBuffer(scratch -> jpeg ring slot)
-             * now; libjpeg encode runs in finalizeCpuOutputs after the
+             * now; libjpeg encode runs on the JPEG engine after the
              * frame's fence is reaped; the encode does its own lock and
              * unlock. */
-            return recordBlobOutput(srcBuf, frameNumber, jpegSnapshot);
-        }
-        default:
-            /* StreamConfig refuses any other format at configure time;
-             * this is only reached if that check and this switch part
-             * ways. */
-            ALOGE("Unknown pixel format %d in buffer %p (stream %p)",
-                  srcBuf.stream->format, srcBuf.buffer, srcBuf.stream);
-            if (srcBuf.acquire_fence >= 0) ::close(srcBuf.acquire_fence);
-            return BAD_VALUE;
+            return recordBlobOutput(out, frameNumber);
     }
+    return BAD_VALUE;
 }
 
 }; /* namespace android */

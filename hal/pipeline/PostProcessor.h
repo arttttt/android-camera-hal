@@ -4,9 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "CameraMetadataCompat.h"
-
 #include "JpegSnapshot.h"
+#include "mochacamera/FrameSettings.h"
 
 namespace android {
 
@@ -30,12 +29,12 @@ public:
      * number of bytes consumed in `*bytesWritten` (must be non-null).
      * On failure returns false; *bytesWritten is undefined.
      *
-     * `metadata` carries encoder-specific request knobs (JPEG quality,
-     * orientation, GPS, ...). The consumer guarantees src.rgba is valid
+     * `settings` carries the request's JPEG knobs (quality, orientation,
+     * thumbnail). The consumer guarantees src.rgba is valid
      * (post-fence-reap + invalidate) for the duration of this call. */
     virtual bool process(const JpegSnapshot &src,
                           uint8_t *dst, size_t dstCapacity,
-                          const CameraMetadata &metadata,
+                          const mocha::camera::FrameSettings::Jpeg &settings,
                           size_t *bytesWritten) = 0;
 };
 

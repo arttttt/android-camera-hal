@@ -16,18 +16,22 @@
 
 #include "Frame.h"
 
+#include <unistd.h>
+
 #include "IspPipeline.h"
 
 namespace mocha::camera {
 
 Frame::~Frame() {
-    if (!jpegRing)
-        return;
-    for (android::JpegSnapshot &snapshot : outputJpegSnapshots) {
-        if (snapshot.ringSlot >= 0) {
-            jpegRing->releaseJpegSnapshot(snapshot);
-            snapshot.ringSlot = -1;
+    for (Output &out : outputs) {
+        if (jpegRing && out.jpeg.ringSlot >= 0) {
+            jpegRing->releaseJpegSnapshot(out.jpeg);
+            out.jpeg.ringSlot = -1;
         }
+        /* Handed back with the result, which takes it; one left here
+         * belongs to a frame that never went out. */
+        if (out.releaseFence >= 0)
+            ::close(out.releaseFence);
     }
 }
 

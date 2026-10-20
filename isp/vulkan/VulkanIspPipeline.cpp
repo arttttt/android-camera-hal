@@ -391,7 +391,7 @@ bool VulkanIspPipeline::beginFrame(unsigned srcW, unsigned srcH, uint32_t pixFmt
     return true;
 }
 
-bool VulkanIspPipeline::blitToGralloc(void *nativeBuffer,
+bool VulkanIspPipeline::blitToGralloc(mocha::camera::NativeBuffer *buffer,
                                         unsigned dstW, unsigned dstH,
                                         const CropRect &crop,
                                         int acquireFence,
@@ -399,12 +399,26 @@ bool VulkanIspPipeline::blitToGralloc(void *nativeBuffer,
     *releaseFenceOut = -1;
     /* acquireFence is consumed on every path, failures included: the
      * caller gives it up when it calls. */
-    if (!mRec.active || !nativeBuffer || !mDeviceState.nativeBufferAvailable()) {
+    if (!mRec.active || !buffer || !mDeviceState.nativeBufferAvailable()) {
         if (acquireFence >= 0) ::close(acquireFence);
         return false;
     }
 
-    ANativeWindowBuffer *anwb = (ANativeWindowBuffer *)nativeBuffer;
+    /* The frontend's buffer is the request's buffer_handle_t*. Wrapped
+     * for the import, no ownership taken: the handle is the framework's
+     * and stays registered for as long as the request is ours. The
+     * wrapper lives through this call; the cache keys its VkImage by the
+     * handle, not by the wrapper. */
+    const buffer_handle_t handle = *reinterpret_cast<const buffer_handle_t *>(buffer);
+    sp<GraphicBuffer> wrapped = new GraphicBuffer(
+        const_cast<native_handle_t *>(handle),
+        GraphicBuffer::WRAP_HANDLE,
+        dstW, dstH,
+        HAL_PIXEL_FORMAT_RGBA_8888,
+        1 /* layerCount */,
+        (uint64_t)(GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_COMPOSER),
+        dstW);
+    ANativeWindowBuffer *anwb = wrapped->getNativeBuffer();
     VulkanGrallocCache::Entry *entry = NULL;
     if (!mGrallocCache.getOrCreate(anwb, dstW, dstH, &entry)) {
         if (acquireFence >= 0) ::close(acquireFence);
@@ -453,18 +467,18 @@ bool VulkanIspPipeline::blitToGralloc(void *nativeBuffer,
     return true;
 }
 
-bool VulkanIspPipeline::blitToYuv(void *nativeBuffer,
+bool VulkanIspPipeline::blitToYuv(mocha::camera::NativeBuffer *buffer,
                                     unsigned dstW, unsigned dstH,
                                     const CropRect &crop,
                                     int acquireFence,
                                     int *releaseFenceOut) {
-    /* nativeBuffer / crop / acquireFence are gralloc-side concerns: the
+    /* buffer / crop / acquireFence are gralloc-side concerns: the
      * GPU writes NV12 into mYuvEncoder's host-mapped buffer, and the CPU
      * libyuv repack into the output gralloc happens after endFrame's fence
-     * has been reaped (BufferProcessor::processYuvOutput). releaseFenceOut
+     * has been reaped (BufferProcessor::finalizeYuvOutput). releaseFenceOut
      * therefore stays -1 — the CPU finalize is synchronous on the
      * caller's thread before it returns to the framework. */
-    (void)nativeBuffer;
+    (void)buffer;
     (void)crop;
     *releaseFenceOut = -1;
     if (acquireFence >= 0) ::close(acquireFence);

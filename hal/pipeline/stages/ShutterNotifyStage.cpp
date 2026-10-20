@@ -3,23 +3,16 @@
 #include <utils/Timers.h>
 
 #include "Frame.h"
+#include "mochacamera/ports/ResultSink.h"
 
 namespace android {
 
-ShutterNotifyStage::ShutterNotifyStage(const camera3_callback_ops_t *const *ops)
-    : callbackOps(ops) {}
+ShutterNotifyStage::ShutterNotifyStage(mocha::camera::ResultSink *s)
+    : sink(s) {}
 
-void ShutterNotifyStage::process(mocha::camera::Frame &ctx) {
-    ctx.tShutter = systemTime();
-
-    const camera3_callback_ops_t *ops = *callbackOps;
-    if (!ops) return;
-
-    camera3_notify_msg_t msg;
-    msg.type = CAMERA3_MSG_SHUTTER;
-    msg.message.shutter.frame_number = ctx.request.frameNumber;
-    msg.message.shutter.timestamp    = (uint64_t)ctx.tShutter;
-    ops->notify(ops, &msg);
+void ShutterNotifyStage::process(mocha::camera::Frame &frame) {
+    frame.tShutter = systemTime();
+    sink->shutter(frame.frameNumber, frame.tShutter);
 }
 
 } /* namespace android */

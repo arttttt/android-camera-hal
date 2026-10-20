@@ -1,23 +1,23 @@
 #ifndef HAL_PIPELINE_STAGES_SHUTTER_NOTIFY_STAGE_H
 #define HAL_PIPELINE_STAGES_SHUTTER_NOTIFY_STAGE_H
 
-#include <hardware/camera3.h>
-
 #include "PipelineStage.h"
+
+namespace mocha::camera { class ResultSink; }
 
 namespace android {
 
-/* Records the shutter timestamp into the context and emits
- * CAMERA3_MSG_SHUTTER to the framework. */
+/* Records the shutter timestamp into the frame and tells the result
+ * sink. */
 class ShutterNotifyStage : public PipelineStage {
 public:
-    explicit ShutterNotifyStage(const camera3_callback_ops_t *const *callbackOps);
+    explicit ShutterNotifyStage(mocha::camera::ResultSink *sink);
 
     const char *name() const override { return "ShutterNotify"; }
     void process(mocha::camera::Frame &context) override;
 
 private:
-    const camera3_callback_ops_t *const *callbackOps;
+    mocha::camera::ResultSink *sink;
 };
 
 } /* namespace android */

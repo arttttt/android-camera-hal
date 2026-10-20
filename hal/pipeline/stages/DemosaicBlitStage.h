@@ -17,8 +17,8 @@ class IspPipeline;
 /* Opens the ISP recording for the frame, runs BufferProcessor::processOne
  * for every output buffer (each appending a per-output blit / encode to
  * the open recording), then closes the recording with endFrame to kick off
- * a single GPU submit. Populates the frame's outputReleaseFences /
- * outputStatuses and returns the submit's
+ * a single GPU submit. Fills in the frame's outputs (release fences,
+ * statuses, JPEG snapshots) and returns the submit's
  * completion sync_fd, which the demosaic engine waits on; invalid when
  * nothing was submitted. */
 class DemosaicBlitStage {

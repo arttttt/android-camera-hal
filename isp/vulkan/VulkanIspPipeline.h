@@ -34,12 +34,12 @@ public:
 
     bool beginFrame(unsigned srcW, unsigned srcH, uint32_t pixFmt,
                      int srcInputSlot) override;
-    bool blitToGralloc(void *nativeBuffer,
+    bool blitToGralloc(mocha::camera::NativeBuffer *buffer,
                         unsigned dstW, unsigned dstH,
                         const CropRect &crop,
                         int acquireFence,
                         int *releaseFenceOut) override;
-    bool blitToYuv(void *nativeBuffer,
+    bool blitToYuv(mocha::camera::NativeBuffer *buffer,
                     unsigned dstW, unsigned dstH,
                     const CropRect &crop,
                     int acquireFence,
