@@ -163,6 +163,12 @@ private:
      * low-passed reading. */
     float smoothedLuma;
 
+    /* Smoothed scene brightness — luma per µs of unity-gain exposure.
+     * Used instead of `smoothedLuma` once the applied exposure of the
+     * measured frame is known, so the filter does not mix frames taken
+     * at different exposures. */
+    float smoothedScene;
+
     /* EV-comp value in effect when the lock branch last published.
      * Used to scale the locked exposure by `factor(current) /
      * factor(lastEvComp)` so dragging the EV slider while locked

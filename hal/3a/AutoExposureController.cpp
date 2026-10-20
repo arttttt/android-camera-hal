@@ -199,6 +199,7 @@ AutoExposureController::AutoExposureController(const SensorConfig &cfg,
       filteredTotalUs((float)cfg.exposureDefault * (float)cfg.gainDefault
                       / (float)cfg.gainUnit),
       smoothedLuma(0.f),
+      smoothedScene(0.f),
       lastEvComp(0),
       lockedBiasedTotalUs(0.f),
       aeLockHeld(false),
@@ -210,6 +211,7 @@ void AutoExposureController::reset() {
                         * (float)sensorCfg.gainDefault
                         / (float)sensorCfg.gainUnit;
     smoothedLuma        = 0.f;
+    smoothedScene       = 0.f;
     lastEvComp          = 0;
     lockedBiasedTotalUs = 0.f;
     aeLockHeld          = false;
@@ -381,10 +383,24 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
      * meanLuma ±30 % frame to frame, which is more than the
      * dead-band is wide. Seed on first hit so the filter doesn't
      * spend its start-up ramp dragging from zero. */
-    if (smoothedLuma <= 0.f) smoothedLuma = meanLuma;
-    else                     smoothedLuma = damping * meanLuma
-                                           + (1.0f - damping) * smoothedLuma;
-    meanLuma = smoothedLuma;
+    if (appliedTotalUs > 0.f) {
+        /* Smooth the SCENE, not the image: luma divided by the
+         * exposure it was taken at. Image luma moves with our own
+         * exposure changes, and averaging frames taken at different
+         * exposures blends the old operating point into the new
+         * measurement. On a static exposure this is the same filter
+         * as before. */
+        const float scene = meanLuma / appliedTotalUs;
+        if (smoothedScene <= 0.f) smoothedScene = scene;
+        else                      smoothedScene = damping * scene
+                                                + (1.0f - damping) * smoothedScene;
+        meanLuma = smoothedScene * appliedTotalUs;
+    } else {
+        if (smoothedLuma <= 0.f) smoothedLuma = meanLuma;
+        else                     smoothedLuma = damping * meanLuma
+                                               + (1.0f - damping) * smoothedLuma;
+        meanLuma = smoothedLuma;
+    }
 
     /* Apply the framework's exposure compensation (1/3-stop units)
      * by shifting the AE target. evComp == 0 → factor 1.0 → identical
