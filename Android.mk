@@ -67,6 +67,7 @@ LOCAL_C_INCLUDES += frameworks/native/libs/nativewindow/include
 # Module-internal include dirs
 LOCAL_C_INCLUDES += \
     $(LOCAL_PATH)/base \
+    $(LOCAL_PATH)/core/include \
     $(LOCAL_PATH)/core/engine \
     $(LOCAL_PATH)/core/engines \
     $(LOCAL_PATH)/core/pipeline \
@@ -92,11 +93,15 @@ LOCAL_SRC_FILES += \
     core/pipeline/FrameRegistry.cpp \
     hal/HalModule.cpp \
     hal/Camera.cpp \
+    hal/Camera3GrallocPort.cpp \
+    hal/Camera3Request.cpp \
+    hal/Camera3ResultSink.cpp \
     hal/metadata/CameraStaticMetadata.cpp \
     hal/metadata/RequestTemplateBuilder.cpp \
     hal/metadata/ResultMetadataBuilder.cpp \
     hal/3a/AutoExposureController.cpp \
     hal/3a/AutoFocusController.cpp \
+    hal/3a/ThreeAReport.cpp \
     hal/3a/AwbFactory.cpp \
     hal/3a/BayesianAwbController.cpp \
     hal/3a/GrayWorldAwbController.cpp \

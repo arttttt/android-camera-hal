@@ -48,7 +48,8 @@
 
 #include "BayerSource.h"
 #include "V4l2Source.h"
-#include "pipeline/CaptureRequest.h"
+#include "Camera3Request.h"
+#include "Camera3ResultSink.h"
 #include "pipeline/Pipeline.h"
 #include "pipeline/DeviceErrorReporter.h"
 #include "pipeline/stages/ApplySettingsStage.h"
@@ -245,7 +246,7 @@ int Camera::closeDevice() {
     mLastRequestSettings.clear();
     mLastConfigWidth  = 0;
     mLastConfigHeight = 0;
-    mLastAeMode       = 0xff;
+    mLastAeMode.reset();
     if (mAf)              mAf->reset();
     if (mApplySettingsStage) mApplySettingsStage->reset();
     if (mDeviceError)     mDeviceError->rearm();
@@ -320,6 +321,30 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
         status_t e = StreamConfig::normalize(streamList, &width, &height);
         if (e != NO_ERROR)
             return e;
+    }
+
+    /* The streams by the core's ids: their index in this
+     * configuration. Rebuilt every time, the same-capture shortcut
+     * below included -- the framework sends no request across a
+     * configuration, so no frame holds an id of the old table. */
+    {
+        std::vector<std::pair<camera3_stream_t *, mocha::camera::StreamSpec>> streams;
+        std::vector<camera3_stream_t *> ids;
+        for (size_t i = 0; i < streamList->num_streams; ++i) {
+            camera3_stream_t *s = streamList->streams[i];
+            mocha::camera::StreamSpec spec;
+            spec.id     = (mocha::camera::StreamId)i;
+            spec.width  = s->width;
+            spec.height = s->height;
+            if (!toPixelFormat(s->format, &spec.format)) {
+                ALOGE("configureStreams: stream %zu format 0x%x not produced", i, s->format);
+                return BAD_VALUE;
+            }
+            streams.emplace_back(s, spec);
+            ids.push_back(s);
+        }
+        mStreams = std::move(streams);
+        mResultSink->setStreams(std::move(ids));
     }
 
     /* Skip the V4L2/Vulkan reinit when only the output stream set has
@@ -446,9 +471,8 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
     }
 
     auto ctx = std::make_shared<mocha::camera::Frame>();
-    ctx->frameNumber         = request->frame_number;
-    ctx->request.frameNumber = request->frame_number;
-    ctx->tAccepted           = systemTime();
+    ctx->frameNumber = request->frame_number;
+    ctx->tAccepted   = systemTime();
 
     {
         Mutex::Autolock lock(mMutex);
@@ -465,18 +489,39 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
             return BAD_VALUE;
         }
 
-        if (request->settings) {
-            ctx->request.settings = request->settings;
-            /* Update the cache synchronously: the worker that would
-             * otherwise write it runs far behind the binder thread,
-             * so a request with settings=NULL landing before frame N's
-             * worker finishes would otherwise see an empty cache. */
+        /* Update the cache synchronously: a request with settings=NULL
+         * repeats the last ones. */
+        if (request->settings)
             mLastRequestSettings = request->settings;
-        } else {
-            ctx->request.settings = mLastRequestSettings;
+
+        /* The outputs, by the core's stream ids. A buffer of a stream
+         * that was not configured makes the request invalid; nothing
+         * of it has been taken yet. */
+        ctx->outputs.resize(request->num_output_buffers);
+        for (uint32_t i = 0; i < request->num_output_buffers; ++i) {
+            const camera3_stream_buffer &src = request->output_buffers[i];
+            const mocha::camera::StreamSpec *spec = nullptr;
+            for (const auto &entry : mStreams)
+                if (entry.first == src.stream) spec = &entry.second;
+            if (!spec) {
+                ALOGE("frame %u: buffer of an unconfigured stream %p",
+                      request->frame_number, src.stream);
+                return -EINVAL;
+            }
+            ctx->outputs[i].stream = *spec;
+            ctx->outputs[i].buffer =
+                reinterpret_cast<mocha::camera::NativeBuffer *>(src.buffer);
+        }
+        /* Acquire-fence ownership transfers to the HAL from here. */
+        for (uint32_t i = 0; i < request->num_output_buffers; ++i) {
+            if (request->output_buffers[i].acquire_fence >= 0)
+                ctx->outputs[i].acquireFence.reset(request->output_buffers[i].acquire_fence);
         }
 
-        ctx->stillCapture = isStillCapture(*request, ctx->request.settings);
+        ctx->settings = parseFrameSettings(mLastRequestSettings);
+        for (const mocha::camera::Frame::Output &out : ctx->outputs)
+            if (out.stream.format == mocha::camera::PixelFormat::Blob)
+                ctx->settings.stillCapture = true;
 
         /* Open Camera and similar Camera2 apps don't issue an explicit
          * flush() on AE_MODE manual→auto toggles, so the framework
@@ -488,33 +533,19 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
          * wait and completes; a snapshot is never given up. Auto→manual
          * has nothing long to drain. The new request itself proceeds
          * normally past this point. */
-        uint8_t curAeMode = ANDROID_CONTROL_AE_MODE_ON;
-        if (ctx->request.settings.exists(ANDROID_CONTROL_AE_MODE)) {
-            curAeMode = *ctx->request.settings.find(ANDROID_CONTROL_AE_MODE).data.u8;
-        }
-        if (mLastAeMode == ANDROID_CONTROL_AE_MODE_OFF &&
-            curAeMode != ANDROID_CONTROL_AE_MODE_OFF) {
-            ALOGD("processCaptureRequest: AE_MODE %u→%u, cancelling frames waiting for Bayer",
-                  (unsigned)mLastAeMode, (unsigned)curAeMode);
+        const mocha::camera::AeMode curAeMode = ctx->settings.ae.mode;
+        if (mLastAeMode == mocha::camera::AeMode::Off &&
+            curAeMode != mocha::camera::AeMode::Off) {
+            ALOGD("processCaptureRequest: AE off→on, cancelling frames waiting for Bayer");
             cancelInFlight([](const mocha::camera::Frame &c) {
-                return !c.stillCapture &&
+                return !c.settings.stillCapture &&
                        !c.hasBayer.load(std::memory_order_acquire);
             });
         }
         mLastAeMode = curAeMode;
-    }
 
-    /* Deep-copy output buffer descriptors. Acquire-fence ownership
-     * transfers to the HAL via UniqueFd. */
-    ctx->request.outputBuffers.resize(request->num_output_buffers);
-    for (uint32_t i = 0; i < request->num_output_buffers; ++i) {
-        const camera3_stream_buffer &src = request->output_buffers[i];
-        CaptureRequest::Buffer &dst = ctx->request.outputBuffers[i];
-        dst.stream = src.stream;
-        dst.buffer = src.buffer;
-        if (src.acquire_fence >= 0) {
-            dst.acquireFence.reset(src.acquire_fence);
-        }
+        /* The echo the frame's results start from. */
+        mResultSink->expect(ctx->frameNumber, mLastRequestSettings);
     }
 
     /* The frame's first token, taken before the result engine sees
@@ -540,6 +571,7 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
     if (!mResultEngine->submit(ctx)) {
         ALOGE("frame %u: the result engine is stopped", ctx->frameNumber);
         mRegistry->remove(ctx->frameNumber);
+        mResultSink->forget(ctx->frameNumber);
         return -ENODEV;
     }
     /* A capture engine that refuses lets the token go; the frame goes
@@ -613,7 +645,7 @@ void Camera::buildInfrastructure() {
 
     {
         Ipa3A *ipa = new Ipa3A(mSensorCfg, mIsp, mAf, &mTuning,
-                               wbGainPrior, mCcmQ10);
+                               wbGainPrior, mCcmQ10, mCapability.ae.evStep);
         /* The one place the lens is moved from: AF decides, the IPA
          * coordinator writes, on the IPA's own thread. */
         V4l2Device *dev = mDev;
@@ -626,13 +658,14 @@ void Camera::buildInfrastructure() {
     BufferProcessor::Deps bpDeps;
     bpDeps.isp            = mIsp;
     bpDeps.jpeg           = mJpeg;
+    bpDeps.gralloc        = &mGralloc;
     bpDeps.jpegBufferSize = &mJpegBufferSize;
     mBufferProcessor = new BufferProcessor(bpDeps);
 
-    mPartialEmitter.reset(new CameraCallbackEmitter(&mCallbackOps));
+    mResultSink.reset(new Camera3ResultSink(&mCallbackOps, mSensorCfg.focalLengthMm));
     mBayerSource.reset(new V4l2Source(mDev));
     mRegistry.reset(new mocha::camera::FrameRegistry(kFrameCeiling));
-    mDeviceError.reset(new DeviceErrorReporter(&mCallbackOps));
+    mDeviceError.reset(new DeviceErrorReporter(mResultSink.get()));
     mStatsEngine.reset(new mocha::camera::StatsEngine());
     if (mTuning.isLoaded())
         mStatsEngine->setBlackLevel((uint32_t)mTuning.opticalBlack().r);
@@ -660,12 +693,13 @@ void Camera::buildInfrastructure() {
         d.af              = mAf;
         d.sensorCfg       = &mSensorCfg;
         d.delayedControls = mDelayedControls.get();
+        d.evStep          = mCapability.ae.evStep;
         mApplySettingsStage = new ApplySettingsStage(d);
         mSettingsPipeline->appendStage(
             std::unique_ptr<PipelineStage>(mApplySettingsStage));
     }
     mSettingsPipeline->appendStage(
-        std::unique_ptr<PipelineStage>(new ShutterNotifyStage(&mCallbackOps)));
+        std::unique_ptr<PipelineStage>(new ShutterNotifyStage(mResultSink.get())));
 
     {
         DemosaicBlitStage::Deps d;
@@ -678,8 +712,7 @@ void Camera::buildInfrastructure() {
 
     {
         ResultDispatchStage::Deps d;
-        d.callbackOps     = &mCallbackOps;
-        d.emitter         = mPartialEmitter.get();
+        d.sink            = mResultSink.get();
         d.af              = mAf;
         d.sensorCfg       = &mSensorCfg;
         d.delayedControls = mDelayedControls.get();
@@ -693,7 +726,7 @@ void Camera::buildInfrastructure() {
         d.sensorCfg       = &mSensorCfg;
         d.stats           = mStatsEngine.get();
         d.af              = mAf;
-        d.emitter         = mPartialEmitter.get();
+        d.sink            = mResultSink.get();
         mStatsProcessStage.reset(new StatsProcessStage(d));
     }
 
@@ -750,6 +783,7 @@ void Camera::destroyInfrastructure() {
     mIpa.reset();
     mRegistry.reset();
     mDeviceError.reset();
+    mResultSink.reset();
     mBayerSource.reset();
 
     delete mBufferProcessor; mBufferProcessor = NULL;
@@ -764,23 +798,6 @@ void Camera::cancelInFlight(
         const std::function<bool(const mocha::camera::Frame &)> &which) {
     if (mRegistry)      mRegistry->cancelIf(which);
     if (mCaptureEngine) mCaptureEngine->wake();
-}
-
-bool Camera::isStillCapture(const camera3_capture_request_t &request,
-                            const CameraMetadata &settings) {
-    for (uint32_t i = 0; i < request.num_output_buffers; ++i) {
-        const camera3_stream_t *s = request.output_buffers[i].stream;
-        if (s && s->format == HAL_PIXEL_FORMAT_BLOB) return true;
-    }
-    if (!settings.exists(ANDROID_CONTROL_CAPTURE_INTENT)) return false;
-    switch (*settings.find(ANDROID_CONTROL_CAPTURE_INTENT).data.u8) {
-        case ANDROID_CONTROL_CAPTURE_INTENT_STILL_CAPTURE:
-        case ANDROID_CONTROL_CAPTURE_INTENT_VIDEO_SNAPSHOT:
-        case ANDROID_CONTROL_CAPTURE_INTENT_ZERO_SHUTTER_LAG:
-            return true;
-        default:
-            return false;
-    }
 }
 
 void Camera::stopEngines() {
@@ -833,14 +850,6 @@ bool Camera::startEngines() {
     }
     mEnginesRunning = true;
     return true;
-}
-
-inline void Camera::notifyShutter(uint32_t frameNumber, uint64_t timestamp) {
-    camera3_notify_msg_t msg;
-    msg.type = CAMERA3_MSG_SHUTTER;
-    msg.message.shutter.frame_number = frameNumber;
-    msg.message.shutter.timestamp = timestamp;
-    mCallbackOps->notify(mCallbackOps, &msg);
 }
 
 void Camera::notifyError(uint32_t frameNumber, camera3_stream_t *stream, int errorCode) {

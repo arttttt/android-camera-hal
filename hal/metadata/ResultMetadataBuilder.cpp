@@ -4,18 +4,15 @@
 
 #include <system/camera_metadata.h>
 
-#include "sensor/SensorConfig.h"
-
 namespace android {
 
-using FrameState = ResultMetadataBuilder::FrameState;
+using mocha::camera::Core3AResult;
 
-void ResultMetadataBuilder::buildBaseMetadata(CameraMetadata &cm,
-                                               const FrameState &fs,
-                                               const SensorConfig &cfg) {
+void ResultMetadataBuilder::buildBase(CameraMetadata &cm, int64_t timestampNs,
+                                       uint32_t frameNumber, float focalLengthMm) {
     /* Capture timebase + frame identity. */
-    int64_t sensorTimestamp = fs.timestampNs;
-    int64_t syncFrameNumber = fs.frameNumber;
+    int64_t sensorTimestamp = timestampNs;
+    int64_t syncFrameNumber = frameNumber;
     cm.update(ANDROID_SENSOR_TIMESTAMP,  &sensorTimestamp, 1);
     cm.update(ANDROID_SYNC_FRAME_NUMBER, &syncFrameNumber, 1);
 
@@ -27,10 +24,9 @@ void ResultMetadataBuilder::buildBaseMetadata(CameraMetadata &cm,
         reportIntent = *cm.find(ANDROID_CONTROL_CAPTURE_INTENT).data.u8;
     cm.update(ANDROID_CONTROL_CAPTURE_INTENT, &reportIntent, 1);
 
-    static const float reportAperture    = 2.0f;
-    const float reportFocalLength = cfg.focalLengthMm;
-    cm.update(ANDROID_LENS_APERTURE,     &reportAperture,    1);
-    cm.update(ANDROID_LENS_FOCAL_LENGTH, &reportFocalLength, 1);
+    static const float reportAperture = 2.0f;
+    cm.update(ANDROID_LENS_APERTURE,     &reportAperture, 1);
+    cm.update(ANDROID_LENS_FOCAL_LENGTH, &focalLengthMm,  1);
 
     /* Dynamic-only key — never present in the request echo, so it
      * must be written here. No flash unit → always UNAVAILABLE. */
@@ -38,80 +34,51 @@ void ResultMetadataBuilder::buildBaseMetadata(CameraMetadata &cm,
     cm.update(ANDROID_FLASH_STATE, &flashState, 1);
 }
 
-void ResultMetadataBuilder::buildAfMetadata(CameraMetadata &cm,
-                                             const FrameState &fs) {
-    uint8_t afState      = fs.af.afState;
-    uint8_t afMode       = fs.af.afMode;
-    float   focusDiopter = fs.af.focusDiopter;
+void ResultMetadataBuilder::buildAf(CameraMetadata &cm, const Core3AResult &r) {
+    uint8_t afState      = (uint8_t)r.afState;
+    uint8_t afMode       = (uint8_t)r.afMode;
+    float   focusDiopter = r.focusDistanceDiopters;
     cm.update(ANDROID_CONTROL_AF_STATE,    &afState,      1);
     cm.update(ANDROID_LENS_FOCUS_DISTANCE, &focusDiopter, 1);
     cm.update(ANDROID_CONTROL_AF_MODE,     &afMode,       1);
 }
 
-void ResultMetadataBuilder::buildAeMetadata(CameraMetadata &cm,
-                                             const FrameState &fs,
-                                             const SensorConfig &cfg) {
+void ResultMetadataBuilder::buildAe(CameraMetadata &cm, const Core3AResult &r) {
     /* Sensor timing applied on this frame. The framework diffs
      * request vs result to know what landed. */
-    int64_t reportExposureNs    = (int64_t)fs.appliedExposureUs * 1000LL;
-    int32_t reportSensitivity   = cfg.gainToIso(fs.appliedGain);
-    int64_t reportFrameDuration = (int64_t)cfg.frameLenDefault
-                                * cfg.lineTimeUs * 1000LL;
-    cm.update(ANDROID_SENSOR_EXPOSURE_TIME,  &reportExposureNs,    1);
-    cm.update(ANDROID_SENSOR_SENSITIVITY,    &reportSensitivity,   1);
-    cm.update(ANDROID_SENSOR_FRAME_DURATION, &reportFrameDuration, 1);
+    int64_t exposureNs    = r.exposureTimeNs;
+    int32_t sensitivity   = r.sensitivityIso;
+    int64_t frameDuration = r.frameDurationNs;
+    cm.update(ANDROID_SENSOR_EXPOSURE_TIME,  &exposureNs,    1);
+    cm.update(ANDROID_SENSOR_SENSITIVITY,    &sensitivity,   1);
+    cm.update(ANDROID_SENSOR_FRAME_DURATION, &frameDuration, 1);
 
-    /* AE mode echo + state derivation. AE: OFF → INACTIVE; LOCK_ON
-     * → LOCKED; aeConverged → CONVERGED; otherwise SEARCHING. */
-    uint8_t reportAeMode = ANDROID_CONTROL_AE_MODE_OFF;
+    uint8_t aeMode = ANDROID_CONTROL_AE_MODE_OFF;
     if (cm.exists(ANDROID_CONTROL_AE_MODE))
-        reportAeMode = *cm.find(ANDROID_CONTROL_AE_MODE).data.u8;
-    cm.update(ANDROID_CONTROL_AE_MODE, &reportAeMode, 1);
+        aeMode = *cm.find(ANDROID_CONTROL_AE_MODE).data.u8;
+    cm.update(ANDROID_CONTROL_AE_MODE, &aeMode, 1);
 
-    uint8_t aeLock = ANDROID_CONTROL_AE_LOCK_OFF;
-    if (cm.exists(ANDROID_CONTROL_AE_LOCK))
-        aeLock = *cm.find(ANDROID_CONTROL_AE_LOCK).data.u8;
-
-    uint8_t reportAeState = ANDROID_CONTROL_AE_STATE_INACTIVE;
-    if (reportAeMode != ANDROID_CONTROL_AE_MODE_OFF) {
-        if (aeLock == ANDROID_CONTROL_AE_LOCK_ON) {
-            reportAeState = ANDROID_CONTROL_AE_STATE_LOCKED;
-        } else if (fs.aeConverged) {
-            reportAeState = ANDROID_CONTROL_AE_STATE_CONVERGED;
-        } else {
-            reportAeState = ANDROID_CONTROL_AE_STATE_SEARCHING;
-        }
-    }
-    cm.update(ANDROID_CONTROL_AE_STATE, &reportAeState, 1);
+    uint8_t aeState = (uint8_t)r.aeState;
+    cm.update(ANDROID_CONTROL_AE_STATE, &aeState, 1);
 }
 
-void ResultMetadataBuilder::buildAwbMetadata(CameraMetadata &cm,
-                                              const FrameState &fs) {
-    uint8_t reportAwbMode = ANDROID_CONTROL_AWB_MODE_OFF;
+void ResultMetadataBuilder::buildAwb(CameraMetadata &cm, const Core3AResult &r) {
+    uint8_t awbMode = ANDROID_CONTROL_AWB_MODE_OFF;
     if (cm.exists(ANDROID_CONTROL_AWB_MODE))
-        reportAwbMode = *cm.find(ANDROID_CONTROL_AWB_MODE).data.u8;
-    cm.update(ANDROID_CONTROL_AWB_MODE, &reportAwbMode, 1);
+        awbMode = *cm.find(ANDROID_CONTROL_AWB_MODE).data.u8;
+    cm.update(ANDROID_CONTROL_AWB_MODE, &awbMode, 1);
 
-    uint8_t reportAwbState = ANDROID_CONTROL_AWB_STATE_INACTIVE;
-    if (reportAwbMode == ANDROID_CONTROL_AWB_MODE_AUTO) {
-        /* AF holds AWB locked through any sweep, triggered or passive. */
-        bool awbLocked = (fs.af.afState == ANDROID_CONTROL_AF_STATE_ACTIVE_SCAN ||
-                          fs.af.afState == ANDROID_CONTROL_AF_STATE_PASSIVE_SCAN);
-        if (cm.exists(ANDROID_CONTROL_AWB_LOCK))
-            awbLocked = awbLocked || (*cm.find(ANDROID_CONTROL_AWB_LOCK).data.u8
-                                      == ANDROID_CONTROL_AWB_LOCK_ON);
-        reportAwbState = awbLocked ? ANDROID_CONTROL_AWB_STATE_LOCKED
-                                   : ANDROID_CONTROL_AWB_STATE_CONVERGED;
-    }
-    cm.update(ANDROID_CONTROL_AWB_STATE, &reportAwbState, 1);
+    uint8_t awbState = (uint8_t)r.awbState;
+    cm.update(ANDROID_CONTROL_AWB_STATE, &awbState, 1);
 }
 
-void ResultMetadataBuilder::build(CameraMetadata &cm, const FrameState &fs,
-                                   const SensorConfig &cfg) {
-    buildBaseMetadata(cm, fs, cfg);
-    buildAfMetadata  (cm, fs);
-    buildAeMetadata  (cm, fs, cfg);
-    buildAwbMetadata (cm, fs);
+void ResultMetadataBuilder::buildFinal(CameraMetadata &cm, const Core3AResult &r,
+                                        int64_t timestampNs, uint32_t frameNumber,
+                                        float focalLengthMm) {
+    buildBase(cm, timestampNs, frameNumber, focalLengthMm);
+    buildAf  (cm, r);
+    buildAe  (cm, r);
+    buildAwb (cm, r);
 }
 
 }; /* namespace android */

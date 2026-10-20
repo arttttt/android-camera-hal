@@ -4,6 +4,9 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <utility>
+#include <vector>
 
 #include <utils/Errors.h>
 #include <hardware/camera_common.h>
@@ -20,7 +23,10 @@
 #include "3a/AutoFocusController.h"
 #include "jpeg/JpegEncoder.h"
 #include "pipeline/BufferProcessor.h"
-#include "pipeline/CameraCallbackEmitter.h"
+#include "Camera3GrallocPort.h"
+#include "mochacamera/Buffers.h"
+#include "mochacamera/Capability.h"
+#include "mochacamera/Controls.h"
 #include "pipeline/StreamConfig.h"
 #include "DbgUtils.h"
 
@@ -44,6 +50,7 @@ class StatsProcessStage;
 class ResultDispatchStage;
 class DeviceErrorReporter;
 class BayerSource;
+class Camera3ResultSink;
 
 class Camera: public camera3_device {
 public:
@@ -67,7 +74,6 @@ protected:
 
     /* HELPERS/SUBPROCEDURES */
 
-    void notifyShutter(uint32_t frameNumber, uint64_t timestamp);
     void notifyError(uint32_t frameNumber, camera3_stream_t *stream, int errorCode);
 
     camera_metadata_t *mStaticCharacteristics;
@@ -94,7 +100,14 @@ private:
     BufferProcessor *mBufferProcessor;
     Mutex mMutex;
 
-    std::unique_ptr<CameraCallbackEmitter>        mPartialEmitter;
+    /* What the camera can do; the static metadata, the templates and
+     * the stream checks read it. */
+    mocha::camera::Capability                     mCapability;
+    /* The core's results, to the framework. */
+    std::unique_ptr<Camera3ResultSink>            mResultSink;
+    Camera3GrallocPort                            mGralloc;
+    /* The configured streams, by StreamId (their index here). */
+    std::vector<std::pair<camera3_stream_t *, mocha::camera::StreamSpec>> mStreams;
     std::unique_ptr<BayerSource>                  mBayerSource;
     std::unique_ptr<mocha::camera::FrameRegistry> mRegistry;
     std::unique_ptr<DeviceErrorReporter>          mDeviceError;
@@ -131,8 +144,8 @@ private:
      * detect manual→auto transitions and cancel the frames still
      * waiting for their Bayer — Camera2 apps generally don't call
      * flush() on the mode change so we can't rely on the framework.
-     * 0xff = sentinel "no prior request seen". */
-    uint8_t                                       mLastAeMode = 0xff;
+     * Empty until the first request of the session. */
+    std::optional<mocha::camera::AeMode>          mLastAeMode;
 
     /* Set while flush() waits for the HAL to drain; a request arriving
      * then is cancelled at once. */
@@ -167,10 +180,6 @@ private:
      * Takes no lock of Camera's own, so it is safe under mMutex. */
     void cancelInFlight(const std::function<bool(const mocha::camera::Frame &)> &which);
 
-    /* A snapshot: a BLOB output, or a still / video snapshot / ZSL
-     * capture intent. */
-    static bool isStillCapture(const camera3_capture_request_t &request,
-                               const CameraMetadata &settings);
 
     /* STATIC WRAPPERS */
 
