@@ -52,7 +52,8 @@ public:
     static void buildAeMetadata (CameraMetadata &cm, const FrameState &fs,
                                  const SensorConfig &cfg);
     static void buildAfMetadata (CameraMetadata &cm, const FrameState &fs);
-    static void buildBaseMetadata(CameraMetadata &cm, const FrameState &fs);
+    static void buildBaseMetadata(CameraMetadata &cm, const FrameState &fs,
+                                  const SensorConfig &cfg);
 
     /* Aggregate — runs all four subsets in order. Used by
      * ResultDispatchStage on the final partial so the merged result

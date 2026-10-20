@@ -32,8 +32,10 @@ void writeFrameState(CameraMetadata &cm, V4l2Device *dev) {
     cm.update(ANDROID_SCALER_CROP_REGION, scalerCropRegion, NELEM(scalerCropRegion));
 }
 
-/* JPEG encoder defaults — thumbnail geometry, GPS placeholders,
- * orientation. All overwritten at capture time by the app. */
+/* JPEG encoder defaults — thumbnail geometry, orientation. All
+ * overwritten at capture time by the app. GPS is not offered: the HAL
+ * writes no GPS into the JPEG, and apps that geotag write it
+ * themselves. */
 void writeJpegDefaults(CameraMetadata &cm) {
     static const int32_t jpegThumbnailSize[] = {
         0, 0
@@ -43,32 +45,16 @@ void writeJpegDefaults(CameraMetadata &cm) {
     static const uint8_t jpegThumbnailQuality = 50;
     cm.update(ANDROID_JPEG_THUMBNAIL_QUALITY, &jpegThumbnailQuality, 1);
 
-    static const double jpegGpsCoordinates[] = {
-        0, 0
-    };
-    cm.update(ANDROID_JPEG_GPS_COORDINATES, jpegGpsCoordinates, NELEM(jpegGpsCoordinates));
-
-    static const uint8_t jpegGpsProcessingMethod[32] = "None";
-    cm.update(ANDROID_JPEG_GPS_PROCESSING_METHOD, jpegGpsProcessingMethod, NELEM(jpegGpsProcessingMethod));
-
-    static const int64_t jpegGpsTimestamp = 0;
-    cm.update(ANDROID_JPEG_GPS_TIMESTAMP, &jpegGpsTimestamp, 1);
-
     static const int32_t jpegOrientation = 0;
     cm.update(ANDROID_JPEG_ORIENTATION, &jpegOrientation, 1);
 }
 
-/* Statistics modes — all OFF by default; no histogram/sharpness-map
- * generation happens unless an app opts in. */
+/* Statistics modes — face detection OFF. Histogram and sharpness-map
+ * modes are left out: metadata_definitions.xml tags them FUTURE ("do
+ * not implement or use it") and keeps them out of the public API. */
 void writeStatisticsDefaults(CameraMetadata &cm) {
     static const uint8_t statisticsFaceDetectMode = ANDROID_STATISTICS_FACE_DETECT_MODE_OFF;
     cm.update(ANDROID_STATISTICS_FACE_DETECT_MODE, &statisticsFaceDetectMode, 1);
-
-    static const uint8_t statisticsHistogramMode = ANDROID_STATISTICS_HISTOGRAM_MODE_OFF;
-    cm.update(ANDROID_STATISTICS_HISTOGRAM_MODE, &statisticsHistogramMode, 1);
-
-    static const uint8_t statisticsSharpnessMapMode = ANDROID_STATISTICS_SHARPNESS_MAP_MODE_OFF;
-    cm.update(ANDROID_STATISTICS_SHARPNESS_MAP_MODE, &statisticsSharpnessMapMode, 1);
 }
 
 /* 3A + capture-intent defaults. capture_intent varies by template

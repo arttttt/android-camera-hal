@@ -11,7 +11,8 @@ namespace android {
 using FrameState = ResultMetadataBuilder::FrameState;
 
 void ResultMetadataBuilder::buildBaseMetadata(CameraMetadata &cm,
-                                               const FrameState &fs) {
+                                               const FrameState &fs,
+                                               const SensorConfig &cfg) {
     /* Capture timebase + frame identity. */
     int64_t sensorTimestamp = fs.timestampNs;
     int64_t syncFrameNumber = fs.frameNumber;
@@ -19,14 +20,15 @@ void ResultMetadataBuilder::buildBaseMetadata(CameraMetadata &cm,
     cm.update(ANDROID_SYNC_FRAME_NUMBER, &syncFrameNumber, 1);
 
     /* Capture intent echoed; lens aperture / focal length are fixed
-     * hardware attributes for this Tegra K1 sensor pair. */
+     * hardware attributes. The focal length is the module's, the same
+     * value LENS_INFO_AVAILABLE_FOCAL_LENGTHS advertises. */
     uint8_t reportIntent = ANDROID_CONTROL_CAPTURE_INTENT_PREVIEW;
     if (cm.exists(ANDROID_CONTROL_CAPTURE_INTENT))
         reportIntent = *cm.find(ANDROID_CONTROL_CAPTURE_INTENT).data.u8;
     cm.update(ANDROID_CONTROL_CAPTURE_INTENT, &reportIntent, 1);
 
     static const float reportAperture    = 2.0f;
-    static const float reportFocalLength = 3.30f;
+    const float reportFocalLength = cfg.focalLengthMm;
     cm.update(ANDROID_LENS_APERTURE,     &reportAperture,    1);
     cm.update(ANDROID_LENS_FOCAL_LENGTH, &reportFocalLength, 1);
 
@@ -104,7 +106,7 @@ void ResultMetadataBuilder::buildAwbMetadata(CameraMetadata &cm,
 
 void ResultMetadataBuilder::build(CameraMetadata &cm, const FrameState &fs,
                                    const SensorConfig &cfg) {
-    buildBaseMetadata(cm, fs);
+    buildBaseMetadata(cm, fs, cfg);
     buildAfMetadata  (cm, fs);
     buildAeMetadata  (cm, fs, cfg);
     buildAwbMetadata (cm, fs);

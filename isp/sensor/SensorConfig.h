@@ -55,6 +55,11 @@ struct SensorConfig {
      * drives it. Consumed by DelayedControls. */
     int32_t controlDelay[DelayedControls::COUNT];
 
+    /* Lens — the module's focal length (mm), from the tuning's module
+     * block. Static metadata advertises it and every result reports
+     * it; it is a fixed property of the lens, focusing or not. */
+    float focalLengthMm;
+
     /* --- Helpers --- */
 
     /* Max exposure (µs) at the given frame_length */

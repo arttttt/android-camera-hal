@@ -41,7 +41,8 @@ constexpr int64_t  kFallbackMinFrameDurationNs = 1000000000LL / 30;
  * (per-module datasheet values). Fall back to aspect-correct fakes
  * when tuning isn't loaded so the framework doesn't reject the HAL. */
 void writeSensorInfo(CameraMetadata &cm, V4l2Device *dev,
-                     const SensorTuning *tuning, int facing) {
+                     const SensorTuning *tuning, int facing,
+                     const SensorConfig &cfg) {
     auto sensorRes = dev->sensorResolution();
 
     float physSize[2];
@@ -51,14 +52,14 @@ void writeSensorInfo(CameraMetadata &cm, V4l2Device *dev,
         const auto &m = tuning->module();
         physSize[0]      = m.physicalSizeMm[0];
         physSize[1]      = m.physicalSizeMm[1];
-        focalLength      = m.focalLengthMm;
+        focalLength      = cfg.focalLengthMm;
         minFocusDiopters = m.minFocusDistanceDiopters;
     } else {
         /* Aspect-correct fallback so framework sees a coherent sensor
          * area when tuning failed to load. */
         physSize[0]      = 5.0f;
         physSize[1]      = 5.0f * (float)sensorRes.height / (float)sensorRes.width;
-        focalLength      = 3.30f;
+        focalLength      = cfg.focalLengthMm;
         minFocusDiopters = (facing == CAMERA_FACING_BACK) ? 10.0f : 0.0f;
     }
 
@@ -216,8 +217,12 @@ void writeJpegInfo(CameraMetadata &cm, V4l2Device *dev, size_t *jpegBufferSize) 
     const int32_t jpegMaxSize = (int32_t)jpegBuf;
     cm.update(ANDROID_JPEG_MAX_SIZE, &jpegMaxSize, 1);
 
+    /* (0,0) for no thumbnail, then 16:9 and 4:3 — the aspect ratios
+     * of the output sizes. JpegEncoder crops the snapshot's centre to
+     * the requested aspect and embeds the thumbnail in EXIF IFD1. */
     static const int32_t jpegAvailableThumbnailSizes[] = {
         0, 0,
+        320, 180,
         320, 240
     };
     cm.update(ANDROID_JPEG_AVAILABLE_THUMBNAIL_SIZES, jpegAvailableThumbnailSizes, NELEM(jpegAvailableThumbnailSizes));
@@ -662,9 +667,6 @@ void writeAvailableKeys(CameraMetadata &cm) {
         ANDROID_EDGE_MODE,
         ANDROID_FLASH_MODE,
         ANDROID_HOT_PIXEL_MODE,
-        ANDROID_JPEG_GPS_COORDINATES,
-        ANDROID_JPEG_GPS_PROCESSING_METHOD,
-        ANDROID_JPEG_GPS_TIMESTAMP,
         ANDROID_JPEG_ORIENTATION,
         ANDROID_JPEG_QUALITY,
         ANDROID_JPEG_THUMBNAIL_QUALITY,
@@ -679,10 +681,8 @@ void writeAvailableKeys(CameraMetadata &cm) {
         ANDROID_SENSOR_TEST_PATTERN_MODE,
         ANDROID_SHADING_MODE,
         ANDROID_STATISTICS_FACE_DETECT_MODE,
-        ANDROID_STATISTICS_HISTOGRAM_MODE,
         ANDROID_STATISTICS_HOT_PIXEL_MAP_MODE,
         ANDROID_STATISTICS_LENS_SHADING_MAP_MODE,
-        ANDROID_STATISTICS_SHARPNESS_MAP_MODE,
         ANDROID_TONEMAP_MODE,
     };
     cm.update(ANDROID_REQUEST_AVAILABLE_REQUEST_KEYS,
@@ -717,9 +717,6 @@ void writeAvailableKeys(CameraMetadata &cm) {
         ANDROID_EDGE_MODE,
         ANDROID_FLASH_MODE,
         ANDROID_HOT_PIXEL_MODE,
-        ANDROID_JPEG_GPS_COORDINATES,
-        ANDROID_JPEG_GPS_PROCESSING_METHOD,
-        ANDROID_JPEG_GPS_TIMESTAMP,
         ANDROID_JPEG_ORIENTATION,
         ANDROID_JPEG_QUALITY,
         ANDROID_JPEG_THUMBNAIL_QUALITY,
@@ -731,10 +728,8 @@ void writeAvailableKeys(CameraMetadata &cm) {
         ANDROID_SENSOR_TEST_PATTERN_MODE,
         ANDROID_SHADING_MODE,
         ANDROID_STATISTICS_FACE_DETECT_MODE,
-        ANDROID_STATISTICS_HISTOGRAM_MODE,
         ANDROID_STATISTICS_HOT_PIXEL_MAP_MODE,
         ANDROID_STATISTICS_LENS_SHADING_MAP_MODE,
-        ANDROID_STATISTICS_SHARPNESS_MAP_MODE,
         ANDROID_TONEMAP_MODE,
         /* Result-only — written per-frame by ResultMetadataBuilder */
         ANDROID_CONTROL_AE_STATE,
@@ -834,7 +829,7 @@ camera_metadata_t *CameraStaticMetadata::build(V4l2Device *dev, int facing,
                                                 const SensorConfig &sensorCfg,
                                                 size_t *jpegBufferSize) {
     CameraMetadata cm;
-    writeSensorInfo         (cm, dev, tuning, facing);
+    writeSensorInfo         (cm, dev, tuning, facing, sensorCfg);
     writeScalerConfigs      (cm, dev);
     writeJpegInfo           (cm, dev, jpegBufferSize);
     writeSensorRanges       (cm, dev, sensorCfg);

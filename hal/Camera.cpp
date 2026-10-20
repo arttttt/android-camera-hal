@@ -160,6 +160,10 @@ Camera::Camera(const char *devNode, int facing)
      * in later at configureStreams time. */
     mSensorCfg = (mFacing == CAMERA_FACING_BACK) ?
         SensorConfig::imx179() : SensorConfig::ov5693();
+    /* Without a tuning, the same stand-in the static metadata used to
+     * fall back on. */
+    mSensorCfg.focalLengthMm = mTuning.isLoaded()
+        ? mTuning.module().focalLengthMm : 3.30f;
 
     /* Soft-ISP vs (legacy) HW-ISP selector. Read once per camera
      * instance; toggling the property mid-session has no effect. */

@@ -11,8 +11,9 @@ namespace android {
 
 /* libjpeg-backed BLOB encoder. Consumes a JpegSnapshot (host-mapped RGBA
  * already populated by the ISP into one of the JPEG ring slots) and
- * writes a JPEG with an EXIF Orientation APP1 marker into the caller's
- * output buffer. The caller is responsible for calling
+ * writes a JPEG into the caller's output buffer, with an EXIF APP1
+ * marker carrying the orientation and, when the request asks for one
+ * (ANDROID_JPEG_THUMBNAIL_SIZE), a JPEG thumbnail. The caller is responsible for calling
  * IspPipeline::invalidateJpegSnapshot before invoking process() and
  * releaseJpegSnapshot afterwards.
  *
