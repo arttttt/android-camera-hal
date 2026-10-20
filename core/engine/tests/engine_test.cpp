@@ -270,8 +270,9 @@ void testStop() {
         const int n = j.n;
         return Step::wait(n == 0 ? late.fd() : never.fd(),
                           [n] { return Step::done(n); });
-    }, keep(2));
-    CHECK(e.setStallWatch(150ms, [] {}));
+    }, Eng::Options{.maxRunning = 2, .keepOutcomes = true,
+                    .stopGrace = 150ms});
+    CHECK(e.setStallWatch(10s, [] {}));
     CHECK(e.start());
     CHECK(!e.setStallWatch(10ms, [] {}));
 
@@ -338,13 +339,14 @@ void testWatch() {
         engineThread = std::this_thread::get_id();
         return Step::done(0);
     }, keep());
-    CHECK(e.watch(node.fd(), [&] {
+    CHECK(e.watch(node.fd(), [&](short revents) {
+        CHECK(revents & POLLIN);
         node.drain();
         reads++;
         onEngine = std::this_thread::get_id() == engineThread;
     }));
     CHECK(e.start());
-    CHECK(!e.watch(node.fd(), [] {}));
+    CHECK(!e.watch(node.fd(), [](short) {}));
     const auto id = e.submit(Job{0, nullptr});
     CHECK(e.resolve(*id, true).state == State::Done);
     node.notify();
@@ -418,6 +420,25 @@ void testNoLostWake() {
     last.stop();
 }
 
+/* No grace: a job waiting only for work to come in is cancelled at
+ * once on stop. */
+void testNoGrace() {
+    EventFd never;
+    Eng e("nograce", [&](Eng::Id, Job &) {
+        return Step::wait(never.fd(), [] { return Step::done(); });
+    }, Eng::Options{.maxRunning = 1, .keepOutcomes = true,
+                    .stopGrace = 0ms});
+    CHECK(e.start());
+    auto held = std::make_shared<int>(0);
+    const auto id = e.submit(Job{0, held});
+    CHECK(waitFor([&] { return held.use_count() == 2; }));
+    const auto t0 = std::chrono::steady_clock::now();
+    e.stop();
+    CHECK(std::chrono::steady_clock::now() - t0 < 100ms);
+    CHECK(held.use_count() == 1);
+    CHECK(e.resolve(*id, true).state == State::Cancelled);
+}
+
 /* An engine never started stops cleanly and refuses work. */
 void testNeverStarted() {
     Eng e("idle", [](Eng::Id, Job &) { return Step::done(0); });
@@ -441,6 +462,7 @@ int main() {
     testWatch();
     testOutcomeFd();
     testNoLostWake();
+    testNoGrace();
     testNeverStarted();
     if (failures == 0)
         std::printf("engine_test: all passed\n");

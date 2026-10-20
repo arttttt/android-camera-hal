@@ -48,6 +48,10 @@ struct EngineOptions {
      * whose jobs pass their work on by themselves keeps none; see
      * JobQueue. */
     bool keepOutcomes = false;
+    /* How long stop() lets jobs that wait finish (their fence, say)
+     * before they are cancelled. Zero for jobs that only wait for work
+     * to come in. */
+    std::chrono::milliseconds stopGrace{1000};
 };
 
 /* One thread of the camera core, and the only way the core has one.
@@ -93,7 +97,7 @@ public:
     class Step {
     public:
         /* Finished; `result` is the outcome. */
-        static Step done(Result result) {
+        static Step done(Result result = Result{}) {
             Step s(Kind::Done);
             s.result.emplace(std::move(result));
             return s;
@@ -153,12 +157,13 @@ public:
     Engine &operator=(const Engine &) = delete;
 
     /* Before start() only: an fd of the component's own (the V4L2 node)
-     * polled with the engine's work; `onReadable` runs on the engine's
-     * thread when it polls readable or reports an error. */
-    bool watch(int fd, std::function<void()> onReadable) {
+     * polled with the engine's work; `onReady` runs on the engine's
+     * thread with the poll's revents when it polls readable or reports
+     * an error. */
+    bool watch(int fd, std::function<void(short revents)> onReady) {
         if (started)
             return false;
-        watched.push_back(Watched{fd, std::move(onReadable)});
+        watched.push_back(Watched{fd, std::move(onReady)});
         return true;
     }
 
@@ -186,9 +191,8 @@ public:
         return true;
     }
 
-    /* For good. Jobs still queued are let go; jobs that wait get until
-     * their stall limit (1 s without one) to finish, and those that do
-     * not are cancelled; whoever waits in resolve() is answered. Joins
+    /* For good. Jobs still queued are let go; jobs that wait get the
+     * stop grace to finish, and those that do not are cancelled; whoever waits in resolve() is answered. Joins
      * the thread, unless called from it. Idempotent. */
     void stop() {
         {
@@ -259,12 +263,10 @@ private:
 
     struct Watched {
         int fd;
-        std::function<void()> onReadable;
+        std::function<void(short)> onReady;
     };
 
     using Clock = std::chrono::steady_clock;
-
-    static constexpr std::chrono::milliseconds kStopGrace{1000};
 
     void run() {
         setThreadName();
@@ -274,8 +276,13 @@ private:
         while (!stopping.load(std::memory_order_acquire)) {
             buildPollSet(fds, waitIds, true);
             const int n = ::poll(fds.data(), fds.size(), pollTimeoutMs());
-            if (n < 0 && errno != EINTR)
+            if (n < 0 && errno != EINTR) {
+                /* A poll that cannot work (ENOMEM, a bad fd) ends the
+                 * engine as stop() would: it refuses work from now on,
+                 * rather than queue jobs nothing will run. */
+                refuseFromNowOn();
                 break;
+            }
 
             /* Before anything is looked at: whatever arrives from here on
              * wakes the next poll. */
@@ -288,7 +295,7 @@ private:
                 const size_t firstWatched = 1;
                 for (size_t i = 0; i < watched.size(); ++i)
                     if (fds[firstWatched + i].revents != 0)
-                        watched[i].onReadable();
+                        watched[i].onReady(fds[firstWatched + i].revents);
                 const size_t firstWait = firstWatched + watched.size();
                 for (size_t i = 0; i < waitIds.size(); ++i)
                     if (fds[firstWait + i].revents != 0)
@@ -299,6 +306,14 @@ private:
         }
 
         finishWaiting();
+    }
+
+    void refuseFromNowOn() {
+        {
+            std::lock_guard<std::mutex> lock(lifeMutex);
+            stopped = true;
+        }
+        queue.stop();
     }
 
     /* fds: the wake, then the watched fds (unless `withWatched` is off),
@@ -408,8 +423,7 @@ private:
 
     /* Stopping: the jobs that wait get their grace, then are cancelled. */
     void finishWaiting() {
-        const auto grace = stallLimit.count() > 0 ? stallLimit : kStopGrace;
-        const auto deadline = Clock::now() + grace;
+        const auto deadline = Clock::now() + options.stopGrace;
         std::vector<pollfd> fds;
         std::vector<Id> waitIds;
         while (!waiting.empty()) {
