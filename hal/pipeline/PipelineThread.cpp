@@ -104,19 +104,22 @@ void PipelineThread::completeCtx(PipelineContext *ctx) {
      * to zero while ctx still has work pending. */
     ctx->jpegPending.store(blobCount, std::memory_order_release);
 
-    if (blobCount && deps.jpegQueue) {
+    if (blobCount) {
         for (size_t i = 0; i < ctx->request.outputBuffers.size(); ++i) {
             const CaptureRequest::Buffer &ob = ctx->request.outputBuffers[i];
             if (ob.stream->format == HAL_PIXEL_FORMAT_BLOB &&
                 ctx->outputJpegSnapshots[i].ringSlot >= 0) {
                 JpegWorker::Job job{ctx, i};
-                if (!deps.jpegQueue->push(job)) {
-                    ALOGE("JpegQueue push failed for frame %u output %zu",
-                          ctx->request.frameNumber, i);
-                    /* Treat as an immediate completion so ResultThread
-                     * won't park forever waiting for this BLOB. */
-                    ctx->jpegPending.fetch_sub(1, std::memory_order_acq_rel);
-                }
+                if (deps.jpegQueue && deps.jpegQueue->push(job)) continue;
+                ALOGE("JpegQueue push failed for frame %u output %zu",
+                      ctx->request.frameNumber, i);
+                /* The BLOB will not be encoded: give its ring slot back,
+                 * report the output as failed, and count the job as
+                 * done so ResultThread won't park forever on it. */
+                if (deps.bufferProcessor)
+                    deps.bufferProcessor->releaseJpegSnapshot(*ctx, i);
+                ctx->outputStatuses[i] = CAMERA3_BUFFER_STATUS_ERROR;
+                ctx->jpegPending.fetch_sub(1, std::memory_order_acq_rel);
             }
         }
     }

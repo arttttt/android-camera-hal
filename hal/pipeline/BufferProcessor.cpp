@@ -279,11 +279,15 @@ status_t BufferProcessor::processYuvNvBlit(const camera3_stream_buffer &srcBuf,
 }
 
 void BufferProcessor::releaseJpegSnapshots(PipelineContext &ctx) {
-    for (size_t i = 0; i < ctx.outputJpegSnapshots.size(); ++i) {
-        if (ctx.outputJpegSnapshots[i].ringSlot >= 0) {
-            mDeps.isp->releaseJpegSnapshot(ctx.outputJpegSnapshots[i]);
-            ctx.outputJpegSnapshots[i].ringSlot = -1;
-        }
+    for (size_t i = 0; i < ctx.outputJpegSnapshots.size(); ++i)
+        releaseJpegSnapshot(ctx, i);
+}
+
+void BufferProcessor::releaseJpegSnapshot(PipelineContext &ctx, size_t i) {
+    if (i >= ctx.outputJpegSnapshots.size()) return;
+    if (ctx.outputJpegSnapshots[i].ringSlot >= 0) {
+        mDeps.isp->releaseJpegSnapshot(ctx.outputJpegSnapshots[i]);
+        ctx.outputJpegSnapshots[i].ringSlot = -1;
     }
 }
 

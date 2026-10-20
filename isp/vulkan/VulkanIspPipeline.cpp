@@ -58,7 +58,7 @@ VulkanIspPipeline::VulkanIspPipeline()
         mJpegRing[s].mem    = VK_NULL_HANDLE;
         mJpegRing[s].mapped = NULL;
         mJpegRing[s].size   = 0;
-        mJpegRing[s].inUse  = false;
+        mJpegRing[s].inUse.store(false, std::memory_order_relaxed);
     }
     for (size_t s = 0; s < SLOT_COUNT; s++) {
         mDescSet[s]     = VK_NULL_HANDLE;
@@ -559,7 +559,7 @@ bool VulkanIspPipeline::ensureJpegRing(unsigned w, unsigned h) {
             return false;
         }
         mJpegRing[s].size  = sz;
-        mJpegRing[s].inUse = false;
+        mJpegRing[s].inUse.store(false, std::memory_order_release);
     }
     mJpegRingW = w;
     mJpegRingH = h;
@@ -576,7 +576,7 @@ void VulkanIspPipeline::releaseJpegRing() {
         mJpegRing[s].buf   = VK_NULL_HANDLE;
         mJpegRing[s].mem   = VK_NULL_HANDLE;
         mJpegRing[s].size  = 0;
-        mJpegRing[s].inUse = false;
+        mJpegRing[s].inUse.store(false, std::memory_order_release);
     }
     mJpegRingW = 0;
     mJpegRingH = 0;
@@ -599,7 +599,7 @@ bool VulkanIspPipeline::blitToJpegCpu(JpegSnapshot *out) {
 
     int slot = -1;
     for (size_t s = 0; s < JPEG_RING_DEPTH; s++) {
-        if (!mJpegRing[s].inUse) {
+        if (!mJpegRing[s].inUse.load(std::memory_order_acquire)) {
             slot = (int)s;
             break;
         }
@@ -619,7 +619,7 @@ bool VulkanIspPipeline::blitToJpegCpu(JpegSnapshot *out) {
         mScratchImg, VK_IMAGE_LAYOUT_GENERAL,
         mJpegRing[slot].buf, 1, &region);
 
-    mJpegRing[slot].inUse = true;
+    mJpegRing[slot].inUse.store(true, std::memory_order_relaxed);
     if (out) {
         out->rgba     = (const uint8_t *)mJpegRing[slot].mapped;
         out->width    = mRec.srcW;
@@ -643,7 +643,7 @@ void VulkanIspPipeline::invalidateJpegSnapshot(const JpegSnapshot &snap) {
 void VulkanIspPipeline::releaseJpegSnapshot(const JpegSnapshot &snap) {
     if (snap.ringSlot < 0 || snap.ringSlot >= (int)JPEG_RING_DEPTH)
         return;
-    mJpegRing[snap.ringSlot].inUse = false;
+    mJpegRing[snap.ringSlot].inUse.store(false, std::memory_order_release);
 }
 
 /* --- init / destroy --- */

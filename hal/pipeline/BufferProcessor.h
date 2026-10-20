@@ -111,6 +111,9 @@ public:
      * (where JPEG jobs are not posted to JpegWorker). */
     void releaseJpegSnapshots(PipelineContext &ctx);
 
+    /* The same for one output, whose job could not be posted. */
+    void releaseJpegSnapshot(PipelineContext &ctx, size_t outputIndex);
+
     /* Lock the BLOB gralloc, libjpeg-encode from the snapshot, write the
      * camera3_jpeg_blob trailer, unlock, release the snapshot. Called
      * by JpegWorker on its own thread once the frame's submit fence has

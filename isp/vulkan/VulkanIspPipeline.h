@@ -1,6 +1,7 @@
 #ifndef VULKAN_ISP_PIPELINE_H
 #define VULKAN_ISP_PIPELINE_H
 
+#include <atomic>
 #include <vector>
 
 #include "IspPipeline.h"
@@ -210,13 +211,18 @@ private:
     /* Ring of host-mapped RGBA8 buffers for blitToJpegCpu. Sized to the
      * current scratch dimensions; reallocated when ensureBuffers resizes
      * the scratch. JpegWorker holds a snapshot for the duration of one
-     * libjpeg encode; blitToJpegCpu picks the first inUse=false slot. */
+     * libjpeg encode; blitToJpegCpu picks the first inUse=false slot.
+     *
+     * inUse is taken on PipelineThread and given back on JpegWorker
+     * (or PipelineThread when the frame never reached the encoder):
+     * the release store orders the encoder's last read of the slot
+     * before the next frame's copy into it. */
     struct JpegRingEntry {
-        VkBuffer       buf;
-        VkDeviceMemory mem;
-        void          *mapped;
-        size_t         size;
-        bool           inUse;
+        VkBuffer          buf;
+        VkDeviceMemory    mem;
+        void             *mapped;
+        size_t            size;
+        std::atomic<bool> inUse;
     };
     JpegRingEntry mJpegRing[JPEG_RING_DEPTH];
     unsigned      mJpegRingW, mJpegRingH;
