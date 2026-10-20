@@ -30,6 +30,16 @@ struct PipelineContext {
     uint32_t       sequence;
     CaptureRequest request;
 
+    /* Set on the binder thread from the request: a snapshot (still
+     * capture, video snapshot or ZSL intent, or a BLOB output) is
+     * never given up by the AE mode switch. */
+    bool stillCapture;
+
+    /* Set by CaptureStage once the frame has its Bayer. Read without a
+     * lock by the AE mode switch, which only gives up frames still
+     * waiting for one. */
+    std::atomic<bool> hasBayer;
+
     /* Populated by CaptureStage. */
     const V4l2Device::VBuffer *bayerFrame;
     int                        cropX;
@@ -91,6 +101,8 @@ struct PipelineContext {
 
     PipelineContext()
         : sequence(0),
+          stillCapture(false),
+          hasBayer(false),
           bayerFrame(nullptr),
           cropX(0), cropY(0), cropW(0), cropH(0),
           appliedExposureUs(0), appliedGain(0),

@@ -1,6 +1,7 @@
 #ifndef CAMERA_H
 #define CAMERA_H
 
+#include <functional>
 #include <memory>
 
 #include <utils/Errors.h>
@@ -120,8 +121,8 @@ private:
     unsigned                                      mLastConfigHeight = 0;
 
     /* AE_MODE seen on the previous processCaptureRequest. Used to
-     * detect auto↔manual transitions and trigger the same in-HAL
-     * cancellation flush() does — Camera2 apps generally don't call
+     * detect manual→auto transitions and cancel the frames still
+     * waiting for their Bayer — Camera2 apps generally don't call
      * flush() on the mode change so we can't rely on the framework.
      * 0xff = sentinel "no prior request seen". */
     uint8_t                                       mLastAeMode = 0xff;
@@ -149,11 +150,23 @@ private:
 
     /* Pull every PipelineContext still parked in mTracker (orphaned
      * upstream of PipelineThread's own in-flight drain during a
-     * stopWorkers), tag each as CAMERA3_MSG_ERROR_REQUEST, and route
+     * stopWorkers), cancel each, and route
      * through ResultDispatchStage so the framework gets its notify()
      * + buffer release. Must run after stopWorkers, before the next
      * configureStreams or closeDevice teardown step. */
     void errorCompletePendingRequests();
+
+    /* The one cancellation flush() and the AE mode switch share:
+     * cancel the in-flight frames `which` picks (committed ones
+     * complete anyway) and wake a CaptureStage waiting on a long
+     * exposure. Takes no lock of Camera's own, so it is safe under
+     * mMutex. */
+    void cancelInFlight(const std::function<bool(const PipelineContext &)> &which);
+
+    /* A snapshot: a BLOB output, or a still / video snapshot / ZSL
+     * capture intent. */
+    static bool isStillCapture(const camera3_capture_request_t &request,
+                               const CameraMetadata &settings);
 
     /* STATIC WRAPPERS */
 

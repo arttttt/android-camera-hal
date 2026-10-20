@@ -38,6 +38,7 @@ void CaptureStage::process(PipelineContext &ctx) {
         return;
     }
     ctx.bayerFrame = frame;
+    ctx.hasBayer.store(true, std::memory_order_release);
 
     if (deps.af) deps.af->onFrameStart();
 

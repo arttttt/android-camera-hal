@@ -31,11 +31,16 @@ std::vector<std::unique_ptr<PipelineContext>> InFlightTracker::drainAll() {
     return out;
 }
 
-void InFlightTracker::cancelAll() {
+void InFlightTracker::cancelIf(
+        const std::function<bool(const PipelineContext &)> &which) {
     std::lock_guard<std::mutex> lock(mutex);
     for (auto &entry : contexts) {
-        if (entry.second) entry.second->status.cancel();
+        if (entry.second && which(*entry.second)) entry.second->status.cancel();
     }
+}
+
+void InFlightTracker::cancelAll() {
+    cancelIf([](const PipelineContext &) { return true; });
 }
 
 size_t InFlightTracker::count() const {

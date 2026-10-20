@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -32,11 +33,13 @@ public:
 
     std::vector<std::unique_ptr<PipelineContext>> drainAll();
 
-    /* Cancel every tracked context without removing it. Workers
-     * downstream see the status at their next stage check and
-     * short-circuit through ResultDispatch. A context that already
-     * failed keeps its failure. Used by flush() to cancel in-flight
-     * requests asynchronously without ripping the pipeline apart. */
+    /* Cancel every tracked context `which` picks, without removing
+     * it. Workers downstream see the status at their next stage check
+     * and short-circuit through ResultDispatch. A context that already
+     * failed or was committed keeps its outcome. Used by flush() and
+     * the AE mode switch to cancel in-flight requests asynchronously
+     * without ripping the pipeline apart. */
+    void cancelIf(const std::function<bool(const PipelineContext &)> &which);
     void cancelAll();
 
     size_t count() const;

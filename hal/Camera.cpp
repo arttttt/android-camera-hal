@@ -512,23 +512,30 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
             ctx->request.settings = mLastRequestSettings;
         }
 
+        ctx->stillCapture = isStillCapture(*request, ctx->request.settings);
+
         /* Open Camera and similar Camera2 apps don't issue an explicit
-         * flush() on AE_MODE auto↔manual toggles, so the framework
+         * flush() on AE_MODE manual→auto toggles, so the framework
          * leaves whatever long manual exposure was in flight to drain
          * naturally — observable as "manual→auto takes seconds" in
-         * preview. Detect the transition here and run the same in-HAL
-         * cancellation flush() does (cancel tracker ctxs + nudge the
-         * bayer source). The new request itself proceeds normally
-         * past this point. */
+         * preview. Detect the transition here and give up the frames
+         * still waiting for their Bayer, through the same cancellation
+         * flush() uses. A frame that already has its Bayer is past the
+         * wait and completes; a snapshot is never given up. Auto→manual
+         * has nothing long to drain. The new request itself proceeds
+         * normally past this point. */
         uint8_t curAeMode = ANDROID_CONTROL_AE_MODE_ON;
         if (ctx->request.settings.exists(ANDROID_CONTROL_AE_MODE)) {
             curAeMode = *ctx->request.settings.find(ANDROID_CONTROL_AE_MODE).data.u8;
         }
-        if (mLastAeMode != 0xff && curAeMode != mLastAeMode) {
-            ALOGD("processCaptureRequest: AE_MODE %u→%u, cancelling in-flight",
+        if (mLastAeMode == ANDROID_CONTROL_AE_MODE_OFF &&
+            curAeMode != ANDROID_CONTROL_AE_MODE_OFF) {
+            ALOGD("processCaptureRequest: AE_MODE %u→%u, cancelling frames waiting for Bayer",
                   (unsigned)mLastAeMode, (unsigned)curAeMode);
-            if (mTracker)     mTracker->cancelAll();
-            if (mBayerSource) mBayerSource->notifyForAbort();
+            cancelInFlight([](const PipelineContext &c) {
+                return !c.stillCapture &&
+                       !c.hasBayer.load(std::memory_order_acquire);
+            });
         }
         mLastAeMode = curAeMode;
     }
@@ -799,6 +806,29 @@ void Camera::destroyInfrastructure() {
     mInfrastructureBuilt = false;
 }
 
+void Camera::cancelInFlight(
+        const std::function<bool(const PipelineContext &)> &which) {
+    if (mTracker)     mTracker->cancelIf(which);
+    if (mBayerSource) mBayerSource->notifyForAbort();
+}
+
+bool Camera::isStillCapture(const camera3_capture_request_t &request,
+                            const CameraMetadata &settings) {
+    for (uint32_t i = 0; i < request.num_output_buffers; ++i) {
+        const camera3_stream_t *s = request.output_buffers[i].stream;
+        if (s && s->format == HAL_PIXEL_FORMAT_BLOB) return true;
+    }
+    if (!settings.exists(ANDROID_CONTROL_CAPTURE_INTENT)) return false;
+    switch (*settings.find(ANDROID_CONTROL_CAPTURE_INTENT).data.u8) {
+        case ANDROID_CONTROL_CAPTURE_INTENT_STILL_CAPTURE:
+        case ANDROID_CONTROL_CAPTURE_INTENT_VIDEO_SNAPSHOT:
+        case ANDROID_CONTROL_CAPTURE_INTENT_ZERO_SHUTTER_LAG:
+            return true;
+        default:
+            return false;
+    }
+}
+
 void Camera::errorCompletePendingRequests() {
     if (!mTracker || !mResultDispatchStage) return;
     auto pending = mTracker->drainAll();
@@ -1002,8 +1032,8 @@ int Camera::flush() {
      * tearing the pipeline down would itself cost the seconds we're
      * trying to save.
      *
-     * cancelAll cancels every tracked context (one that already
-     * failed keeps its failure); pipeline stages check the status at
+     * cancelInFlight cancels every tracked context (one that already
+     * failed or was committed keeps its outcome); pipeline stages check the status at
      * entry and short-circuit to ResultDispatch, which emits
      * notify(ERROR_REQUEST) and returns the framework's output buffers
      * in error. notifyForAbort wakes any RequestThread
@@ -1015,8 +1045,7 @@ int Camera::flush() {
      * The in-flight V4L2 capture finishes naturally; we don't
      * STREAMOFF here. The next process_capture_request after flush
      * acquires the following bayer normally. */
-    if (mTracker)     mTracker->cancelAll();
-    if (mBayerSource) mBayerSource->notifyForAbort();
+    cancelInFlight([](const PipelineContext &) { return true; });
     return OK;
 }
 
