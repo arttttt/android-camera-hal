@@ -44,12 +44,6 @@ typedef struct VkImportMemoryFdInfoKHR {
     int                                   fd;
 } VkImportMemoryFdInfoKHR;
 
-typedef struct VkMemoryFdPropertiesKHR {
-    VkStructureType sType;
-    void           *pNext;
-    uint32_t        memoryTypeBits;
-} VkMemoryFdPropertiesKHR;
-
 typedef struct VkMemoryGetFdInfoKHR {
     VkStructureType                       sType;
     const void                           *pNext;
@@ -69,9 +63,6 @@ typedef struct VkExternalMemoryBufferCreateInfoKHR {
     uint32_t        handleTypes;
 } VkExternalMemoryBufferCreateInfoKHR;
 
-typedef VkResult (VKAPI_PTR *PFN_vkGetMemoryFdPropertiesKHR)(
-    VkDevice device, VkExternalMemoryHandleTypeFlagBitsKHR handleType,
-    int fd, VkMemoryFdPropertiesKHR *pMemoryFdProperties);
 typedef VkResult (VKAPI_PTR *PFN_vkGetMemoryFdKHR)(
     VkDevice device, const VkMemoryGetFdInfoKHR *pGetFdInfo, int *pFd);
 #endif
@@ -157,7 +148,6 @@ struct VulkanPfn {
     PFN_vkEnumeratePhysicalDevices                  EnumeratePhysicalDevices;
     PFN_vkGetPhysicalDeviceMemoryProperties         GetPhysicalDeviceMemoryProperties;
     PFN_vkGetPhysicalDeviceQueueFamilyProperties    GetPhysicalDeviceQueueFamilyProperties;
-    PFN_vkGetPhysicalDeviceProperties               GetPhysicalDeviceProperties;
     PFN_vkEnumerateDeviceExtensionProperties        EnumerateDeviceExtensionProperties;
     PFN_vkCreateDevice                              CreateDevice;
     PFN_vkGetDeviceProcAddr                         GetDeviceProcAddr;
@@ -168,7 +158,6 @@ struct VulkanPfn {
     PFN_vkDeviceWaitIdle                            DeviceWaitIdle;
 
     PFN_vkQueueSubmit                               QueueSubmit;
-    PFN_vkQueueWaitIdle                             QueueWaitIdle;
 
     PFN_vkAllocateMemory                            AllocateMemory;
     PFN_vkFreeMemory                                FreeMemory;
@@ -184,8 +173,6 @@ struct VulkanPfn {
 
     PFN_vkCreateImage                               CreateImage;
     PFN_vkDestroyImage                              DestroyImage;
-    PFN_vkGetImageMemoryRequirements                GetImageMemoryRequirements;
-    PFN_vkBindImageMemory                           BindImageMemory;
     PFN_vkCreateImageView                           CreateImageView;
     PFN_vkDestroyImageView                          DestroyImageView;
     PFN_vkCreateSampler                             CreateSampler;
@@ -232,15 +219,7 @@ struct VulkanPfn {
     PFN_vkCmdDispatch                               CmdDispatch;
     PFN_vkCmdPipelineBarrier                        CmdPipelineBarrier;
     PFN_vkCmdCopyImageToBuffer                      CmdCopyImageToBuffer;
-    PFN_vkCmdCopyImage                              CmdCopyImage;
-    PFN_vkCmdCopyBufferToImage                      CmdCopyBufferToImage;
-    PFN_vkCmdFillBuffer                             CmdFillBuffer;
 
-    PFN_vkCreateQueryPool                           CreateQueryPool;
-    PFN_vkDestroyQueryPool                          DestroyQueryPool;
-    PFN_vkCmdResetQueryPool                         CmdResetQueryPool;
-    PFN_vkCmdWriteTimestamp                         CmdWriteTimestamp;
-    PFN_vkGetQueryPoolResults                       GetQueryPoolResults;
 
     PFN_vkCmdBeginRenderPass                        CmdBeginRenderPass;
     PFN_vkCmdEndRenderPass                          CmdEndRenderPass;
@@ -253,7 +232,6 @@ struct VulkanPfn {
     PFN_vkQueueSignalReleaseImageANDROID            QueueSignalReleaseImageANDROID;
 
     /* VK_KHR_external_memory_fd — import / export VkDeviceMemory as dma-buf fd */
-    PFN_vkGetMemoryFdPropertiesKHR                  GetMemoryFdPropertiesKHR;
     PFN_vkGetMemoryFdKHR                            GetMemoryFdKHR;
 
     /* VK_KHR_external_fence_fd — export VkFence completion as Android sync_fd */

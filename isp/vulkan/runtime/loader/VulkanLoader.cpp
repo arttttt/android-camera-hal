@@ -52,7 +52,6 @@ void VulkanLoader::loadInstancePfns(VkInstance instance, VulkanPfn *pfn) const {
     INST(EnumeratePhysicalDevices);
     INST(GetPhysicalDeviceMemoryProperties);
     INST(GetPhysicalDeviceQueueFamilyProperties);
-    INST(GetPhysicalDeviceProperties);
     INST(EnumerateDeviceExtensionProperties);
     INST(CreateDevice);
     INST(GetDeviceProcAddr);
@@ -71,7 +70,6 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
     DEV(DeviceWaitIdle);
 
     DEV(QueueSubmit);
-    DEV(QueueWaitIdle);
 
     DEV(AllocateMemory);
     DEV(FreeMemory);
@@ -87,8 +85,6 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
 
     DEV(CreateImage);
     DEV(DestroyImage);
-    DEV(GetImageMemoryRequirements);
-    DEV(BindImageMemory);
     DEV(CreateImageView);
     DEV(DestroyImageView);
     DEV(CreateSampler);
@@ -135,15 +131,7 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
     DEV(CmdDispatch);
     DEV(CmdPipelineBarrier);
     DEV(CmdCopyImageToBuffer);
-    DEV(CmdCopyImage);
-    DEV(CmdCopyBufferToImage);
-    DEV(CmdFillBuffer);
 
-    DEV(CreateQueryPool);
-    DEV(DestroyQueryPool);
-    DEV(CmdResetQueryPool);
-    DEV(CmdWriteTimestamp);
-    DEV(GetQueryPoolResults);
 
     DEV(CmdBeginRenderPass);
     DEV(CmdEndRenderPass);
@@ -156,7 +144,6 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
     DEV(QueueSignalReleaseImageANDROID);
 
     /* VK_KHR_external_memory_fd */
-    DEV(GetMemoryFdPropertiesKHR);
     DEV(GetMemoryFdKHR);
 
     /* VK_KHR_external_fence_fd */

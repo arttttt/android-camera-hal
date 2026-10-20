@@ -56,7 +56,7 @@ void V4l2Source::stop() {
     }
     /* Back to V4L2 directly, so the next STREAMOFF sees a clean ring. */
     for (int index : residue) {
-        if (!dev->queueBufferExt(index))
+        if (!dev->queueBuffer(index))
             ALOGE("stop: QBUF slot %d failed, errno=%d", index, errno);
     }
 }
@@ -87,16 +87,16 @@ bool V4l2Source::drainToLatest(short revents) {
     int damaged = 0;
     for (;;) {
         bool corrupt = false;
-        const int next = dev->dequeueBufferNonBlockingExt(&corrupt);
+        const int next = dev->dequeueBufferNonBlocking(&corrupt);
         if (next < 0) break;
         if (corrupt) {
-            if (!dev->queueBufferExt(next))
+            if (!dev->queueBuffer(next))
                 ALOGE("requeue of damaged slot %d failed: errno=%d", next, errno);
             ++damaged;
             continue;
         }
         if (id >= 0) {
-            if (!dev->queueBufferExt(id))
+            if (!dev->queueBuffer(id))
                 ALOGE("drain-to-latest: QBUF slot %d failed: errno=%d", id, errno);
             ++dropped;
         }
@@ -126,7 +126,7 @@ bool V4l2Source::drainToLatest(short revents) {
     /* A previous latest nobody took is dropped now: drain-to-latest at
      * the source boundary rather than in the V4L2 done queue. It never
      * reached the GPU, so it goes straight back. */
-    if (latest && !dev->queueBufferExt(latest->index))
+    if (latest && !dev->queueBuffer(latest->index))
         ALOGE("drain-to-latest: QBUF slot %d failed: errno=%d",
               latest->index, errno);
     latest = frame;
@@ -160,7 +160,7 @@ void V4l2Source::requeueReturned() {
         pending.swap(returned);
     }
     for (int index : pending) {
-        if (!dev->queueBufferExt(index))
+        if (!dev->queueBuffer(index))
             ALOGE("requeue: QBUF slot %d failed, errno=%d", index, errno);
     }
 }

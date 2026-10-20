@@ -22,8 +22,7 @@ VulkanDeviceState::VulkanDeviceState()
     , mQueue(VK_NULL_HANDLE)
     , mQueueFamily(0)
     , mNativeBufferAvail(false)
-    , mTimestampPeriod(0.0f)
-    , mTimestampValidBits(0) {}
+{}
 
 VulkanDeviceState::~VulkanDeviceState() { destroy(); }
 
@@ -178,17 +177,6 @@ bool VulkanDeviceState::init() {
         return false;
     }
 
-    /* Physical device limits — grab timestampPeriod for turning raw
-     * query ticks into nanoseconds. Combined with the queue's
-     * timestampValidBits this tells callers whether vkCmdWriteTimestamp
-     * on this queue produces usable data. */
-    VkPhysicalDeviceProperties pdp;
-    memset(&pdp, 0, sizeof(pdp));
-    mPfn->GetPhysicalDeviceProperties(mPhysDev, &pdp);
-    mTimestampPeriod    = pdp.limits.timestampPeriod;
-    mTimestampValidBits = qfProps[mQueueFamily].timestampValidBits;
-    ALOGD("timestamp: period=%.2f ns, validBits=%u",
-          mTimestampPeriod, mTimestampValidBits);
 
     float qPriority = 1.0f;
     VkDeviceQueueCreateInfo qci = {};

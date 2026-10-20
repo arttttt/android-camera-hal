@@ -79,20 +79,15 @@ public:
     bool setStreaming(bool enable);
     bool isStreaming() const { return mStreaming; }
 
-    const VBuffer * readLock();
-    bool unlock(const VBuffer *buf);
-
-    /* Lower-level capture primitives — exposed for V4l2Source which
-     * runs its own poll loop on a dedicated capture thread and cannot
-     * use the blocking readLock() path. Caller responsibility to only
-     * invoke these while isStreaming(). */
+    /* Capture primitives for V4l2Source, which the capture engine's
+     * thread drives: it polls fd() and dequeues without blocking. Only
+     * while isStreaming(). */
     int  fd() const { return mFd; }
-    int  dequeueBufferBlocking();            /* waits via poll(); returns slot or -1 */
     /* EAGAIN -> -1; otherwise slot. `corrupt` (optional) reports
      * V4L2_BUF_FLAG_ERROR: the driver filled the slot but the frame in
      * it is damaged. */
-    int  dequeueBufferNonBlockingExt(bool *corrupt = nullptr);
-    bool queueBufferExt(unsigned id);        /* V4L2 QBUF; returns false on error */
+    int  dequeueBufferNonBlocking(bool *corrupt = nullptr);
+    bool queueBuffer(unsigned id);           /* V4L2 QBUF; returns false on error */
     const VBuffer* slotAt(int id) const;     /* accessor into mBuf[id]; null on range error */
 
     /* Switch capture memory model from the default V4L2_MEMORY_MMAP to
@@ -124,10 +119,6 @@ public:
     void closeFocuser();
 
 private:
-    bool queueBuffer(unsigned id);
-    int dequeueBuffer();
-    int dequeueBufferNonBlocking(bool *corrupt = nullptr);
-
     bool iocStreamOff();
     bool iocStreamOn();
     bool iocSFmt(unsigned width, unsigned height);
@@ -148,18 +139,10 @@ private:
     uint32_t mMemoryType;                   /* V4L2_MEMORY_MMAP or _DMABUF */
     int mDmaBufFds[V4L2DEVICE_BUF_COUNT];   /* for DMABUF mode; -1 = unused */
 
-    /* Deferred-return queue for DMABUF mode: unlock() stashes the index here,
-     * and readLock() flushes the stash back to the kernel via VIDIOC_QBUF at
-     * the start of the next frame — by then the previous frame's GPU dispatch
-     * has drained (guaranteed by the ISP's WaitForFences), so VI can safely
-     * overwrite the buffer. mPendingQbufHead is -1 when the stash is empty. */
-    int mPendingQbuf[V4L2DEVICE_BUF_COUNT];
-    int mPendingQbufCount;
     Vector<Resolution> mAvailableResolutions;
     Vector<int32_t>    mAvailableFps;
     struct v4l2_format mFormat;
     VBuffer mBuf[V4L2DEVICE_BUF_COUNT];
-    struct pollfd mPFd;
     int mFocuserFd;
 };
 

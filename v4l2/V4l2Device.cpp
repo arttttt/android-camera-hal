@@ -82,17 +82,13 @@ V4l2Device::V4l2Device(const char *devNode)
     , mDevNode(strdup(devNode))
     , mPixelFormat(0)
     , mMemoryType(V4L2_MEMORY_MMAP)
-    , mPendingQbufCount(0)
     , mFocuserFd(-1)
 {
     memset(&mFormat, 0, sizeof(mFormat));
     for (int i = 0; i < V4L2DEVICE_BUF_COUNT; i++) {
         mDmaBufFds[i] = -1;
         mBuf[i].index = i;
-        mPendingQbuf[i] = -1;
     }
-    mPFd.fd = -1;
-    mPFd.events = POLLIN | POLLRDNORM;
 }
 
 V4l2Device::~V4l2Device() {
@@ -629,8 +625,6 @@ bool V4l2Device::connect() {
         return false;
     }
 
-    mPFd.fd = mFd;
-    mPFd.revents = 0;
     mConnected = true;
 
     return true;
@@ -691,80 +685,6 @@ bool V4l2Device::setStreaming(bool enable) {
 }
 
 /**
- * Lock buffer and return pointer to it. After processing buffer must be
- * unlocked with V4l2Device::unlock().
- */
-const V4l2Device::VBuffer * V4l2Device::readLock() {
-    assert(isConnected());
-    assert(isStreaming());
-
-    /* Flush deferred-QBUFs before dequeueing this frame. In DMABUF mode the
-     * previous frame's GPU dispatch may still be reading its input slot at
-     * Camera::unlock() time; deferring QBUF to the next readLock() trades a
-     * one-frame return delay for guaranteed no V4L2↔GPU write/read overlap
-     * (by this point the ISP's WaitForFences has drained frame N-1). */
-    for (int i = 0; i < mPendingQbufCount; i++) {
-        int id = mPendingQbuf[i];
-        mPendingQbuf[i] = -1;
-        if (!queueBuffer(id))
-            ALOGE("deferred QBUF of slot %d failed: %s (%d)", id, strerror(errno), errno);
-    }
-    mPendingQbufCount = 0;
-
-    int id = dequeueBuffer();
-    if(id < 0) {
-        ALOGE("Could not dequeue buffer: %s (%d)", strerror(errno), errno);
-        return NULL;
-    }
-
-    /* Drain-to-latest: the done-queue may already hold newer frames that
-     * piled up while we were processing the previous request (GPU fence
-     * wait, GC pause, …). Loop non-blocking DQBUFs, requeueing each stale
-     * slot, so we hand the caller the freshest captured frame instead of
-     * the oldest one. Bounds worst-case staleness to one frame period.
-     *
-     * Safe with the deferred-QBUF scheme above: those drained slots have
-     * never been touched by GPU (they've only been in VI's done-queue),
-     * so VIDIOC_QBUF returns them to VI immediately. */
-    int dropped = 0;
-    for (;;) {
-        int next = dequeueBufferNonBlocking();
-        if (next < 0)
-            break;
-        if (!queueBuffer(id))
-            ALOGE("drain-to-latest: QBUF of slot %d failed: %s (%d)",
-                  id, strerror(errno), errno);
-        id = next;
-        ++dropped;
-    }
-    if (dropped)
-        ALOGD("readLock: skipped %d stale frame(s)", dropped);
-
-    return &mBuf[id];
-}
-
-/**
- * Unlocks previously locked buffer.
- */
-bool V4l2Device::unlock(const VBuffer *buf) {
-    if(!buf || buf->index < 0 || buf->index >= V4L2DEVICE_BUF_COUNT)
-        return false;
-
-    if (mMemoryType == V4L2_MEMORY_DMABUF) {
-        /* Defer return; see note in readLock(). */
-        assert(mPendingQbufCount < V4L2DEVICE_BUF_COUNT);
-        mPendingQbuf[mPendingQbufCount++] = buf->index;
-        return true;
-    }
-
-    if(!queueBuffer(buf->index)) {
-        ALOGE("Could not queue buffer %d: %s (%d)", buf->index, strerror(errno), errno);
-        return false;
-    }
-    return true;
-}
-
-/**
  * Returns buffer with specified ID to the kernel
  */
 bool V4l2Device::queueBuffer(unsigned id) {
@@ -819,53 +739,15 @@ void V4l2Device::setDmaBufFds(const int *fds, int count) {
     for (int i = 0; i < count; i++) mDmaBufFds[i] = fds[i];
 }
 
-/**
- * Dequeues next available buffer and returns its ID.
- */
-int V4l2Device::dequeueBufferBlocking() {
-    return dequeueBuffer();
-}
-
-int V4l2Device::dequeueBufferNonBlockingExt(bool *corrupt) {
-    return dequeueBufferNonBlocking(corrupt);
-}
-
-bool V4l2Device::queueBufferExt(unsigned id) {
-    return queueBuffer(id);
-}
-
 const V4l2Device::VBuffer* V4l2Device::slotAt(int id) const {
     if (id < 0 || id >= V4L2DEVICE_BUF_COUNT) return NULL;
     return &mBuf[id];
 }
 
-int V4l2Device::dequeueBuffer() {
-    assert(mFd >= 0);
-
-    struct v4l2_buffer bufInfo;
-
-    memset(&bufInfo, 0, sizeof(bufInfo));
-    bufInfo.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    bufInfo.memory = mMemoryType;
-    bufInfo.index = 0;
-
-    do {
-        if((errno = 0, poll(&mPFd, 1, 5000)) <= 0) {
-            errno = ETIME;
-            return -1;
-        }
-    } while((errno = 0, ioctl(mFd, VIDIOC_DQBUF, &bufInfo)) < 0 && (errno == EINVAL || errno == EAGAIN));
-    if(errno)
-        return -1;
-
-    return (int)bufInfo.index;
-}
-
 /**
- * Non-blocking counterpart of dequeueBuffer(). Returns -1 immediately with
- * errno=EAGAIN when the driver has no ready frame. Used by readLock() to
- * drain any newer frames sitting in the done-queue after the first
- * (blocking) DQBUF — bounds preview staleness to one frame.
+ * Non-blocking DQBUF. Returns -1 immediately with errno=EAGAIN when the
+ * driver has no ready frame; the capture engine polls the node and
+ * drains it to the newest frame.
  */
 int V4l2Device::dequeueBufferNonBlocking(bool *corrupt) {
     assert(mFd >= 0);
@@ -1149,7 +1031,6 @@ void V4l2Device::cleanup() {
     setDmaBufFds(NULL, 0);
 
     closeFd(&mFd);
-    mPFd.fd = -1;
     mConnected = false;
 
     /* Wipe the cached V4L2 format. The kernel-side state is gone with
