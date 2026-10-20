@@ -6,7 +6,7 @@
 namespace android {
 
 /* Layout of the statistics buffer NeonStatsEncoder produces on the
- * StatsWorker thread and StatsProcessStage forwards to the IPA.
+ * stats engine and StatsProcessStage forwards to the IPA.
  *
  * Filled from a single pass (or a `phaseCount` progressive sequence
  * of partial passes) over the raw Bayer slot — pre-WB / pre-CCM

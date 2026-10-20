@@ -27,7 +27,7 @@ struct SensorConfig;
  * directly for now (folded into this coordinator in step 6).
  *
  * Stats live in raw-Bayer domain (pre WB / CCM / gamma), matching
- * libcamera IPU3 / rkisp1 convention. Runs on PipelineThread via
+ * libcamera IPU3 / rkisp1 convention. Runs on the finish engine via
  * StatsProcessStage. Every call must finish well below one frame
  * budget (< 1 ms on Tegra K1 CPU). */
 class Ipa3A : public Ipa {

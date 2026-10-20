@@ -204,8 +204,7 @@ public:
     /* Read-only host pointer to the raw Bayer content of input ring
      * slot `slot`. The pointer is valid for the lifetime of the
      * backend, but the content is only defined while V4L2 holds the
-     * slot dequeued (i.e. between BayerSource::acquireNextFrame and
-     * the matching releaseFrame) and after invalidateBayer(slot) has
+     * slot dequeued (i.e. while a BayerLease on it is held) and after invalidateBayer(slot) has
      * been called. Intended for CPU stats / analysis on the raw
      * capture. Returns NULL on backends without a CPU-mapped input
      * ring. */

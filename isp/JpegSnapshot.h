@@ -12,7 +12,7 @@ namespace android {
  * fence has signalled and IspPipeline::invalidateJpegSnapshot has been
  * called; it stays valid until releaseJpegSnapshot is invoked.
  *
- * The backend owns a small ring of these buffers; JpegWorker holds a
+ * The backend owns a small ring of these buffers; a JPEG job holds a
  * snapshot for the duration of one libjpeg encode and releases it
  * afterwards so the slot rotates back. ringSlot is opaque to
  * consumers — pass the snapshot back to IspPipeline unchanged. */

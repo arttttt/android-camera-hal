@@ -552,7 +552,7 @@ bool VulkanIspPipeline::endFrame(int *submitFenceOut) {
     /* Export the slot's fence as a sync_fd into mSlotSyncFd[slot] for the
      * next acquireSlot to poll on. vkGetFenceFdKHR with SYNC_FD also
      * resets the fence atomically. The same signal is dup'd into
-     * submitFenceOut so the caller's poll set (PipelineThread) sees the
+         * submitFenceOut so the caller's poll (the demosaic engine) sees the
      * same completion event without consuming the slot's tracking fd. */
     if (mDeviceState.pfn()->GetFenceFdKHR) {
         VkFenceGetFdInfoKHR gi = {};
@@ -1021,7 +1021,7 @@ bool VulkanIspPipeline::createCommandObjects() {
                                        sizeof(IspParams), 0, &mParamMap[s]);
     }
 
-    /* Fences created with SYNC_FD_BIT in pNext so PipelineThread can
+    /* Fences created with SYNC_FD_BIT in pNext so the demosaic engine can
      * later export each submit's completion as a sync_fd for poll(). */
     VkExportFenceCreateInfoKHR efci = {};
     efci.sType       = VK_STRUCTURE_TYPE_EXPORT_FENCE_CREATE_INFO_KHR;

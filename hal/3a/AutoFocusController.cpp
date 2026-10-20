@@ -671,8 +671,8 @@ AfResult AutoFocusController::process(const IpaStats &stats, bool fresh,
 
     /* Snapshot the AF region once for the whole tick so all sums and
      * the scene-change snapshot agree. Must match the rectangle the
-     * NEON encoder restricted Sobel / greenSq to (see StatsWorker /
-     * StatsDispatchStage), otherwise the focus metric reads zeros
+     * NEON encoder restricted Sobel / greenSq to (see StatsEngine /
+     * CaptureEngine::dispatchStats), otherwise the focus metric reads zeros
      * for patches the encoder skipped. */
     const FocusRoi roi = currentFocusRoi();
     const float score = sumFocusInRoi(stats.focusMetric, roi);
@@ -760,7 +760,7 @@ AfResult AutoFocusController::process(const IpaStats &stats, bool fresh,
      * the lens settled where the last move put it: fresh stats (not
      * the previous tick's again) of a frame whose exposure began at
      * least settle_time after the move. Stats trail the frame they
-     * come from by a StatsWorker cycle, so the stats of the frames
+     * come from by a stats-engine cycle, so the stats of the frames
      * right after a move still show the old position; a sample taken
      * from them would credit the old position's sharpness to the new
      * one and shift the whole score curve by a step. */

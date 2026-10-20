@@ -148,7 +148,7 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
         emptyBatch.val[i] = 0;
     }
 
-    /* Stats come in once per StatsWorker cycle, while this runs on
+    /* Stats come in once per stats-engine cycle, while this runs on
      * every frame: most ticks see the stats of the tick before again.
      * Controllers that integrate over time (AWB's smoothing, AF's
      * sweep samples) run only on fresh stats, or each would count one

@@ -17,7 +17,7 @@ namespace android {
  *
  * A slot must not re-enter the same Signal (neither directly nor by
  * emitting another Signal that eventually calls this one). Queued
- * dispatch is out of scope — use an EventQueue if you need a thread
+ * dispatch is out of scope — use an Engine if you need a thread
  * hop. */
 template <typename... Args>
 class Signal {

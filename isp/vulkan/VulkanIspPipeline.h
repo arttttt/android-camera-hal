@@ -150,9 +150,9 @@ private:
                   "an evicted gralloc entry must be past every submit in flight");
 
     /* JPEG snapshot ring depth — sized for the in-flight BLOB encode
-     * pipeline, not the per-submit slot ring. JpegWorker holds one
+     * pipeline, not the per-submit slot ring. The JPEG engine holds one
      * snapshot during the libjpeg encode (~150 ms at 1080p);
-     * PipelineThread can stage the next snapshot in parallel. Two
+     * the demosaic engine can stage the next snapshot in parallel. Two
      * slots cover that producer/consumer overlap. Larger only matters
      * if the framework starts queuing multiple BLOB requests
      * back-to-back at >1 / encode-period — not how Camera3 actually
@@ -228,11 +228,12 @@ private:
 
     /* Ring of host-mapped RGBA8 buffers for blitToJpegCpu. Sized to the
      * current scratch dimensions; reallocated when ensureBuffers resizes
-     * the scratch. JpegWorker holds a snapshot for the duration of one
+     * the scratch. A JPEG job holds a snapshot for the duration of one
      * libjpeg encode; blitToJpegCpu picks the first inUse=false slot.
      *
-     * inUse is taken on PipelineThread and given back on JpegWorker
-     * (or PipelineThread when the frame never reached the encoder):
+     * inUse is taken on the demosaic engine and given back by the JPEG
+     * job (or the finish engine when the frame never reached the
+     * encoder):
      * the release store orders the encoder's last read of the slot
      * before the next frame's copy into it. */
     struct JpegRingEntry {

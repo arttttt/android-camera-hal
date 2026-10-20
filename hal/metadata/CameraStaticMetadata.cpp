@@ -23,10 +23,8 @@ namespace android {
 namespace {
 
 /* Pipeline depth advertised to the framework so it can size its
- * own backpressure / scheduler windows. After Tier 3 PR 4 we run a
- * fence-fd ring of depth 4 between RequestThread and PipelineThread
- * (PipelineContext.SLOT_COUNT in the Vulkan ISP, GPU-submit ring of
- * the same size). `kPartialResultCount` lives in
+ * own backpressure / scheduler windows: the Vulkan ISP's GPU-submit
+ * ring (VulkanIspPipeline::SLOT_COUNT) is 4 deep. `kPartialResultCount` lives in
  * CameraStaticMetadata.h so producers (IPA tick, result-dispatch
  * stage) can reference the same advertised value. */
 constexpr uint8_t  kPipelineMaxDepth   = 4;
@@ -592,7 +590,7 @@ void writeHalInfo(CameraMetadata &cm) {
 
     /* Concurrent output stream caps. Produce-once landed in Tier 3 PR 7
      * so RGBA preview + YUV video are both non-stalling on the GPU side,
-     * and the BLOB encode runs on JpegWorker concurrently with
+     * and the BLOB encode runs on the JPEG engine concurrently with
      * pipeline submits — counts as one stalling stream because libjpeg
      * holds the JPEG snapshot ring slot until done. RAW and reprocess
      * are unimplemented; both set to 0 so apps don't try.

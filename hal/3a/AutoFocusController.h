@@ -24,8 +24,8 @@ class SensorTuning;
  * position to move to, and the coordinator writes it.
  *
  * Threading: the sweep's state belongs to the thread that calls
- * process() (PipelineThread) and changes nowhere else. onSettings
- * runs on RequestThread and only queues what the request asks for;
+ * process() (the finish engine) and changes nowhere else. onSettings
+ * runs on the capture engine and only queues what the request asks for;
  * process() applies the queue at the start of its tick. report()
  * hands out the state process() last published, so the result
  * thread never reads fields another thread is writing. The ISP's AWB lock is held
@@ -118,13 +118,14 @@ public:
     /* The state as of the last process() tick. Safe from any thread. */
     Report report() const;
 
-    /* Snapshot the AF region the StatsWorker should restrict its
+    /* Snapshot the AF region the stats engine should restrict its
      * Sobel / greenSq accumulation to. Updated from the framework's
      * ANDROID_CONTROL_AF_REGIONS in onSettings; defaults to the
      * compile-time FOCUS_ROI_* centre rectangle when no app sets a
      * region (or when the region is the default full-frame one).
-     * Thread-safe — onSettings runs on RequestThread, this getter is
-     * called from StatsWorker each cycle. */
+     * Thread-safe — onSettings runs on the capture engine, as does
+     * this getter when it hands a frame to the stats engine; the
+     * finish engine reads it for AE / AWB metering. */
     FocusRoi currentFocusRoi() const;
 
     /* Reset the state-machine to the initial post-construction
@@ -214,7 +215,7 @@ private:
     int          mSensorWidth;
     int          mSensorHeight;
 
-    /* RequestThread → process(): requests not yet applied, in order.
+    /* onSettings → process(): requests not yet applied, in order.
      * Consecutive requests without a trigger collapse into the last
      * one, so the queue stays short however far the pipeline lags. */
     std::mutex           mCommandMutex;
@@ -327,7 +328,7 @@ private:
     uint32_t  mFramesSinceLastSweep;
 
     /* AF region of interest in patch coordinates, written by
-     * onSettings on the RequestThread and read by StatsWorker on
+     * onSettings on the capture engine and read by the stats path on
      * its own thread. Default (full-frame request settings) maps to
      * the centre 8×8 patches via FOCUS_ROI_* constants. */
     mutable std::mutex mFocusRoiMutex;

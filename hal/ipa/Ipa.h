@@ -57,7 +57,7 @@ struct IpaProcessParams {
  *
  * Consumes per-frame GPU statistics and emits a DelayedControls
  * batch describing what exposure / gain should land on a future
- * frame. In-process, synchronous: invoked by PipelineThread on the
+ * frame. In-process, synchronous: invoked by the finish engine on the
  * frame-fence signal, while the stats buffer is still mapped and
  * hot in L1. Every call must finish in well under one frame budget
  * (target < 1 ms on Tegra K1 CPU) — no blocking I/O, no allocation

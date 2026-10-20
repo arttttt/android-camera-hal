@@ -12,9 +12,9 @@ namespace android {
  * sequence N lands in the kernel-captured frame at sequence N + delay.
  *
  * push() is called from two sources that share the same ring:
- *   - ApplySettingsStage on the RequestThread, for the frame being
+ *   - ApplySettingsStage on the capture engine, for the frame being
  *     dispatched to the sensor right now (seq = request.frameNumber).
- *   - Ipa::processStats result on the PipelineThread, with
+ *   - Ipa::processStats result on the finish engine, with
  *     seq = inputSequence + delay, publishing a 3A decision whose
  *     effect lands one delay window ahead.
  *
@@ -103,8 +103,8 @@ private:
     Config config;
     Cell   ring[RING_SIZE][COUNT];
 
-    /* Producers (ApplySettingsStage on RequestThread, StatsProcessStage
-     * on PipelineThread) and consumers (ApplySettingsStage,
+    /* Producers (ApplySettingsStage on the capture engine,
+     * StatsProcessStage on the finish engine) and consumers (ApplySettingsStage,
      * ResultMetadataBuilder) run on different threads; the ring is
      * small enough that a single lock is fine. */
     mutable std::mutex mutex;

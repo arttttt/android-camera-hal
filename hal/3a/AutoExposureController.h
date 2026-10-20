@@ -113,7 +113,7 @@ public:
      * splits via SensorConfig::splitExposureGain to keep FPS).
      *
      * Static because there is no inter-frame state to preserve — the
-     * call is pure. ApplySettingsStage uses it on the RequestThread
+     * call is pure. ApplySettingsStage uses it on the capture engine
      * for both the AE_MODE_OFF path and the auto-mode cold-start
      * fallback when the IPA hasn't pushed yet. */
     static ExposureWriteValues parseManualSettings(const CameraMetadata &cm,

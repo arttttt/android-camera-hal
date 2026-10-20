@@ -25,13 +25,13 @@ namespace android {
  *               Partial accumulator, zeroes it with resetPartial(),
  *               invokes computeRange() over any disjoint sequence of
  *               patch-row spans that covers [0, PATCH_Y) exactly once,
- *               then calls finalize() to emit IpaStats. StatsWorker
+ *               then calls finalize() to emit IpaStats. The stats engine
  *               uses this to spread one statistics computation across
  *               multiple incoming frames so the peak CPU per frame
  *               stays below one sensor period.
  *
  * Stateless — the encoder itself holds no per-frame data; the caller
- * owns any Partial. Thread-safe: multiple StatsWorkers can share one
+ * owns any Partial. Thread-safe: several callers can share one
  * encoder instance. */
 class NeonStatsEncoder {
 public:
