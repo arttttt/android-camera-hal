@@ -26,7 +26,10 @@
 #define ALOGE(...) ALOG_HOST("E", __VA_ARGS__)
 #define ALOGW(...) ALOG_HOST("W", __VA_ARGS__)
 #define ALOGI(...) ALOG_HOST("I", __VA_ARGS__)
-#define ALOGD(...) ((void)0)
-#define ALOGV(...) ((void)0)
+/* Quiet, but the arguments stay used and format-checked. */
+#define ALOG_QUIET(...) \
+    do { if (0) std::fprintf(stderr, __VA_ARGS__); } while (0)
+#define ALOGD(...) ALOG_QUIET(__VA_ARGS__)
+#define ALOGV(...) ALOG_QUIET(__VA_ARGS__)
 
 #endif /* CORE_ENGINE_TESTS_STUB_UTILS_LOG_H */

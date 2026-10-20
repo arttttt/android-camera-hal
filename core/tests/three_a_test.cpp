@@ -1,0 +1,284 @@
+/*
+ * Copyright (C) 2026 Artem Bambalov
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* Host test for 3A on synthetic statistics: the states describe3A
+ * derives, the manual exposure path, AE closing its loop on a linear
+ * sensor model (and EV compensation moving it), gray-world AWB finding
+ * a scene's neutral, and AF's Camera2 state machine sweeping to a
+ * focus peak. Loads the repository's IMX179 tuning. Run by
+ * core/tests/run_host_tests.sh from the repository root. */
+
+#include <math.h>
+
+#include <cstdio>
+#include <cstring>
+
+#include "3a/AutoExposureController.h"
+#include "3a/AutoFocusController.h"
+#include "3a/GrayWorldAwbController.h"
+#include "3a/ThreeAReport.h"
+#include "ipa/IpaFrameMeta.h"
+#include "ipa/IpaStats.h"
+#include "sensor/DelayedControls.h"
+#include "sensor/SensorConfig.h"
+#include "sensor/SensorTuning.h"
+
+#include <utils/Timers.h>
+
+using namespace android;
+using mocha::camera::AeMode;
+using mocha::camera::AeState;
+using mocha::camera::AfMode;
+using mocha::camera::AfState;
+using mocha::camera::AfTrigger;
+using mocha::camera::AwbMode;
+using mocha::camera::AwbState;
+using mocha::camera::FrameSettings;
+using mocha::camera::Rational;
+
+namespace {
+
+int failures = 0;
+
+#define CHECK(cond)                                                \
+    do {                                                           \
+        if (!(cond)) {                                             \
+            std::printf("%s:%d: %s\n", __FILE__, __LINE__, #cond); \
+            failures++;                                            \
+        }                                                          \
+    } while (0)
+
+constexpr Rational kThirdStop{1, 3};
+
+/* The IMX179 as the driver reports it on the device. */
+SensorConfig imx179() {
+    SensorConfig c = SensorConfig::imx179();
+    c.frameLenDefault = 2564;
+    c.frameLenMax     = 3 * 2564;
+    c.gainMin         = 256;
+    c.gainDefault     = 256;
+    c.gainMax         = 4096;
+    c.exposureMin     = 13;
+    c.exposureDefault = 16000;
+    c.exposureMax     = 99000;
+    c.focalLengthMm   = 3.5f;
+    return c;
+}
+
+IpaStats uniformStats(float r, float g, float b, float focus = 0.f) {
+    IpaStats s;
+    std::memset(&s, 0, sizeof(s));
+    for (int py = 0; py < IpaStats::PATCH_Y; ++py) {
+        for (int px = 0; px < IpaStats::PATCH_X; ++px) {
+            s.rgbMean[py][px][0] = r;
+            s.rgbMean[py][px][1] = g;
+            s.rgbMean[py][px][2] = b;
+            s.focusMetric[py][px] = focus;
+        }
+    }
+    return s;
+}
+
+/* AE states from the frame's own mode and lock; AWB Locked while AF
+ * sweeps or the request locks it, Converged otherwise in Auto, Inactive
+ * in any other mode; the exposure in effect is what was written a delay
+ * before, or the defaults. */
+void testDescribe3A() {
+    const SensorConfig cfg = imx179();
+    DelayedControls::Config dcc{};
+    dcc.delay[0] = dcc.delay[1] = 2;
+    DelayedControls dc(dcc);
+
+    AutoFocusController::Report af{AfState::Inactive, AfMode::Off, 0.f};
+    FrameSettings s;
+
+    auto r = describe3A(s, af, false, 10, &dc, cfg);
+    CHECK(r.aeState == AeState::Searching);
+    CHECK(r.awbState == AwbState::Converged);
+    CHECK(r.exposureTimeNs == (int64_t)cfg.exposureDefault * 1000);
+    CHECK(r.sensitivityIso == 100);
+
+    r = describe3A(s, af, true, 10, &dc, cfg);
+    CHECK(r.aeState == AeState::Converged);
+
+    s.ae.lock = true;
+    s.awb.lock = true;
+    r = describe3A(s, af, false, 10, &dc, cfg);
+    CHECK(r.aeState == AeState::Locked);
+    CHECK(r.awbState == AwbState::Locked);
+
+    s = FrameSettings();
+    af.afState = AfState::PassiveScan;
+    r = describe3A(s, af, false, 10, &dc, cfg);
+    CHECK(r.awbState == AwbState::Locked);
+
+    s.ae.mode  = AeMode::Off;
+    s.awb.mode = AwbMode::Daylight;
+    r = describe3A(s, af, false, 10, &dc, cfg);
+    CHECK(r.aeState == AeState::Inactive);
+    CHECK(r.awbState == AwbState::Inactive);
+
+    DelayedControls::Batch written{};
+    written.has[DelayedControls::EXPOSURE] = true;
+    written.val[DelayedControls::EXPOSURE] = 20000;
+    written.has[DelayedControls::GAIN]     = true;
+    written.val[DelayedControls::GAIN]     = 512;
+    dc.commit(8, written);
+    r = describe3A(FrameSettings(), af, false, 10, &dc, cfg);
+    CHECK(r.exposureTimeNs == 20000000LL);
+    CHECK(r.sensitivityIso == 200);
+}
+
+/* Manual AE: the requested exposure verbatim, the frame grown to fit a
+ * long one; EV compensation scales it by 2^(steps x step). */
+void testManualExposure() {
+    const SensorConfig cfg = imx179();
+    FrameSettings s;
+    s.ae.mode = AeMode::Off;
+    s.sensor.exposureTimeNs = 60000000;   /* 60 ms: past the default frame */
+    s.sensor.sensitivityIso = 400;
+    ExposureWriteValues v = AutoExposureController::parseManualSettings(s, cfg, kThirdStop);
+    CHECK(v.exposureUs == 60000);
+    CHECK(v.frameLen > cfg.frameLenDefault);
+    CHECK(v.gain == 4 * cfg.gainUnit);
+
+    s.sensor.exposureTimeNs = 10000000;
+    s.ae.evCompensationSteps = 3;          /* one stop */
+    v = AutoExposureController::parseManualSettings(s, cfg, kThirdStop);
+    CHECK(v.exposureUs == 20000);
+    CHECK(v.frameLen == cfg.frameLenDefault);
+}
+
+/* AE on a linear sensor: luma proportional to exposure x gain. It
+ * converges and holds; one stop of EV compensation doubles the
+ * exposure it settles on. */
+float settleAe(AutoExposureController &ae, const SensorConfig &cfg,
+               int32_t evSteps, float sceneGain, bool *converged) {
+    IpaFrameMeta meta;
+    meta.aeExposureCompensation = evSteps;
+    float totalUs = (float)cfg.exposureDefault;
+    float lastTotal = 0.f;
+    for (int frame = 0; frame < 400; ++frame) {
+        float luma = sceneGain * totalUs;
+        if (luma > 1.f) luma = 1.f;
+        const IpaStats stats = uniformStats(luma, luma, luma);
+        const AeResult r = ae.process(stats, meta, 1.f, 1.f, totalUs, 1);
+        if (r.batch.has[DelayedControls::EXPOSURE] && r.batch.has[DelayedControls::GAIN]) {
+            lastTotal = totalUs;
+            totalUs = (float)r.batch.val[DelayedControls::EXPOSURE]
+                    * (float)r.batch.val[DelayedControls::GAIN] / (float)cfg.gainUnit;
+        }
+    }
+    *converged = ae.isConverged() && fabsf(totalUs - lastTotal) <= 0.02f * totalUs;
+    return totalUs;
+}
+
+void testAeLoop() {
+    SensorTuning tuning;
+    CHECK(tuning.loadFile("tuning/imx179_primax.json"));
+    const SensorConfig cfg = imx179();
+
+    AutoExposureController ae(cfg, &tuning, kThirdStop);
+    bool converged = false;
+    const float base = settleAe(ae, cfg, 0, 1.f / 80000.f, &converged);
+    CHECK(converged);
+
+    AutoExposureController aePlus(cfg, &tuning, kThirdStop);
+    const float plusOne = settleAe(aePlus, cfg, 3, 1.f / 80000.f, &converged);
+    CHECK(converged);
+    const float ratio = plusOne / base;
+    CHECK(ratio > 1.7f && ratio < 2.3f);
+}
+
+/* Gray-world finds the scene's neutral: gains move from the prior to
+ * G/R and G/B of the patches. */
+void testGrayWorld() {
+    SensorTuning tuning;
+    CHECK(tuning.loadFile("tuning/imx179_primax.json"));
+    const float prior[3] = {1.f, 1.f, 1.f};
+    GrayWorldAwbController awb(&tuning, prior);
+    const IpaStats stats = uniformStats(0.30f, 0.40f, 0.50f);
+    for (int tick = 0; tick < 300; ++tick)
+        awb.process(stats, 0.f, AwbMode::Auto);
+    CHECK(fabsf(awb.currentWbR() - 0.40f / 0.30f) < 0.03f);
+    CHECK(fabsf(awb.currentWbB() - 0.40f / 0.50f) < 0.03f);
+
+    const AwbResult manual = awb.applyManualGains(2.f, 1.f, 1.5f);
+    CHECK(static_cast<bool>(manual.gains));
+}
+
+/* AF: a triggered sweep in Auto runs as ActiveScan, holds AE / AWB for
+ * its length, and locks focused near the sharpness peak; CANCEL
+ * returns it to Inactive. */
+void testAfSweep() {
+    SensorTuning tuning;
+    CHECK(tuning.loadFile("tuning/imx179_primax.json"));
+    AutoFocusController af(&tuning, 3280, 2464);
+
+    const int peak = 400;
+    int lens = -1;
+    auto statsAt = [&](int pos) {
+        const float d = (float)(pos - peak) / 60.f;
+        return uniformStats(0.4f, 0.4f, 0.4f, 50.f / (1.f + d * d));
+    };
+
+    FrameSettings s;
+    s.af.mode = AfMode::Auto;
+    af.onSettings(s, 0);
+    af.process(statsAt(0), true, systemTime() + 10000000000LL, true);
+    CHECK(af.report().afState == AfState::Inactive);
+
+    s.af.trigger = AfTrigger::Start;
+    af.onSettings(s, 1);
+    s.af.trigger = AfTrigger::Idle;
+
+    bool sawScan = false;
+    bool sweepHeld = false;
+    for (int tick = 0; tick < 400; ++tick) {
+        const AfResult r = af.process(statsAt(lens < 0 ? 0 : lens), true,
+                                      systemTime() + 10000000000LL, true);
+        if (r.vcmPosition) lens = *r.vcmPosition;
+        if (r.state == AfState::ActiveScan) {
+            sawScan = true;
+            sweepHeld = sweepHeld || r.sweeping;
+        }
+        const AfState st = af.report().afState;
+        if (st == AfState::FocusedLocked || st == AfState::NotFocusedLocked)
+            break;
+    }
+    CHECK(sawScan);
+    CHECK(sweepHeld);
+    CHECK(af.report().afState == AfState::FocusedLocked);
+    CHECK(lens >= peak - 25 && lens <= peak + 25);
+
+    s.af.trigger = AfTrigger::Cancel;
+    af.onSettings(s, 2);
+    af.process(statsAt(lens), true, systemTime() + 10000000000LL, true);
+    CHECK(af.report().afState == AfState::Inactive);
+}
+
+} // namespace
+
+int main() {
+    testDescribe3A();
+    testManualExposure();
+    testAeLoop();
+    testGrayWorld();
+    testAfSweep();
+    if (failures == 0)
+        std::printf("three_a_test: all passed\n");
+    return failures == 0 ? 0 : 1;
+}
