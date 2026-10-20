@@ -272,8 +272,13 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
         int32_t appliedExpUs = params.sensorCfg.exposureDefault;
         int32_t appliedGain  = params.sensorCfg.gainDefault;
         if (params.delayedControls) {
+            /* Before the first write lands, the sensor runs on the
+             * defaults configureStreams wrote — report those, not 0. */
+            int32_t fallback[DelayedControls::COUNT];
+            fallback[DelayedControls::EXPOSURE] = params.sensorCfg.exposureDefault;
+            fallback[DelayedControls::GAIN]     = params.sensorCfg.gainDefault;
             const DelayedControls::Batch live =
-                params.delayedControls->applyControls(params.frameNumber);
+                params.delayedControls->applyControls(params.frameNumber, fallback);
             if (live.has[DelayedControls::EXPOSURE])
                 appliedExpUs = live.val[DelayedControls::EXPOSURE];
             if (live.has[DelayedControls::GAIN])

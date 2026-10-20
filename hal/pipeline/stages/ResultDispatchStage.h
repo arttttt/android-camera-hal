@@ -11,6 +11,7 @@ class BayerSource;
 class AutoFocusController;
 class PartialEmitter;
 struct SensorConfig;
+class DelayedControls;
 
 /* Always-run terminal stage. On the success path: builds result
  * metadata via ResultMetadataBuilder, unlocks any gralloc outputs
@@ -32,6 +33,7 @@ public:
         BayerSource                         *bayerSource;
         AutoFocusController                 *af;         /* may be null */
         const SensorConfig                  *sensorCfg;
+        const DelayedControls               *delayedControls; /* may be null */
     };
 
     explicit ResultDispatchStage(const Deps &deps);

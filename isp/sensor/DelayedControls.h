@@ -75,6 +75,14 @@ public:
      * frame `seq`. */
     Batch applyControls(uint32_t seq) const;
 
+    /* The same, with `fallback` reported for a control that has no
+     * matching write instead of Config.defaultValue. Result metadata
+     * passes the defaults configureStreams writes before STREAMON, so
+     * a cold-start frame reports what the sensor started with rather
+     * than 0. (The IPA keeps the plain form: it reads 0 as "nothing
+     * applied yet".) */
+    Batch applyControls(uint32_t seq, const int32_t fallback[COUNT]) const;
+
     /* Reports the controls queued to be WRITTEN to the sensor at frame
      * `seq` — slot `seq % RING_SIZE` directly, tag-checked against
      * `seq`. has[id] == false when no push for this slot has landed.

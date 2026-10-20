@@ -62,7 +62,9 @@ struct PipelineContext {
      * encodes + releases. */
     std::vector<JpegSnapshot> outputJpegSnapshots;
 
-    /* Echoed back in result metadata. */
+    /* What this request wrote to the sensor. It takes effect a
+     * control delay later; result metadata reports what was in effect
+     * from DelayedControls instead. */
     int32_t appliedExposureUs;
     int32_t appliedGain;
     bool    aeConverged;

@@ -47,6 +47,11 @@ void DelayedControls::commit(uint32_t seq, const Batch &batch) {
 }
 
 DelayedControls::Batch DelayedControls::applyControls(uint32_t seq) const {
+    return applyControls(seq, config.defaultValue);
+}
+
+DelayedControls::Batch DelayedControls::applyControls(
+        uint32_t seq, const int32_t fallback[COUNT]) const {
     std::lock_guard<std::mutex> lock(mutex);
     Batch out;
     for (int id = 0; id < COUNT; ++id) {
@@ -58,7 +63,7 @@ DelayedControls::Batch DelayedControls::applyControls(uint32_t seq) const {
             out.val[id] = cell.val;
         } else {
             out.has[id] = true;
-            out.val[id] = config.defaultValue[id];
+            out.val[id] = fallback[id];
         }
     }
     return out;

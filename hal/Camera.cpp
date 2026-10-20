@@ -753,6 +753,7 @@ void Camera::buildInfrastructure() {
         d.bayerSource = mBayerSource.get();
         d.af          = mAf;
         d.sensorCfg   = &mSensorCfg;
+        d.delayedControls = mDelayedControls.get();
         mResultDispatchStage.reset(new ResultDispatchStage(d));
     }
 

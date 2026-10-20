@@ -16,6 +16,7 @@
 #include "metadata/CameraStaticMetadata.h"
 #include "metadata/ResultMetadataBuilder.h"
 #include "pipeline/PartialEmitter.h"
+#include "sensor/DelayedControls.h"
 #include "sensor/SensorConfig.h"
 
 #undef  LOG_TAG
@@ -129,8 +130,21 @@ void ResultDispatchStage::process(PipelineContext &ctx) {
     ResultMetadataBuilder::FrameState fs;
     fs.timestampNs       = ctx.tShutter ? ctx.tShutter : ctx.tAccepted;
     fs.frameNumber       = ctx.request.frameNumber;
-    fs.appliedExposureUs = ctx.appliedExposureUs;
-    fs.appliedGain       = ctx.appliedGain;
+    /* What was in effect on this frame, the same source the AE
+     * partial reads: ctx.applied* is what this request WROTE, which
+     * lands a control delay later. Before the first write lands the
+     * sensor runs on the defaults configureStreams wrote. */
+    fs.appliedExposureUs = deps.sensorCfg->exposureDefault;
+    fs.appliedGain       = deps.sensorCfg->gainDefault;
+    if (deps.delayedControls) {
+        int32_t fallback[DelayedControls::COUNT];
+        fallback[DelayedControls::EXPOSURE] = deps.sensorCfg->exposureDefault;
+        fallback[DelayedControls::GAIN]     = deps.sensorCfg->gainDefault;
+        const DelayedControls::Batch live =
+            deps.delayedControls->applyControls(ctx.request.frameNumber, fallback);
+        fs.appliedExposureUs = live.val[DelayedControls::EXPOSURE];
+        fs.appliedGain       = live.val[DelayedControls::GAIN];
+    }
     fs.aeConverged       = ctx.aeConverged;
     fs.af.afMode       = ANDROID_CONTROL_AF_MODE_OFF;
     fs.af.afState      = ANDROID_CONTROL_AF_STATE_INACTIVE;
