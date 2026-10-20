@@ -38,9 +38,8 @@ using mocha::camera::StreamId;
 static_assert((int)BufferStatus::Ok    == CAMERA3_BUFFER_STATUS_OK,    "BufferStatus");
 static_assert((int)BufferStatus::Error == CAMERA3_BUFFER_STATUS_ERROR, "BufferStatus");
 
-Camera3ResultSink::Camera3ResultSink(const camera3_callback_ops_t *const *o,
-                                     float focalLength)
-    : opsPtr(o), focalLengthMm(focalLength) {}
+Camera3ResultSink::Camera3ResultSink(const camera3_callback_ops_t *const *o)
+    : opsPtr(o) {}
 
 void Camera3ResultSink::setStreams(std::vector<camera3_stream_t *> s) {
     std::lock_guard<std::mutex> lock(mutex);

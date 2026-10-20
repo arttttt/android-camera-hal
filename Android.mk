@@ -93,8 +93,9 @@ LOCAL_SRC_FILES += \
     core/pipeline/Frame.cpp \
     core/pipeline/FrameRegistry.cpp \
     core/session/CapabilityProbe.cpp \
+    core/session/Session.cpp \
     hal/HalModule.cpp \
-    hal/Camera.cpp \
+    hal/Camera3Device.cpp \
     hal/Camera3GrallocPort.cpp \
     hal/Camera3Request.cpp \
     hal/Camera3ResultSink.cpp \

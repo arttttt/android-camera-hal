@@ -45,8 +45,10 @@ class Camera3ResultSink : public mocha::camera::ResultSink {
 public:
     /* `opsPtr`: the framework's callbacks are installed by initialize()
      * after this sink is built, hence the pointer to the pointer. */
-    Camera3ResultSink(const camera3_callback_ops_t *const *opsPtr,
-                      float focalLengthMm);
+    explicit Camera3ResultSink(const camera3_callback_ops_t *const *opsPtr);
+
+    /* The lens's focal length, reported with every final result. */
+    void setFocalLength(float mm) { focalLengthMm = mm; }
 
     /* The configured streams, indexed by StreamId. */
     void setStreams(std::vector<camera3_stream_t *> streams);
@@ -73,7 +75,7 @@ private:
               const std::vector<camera3_stream_buffer_t> &buffers);
 
     const camera3_callback_ops_t *const *opsPtr;
-    const float focalLengthMm;
+    float focalLengthMm = 0.f;
 
     mutable std::mutex mutex;
     std::vector<camera3_stream_t *>    streams;

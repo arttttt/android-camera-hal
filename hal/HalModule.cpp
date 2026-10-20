@@ -27,7 +27,7 @@
 #include <linux/videodev2.h>
 #include <utils/Vector.h>
 
-#include "Camera.h"
+#include "Camera3Device.h"
 
 #define MAX_CAMERAS 8
 #define MAX_VIDEO_NODES 16
@@ -37,7 +37,7 @@ extern camera_module_t HAL_MODULE_INFO_SYM;
 namespace android {
 namespace HalModule {
 
-static Camera *sCameras[MAX_CAMERAS];
+static Camera3Device *sCameras[MAX_CAMERAS];
 static int sNumCameras = 0;
 
 static bool isV4l2CaptureDevice(const char *path) {
@@ -79,14 +79,7 @@ static void enumerateCameras() {
         ALOGI("Found V4L2 capture device: %s (facing=%s)",
               path, facing == CAMERA_FACING_BACK ? "back" : "front");
 
-        sCameras[sNumCameras] = new Camera(path, facing);
-        if (sCameras[sNumCameras]->isValid()) {
-            sNumCameras++;
-        } else {
-            ALOGW("Camera %s failed to initialize", path);
-            delete sCameras[sNumCameras];
-            sCameras[sNumCameras] = NULL;
-        }
+        sCameras[sNumCameras++] = new Camera3Device(path, facing);
     }
 
     ALOGI("Enumerated %d camera(s)", sNumCameras);
@@ -101,10 +94,6 @@ static int getCameraInfo(int cameraId, struct camera_info *info) {
     enumerateCameras();
     if (cameraId < 0 || cameraId >= sNumCameras) {
         ALOGE("%s: invalid camera ID (%d)", __FUNCTION__, cameraId);
-        return -ENODEV;
-    }
-    if (!sCameras[cameraId]->isValid()) {
-        ALOGE("%s: camera %d is not initialized", __FUNCTION__, cameraId);
         return -ENODEV;
     }
     return sCameras[cameraId]->cameraInfo(info);
@@ -132,12 +121,6 @@ static int openDevice(const hw_module_t *module, const char *name, hw_device_t *
         ALOGE("%s: invalid camera ID (%s)", __FUNCTION__, name);
         return -EINVAL;
     }
-    if (!sCameras[cameraId]->isValid()) {
-        ALOGE("%s: camera %d is not initialized", __FUNCTION__, cameraId);
-        *device = NULL;
-        return -ENODEV;
-    }
-
     return sCameras[cameraId]->openDevice(device);
 }
 

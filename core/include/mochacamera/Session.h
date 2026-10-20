@@ -1,0 +1,113 @@
+/*
+ * Copyright (C) 2026 Artem Bambalov
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#ifndef MOCHACAMERA_SESSION_H
+#define MOCHACAMERA_SESSION_H
+
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "mochacamera/Buffers.h"
+#include "mochacamera/Capability.h"
+#include "mochacamera/Controls.h"
+#include "mochacamera/FrameSettings.h"
+
+namespace mocha::camera {
+
+class GrallocPort;
+class ResultSink;
+
+/* A capture request as a frontend hands it in: its settings, parsed,
+ * and its output buffers. */
+struct FrameRequest {
+    struct Output {
+        StreamSpec    stream;
+        NativeBuffer *buffer       = nullptr;
+        /* Owned by the core from submit() on; -1 when none. */
+        int           acquireFence = -1;
+    };
+
+    uint32_t            frameNumber = 0;
+    FrameSettings       settings;
+    std::vector<Output> outputs;
+};
+
+/* The camera core, for one camera: what a frontend opens, configures
+ * and feeds requests to. Everything behind it -- the sensor and its
+ * lens, the ISP, 3A, JPEG, the engines -- is the core's own; what it
+ * has to say comes back through the ResultSink, and it reaches the
+ * frontend's buffers only through the GrallocPort.
+ *
+ * Built once per camera and kept across open / close. Calls come from
+ * the frontend's threads: open, close, configure and submit one at a
+ * time; flush may run beside submit. */
+class Session {
+public:
+    struct Config {
+        /* The capture node, e.g. /dev/video0. */
+        std::string devNode;
+        bool        facingFront = false;
+        /* The tuning to load: sensor and module integrator. */
+        std::string sensorName;
+        std::string integrator;
+        /* The full ISP (WB, CCM, gamma), or demosaic only. */
+        bool        softIsp = true;
+    };
+
+    Session(const Config &config, ResultSink *sink, GrallocPort *gralloc);
+    ~Session();
+
+    Session(const Session &) = delete;
+    Session &operator=(const Session &) = delete;
+
+    /* What the camera can do; probed on first use. */
+    const Capability &capability();
+
+    /* The sensor's mounting, for the frontend's camera info. */
+    int32_t sensorOrientationDegrees() const;
+
+    bool open();
+    /* Every frame held goes back through the sink before this returns. */
+    void close();
+
+    /* Capture at this size, the engines running. Every frame held goes
+     * back first. Capturing at the same size already does nothing. */
+    bool configure(Size capture);
+
+    /* Whether the engines run, so a request can be taken. */
+    bool running() const;
+
+    /* Take a request; its result comes back through the sink, in
+     * submission order. Only while running(). */
+    void submit(FrameRequest request);
+
+    /* Cancel every frame held and wait, up to a second, until none is;
+     * the committed ones complete normally. */
+    void flush();
+
+    /* A few lines on the session's state, for dumpsys. */
+    void dump(int fd);
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl;
+};
+
+} /* namespace mocha::camera */
+
+#endif /* MOCHACAMERA_SESSION_H */
