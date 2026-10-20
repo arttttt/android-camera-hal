@@ -124,7 +124,15 @@ struct SensorConfig {
             .exposureMin     = 0,
             .exposureDefault = 0,
             .exposureMax     = 0,
-            .controlDelay    = { 2, 2 },
+            /* Measured on mocha (LOS 19.1, 20.10.2026): a value written
+             * on request N shows in frame N+3, 13 steps of 14 in a
+             * square-wave trace. The libcamera-style 2 this replaced
+             * was never measured here, and our writes are not tied to
+             * start-of-frame the way libcamera's are, so its number
+             * does not transfer. 3 also keeps the IPA's push for
+             * request N+3 well ahead of that request reaching the
+             * sensor; with 2 the push lost that race now and then. */
+            .controlDelay    = { 3, 3 },
         };
     }
 
