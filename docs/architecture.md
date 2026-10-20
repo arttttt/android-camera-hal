@@ -1,403 +1,250 @@
 # Architecture
 
-Targets the Xiaomi Mi Pad 1 (Tegra K1, codename `mocha`) running
-LineageOS 14.1 / Android 7.1.2. Bayer-only Vulkan ISP is the one and
-only data path; the HAL has no CPU fallback.
-
-The pipeline is **asynchronous and event-driven**: framework calls
-return in < 1 ms, all blocking work (V4L2 dequeue, GPU submit fence,
-libjpeg encode, NEON statistics) lives on its own worker thread, and
-threads communicate through bounded queues + sync_fd / eventfd.
-
-For the design rationale and PR-level history of the async refactor,
-see [tier3_architecture.md](tier3_architecture.md). This document
-describes what the codebase does **today**.
-
-## Component overview
+The HAL is two modules: a camera **core** that knows the sensor, the
+ISP, 3A and JPEG but no framework interface, and a thin **Camera3
+frontend** that translates between the core and Android's
+`camera3_device`. The execution model inside the core -- its threads,
+how a frame travels and is owned, cancellation and shutdown -- is in
+[tier3_architecture.md](tier3_architecture.md).
 
 ```
-                      Android camera framework (cameraserver)
-                                     │ Camera3 ops
-                            ┌────────▼────────┐
-                            │     Camera      │  hal/Camera.cpp
-                            │  (Camera3 dev)  │
-                            └─┬──────┬──────┬─┘
-                              │      │      │
-                ┌─────────────┘      │      └──────────────┐
-                ▼                    ▼                     ▼
-          RequestThread       per-camera helpers    V4l2Source / CaptureThread
-       (hal/pipeline/)        (hal/3a/, hal/jpeg/)  (hal/pipeline/v4l2/)
-                                                          │ /dev/video0 + DMABUF
-                                                          ▼
-                                                  ┌──────────────────┐
-                                                  │ VulkanIspPipeline│
-                                                  │ (isp/vulkan/)    │
-                                                  └─┬────────────────┘
-                                                    │ produce-once submit
-                                                    │
-                          ┌─────────────────────────┴───────────────┐
-                          │                  │                      │
-                          ▼                  ▼                      ▼
-                       gralloc      JpegSnapshot ring         NV12 mapped buffer
-                     (preview /          │                          │
-                      video frames)      ▼                          ▼
-                                    JpegWorker (libjpeg)    BufferProcessor
-                                         │                  (NV12→YV12/I420 repack)
-                                         ▼
-                              ResultThread → process_capture_result
+ Android camera provider (HIDL 2.4)
+        │ dlopen camera.tegra.so, camera3_device ops
+        ▼
+ hal/  camera.tegra  ── Camera3 frontend ───────────────────────────────
+   HalModule          enumerates /dev/video*, one Camera3Device each
+   Camera3Device      the camera3_device: ops, stream table, templates
+   Camera3Request     metadata → FrameSettings (once, on acceptance)
+   Camera3ResultSink  ResultSink → notify / process_capture_result
+   Camera3GrallocPort GrallocPort → GraphicBufferMapper
+   StreamConfig, metadata/ (static characteristics, templates, results)
+        │ mochacamera/*.h only: Session, FrameRequest, FrameSettings,
+        │ Capability, ResultSink, GrallocPort, NativeBuffer
+        ▼
+ core/ libmochacamera  ── the camera core ─────────────────────────────
+   session/   Session (facade), CapabilityProbe
+   engines/   Capture, Stats, Isp, Finish, Jpeg, Result
+   engine/    Engine, JobQueue, PermitPool
+   pipeline/  Frame, FrameRegistry, FrameStatus, stages, BufferProcessor
+   3a/ ipa/   AE, AWB, AF, Ipa3A, NEON stats
+   isp/       Vulkan ISP backend (demosaic, blits, NV12, JPEG ring)
+   jpeg/      libjpeg encoder with EXIF + thumbnail
+   sensor/    SensorConfig, SensorTuning, DelayedControls
+   v4l2/      V4l2Device, V4l2Source (FrameSource), Focuser, MediaGraph
+        │
+        ▼
+ kernel: tegra_vi V4L2, IMX179 / OV5693 sensors, VCM subdev; nvhost GPU
 ```
 
-`V4l2Device` hands `VulkanIspPipeline`-exported dma-buf fds to
-`VIDIOC_QBUF` so the VI DMA writes captured Bayer directly into the
-GPU-visible input ring — no CPU copy on the hot path.
+## The boundary
 
-## Top-level objects
+The core speaks its own vocabulary, in `core/include/mochacamera/`:
 
-- **`Camera`** (`hal/Camera.cpp/.h`) — one instance per physical
-  camera. Implements the Camera3 device ops
-  (`process_capture_request`, `configure_streams`,
-  `construct_default_request_settings`, `flush`,
-  `register_stream_buffers = NULL`) and owns the worker threads and
-  per-camera helpers below. Build-once lifecycle: helpers and threads
-  are created on the first `openDevice` and survive
-  `closeDevice → openDevice` of subsequent sessions; only V4L2
-  reconfig and tracker drain happen per-session.
+- **Controls.h** -- the 3A enums (`AeMode`, `AeState`, `AwbMode`,
+  `AwbState`, `AfMode`, `AfTrigger`, `AfState`, `CaptureIntent`) with
+  Camera2's values set explicitly, plus `SensorRect`, `CropRegion`,
+  `MeteringRegion`, `Rational`, `Size`.
+- **FrameSettings.h** -- a request as the core reads it. Parsed once
+  by the frontend (`parseFrameSettings`); absent keys get Camera2's
+  values, or no value where absence means something (default
+  exposure, no thumbnail, centre metering).
+- **Results.h** -- `Core3AResult` (the AE / AWB / AF states and the
+  sensor values in effect), `CoreFrameResult`, `PartialResult`.
+- **Buffers.h** -- `NativeBuffer` (the frontend's buffer, opaque: with
+  Camera3 it is the request's `buffer_handle_t*`), `StreamSpec`,
+  `PixelFormat` (RGBA, YCbCr 4:2:0, BLOB), `BufferReturn`.
+- **Capability.h** -- what the camera can do; see below.
+- **Session.h** -- the facade: `open`, `close`, `configure(Size)`,
+  `running`, `submit(FrameRequest)`, `flush`, `dump`, `capability`.
+- **ports/** -- what the core calls out through: `ResultSink`
+  (shutter, partial, frame, deviceError), `GrallocPort` (CPU lock /
+  unlock of output buffers), and `FrameSource` + `BayerLease` +
+  `BayerFrame` (the capture source, implemented by `v4l2/`).
 
-- **Per-camera helpers** under `hal/`:
-  - `hal/3a/AutoFocusController` — CDAF state machine, AF region
-    parsing. Pure return-style: `process(stats, aeConverged) →
-    AfResult`; the coordinator translates `startSweep` /
-    `sweepComplete` flags into AE / AWB lock toggles.
-  - `hal/3a/AutoExposureController` — EV-space LPF + dead-band +
-    asymmetric speed + highlight-protection candidate. Pure return-
-    style: `process(stats, meta, currentWb) → AeResult`. Static
-    helper `parseManualSettings` handles the `AE_MODE = OFF` /
-    cold-start V4L2 triple computation.
-  - `hal/3a/Awb` — pure-virtual AWB interface. Two impls:
-    `GrayWorldAwbController` (fallback / sensors without bayes
-    calibration) keeps the original 96-patch confidence gate +
-    EMA-relax to prior + CCT-LERP CCM behaviour;
-    `BayesianAwbController` is the production path on IMX179 —
-    coarseSearch over CT curves + lux-conditioned prior +
-    deltaLimit clamp + biasCT pull + off-curve fineSearch + IIR
-    damping. Selected by `hal/3a/AwbFactory::createAwb` from the
-    tuning's `active.awb.algorithm` flag plus a populated
-    `bayes` block. Same return-style:
-    `process(stats, luxIndex, awbMode) → AwbResult`,
-    `applyManualGains(...)` for `AWB_MODE = OFF`.
-  - `hal/ipa/Ipa3A` — 3A coordinator. Owns the three controllers,
-    runs gating decisions, dispatches in order
-    AWB → AE → AF, routes their results to backends
-    (`IspPipeline::setWbGains` / `mCcmQ10` for AWB, `DelayedControls`
-    for AE, `V4l2Device` focuser for AF). Emits AWB and AE partial
-    results inside the IPA tick (counters 1, 2); the final partial
-    with buffers comes from `ResultDispatchStage` (counter 3).
-  - `hal/ipa/StatsWorker` + `hal/ipa/NeonStatsEncoder` — NEON
-    statistics worker thread + the kernel that computes
-    `IpaStats::rgbMean` and `IpaStats::focusMetric` over raw Bayer.
-  - `hal/jpeg/JpegEncoder` (a `PostProcessor`) — libjpeg + EXIF
-    Orientation marker.
-  - `hal/pipeline/StreamConfig` — stream-list normalisation +
-    V4L2 capture resolution pick.
-  - `hal/pipeline/BufferProcessor` — per-output-buffer dispatch
-    (RGBA blit / YUV blit / BLOB encode).
-  - `hal/metadata/{CameraStaticMetadata,RequestTemplateBuilder,
-    ResultMetadataBuilder}` — Camera3 metadata builders.
+Two invariants keep the boundary honest:
 
-- **`V4l2Device`** (`v4l2/V4l2Device.cpp/.h`) — thin C++ wrapper
-  over `/dev/video0`. Speaks `V4L2_MEMORY_DMABUF` (the production
-  path); `setDmaBufFds()` switches into DMABUF mode with caller-
-  supplied capture fds. Manages `VIDIOC_QBUF` / `VIDIOC_DQBUF`,
-  `VIDIOC_S_EXT_CTRLS` (controls grouped by class so the kernel's
-  per-class drain doesn't lose updates), `VIDIOC_QUERYCTRL` for
-  range introspection. Also opens the focuser subdev
-  (`/dev/v4l-subdev*`) when found.
+- **Nothing under `core/` includes `camera3.h` or `CameraMetadata`.**
+  `core/tests/run_host_tests.sh` checks it; the Android build would
+  not find `CameraMetadata` for the core anyway, since only the
+  frontend links the camera-metadata helper.
+- **The frontend sees only `core/include`.** `libmochacamera` exports
+  that directory alone, so `hal/` cannot reach the core's internals.
 
-- **`VulkanIspPipeline`** (`isp/vulkan/VulkanIspPipeline.cpp/.h`) —
-  the only `IspPipeline` impl. Compute demosaic into a per-slot
-  scratch ring + fragment ROP blit + libjpeg-feeding host-mapped
-  ring + RGBA→NV12 compute encoder. See
-  [isp-pipeline.md](isp-pipeline.md) for the per-frame mechanics.
-
-- **`Ipa`** abstraction in `hal/ipa/Ipa.h` with `Ipa3A` and a
-  `StubIpa` for cold-bringup.
-
-- **`DelayedControls`** (`isp/sensor/DelayedControls.cpp/.h`) —
-  ring of pending exposure / gain writes tagged with
-  `frameNumber + controlDelay[id]` so per-frame result metadata
-  reports the value that actually applied at silicon, not the
-  one the request asked for.
-
-## Thread topology
-
-| Thread          | Owner                       | Blocks on                       | Responsibility                                                                |
-|-----------------|-----------------------------|---------------------------------|--------------------------------------------------------------------------------|
-| Main (binder)   | framework                   | nothing                         | Camera3 ops entry; `processCaptureRequest` deep-copies into `PipelineContext`, pushes, returns 0 |
-| RequestThread   | `Camera`                    | condvar on queue                | Pop ctx, run ApplySettings + ShutterNotify + Capture, push to PipelineThread   |
-| CaptureThread   | `V4l2Source`                | `poll()` on V4L2 fd + eventfd   | DQBUF / QBUF, drain-to-latest, signal `bayerReady(slot)`                       |
-| StatsWorker     | `Camera`                    | `poll()` on job eventfd + stopfd| NEON reduce of raw Bayer into `IpaStats`; progressive over `phaseCount` submits|
-| PipelineThread  | `Camera`                    | `poll()` on fence fds + eventfd | Vulkan record + submit, fence fan-out, `StatsProcessStage` (IPA call)          |
-| ResultThread    | `Camera`                    | condvar on completion queue     | `process_capture_result` dispatch, BLOB FIFO gate, in-flight tracker remove   |
-| JpegWorker      | `Camera`                    | condvar on JPEG queue           | libjpeg encode async, releases the JpegSnapshot ring slot when done           |
-
-The framework callback ordering rule (`process_capture_result` must
-fire in monotonic `frame_number`) is enforced by single-thread
-serialisation in `ResultThread` plus a `PipelineContext::jpegPending`
-gate that holds back preview-only ctxs that follow a BLOB ctx still
-in `JpegWorker`.
-
-`stopWorkers()` order on session close: BayerSource → RequestThread
-→ StatsWorker → PipelineThread → JpegWorker → ResultThread. The
-order is load-bearing — stopping PipelineThread before JpegWorker
-guarantees no new JPEG jobs arrive after the worker has quiesced.
-`startWorkers()` is the reverse.
+The enums are converted with a cast; `hal/Camera3Request.cpp`
+`static_assert`s every member against its `ANDROID_CONTROL_*` value.
+Where Camera3 has more modes than the core implements, the parser maps
+them onto the core's (any auto-exposure mode is `AeMode::On`).
 
 ## Request lifecycle
 
-```
-processCaptureRequest(req)                              [binder]
-    │ deep-copy req → PipelineContext, push
-    ▼
-RequestQueue                                             [bounded, depth ≈ 4]
-    │
-    ▼
-RequestThread                                            [request-side stages]
-    ApplySettingsStage   parse settings, push to DelayedControls,
-                          V4L2 setControls(batch)
-    ShutterNotifyStage   tShutter = systemTime(); notify SHUTTER
-    CaptureStage         BayerSource::acquireNextFrame()
-                          → ctx.bayerFrame = slot from V4l2Source
-    DemosaicBlitStage    isp.beginFrame(slot); for each output buffer:
-                            isp.blitToGralloc / blitToYuv / blitToJpegCpu
-                          isp.endFrame() → submit fence fd
-                          push to PipelineQueue
-    │
-    ▼
-PipelineQueue
-    │
-    ▼
-PipelineThread                                           [post-submit stages]
-    ↳ poll() on submit fence fd
-    StatsDispatchStage   StatsWorker::submit(bayer slot, focusRoi)
-                          (StatsWorker computes IpaStats off-thread)
-    StatsProcessStage    StatsWorker::peek(stats) → Ipa3A.processStats
-                          → AWB / AE partials emitted from the IPA tick
-                          → Batch{exposure,gain} → DelayedControls.push
-                          → AutoFocusController::process(stats, aeConverged)
-                            inside Ipa3A; routes startSweep / sweepComplete
-                            into AE / AWB lock toggles
-    push to ResultQueue
-    │
-    ▼
-ResultQueue
-    │
-    ▼
-ResultThread
-    ↳ wait for ctx.jpegPending == 0
-    ResultDispatchStage  build result metadata (RequestMetadataEcho +
-                          per-frame 3A state), call
-                          camera3_callback_ops::process_capture_result
-                          flush Bayer slot back to V4l2Source
-                          InFlightTracker::removeBySequence
-```
+1. **Acceptance** (binder thread, `Camera3Device::processCaptureRequest`).
+   Outputs are mapped to the core's `StreamSpec` through the stream
+   table (an unconfigured stream is `-EINVAL`); acquire fences pass to
+   the core; settings are parsed (a request without settings repeats
+   the last ones); a BLOB output makes it a snapshot. The result sink
+   is told to expect the frame -- it keeps the request's metadata as
+   the echo the results start from -- and `Session::submit` takes it.
+2. **The core** (see [tier3_architecture.md](tier3_architecture.md)):
+   the capture engine applies the settings, notifies the shutter and
+   takes the Bayer; the demosaic engine records and submits the GPU
+   work; the finish engine commits the frame, finishes the YUV outputs
+   on the CPU, runs 3A (which sends the AWB and AE partial results)
+   and hands BLOB outputs to the JPEG engine; the result engine hands
+   the frame back, strictly in submission order.
+3. **Results** (`Camera3ResultSink`). Shutter → `CAMERA3_MSG_SHUTTER`.
+   Partial results → `process_capture_result` with counters 1 (AWB)
+   and 2 (AE), metadata = request echo + that subset. The final result
+   → counter 3 (`kPartialResultCount`) with all result keys and the
+   buffers; an output that failed gets `CAMERA3_MSG_ERROR_BUFFER`
+   first. A failed or cancelled frame is `CAMERA3_MSG_ERROR_REQUEST`
+   followed by its buffers in error, without metadata (partial 0).
 
-JpegWorker runs in parallel: when `DemosaicBlitStage` records a BLOB
-output via `blitToJpegCpu`, it acquires a host-mapped snapshot ring
-slot. After the GPU submit fence signals,
-`PostProcessStage` (on PipelineThread) hands the snapshot to
-`JpegWorker`. The worker libjpeg-encodes into the BLOB gralloc and
-clears `ctx.jpegPending` so ResultThread can release the ctx.
-
-There is **no CPU RGBA fallback**: a `blitToGralloc` failure is a
-hardware / driver error and propagates as a per-buffer error +
-`notify(ERROR_BUFFER)`. Packed-YUV sensors (UYVY / YUYV) are not
-supported — the target hardware is Bayer only.
+`flush()` runs without the device mutex (Camera3 lets
+`process_capture_request` run beside it): the core cancels every frame
+it holds and waits up to a second until none is left; committed frames
+complete normally.
 
 ## Stream configuration
 
-`Camera::configureStreams()` runs inside the binder thread, holding
-the global mutex. It:
+`StreamConfig::normalize` validates the stream list (no rotation, no
+depth, no ZSL usage, one input at most), maps
+`IMPLEMENTATION_DEFINED` to RGBA (or YCbCr for a video encoder
+consumer), sets usage bits and `max_buffers` (4), and picks the
+capture size: a video-encoder stream wins, else the largest non-BLOB,
+else the largest BLOB.
 
-1. **`StreamConfig::normalize()`** validates and rewrites the stream
-   list:
-   - HAL3.3: `operation_mode == NORMAL_MODE`,
-     `stream_t::rotation == ROTATION_0`,
-     `data_space != DEPTH` — non-conformant configs are rejected
-     with `BAD_VALUE`.
-   - One INPUT/BIDIRECTIONAL stream max (today no INPUT path is
-     wired — reserved for ZSL / reprocess).
-   - `IMPLEMENTATION_DEFINED` resolves by usage:
-     `HW_VIDEO_ENCODER` → `YCbCr_420_888`, otherwise → `RGBA_8888`.
-   - Output size cap: 16:9 ≤ 1920×1080. Auxiliary system streams
-     (face-detect input, MediaRecorder thumbnail callback) accepted
-     up to 1920×1080 at any aspect.
-   - Consumer gralloc usage flags preserved; the HAL only adds
-     `SW_WRITE_OFTEN` for BLOB outputs that libjpeg fills CPU-side.
-   - V4L2 capture resolution: an `HW_VIDEO_ENCODER` stream wins
-     (so the sensor locks to the matching FPS mode); else the
-     largest non-BLOB stream; else the largest BLOB.
+`Camera3Device::configureStreams` then builds the stream table
+(`StreamId` = index in this configuration) and refuses a YUV stream at
+any size but the capture's -- the NV12 encoder does not scale
+(`Capability::yuvAtCaptureSizeOnly`). `Session::configure(size)` stops
+the engines (every frame held goes back first), reconfigures V4L2 and
+the ISP (input buffers exported to V4L2 as DMA-BUFs), and starts them
+again. A configuration at the size already running does nothing: apps
+like Open Camera reconfigure on every AE auto↔manual toggle, and the
+full cycle costs ~3 s on Tegra K1.
 
-2. **`stopWorkers()`** drains the in-flight tracker via
-   `errorCompletePendingRequests` so ctxs upstream of PipelineThread
-   surface as errors instead of leaving the framework's output
-   buffers parked on the HAL side.
+## Capability, static characteristics, templates
 
-3. **V4L2 reconfig** — `V4l2Device::setStreaming(false)`,
-   `setResolution()` (`VIDIOC_S_FMT` + `REQBUFS(DMABUF)`),
-   `setStreaming(true)` re-queues every slot before `STREAMON` (the
-   kernel returns slots to USERSPACE on `STREAMOFF`).
+`probeCapability` (core) gathers what the camera can do, once per
+camera: the sensor and lens (driver sizes; tuning physical size, focal
+length, minimum focus distance, orientation, colour filter), exposure
+and sensitivity ranges from the driver, the output sizes the SW ISP
+sustains (16:9 up to 1080p, `OutputResolutionCap`) in each format with
+their frame durations, AE / AWB / AF modes (AWB presets only with the
+Bayesian AWB and a tuning that maps them), the EV step and range, FPS
+ranges from the driver's frame intervals, JPEG buffer size and
+thumbnail sizes, pipeline depth and output counts.
 
-4. **`startWorkers()`** brings the threads back live in the
-   reverse-of-stop order.
-
-No per-stream output-buffer allocation happens in the HAL — gralloc
-buffers come from the framework. The HAL owns the V4L2 capture
-buffers (DMABUF mode, fds exported from the Vulkan input ring).
-
-## Static characteristics
-
-Built once per camera by `CameraStaticMetadata::build()` in
-`hal/metadata/`. Keys grouped by source:
-
-- **From `V4l2Device`:** sensor pixel array size, available
-  resolutions (filtered to 16:9 ≤ 1080p), per-mode min frame
-  durations, available FPS ranges (from
-  `VIDIOC_ENUM_FRAMEINTERVALS`).
-- **From `SensorTuning::module`:** physical sensor size, focal
-  length, min focus distance, sensor orientation, Bayer pattern.
-- **From `SensorConfig` (driver-queried at startup):** exposure /
-  gain ranges, base ISO anchor (`kIsoAtUnityGain = 100`).
-- **HAL constants:** `device_version=3.4`,
-  `hardware_level=LIMITED`, `capabilities=[BACKWARD_COMPATIBLE]`,
-  `pipeline_max_depth=4`, `partial_result_count=1`,
-  `sync_max_latency=UNKNOWN`,
-  per-stage `AVAILABLE_*_MODES`, `AVAILABLE_*_KEYS` arrays.
-
-`Camera` caches the result of the first call.
+The frontend only translates it: `CameraStaticMetadata::build` writes
+the tags, adding what is Camera3 policy rather than capability (the
+per-stage OFF modes, the hardware level LIMITED, the key lists);
+`RequestTemplateBuilder` reads the active array (crop, regions) and
+the AF modes (Auto where the lens moves).
 
 ## 3A summary
 
-- **AE** lives in `Ipa3A::processStats`. State is `filteredTotalUs`
-  (absolute exposure × gain at unity, in µs). Each frame two
-  candidate ratios are computed: `ratioMean = setpoint / lumaInRoi`
-  (spot mean of `IpaStats::rgbMean[*][*][1]` inside `meta.focusRoi`,
-  setpoint = `pow(MeanAlg.target/255, 2.2)`) and `ratioHighlight =
-  highlightCap / IQM_top2%` (post-WB max-of-channels of the brightest
-  ~2 % of patches in the same ROI, cap = 0.8). Strictest wins;
-  `target = filteredTotalUs × ratio`, then a single-pole LPF brings
-  `filteredTotalUs` toward `target`. Both ratios are clamped to the
-  per-sensor `MaxFstopDelta{Pos,Neg}` envelope as a per-frame rate
-  limit. A 2 % absolute-deviation dead-band freezes the LPF at
-  convergence. Optional asymmetric LPF speed (faster pole when
-  `|target/filtered − 1| < closeSpeedZone`) is configurable per
-  sensor via `active.hal_overrides.ae.close_speed_zone`; zero / key
-  missing disables the boost. EV-comp is a multiplicative offset on
-  the target. AE_LOCK holds the converged operating point with an
-  EMA-smoothed locked-bias so EV steps under lock don't tear the
-  rolling-shutter readout. Exposure / gain split via
-  `SensorConfig::splitExposureGain` (prefers exposure up to one
-  default frame_length, then gain).
-- **AWB** has two implementations behind a common `Awb`
-  interface, picked per-sensor by `AwbFactory::createAwb` from
-  the tuning JSON's `active.awb.algorithm` flag.
+3A runs on the finish engine, once per frame, on the latest statistics
+the stats engine published (`Ipa3A::processStats`).
 
-  *GrayWorldAwbController* — original gray-world over
-  `rgbMean[16][16][3]` with patch-level saturation / noise-floor
-  filtering. A 96-valid-patch confidence gate (`awbMinValidPatches
-  = 96`, 37.5 % of the grid) protects against gray-world failures
-  on dim / colour-biased scenes: below the gate `lastWb`
-  EMA-relaxes back to `wbGainPrior` (the per-CCT calibrated
-  daylight neutral). CCT estimated from the gray-world G/B ratio
-  via the tuning's `awb.v4` U → CCT polynomial. Used as the
-  fallback path on sensors without a Bayes calibration block.
-  OV5693 (front) currently runs here.
-
-  *BayesianAwbController* — RPi-style two-stage estimator over
-  the calibrated CT curves (`bayes.ctCurveR / ctCurveB`).
-  coarseSearch is a log-stepped traversal of the curve domain;
-  cost at each candidate t is `Σ_zones min(δ², deltaLimit) +
-  biasWeight · min(δ_bias², deltaLimit) − prior(t | luxIndex)`,
-  with zones = (R/G, B/G) per filtered patch and
-  `(gainR, gainB) = (1/ctR(t), 1/ctB(t))`. The lux-conditioned
-  prior is interpolated between calibrated `bayes.priors[]`
-  entries; the bias term anchors weak-signal scenes toward
-  `biasCT`; the per-zone deltaLimit clamp keeps a single
-  off-grey region from dominating. fineSearch refines the
-  on-curve winner perpendicular to the curve in (R/G, B/G)
-  space (magenta ↔ green correction off the Planckian locus,
-  bounded by `transversePos / transverseNeg`). Output gains are
-  IIR-smoothed at `damping` rate after the first `startupFrames`
-  cold-start snap. Manual AWB presets (`INCANDESCENT` / `DAYLIGHT`
-  / etc.) clip the coarseSearch CT range to per-mode windows from
-  `bayes.modes[]`. IMX179 (rear) runs here.
-
-  Both impls share the downstream pipe: WB gains apply in the
-  demosaic shader (zero silicon delay); CCM is LERP'd between
-  calibrated brackets in `colorCorrection.Set[]` and lands in
-  the shared `mCcmQ10` buffer the shader reads. See
-  [project memory `project_awb_design.md`] and
-  [docs/awb-bayes.md] for the migration plan + remaining
-  calibration work.
-- **AF** is a CDAF state machine in `AutoFocusController`:
-  `Idle → Coarse1 → [Coarse2] → Fine → Settle`, parabolic peak
-  interpolation, scene-change retrigger on continuous AF.
-  Tap-to-focus parses `ANDROID_CONTROL_AF_REGIONS` (max 1 region
-  per static metadata's `CONTROL_MAX_REGIONS = {0, 0, 1}`),
-  expanded to 5×5-patch minimum. The same `FocusRoi` flows into
-  `StatsWorker::Job` so the NEON encoder restricts Sobel /
-  greenSq computation to the same window the state machine sums,
-  and into `IpaFrameMeta` so AE meters the same region. Across a
-  sweep AF holds `Ipa::setAeLock(true)` so AE doesn't chase
-  brightness mid-scan.
+- **AE** (`AutoExposureController`). State is `filteredTotalUs`
+  (exposure × gain at unity, µs). Each frame two candidate ratios:
+  `ratioMean = setpoint / lumaInRoi` (spot mean of the green channel
+  inside the focus ROI, setpoint `pow(MeanAlg.target/255, 2.2)`) and
+  `ratioHighlight = highlightCap / IQM_top2%` (post-WB max-of-channels
+  of the brightest ~2 % of patches). Strictest wins, clamped to the
+  per-sensor `MaxFstopDelta` rate limit; a single-pole LPF moves
+  `filteredTotalUs` toward the target; a 2 % dead-band freezes it at
+  convergence. EV compensation multiplies the target by
+  2^(steps × `Capability::ae.evStep`). AE_LOCK holds the converged
+  point with an EMA-smoothed bias so EV steps under lock don't tear
+  the rolling-shutter readout. Exposure / gain split via
+  `SensorConfig::splitExposureGain` (exposure up to one default frame,
+  then gain). Decisions go to `DelayedControls` at the frame they land
+  on; the capture engine's `ApplySettingsStage` writes them.
+- **Manual AE** (`AeMode::Off`): `parseManualSettings` takes the
+  request's exposure and sensitivity verbatim, grows the frame for a
+  long exposure, and the same EV scaling applies.
+- **AWB** behind the `Awb` interface, picked per sensor by
+  `AwbFactory` from the tuning's `active.awb.algorithm`:
+  *GrayWorldAwbController* (gray-world over `rgbMean[16][16]` with
+  patch filtering, a 96-patch confidence gate relaxing to the
+  calibrated daylight prior; OV5693) and *BayesianAwbController*
+  (RPi-style search over calibrated CT curves with a lux-conditioned
+  prior, bias term, transverse fine search and per-mode CT windows for
+  presets; IMX179). WB gains apply in the demosaic shader with no
+  silicon delay; the CCM is interpolated between calibrated CCT
+  brackets into the buffer the shader reads. See
+  [awb-bayes.md](awb-bayes.md).
+- **AF** (`AutoFocusController`): a contrast-detect sweep
+  (`Coarse1 → [Coarse2] → Fine → Settle`, parabolic peak
+  interpolation) behind the Camera2 AF state machine (Inactive /
+  PassiveScan / PassiveFocused / PassiveUnfocused / ActiveScan /
+  FocusedLocked / NotFocusedLocked). Settings are queued from the
+  capture engine and applied at the start of the next tick, so AF's
+  state has one owner. Continuous-picture mode retriggers on scene
+  change; a sweep samples only fresh statistics of a frame exposed
+  after the lens settled. AE and AWB are held for the length of any
+  sweep (a level, not edges). Tap-to-focus takes the request's AF
+  region (one, `CONTROL_MAX_REGIONS = {0, 0, 1}`), grown to a minimum
+  patch footprint; the same ROI restricts the NEON focus metric and
+  weights AE / AWB metering. The lens is written by the IPA through
+  `Focuser` on the same tick AF decides it.
+- **States** (`describe3A`): AE Off → Inactive, locked → Locked,
+  converged → Converged, else Searching; AWB Auto → Locked while
+  locked or while AF sweeps, else Converged; other AWB modes →
+  Inactive. The same derivation feeds the partial and final results.
 
 ## Configuration knobs
 
-Compile-time, defined in `Android.mk`:
-
-- `V4L2DEVICE_BUF_COUNT` — V4L2 capture ring size (default 8).
-
-Runtime, via setprop (parsed in `hal/Camera.cpp`):
-
-- `persist.camera.soft_isp` — `0` / `1`. `1` (default) enables the
-  Vulkan ISP and the 3A controllers. `0` disables 3A and leaves
-  exposure / gain under whatever the sensor kernel driver defaults
-  to; kept as a fallback for cold bring-up but not exercised on
-  the production path.
+- `V4L2DEVICE_BUF_COUNT` (compile time, `Android.bp`) -- the V4L2
+  capture ring, 8.
+- `persist.camera.soft_isp` (runtime, read by `Camera3Device` once per
+  camera) -- `1` (default): full ISP (WB, CCM, gamma) and 3A; `0`:
+  demosaic only, kept for cold bring-up.
+- Which sensor and module each camera is (`Camera3Device`): back =
+  IMX179 by Primax, front = OV5693 by Sunny; HalModule assigns facing
+  by enumeration order.
 
 ## Per-module tuning files
 
 `/vendor/etc/camera/tuning/<lower(sensor)>_<lower(integrator)>.json`,
-converted from the stock NVIDIA `.isp` overrides via
-`tools/isp_to_json.py`. The JSON splits keys into:
+converted from the stock NVIDIA `.isp` overrides by
+`tools/isp_to_json.py`, installed by the `prebuilt_etc` modules in
+`Android.bp`. Sections:
 
-- `active` — paths with a live HAL consumer today: `af.*` (VCM),
-  `colorCorrection.Set[].ccMatrix` + `.cct` + `.wbGain`
-  (multi-CCT CCM + neutral priors), `opticalBlack.*`, `ae.MeanAlg`
-  (setpoint / damping / ratio clamps / tolerance), `awb.v4.*`
-  (U→CCT polynomial, neutral / dark thresholds, smoothing).
-- `reserved` — preserved 1:1 from the stock tuning (noise
-  reduction, lens shading, tone curves, sharpness filters, full
-  AE VFRTable, flicker detection, full AWB LUTs). Promoted to
-  `active` as the corresponding HAL stage ships.
-- `module` — per-module datasheet values not in the `.isp`
-  (physical size, focal length, min focus distance, sensor
-  orientation, bayer pattern). Merged in at conversion time from
+- `active` -- keys with a live consumer: `af.*` (VCM range, settle
+  time), `colorCorrection.Set[]` (multi-CCT CCM + neutral priors),
+  `opticalBlack.*`, `ae.MeanAlg`, `awb.v4.*`, `awb.bayes.*`.
+- `active.hal_overrides` -- HAL knobs with no `.isp` counterpart,
+  preserved verbatim across regenerations: `ae.close_speed_zone`, and
+  the contrast-AF knobs under `af` (`step_coarse`, `step_fine`,
+  `contrast_ratio`, `retrigger_ratio`, `retrigger_delay_frames`,
+  `pdaf_enabled`, `min_frames_between_sweeps`,
+  `min_focus_roi_patches`; all required -- a missing one disables AF).
+- `reserved` -- the rest of the stock tuning, kept 1:1 until a stage
+  consumes it.
+- `module` -- datasheet values not in the `.isp` (physical size, focal
+  length, min focus distance, orientation, bayer pattern), merged from
   `tuning/_module_<sensor>_<integrator>.json`.
 
-HAL-specific knobs that don't have a counterpart in NVIDIA's `.isp`
-schema live under an `active.hal_overrides` sub-section *inside*
-the same per-module JSON. `tools/isp_to_json.py` carves this section
-out as preserve-verbatim across `.isp` regenerations. Currently
-populated with `ae.close_speed_zone` (per-sensor width of the AE
-LPF's faster-pole zone — see the AE summary above; IMX179 = 0
-because the boost resonates with per-frame variability on rear cam
-that hasn't been root-caused, OV5693 = 0.2). AF state-machine knobs
-(`step_coarse`, `step_fine`, `contrast_ratio`, etc.) live directly
-under `active.af` of the same JSON — there is no separate
-`*_overrides.json` file and no deep-merge logic in
-`SensorTuning::load`.
+`SensorTuning` loads in the `Session` constructor; without it the core
+runs on compile-time defaults (and AF stays off).
 
-`SensorTuning` (`isp/sensor/`) loads at `Camera` construction.
-`!isLoaded()` falls back to compile-time defaults so the HAL stays
-alive even with the tuning dir missing — but the production path
-expects the tuning installed.
+## Build and tests
+
+`Android.bp` builds `libmochacamera` (static, `-Wall -Wextra -Werror`,
+C++20) and `camera.tegra` (the frontend, linking it), plus the tuning
+files and two diagnostic probes. From a LineageOS 19.1 tree:
+
+```
+mmm hardware/camera
+```
+
+The core's host tests (JobQueue, Engine, PermitPool, Frame and its
+holders, DelayedControls, the result engine on a fake sink, 3A on
+synthetic statistics) run under ThreadSanitizer from the repository
+root, in the build tree:
+
+```
+core/tests/run_host_tests.sh
+```

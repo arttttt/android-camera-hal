@@ -1,11 +1,13 @@
-# VIC encoder-stream path (dormant)
+# VIC encoder-stream path (removed)
 
-Status: **disabled**. `BufferProcessor::processOne` routes YCbCr_420_888
-outputs through the GPU NV12 encode + libyuv repack path unconditionally
-(`d428626`). The NvBlit deferral machinery — `processYuvNvBlit`, the
-`DemosaicBlitStage` third pass, `PipelineContext::outputDeferredNvBlit` —
-is still in the tree but unreachable. This document is the evidence
-record and the re-enable roadmap.
+Status: **removed** (`66d884d`). `BufferProcessor::processOne` had routed
+YCbCr_420_888 outputs through the GPU NV12 encode + libyuv repack path
+unconditionally since `d428626`; the NvBlit deferral machinery —
+`processYuvNvBlit`, the `DemosaicBlitStage` third pass,
+`PipelineContext::outputDeferredNvBlit`, `isp/nvblit/` — was then
+unreachable and went with the core rewrite. This document is the
+evidence record; the file map below names the code as it was, to be
+read at `66d884d^`. `tools/nvblit_probe/` stays.
 
 ## Why it exists, and why it is off
 
@@ -89,7 +91,7 @@ GPU writes NV12 directly into the pitch gralloc (no VIC), but the K1
 Vulkan driver's 2-plane / linear ANW import support needs its own
 probe first.
 
-## File map
+## File map (as of `66d884d^`)
 
 - `hal/pipeline/BufferProcessor.cpp` — `processOne` YCbCr case (the
   disabled branch point), `processYuvNvBlit` (dormant), fence reap,

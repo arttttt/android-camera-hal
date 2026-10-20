@@ -1,8 +1,8 @@
 # Tegra K1 / Mi Pad 1 Camera HAL
 
 V4L2-based Android Camera HAL for **Xiaomi Mi Pad 1** (codename
-`mocha`, Tegra K1, single-SMX Kepler GK20A) running LineageOS 14.1 /
-Android 7.1.2. Software ISP runs on the GPU via Vulkan compute +
+`mocha`, Tegra K1, single-SMX Kepler GK20A) running LineageOS 19.1 /
+Android 12. Software ISP runs on the GPU via Vulkan compute +
 fragment, 3A statistics on ARMv7 NEON. No closed NVIDIA blob (no
 `libnvodm_imager` / `libnvcamerautils`); all processing is ours from
 the raw Bayer pixel onward.
@@ -43,21 +43,26 @@ preview are all working.
 - **Multi-stream produce-once.** One demosaic per frame; per-output
   blits / encodes / copies share a single `vkQueueSubmit`. Per-output
   release fences come from `vkQueueSignalReleaseImageANDROID`.
-- **Asynchronous request pipeline.** Six worker threads per camera:
-  - `RequestThread` — drains the framework's `processCaptureRequest`
-    queue, deep-copies settings into a `PipelineContext`. Returns
-    in < 1 ms.
-  - `CaptureThread` (V4L2) — DQBUF off the V4L2 queue, drain-to-latest
-    so preview never reaches into a stale frame.
-  - `PipelineThread` — owns the GPU submit ring; fence-fd polled for
-    completion (no `vkWaitForFences` on the hot path).
-  - `ResultThread` — `process_capture_result` dispatch + Bayer flush
-    + in-flight tracker remove; gates BLOB-bearing requests so
-    Camera3's monotonic frame_number ordering survives async JPEG.
-  - `JpegWorker` — libjpeg encode off the hot path, snapshot ring of
-    host-mapped Vulkan buffers feeds it.
-  - `StatsWorker` — NEON 3A statistics over the raw Bayer slot,
-    progressive across `phaseCount` submits to keep peak CPU low.
+- **Asynchronous request pipeline.** Six engines per camera, each
+  one thread over a job queue, polling fds instead of blocking:
+  - *Capture* — applies the request's settings, stamps the shutter,
+    takes the newest Bayer (drain-to-latest, so preview never reaches
+    into a stale frame); owns the V4L2 queue.
+    `process_capture_request` returns in < 1 ms.
+  - *Stats* — NEON 3A statistics over the raw Bayer slot, progressive
+    across two frames to keep peak CPU low; always the freshest frame.
+  - *ISP* — records and submits the GPU work, polls its fence (no
+    `vkWaitForFences` on the hot path).
+  - *Finish* — the CPU half: YUV finalisation, 3A, partial results.
+  - *JPEG* — libjpeg encode off the GPU's path, from a snapshot ring
+    of host-mapped Vulkan buffers.
+  - *Result* — hands frames back strictly in request order, each once
+    no job holds it any more, so async JPEG cannot reorder results.
+
+  Capture slots, JPEG snapshots and frames are owned by move-only
+  types (lease, permit, token) that give them back on every path, so
+  flush, stop and errors cannot leak one. See
+  [`docs/tier3_architecture.md`](docs/tier3_architecture.md).
 - **Framework `acquire_fence` honoured** as a binary `VkSemaphore`
   via `VK_KHR_external_semaphore_fd` — the GPU submit waits on the
   framework's producer fence instead of blocking the recording
@@ -129,8 +134,9 @@ preview are all working.
   operation_mode == NORMAL_MODE`, `camera3_stream_t::rotation == 0`,
   rejects `data_space == DEPTH`.
 - HAL3.2 contract: `register_stream_buffers` and
-  `get_metadata_vendor_tag_ops` are NULL'd; `partial_result = 1`
-  on every result.
+  `get_metadata_vendor_tag_ops` are NULL'd.
+- Partial results: `PARTIAL_RESULT_COUNT = 3` — AWB state, then AE
+  state, as soon as 3A has run on the frame; the full result last.
 - AE / AWB / AF state reported per-frame in result metadata.
 
 ### Tuning
@@ -160,10 +166,10 @@ preview are all working.
   ceiling** — the ceiling tracks what the SW ISP can sustain at
   frame rate on this GPU. Below the ceiling every V4L2-supported
   16:9 mode is exposed.
-- Auxiliary streams the framework configures at non-advertised sizes
-  (e.g. MediaRecorder 320×240 thumbnail callback, face-detect
-  inputs) are accepted up to the same dimension cap regardless of
-  aspect.
+- Auxiliary RGBA streams the framework configures at non-advertised
+  sizes (e.g. face-detect inputs) are accepted up to the same
+  dimension cap regardless of aspect. A YUV stream must be at the
+  capture size: the NV12 path does not scale.
 - `IMPLEMENTATION_DEFINED` resolves by usage flags:
   `HW_VIDEO_ENCODER` → `YCbCr_420_888`, everything else →
   `RGBA_8888`. NV12 / I420 / YV12 chroma layouts are repacked from
@@ -172,77 +178,63 @@ preview are all working.
 ## Architecture (high level)
 
 ```
-                        Android camera framework
-                                  │ Camera3 ops
-                          ┌───────▼───────┐
-                          │     Camera    │
-                          └───┬───────┬───┘
-                              │       │
-            ┌─────────────────┘       └─────────────┐
-            ▼                                       ▼
-    RequestThread                          per-camera helpers
-    ↳ PipelineContext queue                Ipa3A coordinator
-            │                              ↳ AE / AWB / AF controllers
-            ▼                              JpegEncoder
-    PipelineThread                         BufferProcessor
-    ↳ acquireSlot, demosaic compute,
-      per-output blits, single submit
-            │
-            │     ┌──────── DMABUF / OPAQUE_FD ────────┐
-            ▼     ▼                                    │
-    VulkanIspPipeline                    CaptureThread / V4l2Source
-    ┌─────────────────────────┐                  │
-    │ compute: Bayer→scratch  │←──────  DQBUF, drain-to-latest
-    │ fragment: scratch→gralloc│                 │
-    │ release_fence per output│       /dev/video0 + /dev/v4l-subdev*
-    └─────────┬──────┬────────┘
-              │      │
-              ▼      ▼
-        gralloc    JpegSnapshot (host-mapped)
-                          │
-                          ▼
-                    JpegWorker (libjpeg async, EXIF orientation)
-                          │
-                          ▼
-                    ResultThread → process_capture_result
-
-    StatsWorker (NEON, parallel to GPU): rgbMean[16×16] +
-        focusMetric[ROI] → IPA (Ipa3A) → DelayedControls
+                    Android camera provider (HIDL 2.4)
+                                  │ camera3_device ops
+   hal/ camera.tegra  ┌───────────▼────────────┐
+   Camera3 frontend   │ Camera3Device          │ metadata ⇄ FrameSettings,
+                      │ Camera3Request         │ static metadata from
+                      │ Camera3ResultSink      │ Capability, results from
+                      │ Camera3GrallocPort     │ Core3AResult
+                      └───────────┬────────────┘
+                                  │ mochacamera/*.h: Session, ports
+   core/ libmochacamera ┌─────────▼──────────┐
+   camera core          │ Session            │
+                        └─────────┬──────────┘
+        submit ─► Capture ─► ISP (GPU) ─► Finish ─► JPEG ─► Result ─► sink
+                    │  ▲                    ▲ 3A
+                    │  └ V4L2 (DMABUF into  │
+                    │    Vulkan input ring) │
+                    └──► Stats (NEON) ──────┘
 ```
 
-Per-frame control writes (exposure, gain) round-trip through
-`DelayedControls` so they land at `frameNumber + controlDelay[id]`
-where the silicon actually applies them. WB gains and CCM apply in
-the demosaic shader (zero silicon delay).
+The core knows nothing of Camera3: no `camera3.h`, no
+`CameraMetadata`. It takes requests as `FrameSettings`, describes
+the camera as a `Capability`, and reports through a `ResultSink`;
+the frontend translates both ways. Per-frame control writes
+(exposure, gain) round-trip through `DelayedControls` so they land at
+`frameNumber + controlDelay[id]`, where the silicon applies them. WB
+gains and CCM apply in the demosaic shader (zero silicon delay).
 
-The full prose architecture used to live in
-[`docs/architecture.md`](docs/architecture.md), but parts of that
-document predate the Tier 3 async-pipeline rewrite and the HAL3.4
-contract pass. For current shape consult
-[`docs/tier3_architecture.md`](docs/tier3_architecture.md) and the
-section above. Developer notes for individual subsystems live under
+- [`docs/architecture.md`](docs/architecture.md) — modules, the
+  boundary, request lifecycle, stream configuration, 3A, tuning.
+- [`docs/tier3_architecture.md`](docs/tier3_architecture.md) — the
+  engines, frame ownership, flush / stop / errors.
+
+Developer notes for individual subsystems live under
 [`docs/`](docs/).
 
 ## Build & deploy
 
-Standard AOSP module. From an AOSP 7.1 / LineageOS 14.1 tree:
+`Android.bp` module, from a LineageOS 19.1 tree:
 
 ```bash
 # Add to your device makefile
-PRODUCT_PACKAGES += camera.$(TARGET_BOARD_PLATFORM)
+PRODUCT_PACKAGES += camera.tegra
 
-# Build (JDK 8 needed for the AOSP 7.1 host tools)
 mmm hardware/camera
 ```
 
-Outputs:
-- `out/.../system/lib/hw/camera.tegra.so` — the HAL.
-- `out/.../system/vendor/etc/camera/tuning/<sensor>_<integrator>.json`
-  — tuning data, installed via `BUILD_PREBUILT`.
+Outputs (vendor partition):
+- `vendor/lib/hw/camera.tegra.so` — the HAL (`libmochacamera`, the
+  core, is linked in statically).
+- `vendor/etc/camera/tuning/<sensor>_<integrator>.json` — tuning
+  data, from the `prebuilt_etc` modules.
 
-Both must land on the device under `/system/lib/hw/` and
-`/system/vendor/etc/camera/tuning/` respectively, then `cameraserver`
-needs a restart.
+After replacing them on a device, restart the provider:
+`setprop ctl.restart vendor.camera-provider-2-4`.
+
+The core's host tests run under ThreadSanitizer from the repository
+root: `core/tests/run_host_tests.sh`.
 
 ## What's not implemented
 
@@ -252,8 +244,8 @@ needs a restart.
   plus a RAW16 stream producer. Not pursued — the Mi Pad 1 use case
   doesn't need DNG.
 - **Reprocessing / ZSL** (`PRIVATE_REPROCESSING`,
-  `YUV_REPROCESSING`). The `Request::inputBuffer` slot is reserved
-  but not wired.
+  `YUV_REPROCESSING`). An input stream configures, but a request's
+  input buffer is not read.
 - **`MANUAL_SENSOR`** — would need pre-capture-trigger contract +
   per-frame sensor settings round-trip we don't implement (manual
   exposure / gain via `SENSOR_EXPOSURE_TIME` / `SENSOR_SENSITIVITY`

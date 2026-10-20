@@ -1,917 +1,277 @@
-# Tier 3 — pipeline architecture
+# Execution model of the core
 
-Single-source-of-truth for the asynchronous, event-driven pipeline
-refactor. This is the plan we implement against; every Tier 3 PR lands
-as a subset of it.
+How `libmochacamera` runs a frame: its threads, what each one does,
+who owns a frame and its resources on the way, and how the core stops,
+flushes and fails. The module split and the Camera3 frontend are in
+[architecture.md](architecture.md).
 
-## Goal
+The file keeps its old name for the links into it; "Tier 3" was the
+first threaded pipeline (RequestThread, CaptureThread, PipelineThread,
+ResultThread, JpegWorker, StatsWorker, each with its own loop and
+queues). The core rewrite replaced every one of them with engines on
+one primitive; see [History](#history).
 
-Break the implicit "caller does everything" model in
-`Camera::processCaptureRequest` into a set of single-responsibility
-threads communicating through bounded queues and sync-fd events. Remove
-the synchronous GPU drain from the framework-facing thread, lift GPU
-depth from 1 to N, and lay a foundation that cleanly extends to ZSL,
-reprocess, real 3A, and multi-stream produce-once without rewrite.
+## The engine
 
-Target improvement: 1080p single-stream throughput
-`~20 fps → ~28–30 fps` without hardware changes. Multi-stream (preview
-+ video + still) throughput limited by sensor cadence, not by HAL
-orchestration.
+`core/engine/Engine.h`. An engine is a `JobQueue` and the one thread
+that works it -- and the only way the core has a thread. A component
+owns its engine and gives it a handler; nothing inherits a thread.
+Engines are built and started when the stream starts, stopped and
+destroyed when it stops; whatever is worth keeping across that lives in
+the component, not in the engine.
 
-## Thread topology
+The handler answers each job with a **Step**:
 
-Seven threads per camera (ResultThread is rolled into PipelineThread
-for the single-stream preview that currently ships; see PR 5 notes).
-One event loop each. Blocking work on its own thread; framework-facing
-code never waits on GPU, sensor, or libjpeg.
+- `done(result)` -- finished;
+- `refused(why)` -- not done and not going to be;
+- `wait(fd, onReady)` -- started; the engine keeps the job, polls `fd`
+  on its own thread and calls `onReady` when it is readable, which
+  again answers with a Step (a job may wait more than once).
 
-| Thread          | Owner                       | Blocks on                   | Responsibility                                                                 |
-|-----------------|-----------------------------|-----------------------------|--------------------------------------------------------------------------------|
-| Main (binder)   | framework                   | nothing                     | HAL3 ops entry; `processCaptureRequest` pushes and returns 0                   |
-| RequestThread   | `Camera`                    | condvar on queue            | Pop next request, apply controls, capture Bayer, hand off to StatsWorker + Pipeline |
-| CaptureThread   | `V4l2Source`                | `poll()` on V4L2 fd + eventfd | QBUF / DQBUF, drain-to-latest, emit `bayerReady(slot)`                       |
-| StatsWorker     | `Camera`                    | `poll()` on job eventfd + stopfd | NEON reduce of raw Bayer into IpaStats; progressive over phaseCount submits |
-| PipelineThread  | `VulkanIspPipeline`         | `poll()` on fence fds + eventfd | Vulkan record + submit, fence fan-out, ZSL ring, produce-once scratch     |
-| (ResultThread)  | `Camera`                    | condvar on completion queue | Reserved. Single-stream preview runs result dispatch on PipelineThread directly |
-| PostprocWorker  | `JpegEncoder` (per stream)  | compute                     | libjpeg encode (one active at a time, spawned on demand)                       |
+There is no third kind of handler. Everything happens on the engine's
+thread: the handler, continuations, the callbacks of watched fds
+(`watch(fd, cb(revents))`), the stall callback, and the destruction of
+a finished job -- so what a job holds (a frame token, a Bayer lease, a
+permit) is let go there.
 
-Framework callback threading: the thread that runs
-`ResultDispatchStage` is the sole caller of
-`camera3_callback_ops::{process_capture_result, notify}`. Today that
-is `PipelineThread`; when PR 7's multi-stream JpegWorker split lands
-the stage moves to a dedicated `ResultThread`. This is a Camera3
-requirement (monotonic result ordering) enforced by single-thread
-serialisation, not by an explicit CallbackSequencer.
+The thread sits in one `poll`: its wake (submit, cancel, stop), the fds
+of waiting jobs, and the watched fds. The wake is drained *before* the
+queue is read, so a job queued at any moment is either seen now or
+wakes the next poll; the lost wake that hung the old pipeline cannot be
+written again. A failed poll puts the engine into refusing: it leaves
+its loop and every later submit is refused, rather than the thread
+spinning.
 
-## Data flow
+`EngineOptions`:
 
-```
-                    processCaptureRequest(req)
-                              |
-                              v                    push + eventfd.write()
-              +--- RequestQueue (bounded, N=4) -----+
-              |                                    
-              v
-        RequestThread
-          ApplySettingsStage:
-            - DelayedControls.push(controls, seq)
-            - v4l2.setControls(batch)
-          ShutterNotifyStage:
-            - tShutter = systemTime(); notify SHUTTER
-          CaptureStage:
-            - BayerSource.acquireNextFrame()  [blocks on V4l2Source condvar]
-            - stash VBuffer* in ctx
-          StatsDispatchStage:
-            - isp.invalidateBayer(slot); bayer = isp.bayerHost(slot)
-            - StatsWorker.submit({bayer, w, h, pixFmt, seq})
-          push ctx -> PipelineQueue
-             |                              eventfd.write()
-             |
-             +------ StatsWorker (parallel branch)
-             |         poll(job eventfd, stop eventfd):
-             |           on job:
-             |             phase == 0: start cycle, captures currentJob,
-             |                         zeroes Partial
-             |             every wake: computeRange(top .. bottom band of
-             |                         patches for this phase) on currentJob
-             |             on final phase: finalize Partial -> IpaStats,
-             |                         publish under mutex
-             v
-        PipelineThread
-          poll(fence_fd[], pipeline eventfd, stop eventfd):
-            on eventfd:
-              DemosaicBlitStage:
-                record demosaic + blit for each output, vkQueueSubmit,
-                vkGetFenceFdKHR -> register in poll set
-            on fence signal:
-              reap fence fds, once ctx fully signalled:
-                StatsProcessStage (not alwaysRun):
-                  StatsWorker.peek(&stats, &srcSeq)
-                  batch = Ipa.processStats(srcSeq, stats)
-                  DelayedControls.push(seq + delay[id], batch[id])
-                ResultDispatchStage (alwaysRun):
-                  process_capture_result / notify
-                  BayerSource.releaseFrame(ctx.bayerFrame)
-              BayerSource.flushPendingReleases()
-```
+- `maxRunning` -- jobs taken at once, running or waiting (1 where jobs
+  must not overlap);
+- `keepOutcomes` -- whether an owner collects outcomes (`outcomeFd`,
+  `ackOutcomes`); the core's engines pass work on themselves and keep
+  none;
+- `stopGrace` -- how long `stop()` lets waiting jobs finish (a fence,
+  say) before cancelling them.
 
-## Synchronisation model
+`setStallWatch(limit, cb)` calls `cb` once for a job that has waited
+longer than `limit` since its first wait; the job keeps waiting, and
+what a stall means is the component's call -- in the core, a device
+error: a sensor that stopped sending frames, a GPU that hung.
 
-Every non-trivial wait uses a **file descriptor** and lives in a
-`poll()` set. No `vkWaitForFences` on hot paths, no `cv.wait_until` for
-GPU completion.
+`JobQueue` (`core/engine/JobQueue.h`) is the composer's queue, copied:
+states Queued / Running / Done / Refused / Dropped / Cancelled, drop
+policies None / Bounded / LatestOnly, `cancel`, `tryResolve`. Its
+`done()` notifies resolvers of a cancelled job too (the composer's copy
+did not, and hung its waiter).
 
-### Primitives
-
-- **eventfd** — wake a thread when a queue has new work. One per thread.
-- **V4L2 fd** — `poll(POLLIN)` for DQBUF readiness.
-- **Vulkan fence fd** — `VK_KHR_external_fence_fd` with `SYNC_FD_BIT`.
-  `vkGetFenceFdKHR` after `vkQueueSubmit` returns a sync_fd. Register
-  it in the PipelineThread `poll()` set; when signalled, completion
-  runs without CPU blocking.
-- **Android sync_fd** — the same fd type the framework speaks in
-  `release_fence` / `acquire_fence`. Direct pass-through: import
-  `acquire_fence` via `vkImportFenceFdKHR` before submit; export
-  `release_fence` via `vkGetFenceFdKHR` after submit.
-
-### When `vkWaitForFences` is allowed
-
-Only on three rare paths, all off the hot frame loop:
-
-1. `flush()` — Camera3 API, drain in-flight on shutdown. Timeout 1000 ms.
-2. `close()` — before destroying `VkDevice`. Timeout 1000 ms, then
-   forcefully log and continue.
-3. GPU-hang recovery — timeout 250 ms on any fence; on expiry mark
-   the request `ERROR_REQUEST`, cancel downstream, continue.
-
-These are the only places a HAL-owned thread blocks on the GPU.
-
-### Queue design
-
-All inter-thread queues are backed by `std::deque` under `std::mutex`,
-woken by **eventfd** (not condvar) so they compose into `poll()`
-sets.
-
-```cpp
-template <typename T>
-class EventQueue {
-public:
-    EventQueue(size_t capacity);
-    bool push(T item);          // false when full, caller decides policy
-    std::optional<T> pop();     // non-blocking
-    int fd() const;             // register in poll() set
-private:
-    size_t capacity;
-    std::deque<T> items;
-    std::mutex mutex;
-    UniqueFd eventFd;
-};
-```
-
-The primitive is always bounded (a hard cap in the data structure
-protects against runaway memory on bugs) but the **effective cap** per
-queue comes from the role, not the primitive:
-
-| Queue            | Cap  | Overflow behaviour                                             |
-|------------------|------|----------------------------------------------------------------|
-| RequestQueue     | 256  | `LOG_ALWAYS_FATAL` — means the framework exceeded its own contract |
-| CaptureQueue     | 8    | `LOG_ALWAYS_FATAL` — HAL accounting bug                        |
-| PipelineQueue    | 8    | `LOG_ALWAYS_FATAL` — HAL accounting bug                        |
-| CompletionQueue  | 16   | `LOG_ALWAYS_FATAL` — HAL accounting bug                        |
-
-**Why no `-EBUSY` from `processCaptureRequest`.** The Camera3 contract
-(`hardware/camera3.h`) defines only `0` / `-EINVAL` / `-ENODEV` as
-valid returns from `process_capture_request`. `-EBUSY` is
-undefined — framework behaviour on it is unspecified.
-
-**Why RequestQueue doesn't need a tight cap.** Backpressure on the
-framework is already expressed through `camera3_stream_t::max_buffers`,
-set to `PIPELINE_MAX_DEPTH` (= 4) in `configureStreams`. The framework
-can never submit more in-flight requests than it has buffers for;
-since it holds those buffers and waits for us to return them via
-`process_capture_result`, our RequestQueue can never grow beyond
-`max_buffers × streamCount`. The 256 cap exists only to catch
-contract violations (our accounting bug or a misbehaving framework);
-on hit, log-fatal is preferable to silent memory growth.
-
-**Why we can't drop Request objects on overflow.** Each request owns
-framework-provided stream buffer handles and fences. The contract
-requires exactly one result per request (success or error). Silently
-dropping would leak buffers and stall the framework's buffer queue.
-For genuine drop semantics we would instead complete the request
-with `CAMERA3_MSG_ERROR_REQUEST` via `notify` — but in the normal
-path we never reach this corner.
-
-**Drain-to-latest is V4L2-only.** The `drain-to-latest` behaviour
-introduced in Tier 2 and moving to `CaptureThread` in PR 3 applies
-to **Bayer V4L2 buffers**, not to Request objects. Stale preview is
-worse than dropped preview, so the sensor drop-to-newest is
-appropriate there. Request-level drop is not.
-
-`PIPELINE_MAX_DEPTH` in static metadata is reported as **4**.
-
-## Interfaces (extension points)
-
-Every cross-thread boundary is an interface, not a concrete. Tier 3
-does not invent hypothetical extensibility — these interfaces exist
-because there are already more than one conceivable implementation
-we have in mind (ZSL bayer source, null IPA vs real IPA, JPEG vs
-future encoders, V4L2 subdev capture vs single-node).
+## The six engines
 
 ```
-BayerSource
-  virtual int start() = 0;
-  virtual int stop() = 0;
-  virtual int configure(resolution, pixelFormat, bufferCount) = 0;
-  Signal<BayerFrame> bayerReady;
-
-IspPipeline
-  virtual int beginFrame(BayerFrame) = 0;       // demosaic -> scratch
-  virtual int blitToGralloc(OutputBuffer) = 0;  // sample scratch
-  virtual int blitToYuv(OutputBuffer) = 0;
-  virtual int blitToJpegCpu(OutputBuffer) = 0;
-  virtual int endFrame(SyncFd releaseFence) = 0; // submit + export fence
-  virtual StatsBuffer statsFor(uint32_t sequence) = 0;
-
-Ipa
-  virtual ControlUpdate processStats(uint32_t sequence,
-                                     const StatsBuffer&) = 0;
-
-PostProcessor
-  virtual int process(const ScratchView&, OutputBuffer,
-                      Signal<void>& done) = 0;
+ submit ─┬─────────────────────────────────────────────────► Result ──► sink
+         │                                                    ▲ (frame order,
+         ▼                                                    │  tokens == 0)
+      Capture ──(permit)──► Isp ──(fence)──► Finish ──► Jpeg ─┘
+         │                   GPU                │
+         └── BayerLease ──► Stats ──(peek)──────┘ 3A
 ```
 
-`Signal<T>` is our own minimal event type (~80 LOC): slot list +
-thread-local delivery mode. Not libcamera-port; just the idea.
+| Engine | maxRunning | Waits on | Does |
+|---|---|---|---|
+| **Capture** (`CaptureEngine`) | 1 | permit, V4L2 node | permit for Isp → `ApplySettingsStage` + `ShutterNotifyStage` → newest Bayer → crop → lease to Stats → frame + permit to Isp. Owns the V4L2 queue (one writer). Stall watch 3 s → device error. |
+| **Stats** (`StatsEngine`) | 1, LatestOnly | -- | NEON statistics in `kPhaseCount` = 2 phases over consecutive jobs; the last phase publishes for `peek()`. A newer job supersedes a waiting one and its lease. |
+| **Isp** (`IspEngine`) | 1 (`kDepth`) | GPU fence | records the demosaic and every output's blit into one submit (`DemosaicBlitStage`), waits on the fence, gives the Bayer lease back, passes the frame to Finish; the permit goes with the job. Stall watch and stop grace 1 s. |
+| **Finish** (`FinishEngine`) | 1 | -- | commits the frame, finishes YUV outputs on the CPU (`BufferProcessor`), runs 3A (`StatsProcessStage`: `Ipa3A`, partial results, AF), hands each BLOB output to Jpeg. |
+| **Jpeg** (`JpegEngine`) | 1 | -- | one job per BLOB output; owns that output's JPEG snapshot (a slot of the ISP's ring); encodes with EXIF and thumbnail. |
+| **Result** (`ResultEngine`) | 1 | the frame's tokens | takes frames in submission order, waits until no job holds a token on the frame, hands the result back (`ResultDispatchStage` → `ResultSink::frame`), lets the registry forget it. |
 
-`V4l2Source` implements `BayerSource`. `VulkanIspPipeline`
-implements `IspPipeline`. `StubIpa` / `Ipa3A` implement `Ipa`.
-`JpegEncoder` wraps `PostProcessor`.
+Settings and shutter run on the capture engine, not on one of their
+own: `ApplySettingsStage` takes the IPA's decision filed for this very
+frame number and the shutter is stamped as it runs, so both must go in
+step with the capture -- a separate engine would race through the whole
+queue at once.
 
-Naming follows the no-Hungarian rule. Members are `bayerReady`, not
-`mBayerReady`; constants are `constexpr size_t requestQueueCapacity = 4`
-or `REQUEST_QUEUE_CAPACITY`, not `kRequestQueueCapacity`. Abstract
-class names carry no `I` prefix (`BayerSource`, not `IBayerSource`) —
-that prefix encodes role, which is exactly what the no-Hungarian rule
-forbids.
+The capture engine takes one job at a time: a second waiting job would
+take a good frame from the first. It drains the V4L2 node to the newest
+frame as frames land; slots that leases give back are queued again on
+its thread. `wake()` makes the waiting job look at its frame's status
+now -- how a cancelled long manual exposure is cut short.
 
-## Pipeline composition
+The ISP engine runs one frame on the GPU (~60 ms a frame on Tegra K1,
+the bottleneck); a deeper ring only adds latency and lets completions
+clump. The finish engine took the CPU half off the GPU's thread, so the
+ISP engine waits on nothing but fences.
 
-The async event-driven pipeline is expressed as four primitives:
+## Who owns a frame
 
-- **`PipelineContext`** — per-frame state object, the baton. Holds the
-  `CaptureRequest` (deep copy of framework input), the V4L2 bayer slot,
-  GPU fence fds, per-output release fences, accumulated result
-  metadata, status, and timestamps. Created once when a request is
-  accepted; travels through stages; destroyed after result delivery.
+`core/pipeline/Frame.h`.
 
-- **`PipelineStage`** — abstract: `process(PipelineContext&) → Status`.
-  Narrow interface, one concrete class per unit of work (apply
-  settings, notify shutter, dequeue bayer, demosaic+blit, dispatch
-  result, etc.). Stages own their own helper state (e.g. an
-  `ApplySettingsStage` holds an `AutoFocusController*` + the V4L2
-  device handle for direct AE-OFF triple writes), not the context's —
-  they only read/write context fields.
+- **`Frame`** -- one request from acceptance to result: frame number,
+  `FrameSettings`, the outputs (stream, buffer, acquire fence, release
+  fence, status, JPEG snapshot), the Bayer lease and crop, applied
+  exposure / gain, timestamps, `FrameStatus`. Fields are written by one
+  engine at a time in the order the frame travels; handing a job to the
+  next engine's queue orders the writes before the next reads. The
+  exceptions (`hasBayer`, `status`, `inPipeline`) are atomic.
+- **`FrameRef`** (`shared_ptr<Frame>`) -- held by the registry (for
+  flush and close) and by the result engine until it has handed the
+  result back.
+- **`FrameToken`** -- a job's hold on the frame it works on; counts
+  `inPipeline`. A job hands the frame on by moving its token into the
+  next job; a fan-out (one JPEG job per BLOB) gives each a `share()`.
+  The last token to go notifies the result engine's `settled` wake.
+  **No path loses a frame:** a job that is done, refused, cancelled,
+  dropped or let go by a stopping engine destroys its token, and the
+  frame goes on to its result either way.
+- **`FrameRegistry`** -- every frame held, by number; `cancelIf`,
+  `waitEmpty`, `takeAll`. A ceiling of 16 frames: more than a framework
+  keeping its stream contract (`max_buffers` 4) can send; a request
+  over it goes out at once as a failed one, in order.
+- **`FrameStatus`** -- Ok, cancelled or failed; set once. Every engine
+  looks at it before its work and skips a frame that is not Ok. The
+  finish engine *commits* a frame: from then on it completes normally,
+  so no ERROR_REQUEST can follow partial results already sent.
 
-- **`Pipeline`** — ordered `vector<PipelineStage*>` executed on one
-  thread against a `PipelineContext`. Each thread owns its own
-  `Pipeline`. The thread's event loop drives the pipeline:
-  ```
-  while (!stopRequested()) {
-      poll(inputQueueFd, stopFd, ...);
-      auto context = inputQueue.pop();
-      pipeline.run(*context);   // iterate stages in order
-      downstreamQueue.push(std::move(context));
-  }
-  ```
+Resources a frame holds go back by type, not by every path
+remembering:
 
-- **`InFlightTracker`** — registry of `PipelineContext*`s currently in
-  flight. Owned by `Camera`, shared across threads. Operations:
-  `add`, `removeBySequence`, `drainAll` (for `flush`/`close`),
-  `count` (for metrics / debug).
+- **`BayerLease`** (`ports/FrameSource.h`) -- a hold on a V4L2 capture
+  slot; the slot goes back to the capture engine's queue when the last
+  lease goes. The frame's lease goes when the GPU fence signals; the
+  stats cycle keeps its own for its whole span.
+- **`Permit`** from a **`PermitPool`** of 2 -- the right to have one
+  more frame between capture and the GPU: one on the GPU, one handed
+  over and waiting. Together with the lease released at the fence this
+  bounds the capture slots held past capture to three of the eight.
+  The capture engine waits for a permit *before* it takes a Bayer, so
+  the frame the GPU gets is the freshest one.
+- **JPEG snapshots** -- a frame that goes with a snapshot still held
+  gives the slot back to the ISP's ring in its destructor; a JPEG job
+  dropped without encoding gives its slot up and marks its output
+  failed.
 
-### Migration path
+## Results in order
 
-```
-PR 2  RequestThread.pipeline = [
-          ValidateStage, ApplySettingsStage, ShutterNotifyStage,
-          CaptureStage, DemosaicBlitStage, ResultDispatchStage
-      ]
+The frame is queued on the result engine the moment it is accepted,
+before any other engine sees it, and its first token is taken before
+that. The result engine takes one frame at a time and does not look at
+the next one until this one is out, so results go out in request order
+by construction -- a JPEG that takes longer only holds back the frames
+after it.
 
-PR 3  CaptureStage moves to CaptureThread.pipeline
-PR 4  DemosaicBlitStage moves to PipelineThread.pipeline
-PR 5  ResultDispatchStage moves to ResultThread.pipeline
-PR 6  (new) StatsProcessStage lands on PipelineThread.pipeline
-PR 7  DemosaicBlitStage splits into DemosaicStage + per-stream BlitStage
-```
+A frame that settles without having been committed did not complete:
+cancelled while waiting for its Bayer, dropped by a stopping engine,
+its GPU work never done. The result engine cancels it and sends it as
+a failed request (`FrameOutcome::Failed` → `CAMERA3_MSG_ERROR_REQUEST`
+and its buffers in error).
 
-Each thread-split PR is a **stage transfer**, not a rewrite: the stage
-class implementation is unchanged, only its owning pipeline changes.
-Cross-thread hand-off becomes a matter of `queue.push(std::move(ctx))`
-at the end of the outgoing pipeline and `queue.pop(ctx)` at the start
-of the incoming one.
+## Start, stop, flush, close
 
-### What this is NOT
+`Session::Impl`:
 
-- Not a DAG engine. Stages are linear; fan-out to multiple outputs
-  (produce-once / sample-many) lives inside a single stage that
-  iterates `context.request.outputBuffers`, not in the pipeline
-  topology.
-- Not a stage scheduler. Threads are not abstract workers; each thread
-  has a fixed shape (orchestrator / poll-based V4L2 / Vulkan submitter /
-  callback dispatcher). Stages are what happens inside each thread's
-  dispatch.
-- Not a message passing framework. Inter-thread communication is
-  direct: one `EventQueue<std::unique_ptr<PipelineContext>>` per
-  consumer thread.
+- **start** -- downstream first, so no engine hands work to one not
+  yet running: frame source, result, JPEG, finish, ISP, stats,
+  capture. One that fails to start stops the rest.
+- **stop** -- from the source towards the result: capture, stats, ISP
+  (with its 1 s grace for the fence), finish. A stopped engine lets its
+  jobs go, and their tokens with them. Frames past the GPU (committed,
+  waiting on a JPEG or their turn) get up to a second to go out
+  normally; then JPEG and result stop, and whatever the registry still
+  holds goes out as failed from the caller's thread. Then the frame
+  source stops.
+- **flush** -- sets `flushing`, cancels every frame in the registry,
+  wakes the capture engine, waits up to a second until the registry is
+  empty. Committed frames complete normally; a request arriving during
+  the wait is cancelled like the rest (the flag is set before the
+  registry is cancelled, so a frame added after that sees it).
+- **AE manual → auto** -- apps like Open Camera switch without a flush,
+  so the session cancels, through the same path, the frames still
+  waiting for their Bayer (not snapshots); a long manual exposure no
+  longer drains for seconds.
+- **configure** -- stop, reconfigure V4L2 and the ISP, start.
+- **close** -- stop, then reset what is per session: AF, ApplySettings,
+  the device-error reporter, the ISP's session state, the IPA,
+  DelayedControls, the stats publication.
+
+## Device errors
+
+`DeviceErrorReporter` sends `ResultSink::deviceError` (Camera3:
+`CAMERA3_MSG_ERROR_DEVICE`) once per session, whichever part finds the
+failure first: the capture engine's 3 s stall watch (no frame from the
+sensor) or the ISP engine's 1 s fence watch (hung GPU). The framework then closes the camera; close stops the engines
+and every frame held goes out as failed.
 
 ## DelayedControls
 
-Port of libcamera's `DelayedControls`. Ring buffer of 16 slots indexed
-by `request.frameNumber`. Each control id carries a per-control delay
-in frames — "the values requested N frames ago now take effect on
-today's kernel frame". API:
-
-```cpp
-class DelayedControls {
-public:
-    enum ControlId { EXPOSURE, GAIN, COUNT };
-    struct Batch  { bool has[COUNT]; int32_t val[COUNT]; };
-    struct Config { int delay[COUNT]; int32_t defaultValue[COUNT]; };
-
-    explicit DelayedControls(const Config&);
-    void  reset();
-    void  push(uint32_t seq, const Batch&);
-    Batch applyControls(uint32_t seq) const;
-};
-```
-
-`controlDelay` lives in `SensorConfig` (silicon property — not
-per-integrator, not runtime-tunable), **not** in the tuning JSON. IMX179
-and OV5693 both default to 2 frames as a libcamera-convention starting
-point; verify empirically when a real 3A loop drives it.
-
-### Scheduling
-
-This is **not shipping as its own PR.** It is folded into the 3A PR
-alongside the `Ipa` interface and stats shader. Reasons:
-
-- On a Tegra / UVC-like driver there is no SOF hook, so the write
-  itself stays on RequestThread (in `ApplySettingsStage`). A standalone
-  DelayedControls is bookkeeping only — it does not move writes closer
-  to the sensor's latch edge the way libcamera's SOF-indexed flow does.
-- Without a real 3A loop there is no consumer writing new exposure /
-  gain per frame, and therefore no race for `DelayedControls` to
-  mediate. Truthful `ANDROID_SENSOR_EXPOSURE_TIME` in result metadata
-  is the only standalone user-visible effect, and no known Android 7
-  client checks it frame-accurately.
-- Drain-to-latest (PR 3) introduces a known semantic gap: the ring is
-  indexed in request-sequence time, kernel frames advance in
-  kernel-frame time, and the two diverge whenever capture drops stale
-  frames. Without a SOF-indexed counter (not available here) the gap
-  is unfixable. Shipping an asymmetric abstraction now and papering
-  over it later is worse than deferring.
-
-When it lands, the write path is:
-
-```
-ApplySettingsStage (RequestThread):
-    batch = exposure->compute(request.settings)
-    delayedControls.push(seq, batch)
-    v4l2.setControls(batch)                       // VIDIOC_S_EXT_CTRLS
-    ctx.applied* = delayedControls.applyControls(seq)
-
-Ipa::processStats (from PipelineThread, PR 6):
-    update = ipa->computeAeAwb(statsBuf)
-    delayedControls.push(seq + delay, update)     // future effect
-
-closeDevice:
-    delayedControls.reset()                       // session boundary
-```
-
-## IPA (3A)
-
-In-process, synchronous. No IPC isolation — our threat model does not
-include closed-source algorithm blobs, and we cannot afford the
-serialisation overhead.
-
-Stats producer lives on its own thread (`StatsWorker`) so CPU compute
-overlaps the Vulkan demosaic + blit submit instead of serialising with
-it. The original plan had the producer as a GPU compute shader; that
-shipped transiently but spent GPU budget on stats rather than demosaic
-and forced a temporal-subsample throttle to fit the frame budget. The
-NEON path frees GPU for the picture path and lets stats run every
-frame at ~4 ms peak CPU per frame (see Stats section below).
-
-Stats path:
-
-1. `RequestThread`'s `StatsDispatchStage` pulls the raw Bayer pointer
-   for the ctx's V4L2 slot via `IspPipeline::bayerHost` and posts it
-   to `StatsWorker` with the frame sequence.
-2. `StatsWorker` runs a NEON-vectorised reduce (`NeonStatsEncoder`)
-   over the raw Bayer, progressive across `phaseCount` submits, and
-   publishes the finished `IpaStats` into a mutex-guarded slot.
-3. On the frame-fence signal, `PipelineThread`'s `StatsProcessStage`
-   calls `StatsWorker::peek(&stats, &srcSeq)` — returning the latest
-   published snapshot — and invokes
-   `ipa->processStats(srcSeq, stats)`. Target < 1 ms on Tegra K1 CPU.
-4. `ControlUpdate` returned by the IPA is pushed into `DelayedControls`
-   at `effectSequence = ctx.sequence + controlDelay[id]` so the next
-   `ApplySettingsStage` lands it on the right kernel frame.
-
-Sequence coupling between stats and controls is explicit: `IPA` sees
-the sequence of the Bayer the stats were computed from; the push uses
-the current-in-flight ctx sequence for the effect side. A one-frame
-lag between produce and consume is expected in steady state — the
-IPA treats stats as an input, not a blocker.
-
-Raw-Bayer domain: because stats are computed on the uncorrected sensor
-buffer before WB / CCM / gamma, `rgbMean` / `lumaHist` semantics match
-libcamera's IPU3 / rkisp1 convention. `Ipa3A`'s AE loop consumes
-this space directly (see below); AWB / AF will do the same.
-
-### Ipa3A AE loop (landed)
-
-`Ipa3A::processStats` is an open-loop EV-space target plus a
-single-pole LPF, with two parallel candidate ratios — strictest
-wins:
-
-1. **Spot mean.** `meanLumaInRoi` averages the green channel of
-   `IpaStats::rgbMean` inside `meta.focusRoi` (default centre 8×8
-   patches; tap-to-focus moves it). EMA-smoothed across frames at
-   `aeDamping = ConvergeSpeed` to filter measurement noise into the
-   controller. Floored at `awbMinChannel` so a near-black frame
-   doesn't produce an unbounded ratio.
-2. **Two ratios.**
-   - `ratioMean = effectiveSetpoint / meanLuma`, where
-     `effectiveSetpoint = aeSetpoint × aeCompFactor(evComp)` and
-     `aeSetpoint = pow(MeanAlg.target/255, 2.2)` — gamma-decode of
-     NVIDIA's post-gamma 0..255 target into the linear pre-gamma
-     domain the histogram lives in.
-   - `ratioHighlight = highlightCap / IQM_top2%`, where IQM is the
-     mean of the top 2 % brightest patches' post-WB max-of-channels
-     inside the same ROI; `highlightCap = 0.8`. On dim scenes IQM
-     stays low, ratioHighlight clamps above ratioMax and falls out
-     of `min`. On scenes with a bright region, this candidate pulls
-     AE darker than ratioMean would, capping post-WB clip headroom.
-   Both clamped to `[aeRatioMin, aeRatioMax]` (from tuning's
-   `MaxFstopDelta{Pos,Neg}`) as a per-frame rate limit.
-3. **EV-space target.** `ratio = min(ratioMean, ratioHighlight)`,
-   then `targetTotalUs = filteredTotalUs × ratio`, clamped to the
-   sensor envelope `[lineTimeUs × 2, maxExposureUsDefault × gainMax
-   / gainUnit]`. The clamp doubles as anti-windup: the LPF state
-   stays at `maxTotalUs` if the scene is darker than the sensor can
-   reach at default frame_length.
-4. **Dead-band + LPF.** If `|targetTotalUs / filteredTotalUs − 1| <
-   0.02` (2 %, RPi `stableRegion` default), freeze the LPF and
-   re-publish the held split — that's the single anti-pulsation
-   primitive. Otherwise:
-   `filteredTotalUs ← speed × targetTotalUs + (1 − speed) ×
-   filteredTotalUs`, where
-   `speed = (closeSpeedZone > 0 && |dev| < closeSpeedZone) ?
-   √aeDamping : aeDamping`. The asymmetric (faster) pole near
-   target is opt-in per sensor via
-   `active.hal_overrides.ae.close_speed_zone`; zero / missing
-   disables it (single pole everywhere).
-5. **Split.** `SensorConfig::splitExposureGain` divides
-   `filteredTotalUs` into `(exposureUs, extraGainQ8)`, preferring
-   exposure up to one default frame_length before reaching for
-   gain — dark-scene policy is FPS priority. Emit a two-entry
-   `DelayedControls::Batch`.
-
-State is `filteredTotalUs` (float) plus `smoothedLuma` (input
-filter) and `lockedBiasedTotalUs` (only used during AE_LOCK).
-There is **no multiplier-space accumulator** — the previous design
-kept state as `state ×= smoothedAeMult` with cascaded EMA, which
-carried directional inertia past the setpoint crossing and showed
-up as ~30-frame overshoot ramps on dim scenes (front-cam OV5693
-"slow ISO pulsation" bug, fixed 2026-05-01).
-
-Knobs, all from `SensorTuning::aeParams()`:
-`{higher,lower}Target` (→ aeSetpoint), `convergeSpeed` (→
-aeDamping), `maxFstopDelta{Pos,Neg}` (→ ratio clamps), and the HAL-
-specific `closeSpeedZone` from `active.hal_overrides.ae.
-close_speed_zone`. No silent fallbacks — missing keys → zero →
-the corresponding branch disables itself (LPF runs without the
-asymmetric boost, etc.).
-
-### ApplySettingsStage AE-mode branch
-
-`ApplySettingsStage` is the single V4L2 writer for exposure + gain
-and branches on `ANDROID_CONTROL_AE_MODE`:
-
-- **`AE_MODE_OFF` — manual.** Parse request metadata via the static
-  helper `AutoExposureController::parseManualSettings`, which clamps
-  into sensor limits and returns an `ExposureWriteValues{frameLen,
-  exposureUs, gain}`; `ApplySettingsStage` writes the triple in one
-  `VIDIOC_S_EXT_CTRLS` call and publishes `(EXPOSURE, GAIN)` into
-  `DelayedControls::push(request.frameNumber, …)` so
-  `ResultMetadataBuilder::applyControls(frame + delay)` returns the
-  same numbers we just wrote. `StatsProcessStage` detects
-  `AE_MODE_OFF` and **skips** its own `DelayedControls::push` — the
-  IPA's compute still runs (useful for a clean switch back to auto),
-  but the result is kept out of the ring so the framework's manual
-  authority is never fought.
-
-- **`AE_MODE != OFF` — auto.** Read
-  `DelayedControls::pendingWrite(request.frameNumber)` — a companion
-  to `applyControls(seq)` that returns `slot[seq]` directly ("what
-  to write at frame seq", the auto branch's consumer API) rather
-  than `slot[seq − delay[id]]` ("what was in physical effect at
-  frame seq", the result-metadata consumer API). If either
-  `EXPOSURE` / `GAIN` is set, `ApplySettingsStage` writes them in
-  one `VIDIOC_S_EXT_CTRLS` call. If the ring has nothing for this
-  slot (cold start, or `StubIpa`-era empty batches), it falls back
-  to the same `parseManualSettings` path so the sensor never freezes
-  during bring-up.
-
-`DelayedControls` is therefore the single source of truth for
-applied exposure + gain. Producers: ApplySettings (manual branch,
-`slot = frameNumber`) and `StatsProcessStage` (IPA push,
-`slot = sequence + delay[id]`). Consumers: `pendingWrite` from
-ApplySettings' auto branch on RequestThread, `applyControls` from
-`ResultMetadataBuilder` on PipelineThread. The class owns a mutex
-since those four call sites span three threads.
-
-### AWB / AF inside Ipa3A (landed)
-
-AWB sits behind a pure-virtual `Awb` interface in `hal/3a/Awb.h`
-with two impls picked per-sensor by `AwbFactory::createAwb` from
-the tuning's `active.awb.algorithm`. `GrayWorldAwbController`
-runs over `rgbMean[16][16][3]` (still pre-WB / pre-CCM) with the
-96-valid-patch confidence gate and EMA-relax to `wbGainPrior`;
-`BayesianAwbController` does coarseSearch over per-sensor CT curves
-plus lux-conditioned prior + deltaLimit clamp + biasCT pull +
-off-curve fineSearch + IIR damping. Both produce WB gains that the
-shader applies in the same frame (zero silicon delay) and a
-CCM-LERP'd Q10 matrix routed through `mCcmQ10`; neither side goes
-through `DelayedControls`. IMX179 ships bayes today; OV5693 stays
-on gray-world until grey-card calibration lands. See
-[awb-bayes.md](awb-bayes.md) for the migration plan + remaining
-calibration work.
-
-AF reads `IpaStats::focusMetric` — `Σ(Gx²+Gy²)/Σ I²` per patch from
-the NEON encoder, exposure-invariant — instead of locking the
-gralloc preview surface for `SW_READ_OFTEN`. Coarse-fine state
-machine with parabolic peak interpolation and multi-channel
-scene-change retrigger. Coordinator (`Ipa3A`) translates the
-controller's `startSweep` / `sweepComplete` edge flags into
-AE / AWB lock toggles so the sensor + WB stay put across a sweep.
-
-Both extend `Ipa3A::processStats`; no new threading. Three partial
-results land per frame (`PARTIAL_RESULT_COUNT = 3`): AWB (counter
-1) and AE (counter 2) emit from inside the IPA tick via
-`PartialEmitter`; the final partial with output buffers + AF/base
-metadata (counter 3) lands from `ResultDispatchStage`.
-
-## Stats — NEON on StatsWorker
-
-`NeonStatsEncoder` owns the ARMv7-NEON reduce from a raw Bayer slot
-into the IpaStats layout (128-bin green-channel histogram, 16×16
-patch-mean RGB, 16×16 Tenengrad sharpness). The producer thread
-(`StatsWorker`) carries state across submits so one IpaStats cycle
-spans `phaseCount` incoming frames:
-
-- Each submit advances one phase. Phase 0 of a cycle captures the
-  Bayer pointer and zeroes a `Partial` accumulator; later phases run
-  `computeRange(pyStart, pyEnd)` over an equal-sized band of patch
-  rows against the captured Bayer; the final phase calls `finalize`
-  to convert the accumulator into an `IpaStats` and publishes under
-  the output mutex.
-- `phaseCount` is a single compile-time constant in `StatsWorker`.
-  Default 2 → per-frame peak CPU halved (~4 ms on 720p) vs a
-  one-shot compute, and the design budget for one stats result is
-  `frame_period × phaseCount` (22 ms at 60 fps). `phaseCount = 1`
-  degenerates to full-image compute on every submit; higher values
-  trade stats refresh rate for lower peak CPU and room for richer
-  future stats.
-
-Bayer lifetime across the multi-frame cycle is safe on the standing
-V4L2 ring: `V4L2DEVICE_BUF_COUNT = 8` slots, HAL holds at most three
-in flight, so a released slot rotates back through V4L2's fill queue
-over five to seven sensor periods (~80–120 ms at 60 fps). One cycle
-spans `phaseCount × frame_period` (~22 ms), well inside that window —
-no memcpy or explicit slot-pinning API is needed.
-
-Cache coherency: `IspPipeline::invalidateBayer(slot)` is called at
-dispatch time (RequestThread) before the pointer is handed to the
-worker, so the CPU sees the DMA-written content V4L2 produced. The
-Vulkan backend's `VulkanInputRing` allocates slots as
-`HOST_VISIBLE | HOST_CACHED` when the driver supports it; the
-`InvalidateMappedMemoryRanges` call is the standard flush-from-GPU
-recipe.
-
-## Produce-once / sample-many (Tier 3.5, same architecture)
-
-PipelineThread demosaics **once** per frame into `scratchImage`. Each
-output buffer in the request performs a blit / encode / copy that
-samples `scratchImage` via `sampler2D` (RGBA output) or compute SSBO
-write (NV12 output). All recorded in one command buffer, submitted
-once.
-
-Multi-stream (preview + video + jpeg) cost:
-
-| Stage              | Current (per-stream demosaic)  | Produce-once                    |
-|--------------------|--------------------------------|---------------------------------|
-| Demosaic           | N× per frame                   | 1× per frame                    |
-| Blit               | N× per frame                   | N× per frame                    |
-| Total GPU work     | O(N × scratchCost + N × blit)  | O(scratchCost + N × blit)       |
-
-AF sharpness metric samples `scratchImage` directly instead of
-locking the gralloc output for `SW_READ` — one more CPU fallback
-removed.
-
-## ZSL / reprocess (slot in Request, impl Tier 4)
-
-`Request` carries an optional `inputBuffer` from day one:
-
-```cpp
-struct Request {
-    uint32_t sequence;
-    ControlList controls;
-    std::optional<InputBuffer> inputBuffer;  // ZSL / reprocess
-    std::vector<OutputBuffer> outputBuffers;
-};
-```
-
-When `inputBuffer.has_value()`, PipelineThread bypasses
-V4L2 / demosaic and sources from:
-
-- **ZSL path** — ring buffer of recent `scratchImage` snapshots
-  (N=4–6) kept in PipelineThread. `RequestThread` picks the closest
-  timestamp.
-- **Reprocess path** — framework-provided YUV/BLOB input, imported
-  as a Vulkan external image.
-
-The ring buffer implementation is Tier 4; the Request shape is Tier 3.
-Not having `inputBuffer` in the Request struct from the start means
-ripping through every thread's queue type later.
-
-## Lifecycle
-
-Start-up order (from `configure_streams` → first frame):
-
-1. `Camera::configureStreams` — Blocking: validate, allocate gralloc
-   buffers, configure IspPipeline.
-2. `start()` chain: V4L2 STREAMON → CaptureThread loop →
-   PipelineThread loop → RequestThread loop → ResultThread loop.
-   Each thread created via `ThreadBase::start()`, signals ready via
-   a startup barrier.
-
-Shutdown order (reverse, explicit):
-
-1. `Camera::flush()` — stop accepting new requests, drain
-   `RequestQueue` with `ERROR_REQUEST` for pending, `vkWaitForFences`
-   for in-flight GPU work.
-2. `close()` — `stop()` each thread via its stop eventfd, then
-   `join()` in reverse of start order. RequestThread joins first
-   (no more upstream), ResultThread joins last (drain completions).
-3. `~Camera()` — destroy `VkDevice`, close V4L2.
-
-Every thread is a subclass of:
-
-```cpp
-class ThreadBase {
-public:
-    void start();
-    void stop();
-    bool isRunning() const;
-protected:
-    virtual void threadLoop() = 0;
-    int stopFd() const;
-};
-```
-
-Exit discipline: threads leave `threadLoop()` only on stop eventfd
-signal. No "check `running` flag at top of loop iteration" races.
-
-## Error handling
-
-- **V4L2 timeout / ESTALE on DQBUF**: CaptureThread marks the slot's
-  request `ERROR_BUFFER`, pushes to CompletionQueue, continues.
-- **Vulkan submit error**: PipelineThread marks request
-  `ERROR_REQUEST`, triggers `flush()` on fatal classes
-  (VK_ERROR_DEVICE_LOST).
-- **IPA processStats error**: logged, ignored for that frame. 3A
-  stays at the previous known-good `ControlUpdate`.
-- **Framework callback error (unlikely, framework contract)**: logged,
-  continue.
-
-Every thread wraps `threadLoop()` in a top-level try/catch that logs
-and signals camera-level error to the framework (`notify(ERROR_DEVICE)`).
-No silent death.
-
-## Non-goals for Tier 3
-
-- **IPC-isolated IPA** (libcamera IPAProxy). No closed-source blobs to
-  protect.
-- **Pipeline-handler registry / plugins**. Exactly one pipeline —
-  `VulkanIspPipeline`. YAGNI.
-- **Timeline semaphores** (Vulkan 1.2). Tegra K1 is Vulkan 1.0.
-- **Multiple Vulkan queues** for parallel dispatch. One graphics /
-  compute queue (Tegra K1 exposes one). Tier 4 if a second queue
-  becomes useful for 3A stats compute in parallel with ISP.
-- **CallbackSequencer** (Exynos). Single `ResultThread` gives FIFO by
-  construction.
-- **Full port of libcamera `Object`/`Signal`/`EventDispatcher`**. We
-  use the design pattern, write ~300 LOC of our own.
-- **ZSL ring buffer impl**. Slot exists in `Request`; ring buffer is
-  Tier 4.
-- **Reprocess impl**. Slot exists; framework integration is Tier 4.
-
-## Implementation sequencing
-
-Originally eight PRs. The `DelayedControls` PR folded into the 3A PR
-once it became clear the former has no real consumer without the
-latter (see the DelayedControls section above for the full rationale);
-the NEON-stats rewrite and the Ipa3A AE + ApplySettings branch were
-sized as follow-ups after `StatsProcessStage` + `StubIpa` had landed,
-so what started as seven landings became nine. Each one isolates a
-single concern so that review stays focused and FPS regressions /
-gains are cleanly attributable via `git bisect`.
-
-**Status:** all PRs shipped — see roadmap.md for the landing summary
-and memory note `project_tier3_progress.md` for the lifecycle /
-streaming invariants that future work must preserve.
-
-### PR 1 — Threading primitives (infra only) — SHIPPED
-
-- `base/ThreadBase`, `base/EventQueue<T>`, `base/Signal<T>`,
-  `base/UniqueFd` (eventfd wrapper).
-- Unit tests exercising queue / signal / eventfd wake behaviour.
-- No consumers yet.
-- Measurable: compiles; unit tests pass.
-
-### PR 2 — RequestQueue + RequestThread — SHIPPED
-
-- `RequestQueue` concrete specialisation.
-- `RequestThread` wraps the current synchronous flow (still calls
-  today's V4L2 + Vulkan sync path).
-- `Camera::processCaptureRequest` pushes and returns.
-- Measurable: `processCaptureRequest` returns in < 1 ms; downstream
-  timing unchanged.
-
-### PR 3 — CaptureThread split — SHIPPED
-
-- `BayerSource` interface; `V4l2Source` implementation owns
-  `CaptureThread`.
-- `poll()` on V4L2 fd; `Signal<BayerFrame> bayerReady`.
-- Drain-to-latest logic migrates out of `V4l2Device::readLock` into
-  `CaptureThread::onBufferAvailable`.
-- `RequestThread` pushes `bayerRequest`, awaits `bayerReady`.
-- Measurable: DQBUF off RequestThread; FPS unchanged.
-
-### PR 4 — PipelineThread + fence-fd — SHIPPED
-
-- `PipelineThread` owns Vulkan record / submit.
-- `vkGetFenceFdKHR` after each submit; fence fds registered in
-  `poll()`.
-- `VulkanIspPipeline::waitForPreviousFrame` dropped from the hot path.
-- Slot ring of depth 4 with fence-fd export; in-flight cap = 1 ctx
-  in PipelineThread (raised from 1 once CPU stats came off the hot
-  path in PR 6.5).
-- Demosaic shader perf pass landed on the same tier: float-recip
-  `readPixel`, cooperative shared Bayer tile, 16×16 workgroup,
-  sRGB LUT, Blit uv precompute, NV12 stride. 1080p demosaic
-  47 ms → 3.4 ms.
-- Measurable: PERF `wait` segment (GPU-drain dominated) collapsed
-  from ~55 ms to near zero.
-
-### PR 5 — ResultThread split — ROLLED INTO PR 4
-
-A dedicated `ResultThread` was unnecessary for single-stream preview:
-result dispatch already ran off the binder thread via PipelineThread,
-and the callback-ordering guarantee is preserved by the single stage
-running on a single thread. The split lands with the multi-stream
-JpegWorker in PR 7, where a second consumer (JPEG encode) would
-otherwise force interleaving of the result queue across threads.
-
-### PR 6 — Ipa + DelayedControls + stats plumbing — SHIPPED
-
-- `Ipa` interface under `hal/ipa/`; `StubIpa` returns empty batches
-  so `ApplySettingsStage`'s direct push remains authoritative until
-  `Ipa3A` lands.
-- `DelayedControls` class (`isp/sensor/DelayedControls.{h,cpp}`);
-  `controlDelay` lives in `SensorConfig` (silicon property, not JSON).
-- `StatsProcessStage` inserted between fence reap and
-  `ResultDispatch` on `PipelineThread`; skipped on errored ctxs.
-- Camera's `closeDevice` resets `Ipa` and `DelayedControls` alongside
-  the other session-boundary cleanups.
-
-Stats producer originally shipped as a GPU compute shader
-(`VulkanStatsEncoder`) writing into a host-mapped `VkBuffer`, with
-temporal subsample every 2nd frame. That path was replaced post-
-PR 6 by the NEON stats worker described in the Stats section above
-— see PR 7 (renumbered from the original sequence) for what remains
-open.
-
-### PR 6.5 — NEON stats on StatsWorker — SHIPPED
-
-- `NeonStatsEncoder` under `hal/ipa/` — stateless raw-Bayer reducer
-  with both all-at-once `compute()` and progressive
-  `computeRange(pyStart, pyEnd) + finalize()` entry points.
-- `StatsWorker` (`hal/ipa/`) — `ThreadBase` subclass that runs the
-  progressive compute across `phaseCount` submits, exposing
-  latest-wins `submit()` and snapshot `peek()`.
-- `StatsDispatchStage` on RequestThread (`hal/pipeline/stages/`) —
-  pulls `bayerHost(slot)` + `invalidateBayer(slot)` from the ISP
-  backend and posts a Job to StatsWorker on every frame.
-- `IspPipeline::bayerHost` / `invalidateBayer` virtuals added to the
-  base and overridden in `VulkanIspPipeline` to forward to the
-  existing `VulkanInputRing` CPU mapping.
-- Vulkan GPU stats backend (`VulkanStatsEncoder`, `StatsCompute.h`,
-  `IspPipeline::mappedStats` / `invalidateStats`) removed once the
-  CPU path was validated on-device; binary shrank ~8 KB.
-
-### PR 6.6 — Ipa3A AE + ApplySettings AE-mode branch — SHIPPED
-
-- `hal/ipa/Ipa3A` — P-controller with EMA damping over the
-  raw-Bayer green-channel mean-luma histogram (see IPA section for
-  the math). Replaces `StubIpa` in `Camera::buildInfrastructure`.
-- `hal/pipeline/stages/ApplySettingsStage` — branches on
-  `ANDROID_CONTROL_AE_MODE`. Manual (`OFF`) parses request settings
-  and writes V4L2 directly, then publishes into `DelayedControls`
-  so result metadata is consistent with what was written. Auto
-  (non-`OFF`) reads `DelayedControls::pendingWrite(frameNumber)`
-  and pushes one `VIDIOC_S_EXT_CTRLS` via `applyBatch`, with a
-  cold-start / `StubIpa` fallback to the manual path.
-- `isp/sensor/DelayedControls` — added `pendingWrite(seq)` as the
-  auto-branch consumer API (returns `slot[seq]` directly, distinct
-  from `applyControls(seq)` which returns `slot[seq − delay[id]]`
-  for result metadata). Added a mutex: producers span PipelineThread
-  (StatsProcessStage) + binder (ApplySettings); consumers span
-  RequestThread (pendingWrite) + PipelineThread
-  (ResultMetadataBuilder). The class is now thread-safe by design.
-- `hal/3a/ExposureControl` (since deleted in the 3A refactor; its
-  responsibilities split between `AutoExposureController::
-  parseManualSettings` and the direct V4L2 writes inside
-  `ApplySettingsStage`) — at PR-6.5 time it gained
-  `applyBatch(const Batch&)` for the auto branch and fixed a bug
-  where `onSettings` stored `mAppliedExposureUs` in lines rather
-  than µs.
-- `hal/pipeline/stages/StatsProcessStage` — when `AE_MODE == OFF`,
-  skips the `DelayedControls::push` so the framework's manual
-  authority isn't fought by the IPA (compute still runs, for clean
-  switch-back to auto).
-- `hal/Camera::buildInfrastructure` — `DelayedControls` init moved
-  ahead of `ApplySettingsStage` in the wiring order since
-  ApplySettings now depends on it in both branches.
-
-### PR 7 — Produce-once + JpegWorker + ResultThread split — SHIPPED
-
-- `IspPipeline` grew `beginFrame` / `blitToGralloc` / `blitToYuv` /
-  `blitToJpegCpu` / `endFrame`. `VulkanIspPipeline` records demosaic
-  once into `mScratchImg` per frame and each output blits / encodes /
-  copies from there inside a single `vkQueueSubmit`. Framework
-  acquire_fence sync_fds get imported as binary `VkSemaphore`s via
-  `VK_KHR_external_semaphore_fd` (probed + enabled at instance + device
-  level) so the recording thread never blocks on framework backpressure.
-  Per-output `release_fence`s come from `vkQueueSignalReleaseImageANDROID`,
-  one call per gralloc image, sharing the post-submit queue ordering.
-- `BufferProcessor::processOne` switched to the blit-only API; YUV path
-  records the GPU NV12 encode at record time and defers the libyuv
-  repack into the gralloc to `finalizeCpuOutputs` on PipelineThread
-  after fence reap. BLOB path records `vkCmdCopyImageToBuffer(scratch →
-  jpeg ring slot)` and stashes a `JpegSnapshot` (handle into a
-  SLOT_COUNT-deep host-mapped RGBA8 ring) in the ctx.
-- New `PostProcessor` abstract under `hal/pipeline/`. `JpegEncoder`
-  implements it (libjpeg + EXIF Orientation marker); the IspPipeline
-  dependency dropped along the way since `JpegSnapshot` is the only
-  producer-side input now.
-- Dispatch side splits in two:
-  - `ResultThread` (`ThreadBase`) owns `ResultDispatchStage`,
-    `BayerSource::flushPendingReleases`, and
-    `InFlightTracker::removeBySequence`. Single consumer of
-    `mResultQueue`. Maintains an internal pending FIFO so it can peek
-    head readiness without popping; only dispatches the ready prefix
-    (errored OR `jpegPending == 0`).
-  - `JpegWorker` (`ThreadBase`) pulls per-output `JpegWorker::Job` from
-    `mJpegQueue`, calls `BufferProcessor::finalizeBlobOutput`, and on
-    the last-decrement of `ctx->jpegPending` notifies a shared
-    `EventFd` that `ResultThread` polls.
-- `PipelineContext` grew a `std::atomic<int> jpegPending` set by
-  PipelineThread before queueing JPEG jobs. Camera3 monotonic-ordering
-  invariant preserved by ResultThread's serial single-thread design.
-- Lifecycle: ResultThread → JpegWorker → PipelineThread → RequestThread
-  (start order); reverse for stop, with JpegWorker draining its queue
-  between PipelineThread and ResultThread so any ctxs parked on
-  `jpegPending` get released before dispatch shuts down.
-- Legacy `processToGralloc` / `processToYuv420` / `processToCpu` and
-  their helpers (`recordGrallocBlit`, `submitWithReleaseFence`,
-  `recordDemosaicAndYuvEncode`, `recordAndSubmit`, `mOutBuf`) deleted
-  once no consumer remained.
-- Measurable on device: BLOB encode (~120 ms at 1080p) runs on
-  JpegWorker; PipelineThread keeps admitting ctxs through the
-  encode window so sensor frames are not dropped (verified via
-  f=N+1 `wait=0ms` immediately after the BLOB frame). ResultThread's
-  FIFO gate means subsequent preview dispatches still wait for the
-  BLOB frame's encode — that's the inherent Camera3 ordering cost.
-
-Each PR: commit → `git pull github master` on build server →
-`mmm hardware/camera` → scp `.so` → mocha-remote deploy → smoke-test
-preview + video + snapshot → gate next PR on no FPS/correctness
-regression.
-
-## Performance expectations
-
-| Scenario | Pre-Tier-3 | Post-PR-2 | Post-PR-4 | Post-PR-6.5 | After PR 7 |
-|----------|------------|-----------|-----------|-------------|------------|
-| `processCaptureRequest` latency | ~50 ms | < 1 ms | < 1 ms | < 1 ms | < 1 ms |
-| 720p preview FPS | 61 (vsync) | 61 (vsync) | 61 (vsync) | ~88 (no cap) | ~88 (no cap) |
-| 1080p preview FPS | ~20 | ~20 | ~28–30 | ~28–30 | ~28–30 |
-| 1080p preview + video FPS | ~13 | ~13 | ~22 | ~22 | ~28–30 |
-
-PR 4 assumes GPU depth ≥ 2 (sensor + GPU overlap). PR 6.5 (NEON
-stats) does not change fps vs PR 4 for the GPU-bound paths but
-clears ~3 ms GPU time per frame that the original GPU-stats
-dispatch consumed, leaving headroom for PR 7's multi-stream work.
-PR 7 assumes multi-stream demosaic deduplication.
+Port of libcamera's `DelayedControls` (`core/sensor/`): a 16-slot ring
+indexed by frame number. Exposure and gain each have a delay in frames
+(`SensorConfig::controlDelay`, a silicon property -- 2 for both
+sensors).
+
+- 3A on the finish engine decides exposure / gain for the frame it
+  ran on and `push`es each control at `frameNumber + delay`.
+- `ApplySettingsStage` on the capture engine takes the decision filed
+  for its frame (`pendingWrite`), fills what the IPA did not decide
+  from the last auto write, writes it (with group hold where the
+  sensor has it) and `commit`s what it wrote. Manual AE, and auto
+  before the first decision, write the request's values and commit
+  them the same way, so a late IPA push cannot overwrite what the
+  sensor really got.
+- Result metadata reports `applyControls(frameNumber)`: what was in
+  effect on the frame, not what its request asked.
+
+There is no start-of-frame event on this driver, so the ring runs in
+request-sequence time; dropping stale frames to the newest makes it
+drift from kernel frames by the frames dropped.
+
+## 3A and statistics
+
+The stats engine publishes `IpaStats` every `kPhaseCount` frames; peak
+CPU per frame stays about one phase's share. It subtracts the optical
+black level as the demosaic shader does and restricts the focus metric
+to AF's ROI, taken when the job is submitted.
+
+3A runs once per committed frame on the finish engine
+(`StatsProcessStage` → `Ipa3A::processStats`) on the latest
+publication: AE, AWB and AF in that order, AWB / AE partial results to
+the sink, WB gains and the CCM straight into the ISP (no sensor delay),
+exposure / gain into DelayedControls, the lens through `Focuser`. AF
+settings arrive from the capture engine (`onSettings`) and are applied
+at the start of the next tick, so AF's state has one owner. Details in
+[architecture.md](architecture.md#3a-summary).
+
+## Produce once, sample many
+
+The ISP engine demosaics a frame once into a scratch image; each
+output is a blit from it (RGBA by sampler, NV12 by compute), all in
+one command buffer and one submit. JPEG outputs take a snapshot of
+the scratch into the ISP's JPEG ring, which the JPEG engine reads
+after the GPU is done -- the next frame's demosaic runs beside the
+encode.
+
+## History
+
+| Before (Tier 3) | Now |
+|---|---|
+| RequestThread + its queue | the capture engine's queue; settings applied on the capture engine |
+| V4l2CaptureThread | `V4l2Source` driven from the capture engine's poll |
+| PipelineThread, `PIPELINE_MAX_IN_FLIGHT`, completeCtx | ISP engine (GPU, fence) + finish engine (CPU half) |
+| StatsWorker | stats engine, LatestOnly |
+| JpegWorker | JPEG engine, the job owns the snapshot |
+| ResultThread + InFlightTracker | result engine, ordered by acceptance, waits on tokens |
+| PipelineContext | `Frame` + `FrameToken` + `FrameRegistry` |
+| bounded blocking queues for slots | `PermitPool` + `BayerLease` |
+| ThreadBase, EventQueue, Signal | `Engine` over `JobQueue` |
+| NvBlit fallback | removed; one Vulkan path |
+
+What did not change: one Vulkan queue (Tegra K1 exposes one, Vulkan
+1.0, no timeline semaphores), one pipeline, the IPA in-process, and no
+ZSL or reprocess (`android.request.availableCapabilities` lists
+neither).
 
 ## See also
 
-- `docs/roadmap.md` — Tier 3 entry points to this document.
-- `docs/latency-and-buffers.md` — motivation for request queue.
-- `docs/open-source-references.md` — libcamera / Intel IPU6 / AOSP
-  3_4 patterns we draw from.
-- `docs/open-questions.md` — BT.709 / BT.601, NV21 output, AWB CCT.
+- [architecture.md](architecture.md) -- the module split, request
+  lifecycle, 3A, tuning.
+- [latency-and-buffers.md](latency-and-buffers.md) -- why requests are
+  queued and buffers bounded.
+- [open-source-references.md](open-source-references.md) -- libcamera
+  and AOSP patterns drawn from.
