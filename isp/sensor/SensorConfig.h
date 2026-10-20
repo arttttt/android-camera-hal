@@ -149,7 +149,11 @@ struct SensorConfig {
             .exposureMin     = 0,
             .exposureDefault = 0,
             .exposureMax     = 0,
-            .controlDelay    = { 2, 2 },
+            /* Measured on mocha (20.10.2026) with the same square-wave
+             * trace as IMX179: request N shows in frame N+3 on all five
+             * transitions. The scene was dim, so the luma ratio was off,
+             * but the frame of the step was not. */
+            .controlDelay    = { 3, 3 },
         };
     }
 };
