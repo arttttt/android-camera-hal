@@ -60,6 +60,12 @@ void PipelineThread::drainFences(PipelineContext *ctx, int timeoutMs) {
 }
 
 void PipelineThread::completeCtx(PipelineContext *ctx) {
+    /* The GPU is done with the frame: commit it before anything of its
+     * result goes out. A cancellation from here on is refused and the
+     * frame completes normally; one that came first keeps the frame on
+     * the error path below. */
+    ctx->status.commit();
+
     /* CPU finalize for YUV outputs (libyuv repack into the gralloc).
      * BLOB outputs are NOT finalised here — they go to JpegWorker
      * below so libjpeg encode runs in parallel with the next frame's
@@ -77,9 +83,8 @@ void PipelineThread::completeCtx(PipelineContext *ctx) {
 
     /* Count BLOB outputs whose snapshot was successfully captured.
      * On the error path no jobs are posted; release the snapshots so
-     * the ISP ring rotates. A cancellation landing after this check
-     * still gets its jobs run: ResultThread waits for jpegPending
-     * whatever the status. */
+     * the ISP ring rotates. The status cannot change past this point:
+     * the frame is either committed or already off the success path. */
     int blobCount = 0;
     if (!ctx->status.ok()) {
         if (deps.bufferProcessor)

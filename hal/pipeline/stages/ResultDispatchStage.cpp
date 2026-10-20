@@ -104,6 +104,17 @@ void ResultDispatchStage::process(PipelineContext &ctx) {
         if (ctx.outputNeedsFinalUnlock[i]) {
             GraphicBufferMapper::get().unlock(*ob.buffer);
         }
+        /* The frame went through but this output did not: camera3.h
+         * asks for ERROR_BUFFER on its stream before the buffer is
+         * returned in error. */
+        if (ctx.outputStatuses[i] != CAMERA3_BUFFER_STATUS_OK && ops) {
+            camera3_notify_msg_t msg;
+            msg.type = CAMERA3_MSG_ERROR;
+            msg.message.error.frame_number = ctx.request.frameNumber;
+            msg.message.error.error_stream = ob.stream;
+            msg.message.error.error_code   = CAMERA3_MSG_ERROR_BUFFER;
+            ops->notify(ops, &msg);
+        }
         camera3_stream_buffer sb;
         sb.stream        = ob.stream;
         sb.buffer        = ob.buffer;

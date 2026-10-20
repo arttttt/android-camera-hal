@@ -35,9 +35,9 @@ void ResultThread::completeCtx(PipelineContext *ctx) {
 
 bool ResultThread::isCtxReady(const PipelineContext *ctx) const {
     /* Ready once every JPEG job posted for it has come back, whatever
-     * the status. A ctx that failed before PipelineThread posted jobs
-     * has none; one cancelled after has jobs JpegWorker still holds a
-     * raw pointer to the ctx for, and dispatch destroys the ctx. */
+     * the status: a job holds a raw pointer to the ctx, and dispatch
+     * destroys it. Jobs are posted only for committed frames, and a
+     * failed or cancelled one has none. */
     return ctx->jpegPending.load(std::memory_order_acquire) == 0;
 }
 
@@ -88,7 +88,8 @@ void ResultThread::threadLoop() {
     dispatchReadyPrefix();
     /* Anything still pending at this point: snapshot encode never
      * completed (e.g. JpegWorker errored). Cancel the ctx and dispatch
-     * so framework buffers return. */
+     * so framework buffers return; a committed one completes
+     * normally. */
     while (!pending.empty()) {
         PipelineContext *ctx = pending.front();
         pending.pop_front();
