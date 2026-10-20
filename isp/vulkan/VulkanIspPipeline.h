@@ -51,7 +51,6 @@ public:
 
     const uint8_t *yuvHostBuffer() const override { return mYuvEncoder.mappedBuffer(); }
     void           invalidateYuvForCpu() override { mYuvEncoder.invalidateForCpu(); }
-    buffer_handle_t scratchHandle() const override;
 
     int    inputBufferCount() const override { return mInputRing.slotCount(); }
     size_t inputBufferSize()  const override { return mInputRing.slotSize(); }
@@ -190,10 +189,7 @@ private:
     /* Shader output image — sampled by the produce-once blits and
      * read by vkCmdCopyImageToBuffer for the JPEG ring. Backed by a
      * gralloc-allocated RGBA buffer and imported through
-     * VK_ANDROID_native_buffer so the same handle can be reused as the
-     * source for HW VIC blits (libnvblit) into encoder-side gralloc
-     * targets — Vulkan owns the writes, NvBlit reads the same memory
-     * for format conversion without a CPU repack. */
+     * VK_ANDROID_native_buffer (see createScratchImage). */
     sp<GraphicBuffer> mScratchGb;
     VkImage           mScratchImg;
     VkImageView       mScratchView;

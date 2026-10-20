@@ -8,7 +8,6 @@
 #include <utils/Log.h>
 #include <utils/Timers.h>
 #include <utils/Vector.h>
-#include <ui/GraphicBufferMapper.h>
 
 #include "Frame.h"
 #include "3a/AutoFocusController.h"
@@ -33,9 +32,6 @@ void ResultDispatchStage::returnBuffersInError(mocha::camera::Frame &ctx) {
     buffers.setCapacity(n);
     for (size_t i = 0; i < n; ++i) {
         CaptureRequest::Buffer &ob = ctx.request.outputBuffers[i];
-        if (i < ctx.outputNeedsFinalUnlock.size() && ctx.outputNeedsFinalUnlock[i]) {
-            GraphicBufferMapper::get().unlock(*ob.buffer);
-        }
         /* camera3.h: the release fence of a failed buffer is the
          * acquire fence the framework gave us if we still hold it,
          * else -1. An output the GPU or the VIC was already told to
@@ -91,9 +87,6 @@ void ResultDispatchStage::process(mocha::camera::Frame &ctx) {
     buffers.setCapacity(ctx.request.outputBuffers.size());
     for (size_t i = 0; i < ctx.request.outputBuffers.size(); ++i) {
         const CaptureRequest::Buffer &ob = ctx.request.outputBuffers[i];
-        if (ctx.outputNeedsFinalUnlock[i]) {
-            GraphicBufferMapper::get().unlock(*ob.buffer);
-        }
         /* The frame went through but this output did not: camera3.h
          * asks for ERROR_BUFFER on its stream before the buffer is
          * returned in error. */

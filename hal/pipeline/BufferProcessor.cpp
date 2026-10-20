@@ -17,7 +17,6 @@
 #include <libyuv.h>
 
 #include "IspPipeline.h"
-#include "NvBlitContext.h"
 #include "PostProcessor.h"
 #include "Frame.h"
 #include "DbgUtils.h"
@@ -29,9 +28,6 @@ namespace {
 /* Timeout for acquire_fence wait — preserves the pre-existing magic
  * number; revisit when fence semantics are formalised. */
 constexpr int kAcquireFenceTimeoutMs = 1000;
-/* VIC blits are single-digit ms; anything beyond this is a stuck
- * engine and the frame is better failed than stalled on. */
-constexpr int kNvBlitFenceTimeoutMs  = 100;
 
 } /* namespace */
 
@@ -66,7 +62,6 @@ status_t BufferProcessor::waitAcquireFence(const camera3_stream_buffer &srcBuf,
 
 bool BufferProcessor::tryZeroCopy(const camera3_stream_buffer &srcBuf,
                                    const FrameContext &ctx,
-                                   OutputState *state,
                                    int *releaseFenceOut) {
     /* The caller guarantees this stream is RGBA_8888 (Bayer sensor =
      * the only source). The shader handles crop + rescale per push-constant.
@@ -95,11 +90,7 @@ bool BufferProcessor::tryZeroCopy(const camera3_stream_buffer &srcBuf,
                                          srcBuf.acquire_fence,
                                          releaseFenceOut);
     }
-    if (!zcOk)
-        return false;
-
-    state->needsFinalUnlock = false;
-    return true;
+    return zcOk;
 }
 
 status_t BufferProcessor::lockSwWrite(const camera3_stream_buffer &srcBuf,
@@ -200,83 +191,10 @@ void BufferProcessor::finalizeCpuOutputs(mocha::camera::Frame &ctx) {
     for (size_t i = 0; i < ctx.request.outputBuffers.size(); ++i) {
         const CaptureRequest::Buffer &ob = ctx.request.outputBuffers[i];
         if (ctx.outputStatuses[i] != CAMERA3_BUFFER_STATUS_OK) continue;
-        /* Deferred-NvBlit outputs were written by the VIC — CPU must
-         * not stomp them with the (stale) host YUV buffer. */
-        if (i < ctx.outputDeferredNvBlit.size() && ctx.outputDeferredNvBlit[i])
-            continue;
         /* BLOB encode runs on the JPEG engine — handled out of band. */
         if (ob.stream->format == HAL_PIXEL_FORMAT_YCbCr_420_888)
             finalizeYuvOutput(ob, ctx.request.frameNumber);
     }
-}
-
-status_t BufferProcessor::processYuvNvBlit(const camera3_stream_buffer &srcBuf,
-                                            const FrameContext &fctx,
-                                            uint32_t frameNumber,
-                                            int submitFenceFd,
-                                            int *releaseFenceOut) {
-    if (releaseFenceOut) *releaseFenceOut = -1;
-    if (!mDeps.nvblit || !mDeps.isp) {
-        ALOGE("processYuvNvBlit: no nvblit/isp dep");
-        if (srcBuf.acquire_fence >= 0) ::close(srcBuf.acquire_fence);
-        return NO_INIT;
-    }
-    buffer_handle_t srcHandle = mDeps.isp->scratchHandle();
-    buffer_handle_t dstHandle = (srcBuf.buffer != nullptr) ? *srcBuf.buffer : nullptr;
-    if (!srcHandle || !dstHandle) {
-        ALOGE("processYuvNvBlit: src=%p dst=%p frame %u",
-              srcHandle, dstHandle, frameNumber);
-        if (srcBuf.acquire_fence >= 0) ::close(srcBuf.acquire_fence);
-        return NO_INIT;
-    }
-
-    /* The crop applies to the demosaiced scratch image (active capture
-     * area). VIC writes the full dst surface, scaling internally. */
-    NvBlitContext::Rect srcRect = { fctx.cropX, fctx.cropY,
-                                     fctx.cropW, fctx.cropH };
-
-    /* dup the Vulkan submit fence — each output owns its own fd so
-     * NvBlit consumes them independently. -1 stays -1. */
-    int srcFenceDup = (submitFenceFd >= 0) ? ::dup(submitFenceFd) : -1;
-    int dstFence    = srcBuf.acquire_fence;   /* ownership moves to NvBlit on success */
-
-    int releaseFd = -1;
-    bool ok = mDeps.nvblit->blit(srcHandle, &srcRect, srcFenceDup,
-                                  dstHandle, nullptr, dstFence,
-                                  &releaseFd);
-    if (!ok) {
-        ALOGE("processYuvNvBlit: NvBlit failed for frame %u", frameNumber);
-        if (srcFenceDup >= 0) ::close(srcFenceDup);
-        if (dstFence    >= 0) ::close(dstFence);
-        return NO_INIT;
-    }
-    /* NvBlit consumed srcFenceDup + dstFence on success.
-     *
-     * Reap the VIC completion here and hand the framework a clean
-     * buffer (release_fence = -1). Passing NvBlit's ReleaseSync
-     * through instead throttles recording to ~5 fps: every consumer
-     * hop (BufferQueue → CameraSource → OMX) runs its own wait on
-     * that fd against timeouts, and CameraSource's 200 ms memory-base
-     * pool timeout turns the per-frame wait into dropped frames. The
-     * VIC blit itself is single-digit ms, so a CPU wait here is
-     * cheap and keeps the fence semantics inside the HAL. */
-    if (releaseFd >= 0) {
-        int64_t t0 = systemTime();
-        sp<Fence> releaseFence = new Fence(releaseFd);  /* adopts fd */
-        status_t e = releaseFence->wait(kNvBlitFenceTimeoutMs);
-        int64_t waitMs = (systemTime() - t0) / 1000000;
-        if (waitMs > 5) {
-            ALOGD("nvblit release wait %lldms  frame %u", (long long)waitMs,
-                  frameNumber);
-        }
-        if (e != NO_ERROR) {
-            ALOGE("processYuvNvBlit: VIC release fence wait failed (%d) "
-                  "for frame %u", (int)e, frameNumber);
-            return NO_INIT;
-        }
-    }
-    if (releaseFenceOut) *releaseFenceOut = -1;
-    return NO_ERROR;
 }
 
 void BufferProcessor::releaseJpegSnapshots(mocha::camera::Frame &ctx) {
@@ -363,12 +281,9 @@ status_t BufferProcessor::processOne(const camera3_stream_buffer &srcBuf,
                                       const FrameContext &ctx,
                                       const CameraMetadata &cm,
                                       uint32_t frameNumber,
-                                      OutputState *state,
                                       int *releaseFenceOut,
                                       JpegSnapshot *jpegSnapshot) {
     (void)cm;
-    state->needsFinalUnlock = true;
-    state->deferredNvBlit   = false;
     if (releaseFenceOut) *releaseFenceOut = -1;
     if (jpegSnapshot) {
         jpegSnapshot->rgba     = nullptr;
@@ -383,9 +298,8 @@ status_t BufferProcessor::processOne(const camera3_stream_buffer &srcBuf,
             /* RGBA zero-copy: GPU writes directly into the gralloc via the
              * blit render pass, framework acquire_fence is imported as a
              * VkSemaphore on the submit, release_fence is exported per
-             * output by endFrame. needsFinalUnlock=false — the gralloc is
-             * never CPU-locked. */
-            if (!tryZeroCopy(srcBuf, ctx, state, releaseFenceOut)) {
+             * output by endFrame. The gralloc is never CPU-locked. */
+            if (!tryZeroCopy(srcBuf, ctx, releaseFenceOut)) {
                 ALOGE("buffer %p  frame %-4u  zero-copy failed",
                       srcBuf.buffer, frameNumber);
                 return NO_INIT;
@@ -394,26 +308,17 @@ status_t BufferProcessor::processOne(const camera3_stream_buffer &srcBuf,
         case HAL_PIXEL_FORMAT_YCbCr_420_888: {
             /* GPU NV12 encode now, libyuv repack into the (pitch-
              * linear) gralloc in finalizeCpuOutputs after the fence
-             * reaps. The HW VIC bridge (processYuvNvBlit) is NOT used
-             * here: in every tested surface combination (tiled dst,
-             * pitch dst, pitch scratch) NvBlit produced tile-scrambled
-             * output — it does not appear to honour the handles'
-             * surface-kind descriptors on this blob. Re-evaluate only
-             * with evidence the blob ABI is being driven correctly. */
-            status_t e = recordYuvOutput(srcBuf, ctx, frameNumber);
-            if (e != NO_ERROR) return e;
-            state->needsFinalUnlock = false;
-            return NO_ERROR;
+             * reaps. The HW VIC (libnvblit) was tried for this and gave
+             * tile-scrambled output in every surface combination; see
+             * docs/vic-encoder-path.md. */
+            return recordYuvOutput(srcBuf, ctx, frameNumber);
         }
         case HAL_PIXEL_FORMAT_BLOB: {
             /* GPU records vkCmdCopyImageToBuffer(scratch -> jpeg ring slot)
              * now; libjpeg encode runs in finalizeCpuOutputs after the
-             * frame's fence is reaped. needsFinalUnlock=false — finalize
-             * does its own lock/unlock. */
-            status_t e = recordBlobOutput(srcBuf, frameNumber, jpegSnapshot);
-            if (e != NO_ERROR) return e;
-            state->needsFinalUnlock = false;
-            return NO_ERROR;
+             * frame's fence is reaped; the encode does its own lock and
+             * unlock. */
+            return recordBlobOutput(srcBuf, frameNumber, jpegSnapshot);
         }
         default:
             /* StreamConfig refuses any other format at configure time;

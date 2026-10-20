@@ -1073,11 +1073,6 @@ bool VulkanIspPipeline::ensureBuffers(unsigned width, unsigned height, bool is16
     return true;
 }
 
-buffer_handle_t VulkanIspPipeline::scratchHandle() const {
-    return mScratchGb != nullptr ? mScratchGb->getNativeBuffer()->handle
-                                  : nullptr;
-}
-
 void VulkanIspPipeline::releaseScratchResources() {
     if (mScratchView) {
         mDeviceState.pfn()->DestroyImageView(mDeviceState.device(), mScratchView, NULL);
@@ -1100,14 +1095,14 @@ bool VulkanIspPipeline::createScratchImage(unsigned width, unsigned height) {
      * than a pure vkAllocateMemory VkImage. The image is then imported
      * into Vulkan via VK_ANDROID_native_buffer (vkCreateImage with
      * VkNativeBufferANDROID in pNext), so the demosaic compute shader
-     * still writes into it as a storage image, but the same handle can
-     * be handed to HW VIC blitters (libnvblit) that take buffer_handle_t
-     * sources — that's the read path used by the encoder-stream YUV
-     * conversion without a CPU repack.
+     * still writes into it as a storage image. The gralloc backing was
+     * chosen so a HW VIC blitter could read the same handle; that path
+     * produced tile-scrambled output and is gone (docs/vic-encoder-path.md),
+     * the allocation is kept as it was.
      *
      * Usage flags requested from gralloc:
      *   HW_RENDER  — Vulkan writes through this image (storage + sampled).
-     *   HW_2D      — VIC / nvblit reads from this image.
+     *   HW_2D      — kept from the VIC path; nothing reads it that way now.
      *   HW_TEXTURE — vkCmdCopyImageToBuffer (BLOB path) reads via the
      *                same image view; HW_TEXTURE keeps the layout
      *                compatible with sampled reads.

@@ -44,7 +44,6 @@ class StatsProcessStage;
 class ResultDispatchStage;
 class DeviceErrorReporter;
 class BayerSource;
-class NvBlitContext;
 
 class Camera: public camera3_device {
 public:
@@ -93,7 +92,6 @@ private:
     AutoFocusController *mAf;
     JpegEncoder *mJpeg;
     BufferProcessor *mBufferProcessor;
-    std::unique_ptr<NvBlitContext> mNvBlit;
     Mutex mMutex;
 
     std::unique_ptr<CameraCallbackEmitter>        mPartialEmitter;

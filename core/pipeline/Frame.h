@@ -75,10 +75,6 @@ struct Frame {
     /* Written by the JPEG engine for a BLOB it could not encode; read
      * by the result engine only once every token is gone. */
     std::vector<int>  outputStatuses;
-    std::vector<bool> outputNeedsFinalUnlock;
-    /* true: the output was written by the VIC bridge; CPU finalize
-     * leaves it alone. */
-    std::vector<bool> outputDeferredNvBlit;
     /* JPEG snapshots for BLOB outputs; ringSlot < 0 for any other
      * output, or when the snapshot could not be taken. Whoever uses one
      * up -- the encode, or the finish engine giving the frame's up --

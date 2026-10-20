@@ -13,8 +13,7 @@ struct SensorConfig;
 class DelayedControls;
 
 /* Always-run terminal stage. On the success path: builds result
- * metadata via ResultMetadataBuilder, unlocks any gralloc outputs
- * that stages left locked, emits the final partial via
+ * metadata via ResultMetadataBuilder, emits the final partial via
  * PartialEmitter (carrying buffer pointers). On the error path: emits notify(ERROR_REQUEST)
  * via the framework callback, then returns every output buffer with
  * CAMERA3_BUFFER_STATUS_ERROR and no metadata, as camera3.h requires
