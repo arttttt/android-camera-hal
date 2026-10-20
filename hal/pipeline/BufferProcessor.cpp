@@ -19,7 +19,7 @@
 #include "IspPipeline.h"
 #include "NvBlitContext.h"
 #include "PostProcessor.h"
-#include "PipelineContext.h"
+#include "Frame.h"
 #include "DbgUtils.h"
 
 namespace android {
@@ -195,7 +195,7 @@ void BufferProcessor::finalizeYuvOutput(const CaptureRequest::Buffer &outBuf,
     GraphicBufferMapper::get().unlock(*outBuf.buffer);
 }
 
-void BufferProcessor::finalizeCpuOutputs(PipelineContext &ctx) {
+void BufferProcessor::finalizeCpuOutputs(mocha::camera::Frame &ctx) {
     if (!ctx.status.ok()) return;
     for (size_t i = 0; i < ctx.request.outputBuffers.size(); ++i) {
         const CaptureRequest::Buffer &ob = ctx.request.outputBuffers[i];
@@ -204,7 +204,7 @@ void BufferProcessor::finalizeCpuOutputs(PipelineContext &ctx) {
          * not stomp them with the (stale) host YUV buffer. */
         if (i < ctx.outputDeferredNvBlit.size() && ctx.outputDeferredNvBlit[i])
             continue;
-        /* BLOB encode runs on JpegWorker — handled out of band. */
+        /* BLOB encode runs on the JPEG engine — handled out of band. */
         if (ob.stream->format == HAL_PIXEL_FORMAT_YCbCr_420_888)
             finalizeYuvOutput(ob, ctx.request.frameNumber);
     }
@@ -279,12 +279,12 @@ status_t BufferProcessor::processYuvNvBlit(const camera3_stream_buffer &srcBuf,
     return NO_ERROR;
 }
 
-void BufferProcessor::releaseJpegSnapshots(PipelineContext &ctx) {
+void BufferProcessor::releaseJpegSnapshots(mocha::camera::Frame &ctx) {
     for (size_t i = 0; i < ctx.outputJpegSnapshots.size(); ++i)
         releaseJpegSnapshot(ctx, i);
 }
 
-void BufferProcessor::releaseJpegSnapshot(PipelineContext &ctx, size_t i) {
+void BufferProcessor::releaseJpegSnapshot(mocha::camera::Frame &ctx, size_t i) {
     if (i >= ctx.outputJpegSnapshots.size()) return;
     if (ctx.outputJpegSnapshots[i].ringSlot >= 0) {
         mDeps.isp->releaseJpegSnapshot(ctx.outputJpegSnapshots[i]);

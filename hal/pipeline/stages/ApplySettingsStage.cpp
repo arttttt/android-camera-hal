@@ -9,7 +9,7 @@
 
 #include <system/camera_metadata.h>
 
-#include "PipelineContext.h"
+#include "Frame.h"
 #include "3a/AutoExposureController.h"
 #include "3a/AutoFocusController.h"
 #include "sensor/DelayedControls.h"
@@ -96,7 +96,7 @@ void ApplySettingsStage::reset() {
     lastAutoGain       = 0;
 }
 
-void ApplySettingsStage::process(PipelineContext &ctx) {
+void ApplySettingsStage::process(mocha::camera::Frame &ctx) {
     if (deps.sensorCfg) {
         ctx.appliedExposureUs = deps.sensorCfg->exposureDefault;
         ctx.appliedGain       = deps.sensorCfg->gainDefault;

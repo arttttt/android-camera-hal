@@ -9,7 +9,7 @@
 #include <ui/GraphicBufferMapper.h>
 #include <hardware/camera3.h>
 
-#include "PipelineContext.h"
+#include "Frame.h"
 #include "BufferProcessor.h"
 #include "BayerSource.h"
 #include "IspPipeline.h"
@@ -27,13 +27,14 @@ void DemosaicBlitStage::reportIfDeviceLost() {
         deps.deviceError->report("ISP GPU device lost");
 }
 
-void DemosaicBlitStage::process(PipelineContext &ctx) {
+UniqueFd DemosaicBlitStage::process(mocha::camera::Frame &ctx) {
     Resolution res = deps.bayerSource->resolution();
+    const V4l2Device::VBuffer *bayer = ctx.bayer.buffer();
 
     BufferProcessor::FrameContext fctx;
-    fctx.frameBuf       = ctx.bayerFrame->buf;
-    fctx.frameSlotIdx   = (ctx.bayerFrame->buf == nullptr) ? ctx.bayerFrame->index : -1;
-    fctx.pixFmt         = ctx.bayerFrame->pixFmt;
+    fctx.frameBuf       = bayer->buf;
+    fctx.frameSlotIdx   = (bayer->buf == nullptr) ? bayer->index : -1;
+    fctx.pixFmt         = bayer->pixFmt;
     fctx.resW           = res.width;
     fctx.resH           = res.height;
     fctx.cropX          = ctx.cropX;
@@ -47,6 +48,7 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
     ctx.outputNeedsFinalUnlock.assign(n, true);
     ctx.outputDeferredNvBlit.assign(n, false);
     ctx.outputJpegSnapshots.assign(n, JpegSnapshot{nullptr, 0, 0, 0, -1});
+    ctx.jpegRing = deps.isp;
 
     /* Open the ISP recording for this frame — demosaic gets recorded once;
      * each blitTo* call inside the loop appends a per-output operation to
@@ -56,7 +58,7 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
         ctx.status.fail(NO_INIT);
         reportIfDeviceLost();
         ctx.outputNeedsFinalUnlock.assign(n, false);
-        return;
+        return UniqueFd();
     }
 
     /* Two-pass:
@@ -125,15 +127,15 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
         ctx.outputNeedsFinalUnlock.assign(n, false);
         ctx.status.fail(NO_INIT);
         reportIfDeviceLost();
-        return;
+        return UniqueFd();
     }
 
     /* Pass 3 — fire HW VIC blits for the outputs processOne deferred.
      * processYuvNvBlit owns the dup of submitFenceFd and sbs[i].acquire_fence
      * on success (NvBlit consumes them); on failure it closes them
      * itself and returns NO_INIT, in which case we just mark the output
-     * as error. The original submitFenceFd stays in pendingFenceFds for
-     * PipelineThread's slot-completion poll. */
+     * as error. The original submitFenceFd goes to the demosaic engine,
+     * which waits on it before the frame moves on. */
     for (size_t i = 0; i < n; ++i) {
         if (!deferredYuv[i]) continue;
         status_t e = deps.bufferProcessor->processYuvNvBlit(
@@ -145,8 +147,7 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
         }
     }
 
-    if (submitFenceFd >= 0)
-        ctx.pendingFenceFds.push_back(submitFenceFd);
+    return UniqueFd(submitFenceFd);
 }
 
 } /* namespace android */

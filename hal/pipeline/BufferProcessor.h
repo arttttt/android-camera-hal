@@ -11,12 +11,13 @@
 #include "CaptureRequest.h"
 #include "JpegSnapshot.h"
 
+namespace mocha::camera { struct Frame; }
+
 namespace android {
 
 class IspPipeline;
 class NvBlitContext;
 class PostProcessor;
-struct PipelineContext;
 
 /* Per-output-buffer processing. Takes a just-dequeued V4L2 Bayer
  * frame and emits either a zero-copy RGBA gralloc (preview) or a
@@ -85,12 +86,12 @@ public:
 
     /* Post-fence-reap CPU finalize for outputs whose GPU half ran into a
      * host-mapped backend buffer. YUV outputs are libyuv-repacked here;
-     * BLOB outputs are encoded asynchronously by JpegWorker so this
+     * BLOB outputs are encoded asynchronously by the JPEG engine so this
      * function does NOT touch them on the success path. Called by
-     * PipelineThread on a successfully completed frame, before stats
-     * and offload to ResultThread. No-op when no YUV output is in the
+     * the finish engine on a committed frame, before stats and the
+     * JPEG hand-off. No-op when no YUV output is in the
      * request. */
-    void finalizeCpuOutputs(PipelineContext &ctx);
+    void finalizeCpuOutputs(mocha::camera::Frame &ctx);
 
     /* Post-isp->endFrame HW VIC dispatch for one YCbCr_420_888 output
      * that processOne flagged with OutputState::deferredNvBlit. Calls
@@ -107,16 +108,16 @@ public:
                                int *releaseFenceOut);
 
     /* Release every BLOB output's JpegSnapshot so the ISP ring rotates
-     * without an encode. Called by PipelineThread on the error path
-     * (where JPEG jobs are not posted to JpegWorker). */
-    void releaseJpegSnapshots(PipelineContext &ctx);
+     * without an encode. Called by the finish engine on the error path
+     * (where no JPEG job is posted). */
+    void releaseJpegSnapshots(mocha::camera::Frame &ctx);
 
     /* The same for one output, whose job could not be posted. */
-    void releaseJpegSnapshot(PipelineContext &ctx, size_t outputIndex);
+    void releaseJpegSnapshot(mocha::camera::Frame &ctx, size_t outputIndex);
 
     /* Lock the BLOB gralloc, libjpeg-encode from the snapshot, write the
      * camera3_jpeg_blob trailer, unlock, release the snapshot. Called
-     * by JpegWorker on its own thread once the frame's submit fence has
+     * by the JPEG engine on its own thread once the frame's submit fence has
      * signalled. False when the BLOB holds no image: the snapshot is
      * released either way. */
     bool finalizeBlobOutput(const CaptureRequest::Buffer &outBuf,

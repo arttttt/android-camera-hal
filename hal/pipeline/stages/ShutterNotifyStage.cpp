@@ -2,14 +2,14 @@
 
 #include <utils/Timers.h>
 
-#include "PipelineContext.h"
+#include "Frame.h"
 
 namespace android {
 
 ShutterNotifyStage::ShutterNotifyStage(const camera3_callback_ops_t *const *ops)
     : callbackOps(ops) {}
 
-void ShutterNotifyStage::process(PipelineContext &ctx) {
+void ShutterNotifyStage::process(mocha::camera::Frame &ctx) {
     ctx.tShutter = systemTime();
 
     const camera3_callback_ops_t *ops = *callbackOps;

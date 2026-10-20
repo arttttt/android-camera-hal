@@ -7,7 +7,6 @@
 
 namespace android {
 
-class BayerSource;
 class AutoFocusController;
 class PartialEmitter;
 struct SensorConfig;
@@ -16,8 +15,7 @@ class DelayedControls;
 /* Always-run terminal stage. On the success path: builds result
  * metadata via ResultMetadataBuilder, unlocks any gralloc outputs
  * that stages left locked, emits the final partial via
- * PartialEmitter (carrying buffer pointers), releases the Bayer
- * frame to the source. On the error path: emits notify(ERROR_REQUEST)
+ * PartialEmitter (carrying buffer pointers). On the error path: emits notify(ERROR_REQUEST)
  * via the framework callback, then returns every output buffer with
  * CAMERA3_BUFFER_STATUS_ERROR and no metadata, as camera3.h requires
  * after ERROR_REQUEST.
@@ -30,7 +28,6 @@ public:
     struct Deps {
         const camera3_callback_ops_t *const *callbackOps;
         PartialEmitter                      *emitter;
-        BayerSource                         *bayerSource;
         AutoFocusController                 *af;         /* may be null */
         const SensorConfig                  *sensorCfg;
         const DelayedControls               *delayedControls; /* may be null */
@@ -39,11 +36,11 @@ public:
     explicit ResultDispatchStage(const Deps &deps);
 
     const char *name() const override { return "ResultDispatch"; }
-    void process(PipelineContext &context) override;
+    void process(mocha::camera::Frame &context) override;
     bool alwaysRun() const override { return true; }
 
 private:
-    void returnBuffersInError(PipelineContext &context);
+    void returnBuffersInError(mocha::camera::Frame &context);
 
     Deps deps;
 };

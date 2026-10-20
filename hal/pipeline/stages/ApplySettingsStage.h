@@ -42,7 +42,7 @@ public:
     explicit ApplySettingsStage(const Deps &deps);
 
     const char *name() const override { return "ApplySettings"; }
-    void process(PipelineContext &context) override;
+    void process(mocha::camera::Frame &context) override;
 
     /* Forget the last auto write. Called when a session closes: the
      * next one starts from the driver defaults configureStreams

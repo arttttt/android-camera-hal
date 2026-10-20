@@ -3,17 +3,18 @@
 
 #include "PipelineStage.h"
 
+namespace mocha::camera { class StatsEngine; }
+
 namespace android {
 
 class  AutoFocusController;
 class  DelayedControls;
 class  Ipa;
 class  PartialEmitter;
-class  StatsWorker;
 struct SensorConfig;
 
-/* Runs on PipelineThread once the frame's submit fence has
- * signalled. Peeks the latest IpaStats the StatsWorker has
+/* Runs on the finish engine once the frame's submit fence has
+ * signalled. Peeks the latest IpaStats the stats engine has
  * published (computed off-thread in parallel with the GPU submit),
  * hands it to the IPA, and publishes the returned control batch
  * into DelayedControls so ApplySettingsStage picks it up on the
@@ -40,7 +41,7 @@ public:
         Ipa                 *ipa;
         DelayedControls     *delayedControls;
         const SensorConfig  *sensorCfg;
-        StatsWorker         *statsWorker;
+        mocha::camera::StatsEngine *stats;
         AutoFocusController *af;          /* may be null — used for
                                            * currentFocusRoi() only       */
         PartialEmitter      *emitter;     /* threaded into the IPA tick so
@@ -51,7 +52,7 @@ public:
     explicit StatsProcessStage(const Deps &deps);
 
     const char *name() const override { return "StatsProcess"; }
-    void process(PipelineContext &context) override;
+    void process(mocha::camera::Frame &context) override;
 
 private:
     Deps deps;

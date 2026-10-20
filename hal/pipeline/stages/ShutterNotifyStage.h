@@ -14,7 +14,7 @@ public:
     explicit ShutterNotifyStage(const camera3_callback_ops_t *const *callbackOps);
 
     const char *name() const override { return "ShutterNotify"; }
-    void process(PipelineContext &context) override;
+    void process(mocha::camera::Frame &context) override;
 
 private:
     const camera3_callback_ops_t *const *callbackOps;

@@ -6,12 +6,12 @@
 #include <utils/Log.h>
 #include <utils/Timers.h>
 
-#include "PipelineContext.h"
+#include "Frame.h"
 #include "3a/AutoFocusController.h"
 #include "ipa/Ipa.h"
 #include "ipa/IpaFrameMeta.h"
 #include "ipa/IpaStats.h"
-#include "ipa/StatsWorker.h"
+#include "StatsEngine.h"
 #include "sensor/DelayedControls.h"
 #include "sensor/SensorConfig.h"
 
@@ -22,16 +22,16 @@ namespace android {
 
 StatsProcessStage::StatsProcessStage(const Deps &d) : deps(d) {}
 
-void StatsProcessStage::process(PipelineContext &ctx) {
+void StatsProcessStage::process(mocha::camera::Frame &ctx) {
     if (!deps.ipa || !deps.delayedControls || !deps.sensorCfg
-        || !deps.statsWorker) return;
+        || !deps.stats) return;
 
     const nsecs_t t0 = systemTime();
 
     IpaStats stats;
     uint32_t statsSeq = 0;
     int64_t  statsStartNs = 0;
-    if (!deps.statsWorker->peek(&stats, &statsSeq, &statsStartNs)) return;
+    if (!deps.stats->peek(&stats, &statsSeq, &statsStartNs)) return;
 
     const nsecs_t tPeek = systemTime();
 
@@ -87,7 +87,7 @@ void StatsProcessStage::process(PipelineContext &ctx) {
     }
 
     /* Pass the frame-of-stats sequence to the IPA so it can correlate
-     * with its own history. DelayedControls::push still uses ctx.sequence
+     * with its own history. DelayedControls::push still uses ctx.frameNumber
      * for effect timing — the control goes into effect relative to
      * today's frame, not to the frame the stats came from.
      *
@@ -129,7 +129,7 @@ void StatsProcessStage::process(PipelineContext &ctx) {
         one.has[id] = true;
         one.val[id] = batch.val[id];
 
-        const uint32_t effectSeq = ctx.sequence
+        const uint32_t effectSeq = ctx.frameNumber
                                    + (uint32_t)deps.sensorCfg->controlDelay[id];
         deps.delayedControls->push(effectSeq, one);
     }

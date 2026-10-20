@@ -16,32 +16,35 @@
 #include "sensor/SensorTuning.h"
 #include "sensor/DelayedControls.h"
 #include "ipa/Ipa.h"
-#include "ipa/StatsWorker.h"
 #include "IspPipeline.h"
 #include "3a/AutoFocusController.h"
 #include "jpeg/JpegEncoder.h"
 #include "pipeline/BufferProcessor.h"
 #include "pipeline/CameraCallbackEmitter.h"
-#include "pipeline/JpegWorker.h"
 #include "pipeline/StreamConfig.h"
 #include "DbgUtils.h"
 
+namespace mocha::camera {
+struct Frame;
+class FrameRegistry;
+class CaptureEngine;
+class StatsEngine;
+class IspEngine;
+class FinishEngine;
+class JpegEngine;
+class ResultEngine;
+}
+
 namespace android {
 
-struct PipelineContext;
 class Pipeline;
-class PipelineStage;
 class ApplySettingsStage;
-class InFlightTracker;
+class DemosaicBlitStage;
+class StatsProcessStage;
+class ResultDispatchStage;
 class DeviceErrorReporter;
-class RequestThread;
-class PipelineThread;
-class ResultThread;
-class JpegWorker;
 class BayerSource;
-class EventFd;
 class NvBlitContext;
-template <typename T> class EventQueue;
 
 class Camera: public camera3_device {
 public:
@@ -95,32 +98,32 @@ private:
 
     std::unique_ptr<CameraCallbackEmitter>        mPartialEmitter;
     std::unique_ptr<BayerSource>                  mBayerSource;
-    std::unique_ptr<InFlightTracker>              mTracker;
+    std::unique_ptr<mocha::camera::FrameRegistry> mRegistry;
     std::unique_ptr<DeviceErrorReporter>          mDeviceError;
-    std::unique_ptr<EventQueue<PipelineContext*>> mRequestQueue;
-    std::unique_ptr<EventQueue<PipelineContext*>> mPipelineQueue;
-    std::unique_ptr<EventQueue<PipelineContext*>> mResultQueue;
-    std::unique_ptr<EventQueue<JpegWorker::Job>>  mJpegQueue;
-    std::unique_ptr<EventFd>                      mJpegCompletionWake;
-    std::unique_ptr<Pipeline>                     mRequestPipeline;
-    /* Owned by mRequestPipeline; kept to reset it on session close. */
+    /* ApplySettings + ShutterNotify, run by the capture engine. */
+    std::unique_ptr<Pipeline>                     mSettingsPipeline;
+    /* Owned by mSettingsPipeline; kept to reset it on session close. */
     ApplySettingsStage                           *mApplySettingsStage = nullptr;
-    std::unique_ptr<PipelineStage>                mDemosaicBlitStage;
-    std::unique_ptr<PipelineStage>                mStatsProcessStage;
-    std::unique_ptr<PipelineStage>                mResultDispatchStage;
-    std::unique_ptr<RequestThread>                mRequestThread;
-    std::unique_ptr<PipelineThread>               mPipelineThread;
-    std::unique_ptr<ResultThread>                 mResultThread;
-    std::unique_ptr<JpegWorker>                   mJpegWorker;
+    std::unique_ptr<DemosaicBlitStage>            mDemosaicBlitStage;
+    std::unique_ptr<StatsProcessStage>            mStatsProcessStage;
+    std::unique_ptr<ResultDispatchStage>          mResultDispatchStage;
     std::unique_ptr<Ipa>                          mIpa;
     std::unique_ptr<DelayedControls>              mDelayedControls;
-    std::unique_ptr<StatsWorker>                  mStatsWorker;
+    /* The engines, one thread each; built once, their threads started
+     * and stopped around every stream configuration. */
+    std::unique_ptr<mocha::camera::ResultEngine>  mResultEngine;
+    std::unique_ptr<mocha::camera::JpegEngine>    mJpegEngine;
+    std::unique_ptr<mocha::camera::FinishEngine>  mFinishEngine;
+    std::unique_ptr<mocha::camera::IspEngine>     mIspEngine;
+    std::unique_ptr<mocha::camera::StatsEngine>   mStatsEngine;
+    std::unique_ptr<mocha::camera::CaptureEngine> mCaptureEngine;
+    bool                                          mEnginesRunning = false;
     bool                                          mInfrastructureBuilt;
 
     /* V4L2 capture resolution from the last configure_streams. The
      * framework re-issues configure_streams on AE_MODE auto↔manual
      * toggles even when the streams haven't changed; the heavy
-     * stopWorkers + STREAMOFF + prewarm + STREAMON + startWorkers
+     * stopEngines + STREAMOFF + prewarm + STREAMON + startEngines
      * cycle is unnecessary when the V4L2 input resolution is the
      * same. 0 = no prior config (first call must run the full path). */
     unsigned                                      mLastConfigWidth = 0;
@@ -139,9 +142,9 @@ private:
     static constexpr int                          kFlushTimeoutMs = 1000;
 
     /* Build the long-lived per-camera infrastructure (ISP, 3A,
-     * BufferProcessor, BayerSource, tracker, pipeline, worker
-     * thread). Called lazily from openDevice on first open; survives
-     * close/reopen cycles and is torn down only in the destructor. */
+     * BufferProcessor, BayerSource, registry, stages, engines). Called
+     * lazily from openDevice on first open; survives close/reopen
+     * cycles and is torn down only in the destructor. */
     void buildInfrastructure();
     void destroyInfrastructure();
 
@@ -153,26 +156,18 @@ private:
      * static seeds. */
     void populateSensorConfigFromDriver();
 
-    /* Stop / (re)start the capture and request workers around a
-     * configure_streams boundary. Both are idempotent; starting a
-     * worker that's already running is a no-op. */
-    void stopWorkers();
-    void startWorkers();
-
-    /* Pull every PipelineContext still parked in mTracker (orphaned
-     * upstream of PipelineThread's own in-flight drain during a
-     * stopWorkers), cancel each, and route
-     * through ResultDispatchStage so the framework gets its notify()
-     * + buffer release. Must run after stopWorkers, before the next
-     * configureStreams or closeDevice teardown step. */
-    void errorCompletePendingRequests();
+    /* Start / stop the engines' threads around a configure_streams
+     * boundary. stopEngines hands every frame still held back to the
+     * framework (normally, or as a failed request) before it returns.
+     * Both are idempotent. */
+    bool startEngines();
+    void stopEngines();
 
     /* The one cancellation flush() and the AE mode switch share:
      * cancel the in-flight frames `which` picks (committed ones
-     * complete anyway) and wake a CaptureStage waiting on a long
-     * exposure. Takes no lock of Camera's own, so it is safe under
-     * mMutex. */
-    void cancelInFlight(const std::function<bool(const PipelineContext &)> &which);
+     * complete anyway) and wake a capture waiting on a long exposure.
+     * Takes no lock of Camera's own, so it is safe under mMutex. */
+    void cancelInFlight(const std::function<bool(const mocha::camera::Frame &)> &which);
 
     /* A snapshot: a BLOB output, or a still / video snapshot / ZSL
      * capture intent. */

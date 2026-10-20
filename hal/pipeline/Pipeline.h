@@ -6,12 +6,13 @@
 
 #include "PipelineStage.h"
 
+namespace mocha::camera { struct Frame; }
+
 namespace android {
 
-struct PipelineContext;
 
 /* Ordered collection of stages executed on one thread against a
- * PipelineContext. Stages run in insertion order; once the context's
+ * frame. Stages run in insertion order; once the frame's
  * status is no longer Ok (a stage failed it, or it was cancelled),
  * subsequent stages are skipped unless they report alwaysRun()==true. */
 class Pipeline {
@@ -23,7 +24,7 @@ public:
 
     void appendStage(std::unique_ptr<PipelineStage> stage);
 
-    void run(PipelineContext &context);
+    void run(mocha::camera::Frame &context);
 
 private:
     std::vector<std::unique_ptr<PipelineStage>> stages;

@@ -67,6 +67,9 @@ LOCAL_C_INCLUDES += frameworks/native/libs/nativewindow/include
 # Module-internal include dirs
 LOCAL_C_INCLUDES += \
     $(LOCAL_PATH)/base \
+    $(LOCAL_PATH)/core/engine \
+    $(LOCAL_PATH)/core/engines \
+    $(LOCAL_PATH)/core/pipeline \
     $(LOCAL_PATH)/hal \
     $(LOCAL_PATH)/hal/ipa \
     $(LOCAL_PATH)/hal/pipeline \
@@ -80,7 +83,14 @@ LOCAL_C_INCLUDES += \
 
 LOCAL_SRC_FILES += \
     base/EventFd.cpp \
-    base/ThreadBase.cpp \
+    core/engines/CaptureEngine.cpp \
+    core/engines/FinishEngine.cpp \
+    core/engines/IspEngine.cpp \
+    core/engines/JpegEngine.cpp \
+    core/engines/ResultEngine.cpp \
+    core/engines/StatsEngine.cpp \
+    core/pipeline/Frame.cpp \
+    core/pipeline/FrameRegistry.cpp \
     hal/HalModule.cpp \
     hal/Camera.cpp \
     hal/metadata/CameraStaticMetadata.cpp \
@@ -93,25 +103,16 @@ LOCAL_SRC_FILES += \
     hal/3a/GrayWorldAwbController.cpp \
     hal/ipa/Ipa3A.cpp \
     hal/ipa/NeonStatsEncoder.cpp \
-    hal/ipa/StatsWorker.cpp \
     hal/ipa/StubIpa.cpp \
     hal/jpeg/JpegEncoder.cpp \
     hal/pipeline/BufferProcessor.cpp \
-    hal/pipeline/InFlightTracker.cpp \
     hal/pipeline/Pipeline.cpp \
-    hal/pipeline/PipelineThread.cpp \
-    hal/pipeline/RequestThread.cpp \
-    hal/pipeline/ResultThread.cpp \
-    hal/pipeline/JpegWorker.cpp \
     hal/pipeline/StreamConfig.cpp \
     hal/pipeline/stages/ApplySettingsStage.cpp \
-    hal/pipeline/stages/CaptureStage.cpp \
     hal/pipeline/stages/DemosaicBlitStage.cpp \
     hal/pipeline/stages/ResultDispatchStage.cpp \
     hal/pipeline/stages/ShutterNotifyStage.cpp \
-    hal/pipeline/stages/StatsDispatchStage.cpp \
     hal/pipeline/stages/StatsProcessStage.cpp \
-    v4l2/V4l2CaptureThread.cpp \
     v4l2/V4l2Device.cpp \
     v4l2/V4l2Source.cpp \
     isp/IspPipeline.cpp \

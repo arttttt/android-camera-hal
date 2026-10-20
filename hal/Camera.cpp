@@ -49,67 +49,37 @@
 
 #include "BayerSource.h"
 #include "V4l2Source.h"
-#include "EventQueue.h"
 #include "pipeline/CaptureRequest.h"
-#include "pipeline/PipelineContext.h"
 #include "pipeline/Pipeline.h"
 #include "pipeline/DeviceErrorReporter.h"
-#include "pipeline/InFlightTracker.h"
-#include "pipeline/RequestThread.h"
-#include "pipeline/PipelineThread.h"
-#include "pipeline/ResultThread.h"
-#include "pipeline/JpegWorker.h"
 #include "pipeline/stages/ApplySettingsStage.h"
 #include "pipeline/stages/ShutterNotifyStage.h"
-#include "pipeline/stages/CaptureStage.h"
 #include "pipeline/stages/DemosaicBlitStage.h"
 #include "pipeline/stages/ResultDispatchStage.h"
-#include "pipeline/stages/StatsDispatchStage.h"
 #include "pipeline/stages/StatsProcessStage.h"
 #include "ipa/Ipa3A.h"
+#include "CaptureEngine.h"
+#include "FinishEngine.h"
+#include "Frame.h"
+#include "FrameRegistry.h"
+#include "IspEngine.h"
+#include "JpegEngine.h"
+#include "ResultEngine.h"
+#include "StatsEngine.h"
 
 extern camera_module_t HAL_MODULE_INFO_SYM;
 
 namespace {
-/* Soft cap; see docs/tier3_architecture.md. */
-constexpr size_t REQUEST_QUEUE_CAPACITY = 256;
+/* Frames the HAL holds at once before a new request is failed on
+ * arrival. The framework keeps at most max_buffers (StreamConfig: 4)
+ * of each stream outstanding, and StreamConfig takes three streams at
+ * most, so 12 is what a framework keeping its contract can reach; the
+ * rest is headroom. */
+constexpr size_t kFrameCeiling = 16;
 
-/* Depth of concurrent GPU submits PipelineThread will keep outstanding.
- * Bounded above by VulkanIspPipeline::SLOT_COUNT (the per-slot ring).
- *
- * Pinned at 1 for single-stream preview. On this hardware GPU is
- * ~60 ms / frame, CPU prep is ~2 ms, sensor cadence is ~33 ms — GPU
- * is the bottleneck and there's nothing CPU-side worth overlapping.
- * Higher depths just add per-frame latency and let completions clump
- * (four ~60 ms submits finish in a batch rather than at sensor
- * cadence). Raise when PR 7 / 8 put real CPU work beside the GPU
- * (IPA stats, JPEG encode). */
-constexpr size_t PIPELINE_MAX_IN_FLIGHT = 1;
-
-/* Handoff buffer between RequestThread and PipelineThread. Decoupled
- * from PIPELINE_MAX_IN_FLIGHT on purpose: the queue size adds directly
- * to the number of Bayer slots reserved out of V4L2 at once (each ctx
- * in the queue still owns its acquireNextFrame'd VBuffer).
- *
- * Worst-case V4L2 slot hold per session =
- *   PIPELINE_MAX_IN_FLIGHT    (ctxs PipelineThread has taken on)
- * + PIPELINE_QUEUE_CAPACITY   (ctxs sitting in the handoff queue)
- * + 1                         (V4l2Source::latest, pre-consumer handoff)
- * — so 1 + 1 + 1 = 3 slots worst-case, leaving V4L2DEVICE_BUF_COUNT-3
- * for the sensor. Larger queue caps only buy one-sided bursts at the
- * cost of sensor starvation. */
-constexpr size_t PIPELINE_QUEUE_CAPACITY = 1;
-
-/* Sized to absorb a small burst of completed ctxs that PipelineThread
- * pushes when the dispatch side is briefly slower (e.g. JPEG encode in
- * BLOB-bearing frames). 16 matches the design budget in
- * docs/tier3_architecture.md. */
-constexpr size_t RESULT_QUEUE_CAPACITY = 16;
-
-/* JPEG job queue: one entry per BLOB output across all in-flight
- * frames. With PIPELINE_MAX_IN_FLIGHT=1 and rare BLOB requests, 8 is
- * comfortably oversized. */
-constexpr size_t JPEG_QUEUE_CAPACITY = 8;
+/* How long stopping waits for the frames past the GPU (JPEG encodes,
+ * results) to go out normally before the rest go out in error. */
+constexpr int kStopDrainTimeoutMs = 1000;
 } /* namespace */
 
 namespace android {
@@ -179,7 +149,7 @@ Camera::Camera(const char *devNode, int facing)
 
 Camera::~Camera() {
     DBGUTILS_AUTOLOGCALL(__func__);
-    stopWorkers();
+    stopEngines();
     destroyInfrastructure();
     if (mDev) {
         mDev->disconnect();
@@ -263,23 +233,12 @@ int Camera::openDevice(hw_device_t **device) {
 int Camera::closeDevice() {
     DBGUTILS_AUTOLOGCALL(__func__);
 
-    /* Stop workers before taking mMutex — a worker may still be
-     * finishing its last iteration (which doesn't need the lock but
-     * may call framework callbacks). PipelineThread drains its own
-     * in-flight contexts on stop; anything still in the tracker is
-     * stuck upstream (RequestThread bailed out of pushBlocking) and
-     * reaped here. */
-    stopWorkers();
+    /* Stop the engines before taking mMutex: one may still be handing
+     * a result back through a framework callback. Every frame held goes
+     * back to the framework before this returns. */
+    stopEngines();
 
     Mutex::Autolock lock(mMutex);
-
-    /* Error-complete any requests that got enqueued but never pushed
-     * downstream — RequestThread ran Apply/Shutter/Capture but got
-     * unblocked out of pushBlocking during stopWorkers. ResultDispatch
-     * alone is enough for cleanup: DemosaicBlit is skipped on error,
-     * and the dispatch stage emits notify(ERROR_REQUEST) + releases
-     * any Bayer slot the stage chain already took. */
-    errorCompletePendingRequests();
 
     /* Drop per-session state so the next open starts from a clean
      * slate. Infrastructure (ISP core, 3A, BufferProcessor, pipeline,
@@ -294,7 +253,7 @@ int Camera::closeDevice() {
     if (mIsp)             mIsp->onSessionClose();
     if (mIpa)             mIpa->reset();
     if (mDelayedControls) mDelayedControls->reset();
-    if (mStatsWorker)     mStatsWorker->reset();
+    if (mStatsEngine)     mStatsEngine->reset();
 
     mDev->disconnect();
     return NO_ERROR;
@@ -368,7 +327,7 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
      * changed without affecting the capture resolution. Apps like Open
      * Camera reissue configure_streams on AE_MODE auto↔manual toggles
      * even when nothing about the streams really changed; the full
-     * stopWorkers + STREAMOFF + prewarm + STREAMON + startWorkers cycle
+     * stopEngines + STREAMOFF + prewarm + STREAMON + startEngines cycle
      * costs ~3 s on Tegra K1 and surfaces as the camera "reopening"
      * between mode switches. New output streams build their gralloc
      * cache entries lazily on first blit, so no per-stream setup is
@@ -387,23 +346,13 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
      * the workers, (2) reconfigures V4L2 + ISP for the new stream
      * set, (3) restarts the workers. */
 
-    stopWorkers();
+    /* Every frame held goes back to the framework before the capture
+     * is torn down; requests come again once the streams are set. */
+    stopEngines();
 
-    /* Error-complete any requests still parked upstream of
-     * PipelineThread's inFlight drain: ctxs in mRequestQueue,
-     * ctxs mid-stage in RequestThread (it was unblocked out of
-     * pushBlocking by the queue's requestStop), ctxs in
-     * mPipelineQueue. Without this the framework's output buffers
-     * stay dequeued on the HAL side across the reconfigure and
-     * the next processCaptureRequest sequence times out with
-     * "wait for output buffer return timed out after 3000ms". */
-    errorCompletePendingRequests();
-
-    /* Drop the StatsWorker's in-progress cycle before the ISP ring
-     * gets resized out from under it. Without this reset the worker's
-     * currentJob.bayer would still point into the old input ring after
-     * ensureBuffers (below) unmaps it on a resolution change. */
-    if (mStatsWorker) mStatsWorker->reset();
+    /* Drop the stats cycle in progress before the ISP ring gets resized
+     * out from under it. */
+    if (mStatsEngine) mStatsEngine->reset();
 
     ALOGD("V4L2 target resolution: %ux%u, soft_isp=%d",
           width, height, mSoftIspEnabled);
@@ -473,7 +422,10 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
         return NO_INIT;
     }
 
-    startWorkers();
+    if (!startEngines()) {
+        ALOGE("configureStreams: the engines did not start");
+        return NO_INIT;
+    }
     return NO_ERROR;
 }
 
@@ -494,16 +446,16 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
         request->input_buffer->release_fence = -1;
     }
 
-    std::unique_ptr<PipelineContext> ctx(new PipelineContext());
-    ctx->sequence            = request->frame_number;
+    auto ctx = std::make_shared<mocha::camera::Frame>();
+    ctx->frameNumber         = request->frame_number;
     ctx->request.frameNumber = request->frame_number;
     ctx->tAccepted           = systemTime();
 
     {
         Mutex::Autolock lock(mMutex);
 
-        if (!mRequestThread || !mRequestThread->isRunning()) {
-            ALOGE("processCaptureRequest: request thread not running");
+        if (!mEnginesRunning) {
+            ALOGE("processCaptureRequest: the engines are not running");
             notifyError(request->frame_number, NULL, CAMERA3_MSG_ERROR_REQUEST);
             return INVALID_OPERATION;
         }
@@ -545,7 +497,7 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
             curAeMode != ANDROID_CONTROL_AE_MODE_OFF) {
             ALOGD("processCaptureRequest: AE_MODE %u→%u, cancelling frames waiting for Bayer",
                   (unsigned)mLastAeMode, (unsigned)curAeMode);
-            cancelInFlight([](const PipelineContext &c) {
+            cancelInFlight([](const mocha::camera::Frame &c) {
                 return !c.stillCapture &&
                        !c.hasBayer.load(std::memory_order_acquire);
             });
@@ -566,21 +518,34 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
         }
     }
 
-    PipelineContext *raw = ctx.get();
-    mTracker->add(std::move(ctx));
+    /* The frame's first token, taken before the result engine sees
+     * the frame: it waits for the frame until the last token goes. */
+    mocha::camera::FrameToken token(ctx);
+    ctx->settled = mResultEngine->settledWake();
+
+    if (!mRegistry->add(ctx)) {
+        /* More frames held than a framework keeping its stream
+         * contract can send. Camera3 gives no return code for that;
+         * the request goes out at once as a failed one, in order. */
+        ALOGE("frame %u: over the ceiling of %zu frames held — failed",
+              ctx->frameNumber, kFrameCeiling);
+        ctx->status.fail(NO_MEMORY);
+    }
     /* A request arriving while flush() waits is cancelled like the
      * ones in flight. flush sets mFlushing before cancelling the
-     * tracker, so a request added after that cancel sees the flag. */
-    if (mFlushing.load()) raw->status.cancel();
+     * registry, so a frame added after that cancel sees the flag. */
+    if (mFlushing.load()) ctx->status.cancel();
 
-    if (!mRequestQueue->push(raw)) {
-        /* Soft cap at REQUEST_QUEUE_CAPACITY (256) — this means the
-         * framework has more requests outstanding than its own
-         * stream.max_buffers contract allows. Reclaim and log-fatal. */
-        std::unique_ptr<PipelineContext> reclaim = mTracker->removeBySequence(raw->sequence);
-        (void)reclaim;
-        LOG_ALWAYS_FATAL("RequestQueue overflow (framework exceeded stream.max_buffers)");
+    /* Results go out in the order frames reach the result engine:
+     * the order requests arrive in. */
+    if (!mResultEngine->submit(ctx)) {
+        ALOGE("frame %u: the result engine is stopped", ctx->frameNumber);
+        mRegistry->remove(ctx->frameNumber);
+        return -ENODEV;
     }
+    /* A capture engine that refuses lets the token go; the frame goes
+     * out as a failed request. */
+    mCaptureEngine->submit(std::move(token));
 
     return NO_ERROR;
 }
@@ -599,7 +564,7 @@ void Camera::buildInfrastructure() {
     mIsp->setEnabled(mSoftIspEnabled);
 
     /* Optical-black bias — set on the ISP only here; the same value is
-     * also pushed into StatsWorker further down, once that object has
+     * also pushed into the stats engine further down, once that object has
      * been constructed. Shared between the demosaic shader and the
      * CPU stats encoder so both read the same signal space; mismatched
      * bias on the stats side lets the offset dominate raw means on
@@ -675,29 +640,11 @@ void Camera::buildInfrastructure() {
 
     mPartialEmitter.reset(new CameraCallbackEmitter(&mCallbackOps));
     mBayerSource.reset(new V4l2Source(mDev));
-    mTracker.reset(new InFlightTracker());
+    mRegistry.reset(new mocha::camera::FrameRegistry(kFrameCeiling));
     mDeviceError.reset(new DeviceErrorReporter(&mCallbackOps));
-    {
-        DeviceErrorReporter *deviceError = mDeviceError.get();
-        mBayerSource->setStallHandler([deviceError] {
-            deviceError->report("sensor stopped sending frames");
-        });
-    }
-    mRequestQueue.reset(new EventQueue<PipelineContext*>(REQUEST_QUEUE_CAPACITY));
-    mPipelineQueue.reset(new EventQueue<PipelineContext*>(PIPELINE_QUEUE_CAPACITY));
-    mResultQueue.reset(new EventQueue<PipelineContext*>(RESULT_QUEUE_CAPACITY));
-    mJpegQueue.reset(new EventQueue<JpegWorker::Job>(JPEG_QUEUE_CAPACITY));
-    mJpegCompletionWake.reset(new EventFd());
-    mRequestPipeline.reset(new Pipeline());
-    mStatsWorker.reset(new StatsWorker());
-    {
-        BayerSource *source = mBayerSource.get();
-        mStatsWorker->setReleaser([source](const void *hold) {
-            source->releaseFrame(static_cast<const V4l2Device::VBuffer *>(hold));
-        });
-    }
+    mStatsEngine.reset(new mocha::camera::StatsEngine());
     if (mTuning.isLoaded())
-        mStatsWorker->setBlackLevel((uint32_t)mTuning.opticalBlack().r);
+        mStatsEngine->setBlackLevel((uint32_t)mTuning.opticalBlack().r);
 
     /* DelayedControls plumbing for the AE / gain push from the IPA's
      * processStats() into the ApplySettingsStage write path. The
@@ -713,10 +660,9 @@ void Camera::buildInfrastructure() {
         mDelayedControls.reset(new DelayedControls(cfg));
     }
 
-    /* RequestThread pipeline — runs Apply / Shutter / Capture on the
-     * binder-adjacent thread. DemosaicBlit and ResultDispatch live on
-     * PipelineThread behind the fence-fd poll set, so they are owned
-     * standalone rather than appended here. */
+    /* The request's settings and its shutter, run by the capture
+     * engine as each frame is captured. */
+    mSettingsPipeline.reset(new Pipeline());
     {
         ApplySettingsStage::Deps d;
         d.dev             = mDev;
@@ -724,30 +670,11 @@ void Camera::buildInfrastructure() {
         d.sensorCfg       = &mSensorCfg;
         d.delayedControls = mDelayedControls.get();
         mApplySettingsStage = new ApplySettingsStage(d);
-        mRequestPipeline->appendStage(
+        mSettingsPipeline->appendStage(
             std::unique_ptr<PipelineStage>(mApplySettingsStage));
     }
-
-    mRequestPipeline->appendStage(
+    mSettingsPipeline->appendStage(
         std::unique_ptr<PipelineStage>(new ShutterNotifyStage(&mCallbackOps)));
-
-    {
-        CaptureStage::Deps d;
-        d.bayerSource = mBayerSource.get();
-        d.isp         = mIsp;
-        mRequestPipeline->appendStage(
-            std::unique_ptr<PipelineStage>(new CaptureStage(d)));
-    }
-
-    {
-        StatsDispatchStage::Deps d;
-        d.isp         = mIsp;
-        d.statsWorker = mStatsWorker.get();
-        d.bayerSource = mBayerSource.get();
-        d.af          = mAf;
-        mRequestPipeline->appendStage(
-            std::unique_ptr<PipelineStage>(new StatsDispatchStage(d)));
-    }
 
     {
         DemosaicBlitStage::Deps d;
@@ -760,11 +687,10 @@ void Camera::buildInfrastructure() {
 
     {
         ResultDispatchStage::Deps d;
-        d.callbackOps = &mCallbackOps;
-        d.emitter     = mPartialEmitter.get();
-        d.bayerSource = mBayerSource.get();
-        d.af          = mAf;
-        d.sensorCfg   = &mSensorCfg;
+        d.callbackOps     = &mCallbackOps;
+        d.emitter         = mPartialEmitter.get();
+        d.af              = mAf;
+        d.sensorCfg       = &mSensorCfg;
         d.delayedControls = mDelayedControls.get();
         mResultDispatchStage.reset(new ResultDispatchStage(d));
     }
@@ -774,70 +700,65 @@ void Camera::buildInfrastructure() {
         d.ipa             = mIpa.get();
         d.delayedControls = mDelayedControls.get();
         d.sensorCfg       = &mSensorCfg;
-        d.statsWorker     = mStatsWorker.get();
+        d.stats           = mStatsEngine.get();
         d.af              = mAf;
         d.emitter         = mPartialEmitter.get();
         mStatsProcessStage.reset(new StatsProcessStage(d));
     }
 
-    mRequestThread.reset(new RequestThread(mRequestQueue.get(),
-                                           mRequestPipeline.get(),
-                                           mPipelineQueue.get()));
+    /* The engines, downstream first: each takes the one after it. */
     {
-        PipelineThread::Deps d;
-        d.queue           = mPipelineQueue.get();
-        d.resultQueue     = mResultQueue.get();
-        d.jpegQueue       = mJpegQueue.get();
-        d.demosaicBlit    = mDemosaicBlitStage.get();
+        mocha::camera::ResultEngine::Deps d;
+        d.dispatch = mResultDispatchStage.get();
+        d.registry = mRegistry.get();
+        mResultEngine.reset(new mocha::camera::ResultEngine(d));
+    }
+    mJpegEngine.reset(new mocha::camera::JpegEngine());
+    {
+        mocha::camera::FinishEngine::Deps d;
+        d.bufferProcessor = mBufferProcessor;
         d.statsProcess    = mStatsProcessStage.get();
-        d.bufferProcessor = mBufferProcessor;
-        d.bayerSource     = mBayerSource.get();
-        d.deviceError     = mDeviceError.get();
-        d.maxInFlight     = PIPELINE_MAX_IN_FLIGHT;
-        mPipelineThread.reset(new PipelineThread(d));
+        d.jpeg            = mJpegEngine.get();
+        mFinishEngine.reset(new mocha::camera::FinishEngine(d));
     }
-
     {
-        ResultThread::Deps d;
-        d.queue              = mResultQueue.get();
-        d.jpegCompletionWake = mJpegCompletionWake.get();
-        d.resultDispatch     = mResultDispatchStage.get();
-        d.bayerSource        = mBayerSource.get();
-        d.tracker            = mTracker.get();
-        mResultThread.reset(new ResultThread(d));
+        mocha::camera::IspEngine::Deps d;
+        d.demosaic    = mDemosaicBlitStage.get();
+        d.finish      = mFinishEngine.get();
+        d.deviceError = mDeviceError.get();
+        mIspEngine.reset(new mocha::camera::IspEngine(d));
     }
-
     {
-        JpegWorker::Deps d;
-        d.queue           = mJpegQueue.get();
-        d.bufferProcessor = mBufferProcessor;
-        d.completionWake  = mJpegCompletionWake.get();
-        mJpegWorker.reset(new JpegWorker(d));
+        mocha::camera::CaptureEngine::Deps d;
+        d.source      = mBayerSource.get();
+        d.isp         = mIsp;
+        d.af          = mAf;
+        d.settings    = mSettingsPipeline.get();
+        d.demosaic    = mIspEngine.get();
+        d.stats       = mStatsEngine.get();
+        d.deviceError = mDeviceError.get();
+        mCaptureEngine.reset(new mocha::camera::CaptureEngine(d));
     }
 
     mInfrastructureBuilt = true;
 }
 
 void Camera::destroyInfrastructure() {
-    mPipelineThread.reset();
-    mJpegWorker.reset();
-    mResultThread.reset();
-    mRequestThread.reset();
-    mResultDispatchStage.reset();
+    mCaptureEngine.reset();
+    mIspEngine.reset();
+    mFinishEngine.reset();
+    mJpegEngine.reset();
+    mResultEngine.reset();
     mStatsProcessStage.reset();
+    mResultDispatchStage.reset();
     mDemosaicBlitStage.reset();
     mApplySettingsStage = nullptr;
-    mRequestPipeline.reset();
-    mStatsWorker.reset();
+    mSettingsPipeline.reset();
+    mStatsEngine.reset();
     mDelayedControls.reset();
     mIpa.reset();
-    mTracker.reset();
+    mRegistry.reset();
     mDeviceError.reset();
-    mJpegQueue.reset();
-    mJpegCompletionWake.reset();
-    mResultQueue.reset();
-    mPipelineQueue.reset();
-    mRequestQueue.reset();
     mBayerSource.reset();
 
     delete mBufferProcessor; mBufferProcessor = NULL;
@@ -852,9 +773,9 @@ void Camera::destroyInfrastructure() {
 }
 
 void Camera::cancelInFlight(
-        const std::function<bool(const PipelineContext &)> &which) {
-    if (mTracker)     mTracker->cancelIf(which);
-    if (mBayerSource) mBayerSource->notifyForAbort();
+        const std::function<bool(const mocha::camera::Frame &)> &which) {
+    if (mRegistry)      mRegistry->cancelIf(which);
+    if (mCaptureEngine) mCaptureEngine->wake();
 }
 
 bool Camera::isStillCapture(const camera3_capture_request_t &request,
@@ -874,124 +795,56 @@ bool Camera::isStillCapture(const camera3_capture_request_t &request,
     }
 }
 
-void Camera::errorCompletePendingRequests() {
-    if (!mTracker || !mResultDispatchStage) return;
-    auto pending = mTracker->drainAll();
-    for (auto &ctx : pending) {
-        if (!ctx) continue;
-        ctx->status.cancel();
-        mResultDispatchStage->process(*ctx);
-    }
+void Camera::stopEngines() {
+    if (!mEnginesRunning) return;
+    mEnginesRunning = false;
+
+    /* From the source towards the result. A stopped engine lets the
+     * jobs it holds go, and with them their frames' tokens: those
+     * frames go on to the result engine and out as failed requests.
+     * The demosaic engine first gives a frame on the GPU its fence's
+     * time. */
+    mCaptureEngine->stop();
+    mStatsEngine->stop();
+    mIspEngine->stop();
+    mFinishEngine->stop();
+
+    /* Frames past the GPU -- committed, waiting on a JPEG or on their
+     * turn -- go out normally if they can. */
+    if (!mRegistry->waitEmpty(kStopDrainTimeoutMs))
+        ALOGE("stopEngines: %zu frames still held after %d ms",
+              mRegistry->count(), kStopDrainTimeoutMs);
+    mJpegEngine->stop();
+    mResultEngine->stop();
+
+    /* Whatever is left goes out in error, from here; no engine runs. */
+    for (const mocha::camera::FrameRef &frame : mRegistry->takeAll())
+        mResultEngine->dispatchFailed(*frame);
+
+    mBayerSource->stop();
 }
 
-void Camera::stopWorkers() {
-    /* Ordering:
-     * 1. Bayer: parked CaptureStage waits on acquireNextFrame cv —
-     *    stop() notifies it with stopping=true so the stage unwinds.
-     * 2. pipelineQueue.requestStop: RequestThread may be blocked
-     *    inside pushBlocking; flipping the queue's stopping flag wakes
-     *    it with a false return so it can exit.
-     * 3. RequestThread join: stopFd signal + stopFlag for the inner
-     *    loop, then join. The ctx it was holding (if any) stays in
-     *    the tracker for closeDevice's drainAll.
-     * 4. PipelineThread join: stopFd wakes the poll; threadLoop's
-     *    tail drains in-flight contexts and pushes JPEG jobs to
-     *    JpegWorker + ctxs to ResultThread (stop-drained ctxs
-     *    cancelled).
-     * 5. JpegWorker join: drains its queue, encodes any remaining
-     *    BLOBs, decrements jpegPending so ResultThread can release
-     *    them. Stopping after PipelineThread guarantees no new jobs
-     *    arrive after this point.
-     * 6. ResultThread join: drains its pending deque and runs
-     *    ResultDispatch + tracker removeBySequence on each so
-     *    framework buffers return cleanly. Stopping last guarantees
-     *    every ctx that JpegWorker decremented to ready state has a
-     *    chance to dispatch.
-     *
-     * GPU drain lives inside PipelineThread's stop path — no
-     * waitForPreviousFrame at this layer. */
-    if (mBayerSource)    mBayerSource->stop();
-    if (mPipelineQueue)  mPipelineQueue->requestStop();
-    if (mRequestThread)  mRequestThread->stop();
-    /* StatsWorker is stopped after RequestThread (so no more submits
-     * arrive) but can run alongside PipelineThread's drain — the
-     * consumer StatsProcessStage just peeks a stale snapshot once the
-     * worker is quiesced. */
-    if (mStatsWorker)    mStatsWorker->stop();
-    if (mPipelineThread) mPipelineThread->stop();
-    if (mJpegWorker)     mJpegWorker->stop();
-    if (mResultThread)   mResultThread->stop();
-}
+bool Camera::startEngines() {
+    if (mEnginesRunning) return true;
+    if (!mInfrastructureBuilt) return false;
 
-void Camera::startWorkers() {
-    /* Clear the stopping flag that stopWorkers flipped on the pipeline
-     * queue; otherwise pushBlocking in the new session would fail
-     * instantly. */
-    if (mPipelineQueue) mPipelineQueue->clearStop();
-
-    if (mBayerSource && !mBayerSource->isRunning()) {
-        if (!mBayerSource->start()) {
-            ALOGE("BayerSource start failed");
-            return;
-        }
+    /* Downstream first, so no engine hands work to one not yet
+     * running; the source before the capture engine that drives it. */
+    const bool started = mBayerSource->start()
+                      && mResultEngine->start()
+                      && mJpegEngine->start()
+                      && mFinishEngine->start()
+                      && mIspEngine->start()
+                      && mStatsEngine->start()
+                      && mCaptureEngine->start();
+    if (!started) {
+        ALOGE("startEngines: an engine did not start; stopping the rest");
+        mEnginesRunning = true;
+        stopEngines();
+        return false;
     }
-    /* StatsWorker before RequestThread: the producer side must have a
-     * live sink to post Bayer jobs into from the very first
-     * StatsDispatchStage run. */
-    if (mStatsWorker && !mStatsWorker->isRunning()) {
-        if (!mStatsWorker->start("CamStats")) {
-            ALOGE("StatsWorker start failed, unwinding BayerSource");
-            if (mBayerSource) mBayerSource->stop();
-            return;
-        }
-    }
-    /* ResultThread before JpegWorker before PipelineThread: each
-     * downstream consumer must be live before its producer starts
-     * pushing. ResultThread reads from JpegWorker's completion eventfd
-     * (so it has to be polling first), and PipelineThread pushes to
-     * both JpegWorker (BLOB jobs) and ResultThread (every ctx). */
-    if (mResultThread && !mResultThread->isRunning()) {
-        if (!mResultThread->start("CamResult")) {
-            ALOGE("ResultThread start failed, unwinding StatsWorker + BayerSource");
-            if (mStatsWorker) mStatsWorker->stop();
-            if (mBayerSource) mBayerSource->stop();
-            return;
-        }
-    }
-    if (mJpegWorker && !mJpegWorker->isRunning()) {
-        if (!mJpegWorker->start("CamJpeg")) {
-            ALOGE("JpegWorker start failed, unwinding ResultThread + StatsWorker + BayerSource");
-            if (mResultThread) mResultThread->stop();
-            if (mStatsWorker)  mStatsWorker->stop();
-            if (mBayerSource)  mBayerSource->stop();
-            return;
-        }
-    }
-    /* PipelineThread before RequestThread: the downstream consumer
-     * must be live before RequestThread starts pushing to pipelineQueue.
-     * Swapping the order would have RequestThread block on pushBlocking
-     * forever. */
-    if (mPipelineThread && !mPipelineThread->isRunning()) {
-        if (!mPipelineThread->start("CamPipeline")) {
-            ALOGE("PipelineThread start failed, unwinding workers");
-            if (mJpegWorker)   mJpegWorker->stop();
-            if (mResultThread) mResultThread->stop();
-            if (mStatsWorker)  mStatsWorker->stop();
-            if (mBayerSource)  mBayerSource->stop();
-            return;
-        }
-    }
-    if (mRequestThread && !mRequestThread->isRunning()) {
-        if (!mRequestThread->start("CamRequest")) {
-            ALOGE("RequestThread start failed, unwinding workers");
-            if (mPipelineThread) mPipelineThread->stop();
-            if (mJpegWorker)     mJpegWorker->stop();
-            if (mResultThread)   mResultThread->stop();
-            if (mStatsWorker)    mStatsWorker->stop();
-            if (mBayerSource)    mBayerSource->stop();
-            return;
-        }
-    }
+    mEnginesRunning = true;
+    return true;
 }
 
 inline void Camera::notifyShutter(uint32_t frameNumber, uint64_t timestamp) {
@@ -1070,19 +923,17 @@ int Camera::flush() {
 
     /* camera3.h: return only once the HAL holds no more requests or
      * buffers, and as soon as possible. The HAL cancels the requests
-     * in flight and lets the workers drain them; tearing the pipeline
+     * in flight and lets the engines drain them; tearing the pipeline
      * down would itself cost the seconds we're trying to save.
      *
-     * cancelInFlight cancels every tracked context (one that already
-     * failed or was committed keeps its outcome); pipeline stages
-     * check the status at entry and short-circuit to ResultDispatch,
-     * which emits notify(ERROR_REQUEST) and returns the framework's
-     * output buffers in error. Committed frames, too late to cancel,
-     * complete normally. notifyForAbort wakes any RequestThread
-     * blocked inside CaptureStage::acquireNextFrame waiting on a long
-     * manual exposure — the abortCheck callback registered there sees
-     * the status and the acquire returns null instead of holding the
-     * pipeline another frame period.
+     * cancelInFlight cancels every frame held (one that already failed
+     * or was committed keeps its outcome); each engine looks at the
+     * status before its work and lets a cancelled frame go, and the
+     * result engine sends it out as notify(ERROR_REQUEST) with the
+     * framework's output buffers in error. Committed frames, too late
+     * to cancel, complete normally. The capture engine is woken, so a
+     * frame waiting on a long manual exposure is let go now rather
+     * than a frame period later.
      *
      * The wait runs without mMutex: process_capture_request may be
      * called while flush is in progress and must return quickly. A
@@ -1092,21 +943,21 @@ int Camera::flush() {
      * The in-flight V4L2 capture finishes naturally; we don't
      * STREAMOFF here. The next process_capture_request after flush
      * acquires the following bayer normally. */
-    InFlightTracker *tracker = nullptr;
+    mocha::camera::FrameRegistry *registry = nullptr;
     {
         Mutex::Autolock lock(mMutex);
-        if (!mTracker) return OK;
-        tracker = mTracker.get();
-        ALOGD("flush: inFlight=%zu", tracker->count());
+        if (!mRegistry) return OK;
+        registry = mRegistry.get();
+        ALOGD("flush: inFlight=%zu", registry->count());
         mFlushing.store(true);
-        cancelInFlight([](const PipelineContext &) { return true; });
+        cancelInFlight([](const mocha::camera::Frame &) { return true; });
     }
 
-    const bool drained = tracker->waitEmpty(kFlushTimeoutMs);
+    const bool drained = registry->waitEmpty(kFlushTimeoutMs);
     mFlushing.store(false);
     if (!drained) {
         ALOGE("flush: %zu requests still in flight after %d ms",
-              tracker->count(), kFlushTimeoutMs);
+              registry->count(), kFlushTimeoutMs);
     }
     return OK;
 }

@@ -10,8 +10,7 @@
 #include <utils/Vector.h>
 #include <ui/GraphicBufferMapper.h>
 
-#include "PipelineContext.h"
-#include "BayerSource.h"
+#include "Frame.h"
 #include "3a/AutoFocusController.h"
 #include "metadata/CameraStaticMetadata.h"
 #include "metadata/ResultMetadataBuilder.h"
@@ -26,7 +25,7 @@ namespace android {
 
 ResultDispatchStage::ResultDispatchStage(const Deps &d) : deps(d) {}
 
-void ResultDispatchStage::returnBuffersInError(PipelineContext &ctx) {
+void ResultDispatchStage::returnBuffersInError(mocha::camera::Frame &ctx) {
     /* The per-output vectors are filled by DemosaicBlitStage; a frame
      * that failed or was cancelled before it has them empty. */
     const size_t n = ctx.request.outputBuffers.size();
@@ -70,17 +69,8 @@ void ResultDispatchStage::returnBuffersInError(PipelineContext &ctx) {
     }
 }
 
-void ResultDispatchStage::process(PipelineContext &ctx) {
+void ResultDispatchStage::process(mocha::camera::Frame &ctx) {
     const camera3_callback_ops_t *ops = *deps.callbackOps;
-
-    /* Defensive close of any lingering submit sync_fds. PipelineThread's
-     * reap path drains them before handing the ctx over, so in normal
-     * operation this vector is empty; on stop-drain timeouts it may
-     * hold unsignalled fds that ::close() simply releases. */
-    for (int fd : ctx.pendingFenceFds) {
-        if (fd >= 0) ::close(fd);
-    }
-    ctx.pendingFenceFds.clear();
 
     /* A failed or cancelled frame is one complete failure to Camera3:
      * the frontend's word for both is ERROR_REQUEST. */
@@ -94,7 +84,6 @@ void ResultDispatchStage::process(PipelineContext &ctx) {
             ops->notify(ops, &msg);
         }
         returnBuffersInError(ctx);
-        if (ctx.bayerFrame) deps.bayerSource->releaseFrame(ctx.bayerFrame);
         return;
     }
 
@@ -124,8 +113,6 @@ void ResultDispatchStage::process(PipelineContext &ctx) {
         sb.release_fence = ctx.outputReleaseFences[i];
         buffers.push_back(sb);
     }
-
-    deps.bayerSource->releaseFrame(ctx.bayerFrame);
 
     ResultMetadataBuilder::FrameState fs;
     fs.timestampNs       = ctx.tShutter ? ctx.tShutter : ctx.tAccepted;
