@@ -17,7 +17,7 @@
 /* Host test for the engines' job queue. Linux (the build server):
  *
  *   clang++ -std=c++20 -Wall -Wextra -fsanitize=thread -g -Icore/engine \
- *       core/engine/tests/job_queue_test.cpp -o out/host-tests/job_queue_test \
+ *       core/tests/job_queue_test.cpp -o out/host-tests/job_queue_test \
  *       && out/host-tests/job_queue_test
  */
 

@@ -18,8 +18,8 @@
  * ThreadSanitizer:
  *
  *   clang++ -std=c++20 -Wall -Wextra -fsanitize=thread -g -pthread \
- *       -Icore/engine -Ibase -Icore/engine/tests/stub \
- *       core/engine/tests/permit_pool_test.cpp base/EventFd.cpp \
+ *       -Icore/engine -Icore/base -Icore/tests/stub \
+ *       core/tests/permit_pool_test.cpp core/base/EventFd.cpp \
  *       -o out/host-tests/permit_pool_test && out/host-tests/permit_pool_test
  */
 

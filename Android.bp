@@ -1,0 +1,171 @@
+// Copyright (C) 2026 Artem Bambalov
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// What the core and the frontend both use: logging and timing helpers.
+cc_library_headers {
+    name: "libmochacamera_util_headers",
+    proprietary: true,
+    export_include_dirs: ["core/util"],
+}
+
+// The camera core without a framework interface on it: the sensor and its
+// lens, the ISP, 3A, JPEG and the engines that run them, behind Session.
+// It speaks its own types (mochacamera/*.h) and reaches the framework only
+// through the ports a frontend implements; nothing in it includes camera3.h
+// or CameraMetadata. A Camera3 frontend links it statically and translates;
+// another interface (AIDL ICameraDevice) would be another frontend over the
+// same core.
+cc_library_static {
+    name: "libmochacamera",
+    proprietary: true,
+    srcs: ["core/**/*.cpp"],
+    exclude_srcs: ["core/tests/**/*.cpp"],
+    export_include_dirs: ["core/include"],
+    local_include_dirs: [
+        "core",
+        "core/include",
+        "core/base",
+        "core/engine",
+        "core/engines",
+        "core/ipa",
+        "core/isp",
+        "core/isp/vulkan",
+        "core/isp/vulkan/encode",
+        "core/pipeline",
+        "core/pipeline/stages",
+        "core/session",
+        "core/util",
+        "core/v4l2",
+    ],
+    include_dirs: [
+        "external/libyuv/files/include",
+        "external/jsoncpp/include",
+        "frameworks/native/include",
+        "frameworks/native/vulkan/include",
+        "frameworks/native/libs/nativewindow/include",
+    ],
+    cpp_std: "c++20",
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-fno-short-enums",
+        "-DV4L2DEVICE_BUF_COUNT=8",
+    ],
+    header_libs: ["libhardware_headers"],
+    static_libs: [
+        "libjsoncpp",
+        "libyuv_static",
+    ],
+    shared_libs: [
+        "libcutils",
+        "libjpeg",
+        "liblog",
+        "libui",
+        "libutils",
+        "libvulkan",
+    ],
+}
+
+// The Camera3 frontend: the camera3_device over the core's Session.
+cc_library_shared {
+    name: "camera.tegra",
+    relative_install_path: "hw",
+    // A hardware module: since O it belongs on the vendor side, next to the
+    // tuning profiles below and to the HIDL provider that dlopens it.
+    proprietary: true,
+    srcs: [
+        "hal/*.cpp",
+        "hal/metadata/*.cpp",
+    ],
+    local_include_dirs: ["hal"],
+    cpp_std: "c++20",
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-fno-short-enums",
+    ],
+    header_libs: [
+        "libhardware_headers",
+        "libmochacamera_util_headers",
+    ],
+    // android.hardware.camera.common@1.0-helper carries AOSP's own copy of
+    // CameraMetadata.cpp, built vendor_available for camera HALs; the
+    // framework's libcamera_client is unreachable from a vendor namespace
+    // (see hal/CameraMetadataCompat.h).
+    static_libs: [
+        "libmochacamera",
+        "android.hardware.camera.common@1.0-helper",
+        "libjsoncpp",
+        "libyuv_static",
+    ],
+    shared_libs: [
+        "libcamera_metadata",
+        "libcutils",
+        "libjpeg",
+        "liblog",
+        "libui",
+        "libutils",
+        "libvulkan",
+    ],
+}
+
+// Per-sensor tuning profiles.
+prebuilt_etc {
+    name: "imx179_primax.json",
+    src: "tuning/imx179_primax.json",
+    sub_dir: "camera/tuning",
+    proprietary: true,
+}
+
+prebuilt_etc {
+    name: "ov5693_sunny.json",
+    src: "tuning/ov5693_sunny.json",
+    sub_dir: "camera/tuning",
+    proprietary: true,
+}
+
+// Diagnostic standalone: libnvblit smoke test.
+cc_binary {
+    name: "nvblit_probe",
+    srcs: ["tools/nvblit_probe/nvblit_probe.cpp"],
+    cflags: ["-Wno-unused-parameter"],
+    shared_libs: [
+        "libcutils",
+        "liblog",
+        "libui",
+        "libutils",
+    ],
+    include_dirs: ["frameworks/native/include"],
+}
+
+// Diagnostic standalone: STORAGE_BIT VkImage over gralloc import.
+cc_binary {
+    name: "vk_storage_probe",
+    srcs: ["tools/vk_storage_probe/vk_storage_probe.cpp"],
+    cflags: ["-Wno-unused-parameter"],
+    shared_libs: [
+        "libcutils",
+        "libdl",
+        "liblog",
+        "libui",
+        "libutils",
+    ],
+    header_libs: ["vulkan_headers"],
+    include_dirs: [
+        "frameworks/native/include",
+        "frameworks/native/vulkan/include",
+    ],
+}
