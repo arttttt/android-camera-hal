@@ -9,7 +9,6 @@
 #include "CameraMetadataCompat.h"
 #include <utils/misc.h>
 
-#include "V4l2Device.h"
 
 namespace android {
 
@@ -17,14 +16,14 @@ namespace {
 
 /* Request envelope — identifier, lens focus, crop region. The crop
  * region defaults to the full active array (no zoom). */
-void writeFrameState(CameraMetadata &cm, V4l2Device *dev) {
+void writeFrameState(CameraMetadata &cm, const mocha::camera::Capability &cap) {
     static const int32_t requestId = 0;
     cm.update(ANDROID_REQUEST_ID, &requestId, 1);
 
     static const float lensFocusDistance = 0.0f;
     cm.update(ANDROID_LENS_FOCUS_DISTANCE, &lensFocusDistance, 1);
 
-    auto sensorSize = dev->sensorResolution();
+    const mocha::camera::Size sensorSize = cap.sensor.pixelArray;
     const int32_t scalerCropRegion[] = {
         0,                          0,
         (int32_t)sensorSize.width,  (int32_t)sensorSize.height
@@ -60,7 +59,8 @@ void writeStatisticsDefaults(CameraMetadata &cm) {
 /* 3A + capture-intent defaults. capture_intent varies by template
  * type; AF mode depends on camera facing (the front lens has no VCM
  * so only MODE_OFF is valid). */
-void writeControlDefaults(CameraMetadata &cm, int type, V4l2Device *dev, int facing) {
+void writeControlDefaults(CameraMetadata &cm, int type,
+                          const mocha::camera::Capability &cap) {
     uint8_t controlCaptureIntent = 0;
     switch (type) {
         case CAMERA3_TEMPLATE_PREVIEW:          controlCaptureIntent = ANDROID_CONTROL_CAPTURE_INTENT_PREVIEW;             break;
@@ -95,7 +95,7 @@ void writeControlDefaults(CameraMetadata &cm, int type, V4l2Device *dev, int fac
     static const uint8_t controlAeLock = ANDROID_CONTROL_AE_LOCK_OFF;
     cm.update(ANDROID_CONTROL_AE_LOCK, &controlAeLock, 1);
 
-    auto sensorSize = dev->sensorResolution();
+    const mocha::camera::Size sensorSize = cap.sensor.pixelArray;
     const int32_t controlAeRegions[] = {
         0,                          0,
         (int32_t)sensorSize.width,  (int32_t)sensorSize.height,
@@ -131,8 +131,10 @@ void writeControlDefaults(CameraMetadata &cm, int type, V4l2Device *dev, int fac
     static const uint8_t flashMode = ANDROID_FLASH_MODE_OFF;
     cm.update(ANDROID_FLASH_MODE, &flashMode, 1);
 
-    uint8_t controlAfMode = (facing == CAMERA_FACING_BACK) ?
-        ANDROID_CONTROL_AF_MODE_AUTO : ANDROID_CONTROL_AF_MODE_OFF;
+    /* AF Auto where the lens moves; a fixed lens offers Off only. */
+    uint8_t controlAfMode = ANDROID_CONTROL_AF_MODE_OFF;
+    for (mocha::camera::AfMode m : cap.af.modes)
+        if (m == mocha::camera::AfMode::Auto) controlAfMode = ANDROID_CONTROL_AF_MODE_AUTO;
     cm.update(ANDROID_CONTROL_AF_MODE, &controlAfMode, 1);
 
     static const uint8_t controlAeState = ANDROID_CONTROL_AE_STATE_CONVERGED;
@@ -154,12 +156,13 @@ void writeControlDefaults(CameraMetadata &cm, int type, V4l2Device *dev, int fac
 
 } /* namespace */
 
-camera_metadata_t *RequestTemplateBuilder::build(int type, V4l2Device *dev, int facing) {
+camera_metadata_t *RequestTemplateBuilder::build(int type,
+                                                  const mocha::camera::Capability &cap) {
     CameraMetadata cm;
-    writeFrameState         (cm, dev);
+    writeFrameState         (cm, cap);
     writeJpegDefaults       (cm);
     writeStatisticsDefaults (cm);
-    writeControlDefaults    (cm, type, dev, facing);
+    writeControlDefaults    (cm, type, cap);
     return cm.release();
 }
 

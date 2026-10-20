@@ -13,317 +13,153 @@
 #include "CameraMetadataCompat.h"
 #include <utils/misc.h>
 
-#include "V4l2Device.h"
-#include "OutputResolutionCap.h"
-#include "sensor/SensorConfig.h"
-#include "sensor/SensorTuning.h"
 
 namespace android {
 
+using mocha::camera::AeMode;
+using mocha::camera::AfMode;
+using mocha::camera::AwbMode;
+using mocha::camera::Capability;
+using mocha::camera::PixelFormat;
+
 namespace {
 
-/* Pipeline depth advertised to the framework so it can size its
- * own backpressure / scheduler windows: the Vulkan ISP's GPU-submit
- * ring (VulkanIspPipeline::SLOT_COUNT) is 4 deep. `kPartialResultCount` lives in
- * CameraStaticMetadata.h so producers (IPA tick, result-dispatch
- * stage) can reference the same advertised value. */
-constexpr uint8_t  kPipelineMaxDepth   = 4;
-
-/* Conservative 30 fps cap when the driver does not report a framerate
- * for a given mode — better for the framework than a 60 fps lie. */
-constexpr int64_t  kFallbackMinFrameDurationNs = 1000000000LL / 30;
-
-/* Sensor + lens physical/geometric attributes. Pixel array size is
- * queried from the running V4L2 device; physical size / focal length /
- * minimum focus distance come from SensorTuning's `module` block
- * (per-module datasheet values). Fall back to aspect-correct fakes
- * when tuning isn't loaded so the framework doesn't reject the HAL. */
-void writeSensorInfo(CameraMetadata &cm, V4l2Device *dev,
-                     const SensorTuning *tuning, int facing,
-                     const SensorConfig &cfg) {
-    auto sensorRes = dev->sensorResolution();
-
-    float physSize[2];
-    float focalLength;
-    float minFocusDiopters;
-    if (tuning && tuning->isLoaded()) {
-        const auto &m = tuning->module();
-        physSize[0]      = m.physicalSizeMm[0];
-        physSize[1]      = m.physicalSizeMm[1];
-        focalLength      = cfg.focalLengthMm;
-        minFocusDiopters = m.minFocusDistanceDiopters;
-    } else {
-        /* Aspect-correct fallback so framework sees a coherent sensor
-         * area when tuning failed to load. */
-        physSize[0]      = 5.0f;
-        physSize[1]      = 5.0f * (float)sensorRes.height / (float)sensorRes.width;
-        focalLength      = cfg.focalLengthMm;
-        minFocusDiopters = (facing == CAMERA_FACING_BACK) ? 10.0f : 0.0f;
+/* What the core produces in Camera3's pixel formats. Preview's
+ * IMPLEMENTATION_DEFINED is produced as RGBA (StreamConfig maps it),
+ * so it is offered wherever RGBA is. */
+int32_t halFormatOf(PixelFormat f) {
+    switch (f) {
+        case PixelFormat::Rgba8888: return HAL_PIXEL_FORMAT_RGBA_8888;
+        case PixelFormat::Ycbcr420: return HAL_PIXEL_FORMAT_YCbCr_420_888;
+        case PixelFormat::Blob:     return HAL_PIXEL_FORMAT_BLOB;
     }
+    return HAL_PIXEL_FORMAT_RGBA_8888;
+}
 
+/* Sensor + lens physical/geometric attributes, from the capability. */
+void writeSensorInfo(CameraMetadata &cm, const Capability &cap) {
+    const float physSize[2] = { cap.sensor.physicalSizeMm[0], cap.sensor.physicalSizeMm[1] };
+    const float focalLength      = cap.lens.focalLengthMm;
+    const float minFocusDiopters = cap.lens.minFocusDistanceDiopters;
     cm.update(ANDROID_SENSOR_INFO_PHYSICAL_SIZE, physSize, 2);
     cm.update(ANDROID_LENS_INFO_AVAILABLE_FOCAL_LENGTHS, &focalLength, 1);
     cm.update(ANDROID_LENS_INFO_MINIMUM_FOCUS_DISTANCE, &minFocusDiopters, 1);
 
-    const uint8_t lensFacing = (facing == CAMERA_FACING_FRONT)
-        ? ANDROID_LENS_FACING_FRONT : ANDROID_LENS_FACING_BACK;
+    const uint8_t lensFacing = cap.facingFront ? ANDROID_LENS_FACING_FRONT
+                                               : ANDROID_LENS_FACING_BACK;
     cm.update(ANDROID_LENS_FACING, &lensFacing, 1);
 
-    const int32_t sensorInfoPixelArraySize[] = {
-        (int32_t)sensorRes.width,
-        (int32_t)sensorRes.height
+    const int32_t pixelArraySize[] = {
+        (int32_t)cap.sensor.pixelArray.width,
+        (int32_t)cap.sensor.pixelArray.height
     };
-    cm.update(ANDROID_SENSOR_INFO_PIXEL_ARRAY_SIZE, sensorInfoPixelArraySize, NELEM(sensorInfoPixelArraySize));
+    cm.update(ANDROID_SENSOR_INFO_PIXEL_ARRAY_SIZE, pixelArraySize, NELEM(pixelArraySize));
 
-    const int32_t sensorInfoActiveArraySize[] = {
-        0,                          0,
-        (int32_t)sensorRes.width,   (int32_t)sensorRes.height
+    const int32_t activeArraySize[] = {
+        0, 0,
+        (int32_t)cap.sensor.pixelArray.width,
+        (int32_t)cap.sensor.pixelArray.height
     };
-    cm.update(ANDROID_SENSOR_INFO_ACTIVE_ARRAY_SIZE, sensorInfoActiveArraySize, NELEM(sensorInfoActiveArraySize));
+    cm.update(ANDROID_SENSOR_INFO_ACTIVE_ARRAY_SIZE, activeArraySize, NELEM(activeArraySize));
 
-    /* From per-module tuning (`module.sensor_orientation_degrees`).
-     * Camera2 spec mandates one of {0, 90, 180, 270}; the static
-     * characteristics version of the same value Camera::cameraInfo
-     * already reports as camera_info::orientation. */
-    const int32_t sensorOrientation = tuning ? tuning->module().sensorOrientationDegrees : 0;
+    const int32_t sensorOrientation = cap.sensor.orientationDegrees;
     cm.update(ANDROID_SENSOR_ORIENTATION, &sensorOrientation, 1);
 }
 
-/* Resolution × format tables + per-mode durations. This is the bulk of
- * the characteristics — every supported (format, width, height) pair
- * needs to be enumerated here so CameraX / Camera2 can pick a stream.
- *
- * Filtered against `OutputResolutionCap` — V4L2 enumerates every native
- * sensor mode (incl. 8 MP / 5 MP for IMX179 / OV5693) but we advertise
- * only what the SW ISP can sustain at frame rate, so apps' photo /
- * video resolution pickers stay honest about what the pipeline
- * actually delivers fast. */
-void writeScalerConfigs(CameraMetadata &cm, V4l2Device *dev) {
-    Vector<Resolution> resolutions;
-    {
-        const auto &all = dev->availableResolutions();
-        for (size_t i = 0; i < all.size(); ++i) {
-            const auto &r = all[i];
-            if (OutputResolutionCap::accepts((int32_t)r.width, (int32_t)r.height))
-                resolutions.add(r);
-        }
-    }
-    const auto &previewResolutions = resolutions;
-
+/* Resolution x format tables + per-mode durations, from the
+ * capability's stream list: exactly the outputs the pipeline produces,
+ * each at its fastest. The legacy per-format size lists (JPEG,
+ * processed) are the same sizes. */
+void writeScalerConfigs(CameraMetadata &cm, const Capability &cap) {
     static const int32_t scalerAvailableFormats[] = {
         HAL_PIXEL_FORMAT_RGBA_8888,
         HAL_PIXEL_FORMAT_YCbCr_420_888,
         HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED,
-        /* Non-preview one, must be last - see following code */
         HAL_PIXEL_FORMAT_BLOB
     };
     cm.update(ANDROID_SCALER_AVAILABLE_FORMATS, scalerAvailableFormats, NELEM(scalerAvailableFormats));
 
-    /* Only for HAL_PIXEL_FORMAT_BLOB */
-    const size_t mainStreamConfigsCount = resolutions.size();
-    /* For all other supported pixel formats */
-    const size_t previewStreamConfigsCount = previewResolutions.size() * (NELEM(scalerAvailableFormats) - 1);
-    const size_t streamConfigsCount = mainStreamConfigsCount + previewStreamConfigsCount;
-
-    int32_t scalerAvailableStreamConfigurations[streamConfigsCount * 4];
-    int64_t scalerAvailableMinFrameDurations[streamConfigsCount * 4];
-
-    int32_t scalerAvailableProcessedSizes[previewResolutions.size() * 2];
-    int64_t scalerAvailableProcessedMinDurations[previewResolutions.size()];
-    int32_t scalerAvailableJpegSizes[resolutions.size() * 2];
-    int64_t scalerAvailableJpegMinDurations[resolutions.size()];
-
-    size_t i4 = 0;
-    size_t i2 = 0;
-    size_t i1 = 0;
-    /* Main stream configurations */
-    for(size_t resId = 0; resId < resolutions.size(); ++resId) {
-        const auto &r = resolutions[resId];
-        int64_t minDur = dev->minFrameDurationNs(r.width, r.height);
-        if (minDur <= 0) minDur = kFallbackMinFrameDurationNs;
-
-        scalerAvailableStreamConfigurations[i4 + 0] = HAL_PIXEL_FORMAT_BLOB;
-        scalerAvailableStreamConfigurations[i4 + 1] = (int32_t)r.width;
-        scalerAvailableStreamConfigurations[i4 + 2] = (int32_t)r.height;
-        scalerAvailableStreamConfigurations[i4 + 3] = ANDROID_SCALER_AVAILABLE_STREAM_CONFIGURATIONS_OUTPUT;
-
-        scalerAvailableMinFrameDurations[i4 + 0] = HAL_PIXEL_FORMAT_BLOB;
-        scalerAvailableMinFrameDurations[i4 + 1] = (int32_t)r.width;
-        scalerAvailableMinFrameDurations[i4 + 2] = (int32_t)r.height;
-        scalerAvailableMinFrameDurations[i4 + 3] = minDur;
-
-        scalerAvailableJpegSizes[i2 + 0] = (int32_t)r.width;
-        scalerAvailableJpegSizes[i2 + 1] = (int32_t)r.height;
-
-        scalerAvailableJpegMinDurations[i1] = minDur;
-
-        i4 += 4;
-        i2 += 2;
-        i1 += 1;
-    }
-    i2 = 0;
-    i1 = 0;
-    /* Preview stream configurations */
-    for(size_t resId = 0; resId < previewResolutions.size(); ++resId) {
-        const auto &r = previewResolutions[resId];
-        int64_t minDur = dev->minFrameDurationNs(r.width, r.height);
-        if (minDur <= 0) minDur = kFallbackMinFrameDurationNs;
-
-        for(size_t fmtId = 0; fmtId < NELEM(scalerAvailableFormats) - 1; ++fmtId) {
-            scalerAvailableStreamConfigurations[i4 + 0] = scalerAvailableFormats[fmtId];
-            scalerAvailableStreamConfigurations[i4 + 1] = (int32_t)r.width;
-            scalerAvailableStreamConfigurations[i4 + 2] = (int32_t)r.height;
-            scalerAvailableStreamConfigurations[i4 + 3] = ANDROID_SCALER_AVAILABLE_STREAM_CONFIGURATIONS_OUTPUT;
-
-            scalerAvailableMinFrameDurations[i4 + 0] = scalerAvailableFormats[fmtId];
-            scalerAvailableMinFrameDurations[i4 + 1] = (int32_t)r.width;
-            scalerAvailableMinFrameDurations[i4 + 2] = (int32_t)r.height;
-            scalerAvailableMinFrameDurations[i4 + 3] = minDur;
-
-            i4 += 4;
+    std::vector<int32_t> configs;
+    std::vector<int64_t> minDurations;
+    std::vector<int64_t> stallDurations;
+    std::vector<int32_t> jpegSizes;
+    std::vector<int64_t> jpegMinDurations;
+    std::vector<int32_t> processedSizes;
+    std::vector<int64_t> processedMinDurations;
+    auto add = [&](int32_t format, const Capability::StreamConfig &sc) {
+        const int32_t w = (int32_t)sc.size.width;
+        const int32_t h = (int32_t)sc.size.height;
+        configs.insert(configs.end(), {format, w, h,
+                ANDROID_SCALER_AVAILABLE_STREAM_CONFIGURATIONS_OUTPUT});
+        minDurations.insert(minDurations.end(), {format, w, h, sc.minFrameDurationNs});
+        stallDurations.insert(stallDurations.end(), {format, w, h, sc.stallDurationNs});
+    };
+    for (const Capability::StreamConfig &sc : cap.streams) {
+        add(halFormatOf(sc.format), sc);
+        if (sc.format == PixelFormat::Rgba8888) {
+            add(HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED, sc);
+            processedSizes.insert(processedSizes.end(),
+                                  {(int32_t)sc.size.width, (int32_t)sc.size.height});
+            processedMinDurations.push_back(sc.minFrameDurationNs);
+        } else if (sc.format == PixelFormat::Blob) {
+            jpegSizes.insert(jpegSizes.end(),
+                             {(int32_t)sc.size.width, (int32_t)sc.size.height});
+            jpegMinDurations.push_back(sc.minFrameDurationNs);
         }
-        scalerAvailableProcessedSizes[i2 + 0] = (int32_t)r.width;
-        scalerAvailableProcessedSizes[i2 + 1] = (int32_t)r.height;
-
-        scalerAvailableProcessedMinDurations[i1] = minDur;
-
-        i2 += 2;
-        i1 += 1;
     }
-    cm.update(ANDROID_SCALER_AVAILABLE_STREAM_CONFIGURATIONS, scalerAvailableStreamConfigurations, (size_t)NELEM(scalerAvailableStreamConfigurations));
-    cm.update(ANDROID_SCALER_AVAILABLE_MIN_FRAME_DURATIONS, scalerAvailableMinFrameDurations, (size_t)NELEM(scalerAvailableMinFrameDurations));
-    /* Probably fake */
-    cm.update(ANDROID_SCALER_AVAILABLE_STALL_DURATIONS, scalerAvailableMinFrameDurations, (size_t)NELEM(scalerAvailableMinFrameDurations));
-    cm.update(ANDROID_SCALER_AVAILABLE_JPEG_SIZES, scalerAvailableJpegSizes, (size_t)NELEM(scalerAvailableJpegSizes));
-    cm.update(ANDROID_SCALER_AVAILABLE_JPEG_MIN_DURATIONS, scalerAvailableJpegMinDurations, (size_t)NELEM(scalerAvailableJpegMinDurations));
-    cm.update(ANDROID_SCALER_AVAILABLE_PROCESSED_SIZES, scalerAvailableProcessedSizes, (size_t)NELEM(scalerAvailableProcessedSizes));
-    cm.update(ANDROID_SCALER_AVAILABLE_PROCESSED_MIN_DURATIONS, scalerAvailableProcessedMinDurations, (size_t)NELEM(scalerAvailableProcessedMinDurations));
+    cm.update(ANDROID_SCALER_AVAILABLE_STREAM_CONFIGURATIONS, configs.data(), configs.size());
+    cm.update(ANDROID_SCALER_AVAILABLE_MIN_FRAME_DURATIONS, minDurations.data(), minDurations.size());
+    cm.update(ANDROID_SCALER_AVAILABLE_STALL_DURATIONS, stallDurations.data(), stallDurations.size());
+    cm.update(ANDROID_SCALER_AVAILABLE_JPEG_SIZES, jpegSizes.data(), jpegSizes.size());
+    cm.update(ANDROID_SCALER_AVAILABLE_JPEG_MIN_DURATIONS, jpegMinDurations.data(), jpegMinDurations.size());
+    cm.update(ANDROID_SCALER_AVAILABLE_PROCESSED_SIZES, processedSizes.data(), processedSizes.size());
+    cm.update(ANDROID_SCALER_AVAILABLE_PROCESSED_MIN_DURATIONS, processedMinDurations.data(), processedMinDurations.size());
 
-    static const float scalerAvailableMaxDigitalZoom = 4;
-    cm.update(ANDROID_SCALER_AVAILABLE_MAX_DIGITAL_ZOOM, &scalerAvailableMaxDigitalZoom, 1);
+    const float maxDigitalZoom = cap.maxDigitalZoom;
+    cm.update(ANDROID_SCALER_AVAILABLE_MAX_DIGITAL_ZOOM, &maxDigitalZoom, 1);
 }
 
-/* JPEG buffer sizing + thumbnail options. Writes *jpegBufferSize so the
- * caller can use it for BLOB allocations in configureStreams. */
-void writeJpegInfo(CameraMetadata &cm, V4l2Device *dev, size_t *jpegBufferSize) {
-    auto sensorRes = dev->sensorResolution();
-
-    /* ~1.1 byte/px typical JPEG, use 2 byte/px for safety margin */
-    size_t jpegBuf = sensorRes.width * sensorRes.height * 2 + sizeof(camera3_jpeg_blob);
-    jpegBuf = (jpegBuf + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
-    *jpegBufferSize = jpegBuf;
-    const int32_t jpegMaxSize = (int32_t)jpegBuf;
+/* JPEG buffer sizing + thumbnail options. */
+void writeJpegInfo(CameraMetadata &cm, const Capability &cap) {
+    const int32_t jpegMaxSize = (int32_t)cap.jpeg.maxSize;
     cm.update(ANDROID_JPEG_MAX_SIZE, &jpegMaxSize, 1);
 
-    /* (0,0) for no thumbnail, then 16:9 and 4:3 — the aspect ratios
-     * of the output sizes. JpegEncoder crops the snapshot's centre to
-     * the requested aspect and embeds the thumbnail in EXIF IFD1. */
-    static const int32_t jpegAvailableThumbnailSizes[] = {
-        0, 0,
-        320, 180,
-        320, 240
-    };
-    cm.update(ANDROID_JPEG_AVAILABLE_THUMBNAIL_SIZES, jpegAvailableThumbnailSizes, NELEM(jpegAvailableThumbnailSizes));
+    std::vector<int32_t> thumbnailSizes;
+    for (const auto &t : cap.jpeg.thumbnailSizes)
+        thumbnailSizes.insert(thumbnailSizes.end(), {(int32_t)t.width, (int32_t)t.height});
+    cm.update(ANDROID_JPEG_AVAILABLE_THUMBNAIL_SIZES, thumbnailSizes.data(), thumbnailSizes.size());
 }
 
-/* Declared sensor operating ranges — exposure time + ISO sensitivity,
- * sourced from the V4L2 driver's queryctrl. No fallback constants:
- * if the driver can't answer the sensor ranges then nothing else in
- * this HAL works, and a wrong value advertised here would just lie to
- * apps about what the slider should offer. Both keys get skipped and
- * the framework will reject the HAL — that's the right outcome,
- * surface the breakage instead of papering over it.
- *
- * Gain↔ISO conversion goes through SensorConfig::gainToIso so the
- * sensor's gainUnit (Q8 today, could differ on a future module) and
- * the Camera2 ISO-at-unity anchor live in one place. */
-void writeSensorRanges(CameraMetadata &cm, V4l2Device *dev,
-                        const SensorConfig &cfg) {
-    int32_t expMinUs = 0, expMaxUs = 0, expDefUs = 0;
-    if (!dev->queryControl(V4L2_CID_EXPOSURE, &expMinUs, &expMaxUs, &expDefUs)) {
-        ALOGE("writeSensorRanges: V4L2_CID_EXPOSURE query failed — "
-              "EXPOSURE_TIME_RANGE will be missing from characteristics");
-        return;
+/* Declared sensor operating ranges -- exposure time + ISO sensitivity,
+ * as the driver reported them. A range the driver could not give is
+ * left out, and the framework will reject the HAL: surfacing the
+ * breakage rather than lying about what a slider should offer. The
+ * gain is pure analog on these sensors, so its maximum is the analog
+ * maximum too. */
+void writeSensorRanges(CameraMetadata &cm, const Capability &cap) {
+    if (cap.sensor.exposureMaxNs > 0) {
+        const int64_t range[] = { cap.sensor.exposureMinNs, cap.sensor.exposureMaxNs };
+        cm.update(ANDROID_SENSOR_INFO_EXPOSURE_TIME_RANGE, range, NELEM(range));
     }
-
-    int32_t gMin = 0, gMax = 0, gDef = 0;
-    if (!dev->queryControl(V4L2_CID_GAIN, &gMin, &gMax, &gDef)) {
-        ALOGE("writeSensorRanges: V4L2_CID_GAIN query failed — "
-              "SENSITIVITY_RANGE will be missing from characteristics");
-        return;
+    if (cap.sensor.sensitivityMaxIso > 0) {
+        const int32_t range[] = { cap.sensor.sensitivityMinIso, cap.sensor.sensitivityMaxIso };
+        cm.update(ANDROID_SENSOR_INFO_SENSITIVITY_RANGE, range, NELEM(range));
+        const int32_t maxAnalog = cap.sensor.sensitivityMaxIso;
+        cm.update(ANDROID_SENSOR_MAX_ANALOG_SENSITIVITY, &maxAnalog, 1);
     }
-
-    /* V4L2_CID_EXPOSURE returns microseconds; metadata wants ns. */
-    const int64_t sensorExposureTimeRange[] = {
-        (int64_t)expMinUs * 1000LL,
-        (int64_t)expMaxUs * 1000LL,
-    };
-    cm.update(ANDROID_SENSOR_INFO_EXPOSURE_TIME_RANGE,
-              sensorExposureTimeRange, NELEM(sensorExposureTimeRange));
-
-    /* V4L2_CID_GAIN on these sensors is pure analog gain — advertise
-     * the driver-reported max as MAX_ANALOG too. */
-    int32_t isoMin = cfg.gainToIso(gMin);
-    int32_t isoMax = cfg.gainToIso(gMax);
-    if (isoMin < 1) isoMin = 1;
-    const int32_t sensorSensitivityRange[] = { isoMin, isoMax };
-    cm.update(ANDROID_SENSOR_INFO_SENSITIVITY_RANGE,
-              sensorSensitivityRange, NELEM(sensorSensitivityRange));
-
-    const int32_t sensorMaxAnalogSensitivity = isoMax;
-    cm.update(ANDROID_SENSOR_MAX_ANALOG_SENSITIVITY,
-              &sensorMaxAnalogSensitivity, 1);
 }
 
-/* AE_AVAILABLE_TARGET_FPS_RANGES from VIDIOC_ENUM_FRAMEINTERVALS.
- *
- * For every FPS value the driver advertises across any supported
- * resolution, emit a constant-rate range `[fps, fps]` plus a variable
- * range `[kFpsLowerFloor, fps]` that lets AE drop the rate in low
- * light up to `fps`. Both forms are required by camera2 apps:
- * constants for video / ZSL, variable for preview AE flexibility.
- *
- * Falls back to {[15, 30], [30, 30]} if the driver reports no
- * intervals — same as the pre-honest hardcoded list, minus the
- * useless [15, 15] entry. Capped at `kFpsMaxRanges` pairs to bound
- * the metadata blob size when a sensor advertises many discrete
- * rates. */
-constexpr int32_t kFpsLowerFloor = 15;
-constexpr size_t  kFpsMaxRanges  = 16;
-
-void writeAvailableFpsRanges(CameraMetadata &cm, V4l2Device *dev) {
-    const Vector<int32_t> &fpsList = dev->availableFps();
-
-    int32_t ranges[kFpsMaxRanges * 2];
-    size_t  count  = 0;
-
-    auto emit = [&](int32_t lo, int32_t hi) {
-        if (count >= kFpsMaxRanges) return;
-        ranges[2 * count + 0] = lo;
-        ranges[2 * count + 1] = hi;
-        ++count;
-    };
-
-    if (fpsList.isEmpty()) {
-        emit(kFpsLowerFloor, 30);
-        emit(30, 30);
-    } else {
-        for (size_t i = 0; i < fpsList.size(); ++i) {
-            int32_t fps = fpsList[i];
-            if (fps > kFpsLowerFloor) emit(kFpsLowerFloor, fps);
-            emit(fps, fps);
-        }
-    }
-
-    cm.update(ANDROID_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES, ranges,
-              count * 2);
+void writeAvailableFpsRanges(CameraMetadata &cm, const Capability &cap) {
+    std::vector<int32_t> ranges;
+    for (const auto &r : cap.ae.targetFpsRanges)
+        ranges.insert(ranges.end(), {r.min, r.max});
+    cm.update(ANDROID_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES, ranges.data(), ranges.size());
 }
 
 /* 3A capabilities + feature flags (flash, stats, scene modes, effects,
  * stabilization). Everything that tells the framework "what we support"
  * outside of resolutions/ranges. */
-void writeControlInfo(CameraMetadata &cm, int facing,
-                      const SensorTuning *tuning) {
+void writeControlInfo(CameraMetadata &cm, const Capability &cap) {
     static const uint8_t flashInfoAvailable = ANDROID_FLASH_INFO_AVAILABLE_FALSE;
     cm.update(ANDROID_FLASH_INFO_AVAILABLE, &flashInfoAvailable, 1);
 
@@ -360,85 +196,36 @@ void writeControlInfo(CameraMetadata &cm, int facing,
     };
     cm.update(ANDROID_CONTROL_AVAILABLE_EFFECTS, controlAvailableEffects, NELEM(controlAvailableEffects));
 
-    static const int32_t controlMaxRegions[] = {
-        0, /* AE */
-        0, /* AWB */
-        1  /* AF — single region for tap-to-focus */
+    const int32_t controlMaxRegions[] = {
+        0,                  /* AE  */
+        0,                  /* AWB */
+        cap.af.maxRegions   /* AF -- tap-to-focus */
     };
     cm.update(ANDROID_CONTROL_MAX_REGIONS, controlMaxRegions, NELEM(controlMaxRegions));
 
-    /* ON: the IPA's auto exposure. OFF: the request's own exposure
-     * time / sensitivity (the manual path in ApplySettingsStage). */
-    static const uint8_t controlAeAvailableModes[] = {
-            ANDROID_CONTROL_AE_MODE_OFF,
-            ANDROID_CONTROL_AE_MODE_ON,
+    std::vector<uint8_t> aeModes;
+    for (AeMode m : cap.ae.modes) aeModes.push_back((uint8_t)m);
+    cm.update(ANDROID_CONTROL_AE_AVAILABLE_MODES, aeModes.data(), aeModes.size());
+
+    const camera_metadata_rational evStep = {
+        cap.ae.evStep.numerator, cap.ae.evStep.denominator
     };
-    cm.update(ANDROID_CONTROL_AE_AVAILABLE_MODES, controlAeAvailableModes, NELEM(controlAeAvailableModes));
-
-    static const camera_metadata_rational controlAeCompensationStep = {1, 3};
-    cm.update(ANDROID_CONTROL_AE_COMPENSATION_STEP, &controlAeCompensationStep, 1);
-
-    int32_t controlAeCompensationRange[] = {-9, 9};
-    cm.update(ANDROID_CONTROL_AE_COMPENSATION_RANGE, controlAeCompensationRange, NELEM(controlAeCompensationRange));
+    cm.update(ANDROID_CONTROL_AE_COMPENSATION_STEP, &evStep, 1);
+    const int32_t evRange[] = { cap.ae.evMinSteps, cap.ae.evMaxSteps };
+    cm.update(ANDROID_CONTROL_AE_COMPENSATION_RANGE, evRange, NELEM(evRange));
 
     static const uint8_t controlAeAvailableAntibandingModes[] = {
             ANDROID_CONTROL_AE_ANTIBANDING_MODE_OFF
     };
     cm.update(ANDROID_CONTROL_AE_AVAILABLE_ANTIBANDING_MODES, controlAeAvailableAntibandingModes, NELEM(controlAeAvailableAntibandingModes));
 
-    /* AUTO + OFF are always advertised — every Awb impl honours them
-     * (AUTO via the per-tick search / gray-world, OFF via
-     * applyManualGains or last-held). Manual presets (INCANDESCENT
-     * / DAYLIGHT / …) require the per-sensor bayes block to be
-     * loaded with a `modes` map — only the Bayesian impl interprets
-     * them via CT-range clipping; gray-world has no preset support
-     * and silently behaves as AUTO if asked, which would break the
-     * Camera2 contract apps expect when they pick a preset. So we
-     * gate the extra entries on bayes presence + a non-empty modes
-     * block. Sensors on gray-world keep the AUTO/OFF-only list. */
-    std::vector<uint8_t> controlAwbAvailableModes;
-    controlAwbAvailableModes.push_back(ANDROID_CONTROL_AWB_MODE_AUTO);
-    controlAwbAvailableModes.push_back(ANDROID_CONTROL_AWB_MODE_OFF);
-    if (tuning
-     && tuning->awbAlgorithm() == SensorTuning::AwbAlgorithm::Bayes
-     && tuning->bayesParams() && !tuning->bayesParams()->modes.empty()) {
-        const auto &modes = tuning->bayesParams()->modes;
-        auto have = [&modes](const char *name) -> bool {
-            for (size_t i = 0; i < modes.size(); ++i)
-                if (modes[i].first == name) return true;
-            return false;
-        };
-        if (have("INCANDESCENT"))
-            controlAwbAvailableModes.push_back(ANDROID_CONTROL_AWB_MODE_INCANDESCENT);
-        if (have("FLUORESCENT"))
-            controlAwbAvailableModes.push_back(ANDROID_CONTROL_AWB_MODE_FLUORESCENT);
-        if (have("WARM_FLUORESCENT"))
-            controlAwbAvailableModes.push_back(ANDROID_CONTROL_AWB_MODE_WARM_FLUORESCENT);
-        if (have("DAYLIGHT"))
-            controlAwbAvailableModes.push_back(ANDROID_CONTROL_AWB_MODE_DAYLIGHT);
-        if (have("CLOUDY_DAYLIGHT"))
-            controlAwbAvailableModes.push_back(ANDROID_CONTROL_AWB_MODE_CLOUDY_DAYLIGHT);
-        if (have("TWILIGHT"))
-            controlAwbAvailableModes.push_back(ANDROID_CONTROL_AWB_MODE_TWILIGHT);
-        if (have("SHADE"))
-            controlAwbAvailableModes.push_back(ANDROID_CONTROL_AWB_MODE_SHADE);
-    }
-    cm.update(ANDROID_CONTROL_AWB_AVAILABLE_MODES,
-              controlAwbAvailableModes.data(),
-              controlAwbAvailableModes.size());
+    std::vector<uint8_t> awbModes;
+    for (AwbMode m : cap.awb.modes) awbModes.push_back((uint8_t)m);
+    cm.update(ANDROID_CONTROL_AWB_AVAILABLE_MODES, awbModes.data(), awbModes.size());
 
-    if (facing == CAMERA_FACING_BACK) {
-        uint8_t controlAfAvailableModes[] = {
-            ANDROID_CONTROL_AF_MODE_OFF,
-            ANDROID_CONTROL_AF_MODE_AUTO,
-            ANDROID_CONTROL_AF_MODE_MACRO,
-            ANDROID_CONTROL_AF_MODE_CONTINUOUS_PICTURE,
-        };
-        cm.update(ANDROID_CONTROL_AF_AVAILABLE_MODES, controlAfAvailableModes, NELEM(controlAfAvailableModes));
-    } else {
-        uint8_t controlAfAvailableModes[] = { ANDROID_CONTROL_AF_MODE_OFF };
-        cm.update(ANDROID_CONTROL_AF_AVAILABLE_MODES, controlAfAvailableModes, 1);
-    }
+    std::vector<uint8_t> afModes;
+    for (AfMode m : cap.af.modes) afModes.push_back((uint8_t)m);
+    cm.update(ANDROID_CONTROL_AF_AVAILABLE_MODES, afModes.data(), afModes.size());
 
     static const uint8_t controlAvailableVideoStabilizationModes[] = {
             ANDROID_CONTROL_VIDEO_STABILIZATION_MODE_OFF
@@ -528,7 +315,7 @@ void writeStageAvailableModes(CameraMetadata &cm) {
  * same reason. APERTURE / FILTER_DENSITIES are single-element
  * arrays with sensible defaults — apps iterate length so empty
  * arrays would crash. */
-void writeLensCalibration(CameraMetadata &cm, const SensorTuning *tuning) {
+void writeLensCalibration(CameraMetadata &cm, const Capability &cap) {
     static const float lensInfoHyperfocalDistance = 0.0f;
     cm.update(ANDROID_LENS_INFO_HYPERFOCAL_DISTANCE,
               &lensInfoHyperfocalDistance, 1);
@@ -538,7 +325,7 @@ void writeLensCalibration(CameraMetadata &cm, const SensorTuning *tuning) {
     cm.update(ANDROID_LENS_INFO_FOCUS_DISTANCE_CALIBRATION,
               &lensInfoFocusDistanceCalibration, 1);
 
-    static const float lensInfoAvailableApertures[] = { 2.0f };
+    const float lensInfoAvailableApertures[] = { cap.lens.aperture };
     cm.update(ANDROID_LENS_INFO_AVAILABLE_APERTURES,
               lensInfoAvailableApertures, NELEM(lensInfoAvailableApertures));
 
@@ -552,25 +339,18 @@ void writeLensCalibration(CameraMetadata &cm, const SensorTuning *tuning) {
     cm.update(ANDROID_SENSOR_INFO_TIMESTAMP_SOURCE,
               &sensorInfoTimestampSource, 1);
 
-    /* Map the tuning's bayer_pattern string to the camera2 enum. */
-    uint8_t cfa = ANDROID_SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_RGGB;
-    if (tuning && tuning->isLoaded()) {
-        const char *p = tuning->bayerPattern();
-        if      (strcmp(p, "RGGB") == 0) cfa = ANDROID_SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_RGGB;
-        else if (strcmp(p, "GRBG") == 0) cfa = ANDROID_SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_GRBG;
-        else if (strcmp(p, "GBRG") == 0) cfa = ANDROID_SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_GBRG;
-        else if (strcmp(p, "BGGR") == 0) cfa = ANDROID_SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_BGGR;
-    }
+    const uint8_t cfa = (uint8_t)cap.sensor.cfa;
     cm.update(ANDROID_SENSOR_INFO_COLOR_FILTER_ARRANGEMENT, &cfa, 1);
 }
 
 /* HAL capability level + request-pipeline shape. Both constants go up
  * once the request-queue refactor (Tier 3) lands. */
-void writeHalInfo(CameraMetadata &cm) {
+void writeHalInfo(CameraMetadata &cm, const Capability &cap) {
     const uint8_t infoSupportedHardwareLevel = ANDROID_INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED;
     cm.update(ANDROID_INFO_SUPPORTED_HARDWARE_LEVEL, &infoSupportedHardwareLevel, 1);
 
-    cm.update(ANDROID_REQUEST_PIPELINE_MAX_DEPTH,   &kPipelineMaxDepth,   1);
+    const uint8_t pipelineMaxDepth = (uint8_t)cap.pipelineMaxDepth;
+    cm.update(ANDROID_REQUEST_PIPELINE_MAX_DEPTH,   &pipelineMaxDepth,    1);
     cm.update(ANDROID_REQUEST_PARTIAL_RESULT_COUNT, &kPartialResultCount, 1);
 
     /* Capability sets the HAL implements. BACKWARD_COMPATIBLE is the
@@ -601,8 +381,8 @@ void writeHalInfo(CameraMetadata &cm) {
      * by symbol presence so the same TU compiles against either. */
 #ifdef ANDROID_REQUEST_MAX_NUM_OUTPUT_RAW
     static const int32_t maxOutputRaw      = 0;
-    static const int32_t maxOutputProc     = 2;
-    static const int32_t maxOutputStalling = 1;
+    const int32_t maxOutputProc     = cap.maxProcessedOutputs;
+    const int32_t maxOutputStalling = cap.maxStallingOutputs;
     cm.update(ANDROID_REQUEST_MAX_NUM_OUTPUT_RAW,
               &maxOutputRaw,      1);
     cm.update(ANDROID_REQUEST_MAX_NUM_OUTPUT_PROC,
@@ -610,10 +390,10 @@ void writeHalInfo(CameraMetadata &cm) {
     cm.update(ANDROID_REQUEST_MAX_NUM_OUTPUT_PROC_STALLING,
               &maxOutputStalling, 1);
 #else
-    static const int32_t maxOutputStreams[] = {
-        0, /* RAW                  */
-        2, /* PROCESSED             */
-        1, /* PROCESSED_STALLING    */
+    const int32_t maxOutputStreams[] = {
+        0,                        /* RAW                */
+        cap.maxProcessedOutputs,  /* PROCESSED          */
+        cap.maxStallingOutputs,   /* PROCESSED_STALLING */
     };
     cm.update(ANDROID_REQUEST_MAX_NUM_OUTPUT_STREAMS,
               maxOutputStreams, NELEM(maxOutputStreams));
@@ -822,20 +602,17 @@ void writeAvailableKeys(CameraMetadata &cm) {
 
 } /* namespace */
 
-camera_metadata_t *CameraStaticMetadata::build(V4l2Device *dev, int facing,
-                                                const SensorTuning *tuning,
-                                                const SensorConfig &sensorCfg,
-                                                size_t *jpegBufferSize) {
+camera_metadata_t *CameraStaticMetadata::build(const Capability &cap) {
     CameraMetadata cm;
-    writeSensorInfo         (cm, dev, tuning, facing, sensorCfg);
-    writeScalerConfigs      (cm, dev);
-    writeJpegInfo           (cm, dev, jpegBufferSize);
-    writeSensorRanges       (cm, dev, sensorCfg);
-    writeAvailableFpsRanges (cm, dev);
-    writeControlInfo        (cm, facing, tuning);
+    writeSensorInfo         (cm, cap);
+    writeScalerConfigs      (cm, cap);
+    writeJpegInfo           (cm, cap);
+    writeSensorRanges       (cm, cap);
+    writeAvailableFpsRanges (cm, cap);
+    writeControlInfo        (cm, cap);
     writeStageAvailableModes(cm);
-    writeLensCalibration    (cm, tuning);
-    writeHalInfo            (cm);
+    writeLensCalibration    (cm, cap);
+    writeHalInfo            (cm, cap);
     writeAvailableKeys      (cm);
     return cm.release();
 }

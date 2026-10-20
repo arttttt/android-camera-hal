@@ -71,6 +71,7 @@ LOCAL_C_INCLUDES += \
     $(LOCAL_PATH)/core/engine \
     $(LOCAL_PATH)/core/engines \
     $(LOCAL_PATH)/core/pipeline \
+    $(LOCAL_PATH)/core/session \
     $(LOCAL_PATH)/hal \
     $(LOCAL_PATH)/hal/ipa \
     $(LOCAL_PATH)/hal/pipeline \
@@ -91,6 +92,7 @@ LOCAL_SRC_FILES += \
     core/engines/StatsEngine.cpp \
     core/pipeline/Frame.cpp \
     core/pipeline/FrameRegistry.cpp \
+    core/session/CapabilityProbe.cpp \
     hal/HalModule.cpp \
     hal/Camera.cpp \
     hal/Camera3GrallocPort.cpp \

@@ -49,6 +49,7 @@
 #include "V4l2Source.h"
 #include "Camera3Request.h"
 #include "Camera3ResultSink.h"
+#include "CapabilityProbe.h"
 #include "pipeline/Pipeline.h"
 #include "pipeline/DeviceErrorReporter.h"
 #include "pipeline/stages/ApplySettingsStage.h"
@@ -261,10 +262,18 @@ int Camera::closeDevice() {
 camera_metadata_t *Camera::staticCharacteristics() {
     if(mStaticCharacteristics)
         return mStaticCharacteristics;
-    mStaticCharacteristics = CameraStaticMetadata::build(mDev, mFacing, &mTuning,
-                                                          mSensorCfg,
-                                                          &mJpegBufferSize);
+    mStaticCharacteristics = CameraStaticMetadata::build(capability());
     return mStaticCharacteristics;
+}
+
+const mocha::camera::Capability &Camera::capability() {
+    if (!mCapabilityProbed) {
+        mCapability = mocha::camera::probeCapability(
+                *mDev, mFacing == CAMERA_FACING_FRONT, &mTuning, mSensorCfg);
+        mJpegBufferSize   = mCapability.jpeg.maxSize;
+        mCapabilityProbed = true;
+    }
+    return mCapability;
 }
 
 int Camera::initialize(const camera3_callback_ops_t *callbackOps) {
@@ -288,7 +297,7 @@ const camera_metadata_t * Camera::constructDefaultRequestSettings(int type) {
 
     if(mDefaultRequestSettings[type])
         return mDefaultRequestSettings[type];
-    mDefaultRequestSettings[type] = RequestTemplateBuilder::build(type, mDev, mFacing);
+    mDefaultRequestSettings[type] = RequestTemplateBuilder::build(type, capability());
     return mDefaultRequestSettings[type];
 }
 
@@ -337,6 +346,15 @@ int Camera::configureStreams(camera3_stream_configuration_t *streamList) {
             spec.height = s->height;
             if (!toPixelFormat(s->format, &spec.format)) {
                 ALOGE("configureStreams: stream %zu format 0x%x not produced", i, s->format);
+                return BAD_VALUE;
+            }
+            /* A YUV output is the capture itself: its encoder does not
+             * scale. Refused here rather than failing every frame. */
+            if (spec.format == mocha::camera::PixelFormat::Ycbcr420 &&
+                capability().yuvAtCaptureSizeOnly &&
+                (spec.width != width || spec.height != height)) {
+                ALOGE("configureStreams: YUV stream %zu is %ux%u, the capture %ux%u",
+                      i, spec.width, spec.height, width, height);
                 return BAD_VALUE;
             }
             streams.emplace_back(s, spec);
@@ -644,7 +662,7 @@ void Camera::buildInfrastructure() {
 
     {
         Ipa3A *ipa = new Ipa3A(mSensorCfg, mIsp, mAf, &mTuning,
-                               wbGainPrior, mCcmQ10, mCapability.ae.evStep);
+                               wbGainPrior, mCcmQ10, capability().ae.evStep);
         /* The one place the lens is moved from: AF decides, the IPA
          * coordinator writes, on the IPA's own thread. */
         V4l2Device *dev = mDev;
@@ -692,7 +710,7 @@ void Camera::buildInfrastructure() {
         d.af              = mAf;
         d.sensorCfg       = &mSensorCfg;
         d.delayedControls = mDelayedControls.get();
-        d.evStep          = mCapability.ae.evStep;
+        d.evStep          = capability().ae.evStep;
         mApplySettingsStage = new ApplySettingsStage(d);
         mSettingsPipeline->appendStage(
             std::unique_ptr<PipelineStage>(mApplySettingsStage));

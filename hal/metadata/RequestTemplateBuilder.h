@@ -3,21 +3,20 @@
 
 #include <system/camera_metadata.h>
 
-namespace android {
+#include "mochacamera/Capability.h"
 
-class V4l2Device;
+namespace android {
 
 /* Builds the default capture request metadata for a given Camera3
  * template (CAMERA3_TEMPLATE_*). Stateless — called once per template
  * type and the result cached by the caller.
  *
- * The template is parameterised by the sensor's active array size
- * (for initial crop / AE-AWB-AF region defaults) and the camera
- * facing (the default AF mode differs between the fixed-focus front
- * lens and the VCM-driven back lens). */
+ * The template is parameterised by the capability: the active array
+ * (initial crop / AE-AWB-AF region defaults) and the AF modes (Auto
+ * where the lens moves, Off for a fixed lens). */
 class RequestTemplateBuilder {
 public:
-    static camera_metadata_t *build(int type, V4l2Device *dev, int facing);
+    static camera_metadata_t *build(int type, const mocha::camera::Capability &cap);
 };
 
 }; /* namespace android */

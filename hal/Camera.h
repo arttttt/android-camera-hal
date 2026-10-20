@@ -100,8 +100,10 @@ private:
     Mutex mMutex;
 
     /* What the camera can do; the static metadata, the templates and
-     * the stream checks read it. */
+     * the stream checks read it. Probed on first use. */
     mocha::camera::Capability                     mCapability;
+    bool                                          mCapabilityProbed = false;
+    const mocha::camera::Capability &capability();
     /* The core's results, to the framework. */
     std::unique_ptr<Camera3ResultSink>            mResultSink;
     Camera3GrallocPort                            mGralloc;
