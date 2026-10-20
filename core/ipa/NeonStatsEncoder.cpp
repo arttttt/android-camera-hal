@@ -97,7 +97,6 @@ void NeonStatsEncoder::computeRange(const void     *bayer,
                                      unsigned        width,
                                      unsigned        height,
                                      uint32_t        pixFmt,
-                                     uint32_t        blackLevel,
                                      const FocusRoi &focusRoi,
                                      Partial        *partial,
                                      int             pyStart,
@@ -337,7 +336,7 @@ void NeonStatsEncoder::compute(const void     *bayer,
                                 IpaStats       *out) const {
     Partial partial;
     resetPartial(&partial);
-    computeRange(bayer, width, height, pixFmt, blackLevel, focusRoi,
+    computeRange(bayer, width, height, pixFmt, focusRoi,
                  &partial, 0, IpaStats::PATCH_Y);
     finalize(partial, pixFmt, blackLevel, out);
 }

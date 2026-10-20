@@ -50,7 +50,7 @@ SensorTuning::SensorTuning()
     : mLoaded(false)
     , mHasAf(false)
     , mModule{{0.0f, 0.0f}, 0.0f, 0.0f, 0}
-    , mAf{0, 0, 0, 0, 0, 0, false}
+    , mAf{}
     , mOpticalBlack{0, 0, 0, 0}
     , mAwbRefs{0, 0, 0, 0} {}
 

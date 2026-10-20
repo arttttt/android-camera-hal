@@ -88,7 +88,7 @@ void StatsEngine::runPhase(Job &job) {
 
     const nsecs_t tNeon0 = systemTime();
     encoder.computeRange(cycle.data, cycle.width, cycle.height,
-                         cycle.pixFmt, blackLevel, cycle.focusRoi,
+                         cycle.pixFmt, cycle.focusRoi,
                          &partial, pyStart, pyEnd);
     const nsecs_t tNeon1 = systemTime();
 

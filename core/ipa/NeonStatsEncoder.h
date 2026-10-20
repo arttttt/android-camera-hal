@@ -104,13 +104,13 @@ public:
      * of calls is allowed provided the combined ranges cover
      * [0, PATCH_Y) exactly once before finalize(). `partial` must have
      * been zeroed by resetPartial() before the first call of a cycle;
-     * it is mutated in place. `blackLevel` and `focusRoi` must be the
-     * same across all calls within one cycle. */
+     * it is mutated in place. `focusRoi` must be the same across all
+     * calls within one cycle. The black level is finalize()'s: it is
+     * taken off the accumulated sums, not per sample. */
     void computeRange(const void     *bayer,
                       unsigned        width,
                       unsigned        height,
                       uint32_t        pixFmt,
-                      uint32_t        blackLevel,
                       const FocusRoi &focusRoi,
                       Partial        *partial,
                       int             pyStart,
