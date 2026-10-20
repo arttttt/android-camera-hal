@@ -517,9 +517,9 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
          * leaves whatever long manual exposure was in flight to drain
          * naturally — observable as "manual→auto takes seconds" in
          * preview. Detect the transition here and run the same in-HAL
-         * cancellation flush() does (mark tracker ctxs as
-         * ERROR_REQUEST + nudge the bayer source). The new request
-         * itself proceeds normally past this point. */
+         * cancellation flush() does (cancel tracker ctxs + nudge the
+         * bayer source). The new request itself proceeds normally
+         * past this point. */
         uint8_t curAeMode = ANDROID_CONTROL_AE_MODE_ON;
         if (ctx->request.settings.exists(ANDROID_CONTROL_AE_MODE)) {
             curAeMode = *ctx->request.settings.find(ANDROID_CONTROL_AE_MODE).data.u8;
@@ -527,7 +527,7 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
         if (mLastAeMode != 0xff && curAeMode != mLastAeMode) {
             ALOGD("processCaptureRequest: AE_MODE %u→%u, cancelling in-flight",
                   (unsigned)mLastAeMode, (unsigned)curAeMode);
-            if (mTracker)     mTracker->markAllAsError(CAMERA3_MSG_ERROR_REQUEST);
+            if (mTracker)     mTracker->cancelAll();
             if (mBayerSource) mBayerSource->notifyForAbort();
         }
         mLastAeMode = curAeMode;
@@ -804,7 +804,7 @@ void Camera::errorCompletePendingRequests() {
     auto pending = mTracker->drainAll();
     for (auto &ctx : pending) {
         if (!ctx) continue;
-        ctx->errorCode = CAMERA3_MSG_ERROR_REQUEST;
+        ctx->status.cancel();
         mResultDispatchStage->process(*ctx);
     }
 }
@@ -821,8 +821,8 @@ void Camera::stopWorkers() {
      *    the tracker for closeDevice's drainAll.
      * 4. PipelineThread join: stopFd wakes the poll; threadLoop's
      *    tail drains in-flight contexts and pushes JPEG jobs to
-     *    JpegWorker + ctxs to ResultThread (with errorCode set on
-     *    stop-drained ctxs).
+     *    JpegWorker + ctxs to ResultThread (stop-drained ctxs
+     *    cancelled).
      * 5. JpegWorker join: drains its queue, encodes any remaining
      *    BLOBs, decrements jpegPending so ResultThread can release
      *    them. Stopping after PipelineThread guarantees no new jobs
@@ -997,24 +997,24 @@ int Camera::flush() {
     const size_t inFlightCount = mTracker ? mTracker->count() : 0;
     ALOGD("flush: inFlight=%zu", inFlightCount);
 
-    /* Camera3 spec: must return ASAP. The HAL marks in-flight
-     * requests as ERROR_REQUEST and lets the workers drain them
-     * asynchronously; tearing the pipeline down would itself cost
-     * the seconds we're trying to save.
+    /* Camera3 spec: must return ASAP. The HAL cancels in-flight
+     * requests and lets the workers drain them asynchronously;
+     * tearing the pipeline down would itself cost the seconds we're
+     * trying to save.
      *
-     * markAllAsError sets ctx.errorCode on every tracked context;
-     * pipeline stages check the flag at entry and short-circuit to
-     * ResultDispatch, which emits notify(ERROR_REQUEST) and releases
-     * the framework's output buffers. notifyForAbort wakes any
-     * RequestThread blocked inside CaptureStage::acquireNextFrame
-     * waiting on a long manual exposure — the abortCheck callback
-     * registered there sees ctx.errorCode and the acquire returns
-     * null instead of holding the pipeline another frame period.
+     * cancelAll cancels every tracked context (one that already
+     * failed keeps its failure); pipeline stages check the status at
+     * entry and short-circuit to ResultDispatch, which emits
+     * notify(ERROR_REQUEST). notifyForAbort wakes any RequestThread
+     * blocked inside CaptureStage::acquireNextFrame waiting on a long
+     * manual exposure — the abortCheck callback registered there sees
+     * the status and the acquire returns null instead of holding the
+     * pipeline another frame period.
      *
      * The in-flight V4L2 capture finishes naturally; we don't
      * STREAMOFF here. The next process_capture_request after flush
      * acquires the following bayer normally. */
-    if (mTracker)     mTracker->markAllAsError(CAMERA3_MSG_ERROR_REQUEST);
+    if (mTracker)     mTracker->cancelAll();
     if (mBayerSource) mBayerSource->notifyForAbort();
     return OK;
 }

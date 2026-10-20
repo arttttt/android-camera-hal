@@ -4,7 +4,6 @@
 #include <errno.h>
 #include <poll.h>
 
-#include <hardware/camera3.h>
 #include <utils/Log.h>
 
 #include "PipelineStage.h"
@@ -35,10 +34,10 @@ void ResultThread::completeCtx(PipelineContext *ctx) {
 }
 
 bool ResultThread::isCtxReady(const PipelineContext *ctx) const {
-    /* Errored ctxs dispatch immediately as ERROR_REQUEST regardless of
-     * pending JPEG work — JpegWorker's queue won't carry their jobs
-     * because PipelineThread releases the snapshots locally on error. */
-    if (ctx->errorCode) return true;
+    /* Ready once every JPEG job posted for it has come back, whatever
+     * the status. A ctx that failed before PipelineThread posted jobs
+     * has none; one cancelled after has jobs JpegWorker still holds a
+     * raw pointer to the ctx for, and dispatch destroys the ctx. */
     return ctx->jpegPending.load(std::memory_order_acquire) == 0;
 }
 
@@ -88,12 +87,12 @@ void ResultThread::threadLoop() {
     drainQueueIntoPending();
     dispatchReadyPrefix();
     /* Anything still pending at this point: snapshot encode never
-     * completed (e.g. JpegWorker errored). Mark the ctx as
-     * ERROR_REQUEST and dispatch so framework buffers return. */
+     * completed (e.g. JpegWorker errored). Cancel the ctx and dispatch
+     * so framework buffers return. */
     while (!pending.empty()) {
         PipelineContext *ctx = pending.front();
         pending.pop_front();
-        if (ctx->errorCode == 0) ctx->errorCode = CAMERA3_MSG_ERROR_REQUEST;
+        ctx->status.cancel();
         completeCtx(ctx);
     }
 }

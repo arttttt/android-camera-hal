@@ -7,7 +7,7 @@ struct PipelineContext;
 
 /* Abstract work unit executed by a Pipeline against a PipelineContext.
  *
- * A stage sets context.errorCode to non-zero to abort the frame; the
+ * A stage fails context.status to abort the frame; the
  * Pipeline then skips remaining non-alwaysRun stages. alwaysRun()
  * reports true for stages that must execute even in the error path
  * (primarily ResultDispatchStage, which must always signal the

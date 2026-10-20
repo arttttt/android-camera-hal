@@ -69,7 +69,7 @@ const V4l2Device::VBuffer* V4l2Source::acquireNextFrame(
 
 void V4l2Source::notifyForAbort() {
     /* No state to flip — the caller has already set whatever flag the
-     * abortCheck callback inspects (e.g. ctx.errorCode). All we need
+     * abortCheck callback inspects (e.g. ctx.status). All we need
      * is to wake the cv so blocked waiters re-evaluate the predicate. */
     frameReady.notify_all();
 }

@@ -195,7 +195,7 @@ void BufferProcessor::finalizeYuvOutput(const CaptureRequest::Buffer &outBuf,
 }
 
 void BufferProcessor::finalizeCpuOutputs(PipelineContext &ctx) {
-    if (ctx.errorCode) return;
+    if (!ctx.status.ok()) return;
     for (size_t i = 0; i < ctx.request.outputBuffers.size(); ++i) {
         const CaptureRequest::Buffer &ob = ctx.request.outputBuffers[i];
         if (ctx.outputStatuses[i] != CAMERA3_BUFFER_STATUS_OK) continue;

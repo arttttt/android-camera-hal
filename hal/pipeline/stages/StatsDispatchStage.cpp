@@ -15,7 +15,7 @@ StatsDispatchStage::StatsDispatchStage(const Deps &d) : deps(d) {}
 void StatsDispatchStage::process(PipelineContext &ctx) {
     if (!deps.isp || !deps.statsWorker || !deps.bayerSource) return;
     if (!ctx.bayerFrame) return;
-    if (ctx.errorCode)   return;
+    if (!ctx.status.ok()) return;
 
     /* Submit every frame. Temporal pacing lives inside StatsWorker: one
      * full IpaStats computation spans phaseCount submits, and each

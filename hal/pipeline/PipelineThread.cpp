@@ -72,14 +72,16 @@ void PipelineThread::completeCtx(PipelineContext *ctx) {
      * buffer is coherent) and the frame has not yet been returned to
      * the framework. Null when the infrastructure build opted out of
      * stats (e.g. CPU/GLES fallback backend). */
-    if (deps.statsProcess && !ctx->errorCode)
+    if (deps.statsProcess && ctx->status.ok())
         deps.statsProcess->process(*ctx);
 
     /* Count BLOB outputs whose snapshot was successfully captured.
      * On the error path no jobs are posted; release the snapshots so
-     * the ISP ring rotates. */
+     * the ISP ring rotates. A cancellation landing after this check
+     * still gets its jobs run: ResultThread waits for jpegPending
+     * whatever the status. */
     int blobCount = 0;
-    if (ctx->errorCode) {
+    if (!ctx->status.ok()) {
         if (deps.bufferProcessor)
             deps.bufferProcessor->releaseJpegSnapshots(*ctx);
     } else {
@@ -169,16 +171,16 @@ void PipelineThread::threadLoop() {
              * ApplySettings on bad metadata) skips straight to
              * dispatch. Its pendingFenceFds stay empty so the reap
              * pass below sees it as done immediately. */
-            if (!ctx->errorCode || deps.demosaicBlit->alwaysRun()) {
+            if (ctx->status.ok() || deps.demosaicBlit->alwaysRun()) {
                 deps.demosaicBlit->process(*ctx);
             }
             inFlight.push_back(ctx);
         }
 
-        /* Reap contexts in submission order. ResultDispatchStage is
-         * alwaysRun=true, so even an errored ctx with empty
-         * pendingFenceFds lands here and gets a ERROR_REQUEST
-         * notification out to the framework. */
+        /* Reap contexts in submission order. An errored ctx with
+         * empty pendingFenceFds is done at once and travels on to
+         * ResultThread like any other; ResultDispatchStage reports it
+         * as ERROR_REQUEST. */
         while (!inFlight.empty()) {
             PipelineContext *head = inFlight.front();
             if (!reapFences(head)) break;
@@ -188,13 +190,13 @@ void PipelineThread::threadLoop() {
     }
 
     /* Stop drain: blocking wait on each remaining ctx's fences with a
-     * per-fence timeout, then run ResultDispatch to complete them as
-     * errors (if not already set). Buffers flow back to the framework
-     * with CAMERA3_MSG_ERROR_REQUEST rather than leak. */
+     * per-fence timeout, then cancel them (a failed ctx keeps its
+     * failure) and hand them on, so ResultDispatch completes them as
+     * errors. */
     while (!inFlight.empty()) {
         PipelineContext *head = inFlight.front();
         drainFences(head, stopDrainTimeoutMs);
-        if (head->errorCode == 0) head->errorCode = CAMERA3_MSG_ERROR_REQUEST;
+        head->status.cancel();
         completeCtx(head);
         inFlight.pop_front();
     }

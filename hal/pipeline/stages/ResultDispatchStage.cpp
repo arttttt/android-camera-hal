@@ -37,7 +37,9 @@ void ResultDispatchStage::process(PipelineContext &ctx) {
     }
     ctx.pendingFenceFds.clear();
 
-    if (ctx.errorCode) {
+    /* A failed or cancelled frame is one complete failure to Camera3:
+     * the frontend's word for both is ERROR_REQUEST. */
+    if (!ctx.status.ok()) {
         if (ops) {
             camera3_notify_msg_t msg;
             msg.type = CAMERA3_MSG_ERROR;

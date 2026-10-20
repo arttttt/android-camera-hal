@@ -11,9 +11,9 @@ namespace android {
 struct PipelineContext;
 
 /* Ordered collection of stages executed on one thread against a
- * PipelineContext. Stages run in insertion order; if a stage sets
- * context.errorCode to non-zero, subsequent stages are skipped
- * unless they report alwaysRun()==true. */
+ * PipelineContext. Stages run in insertion order; once the context's
+ * status is no longer Ok (a stage failed it, or it was cancelled),
+ * subsequent stages are skipped unless they report alwaysRun()==true. */
 class Pipeline {
 public:
     Pipeline() = default;

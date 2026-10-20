@@ -8,6 +8,7 @@
 #include "CameraMetadataCompat.h"
 
 #include "CaptureRequest.h"
+#include "FrameStatus.h"
 #include "JpegSnapshot.h"
 #include "V4l2Device.h"
 
@@ -62,10 +63,10 @@ struct PipelineContext {
     int64_t tBayerDq;
     int64_t tResultSent;
 
-    /* Non-zero means this frame is being aborted. ResultDispatchStage
-     * (which runs even on error) emits notify(ERROR) + error-status
-     * buffers when this is set. */
-    int errorCode;
+    /* How the frame ends. Anything but Ok means it is being aborted:
+     * stages skip their work and ResultDispatchStage (which runs even
+     * then) reports the request as failed. */
+    FrameStatus status;
 
     /* Submit-level sync_fds from vkGetFenceFdKHR, one per GPU submit
      * issued for this context. The thread that drives DemosaicBlit
@@ -80,7 +81,8 @@ struct PipelineContext {
      *              number of BLOBs in the request just before posting
      *              jobs; JpegWorker decrements on each completion.
      *              ResultThread refuses to dispatch the ctx until it
-     *              hits 0.
+     *              hits 0, whatever the status: a job holds a raw
+     *              pointer to the ctx, and dispatch destroys it.
      *
      * Loaded by ResultThread, stored by PipelineThread + JpegWorker —
      * std::atomic guarantees the reader sees a coherent value without
@@ -94,7 +96,6 @@ struct PipelineContext {
           appliedExposureUs(0), appliedGain(0),
           aeConverged(false),
           tAccepted(0), tShutter(0), tBayerDq(0), tResultSent(0),
-          errorCode(0),
           jpegPending(0) {}
 
     PipelineContext(PipelineContext&&) = default;

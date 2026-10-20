@@ -22,19 +22,18 @@ void CaptureStage::process(PipelineContext &ctx) {
      * freshest Bayer and forward the context downstream; the GPU is
      * somebody else's problem.
      *
-     * Pass an abort callback that watches ctx.errorCode so flush() can
-     * unblock a long-exposure acquireNextFrame by setting errorCode on
-     * tracked ctxs and ringing notifyForAbort on the bayer source. */
-    if (ctx.errorCode != 0) return;
+     * Pass an abort callback that watches ctx.status so flush() can
+     * unblock a long-exposure acquireNextFrame by cancelling tracked
+     * ctxs and ringing notifyForAbort on the bayer source. */
+    if (!ctx.status.ok()) return;
     const V4l2Device::VBuffer *frame = deps.bayerSource->acquireNextFrame(
-        [&ctx] { return ctx.errorCode != 0; });
+        [&ctx] { return !ctx.status.ok(); });
     ctx.tBayerDq = systemTime();
 
     if (!frame) {
-        if (ctx.errorCode == 0) {
+        if (ctx.status.fail(NOT_ENOUGH_DATA)) {
             ALOGW("acquireNextFrame returned null for frame %u",
                   ctx.request.frameNumber);
-            ctx.errorCode = NOT_ENOUGH_DATA;
         }
         return;
     }

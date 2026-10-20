@@ -12,7 +12,7 @@ void Pipeline::appendStage(std::unique_ptr<PipelineStage> stage) {
 
 void Pipeline::run(PipelineContext &context) {
     for (auto &stage : stages) {
-        if (context.errorCode && !stage->alwaysRun()) continue;
+        if (!context.status.ok() && !stage->alwaysRun()) continue;
         stage->process(context);
     }
 }

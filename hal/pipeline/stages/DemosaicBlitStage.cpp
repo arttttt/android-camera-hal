@@ -47,7 +47,7 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
      * the same command buffer; endFrame submits the lot. */
     if (!deps.isp->beginFrame(res.width, res.height, fctx.pixFmt, fctx.frameSlotIdx)) {
         ALOGE("beginFrame failed for frame %u", ctx.request.frameNumber);
-        ctx.errorCode = NO_INIT;
+        ctx.status.fail(NO_INIT);
         ctx.outputNeedsFinalUnlock.assign(n, false);
         return;
     }
@@ -106,7 +106,7 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
                 }
             }
             ctx.outputNeedsFinalUnlock.assign(n, false);
-            ctx.errorCode = (int)e;
+            ctx.status.fail(e);
             /* Submit the partial recording anyway so slot fences end up in a
              * consistent state for the next frame; release fences for any
              * already-recorded blits get dropped above. */
@@ -135,7 +135,7 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
             }
         }
         ctx.outputNeedsFinalUnlock.assign(n, false);
-        ctx.errorCode = NO_INIT;
+        ctx.status.fail(NO_INIT);
         return;
     }
 
