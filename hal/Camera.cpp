@@ -555,6 +555,10 @@ int Camera::processCaptureRequest(camera3_capture_request_t *request) {
 
     PipelineContext *raw = ctx.get();
     mTracker->add(std::move(ctx));
+    /* A request arriving while flush() waits is cancelled like the
+     * ones in flight. flush sets mFlushing before cancelling the
+     * tracker, so a request added after that cancel sees the flag. */
+    if (mFlushing.load()) raw->status.cancel();
 
     if (!mRequestQueue->push(raw)) {
         /* Soft cap at REQUEST_QUEUE_CAPACITY (256) — this means the
@@ -1022,44 +1026,60 @@ void Camera::sDump(const camera3_device *device, int fd) {
 
 int Camera::flush() {
     DBGUTILS_AUTOLOGCALL(__func__);
-    Mutex::Autolock lock(mMutex);
 
-    const size_t inFlightCount = mTracker ? mTracker->count() : 0;
-    ALOGD("flush: inFlight=%zu", inFlightCount);
-
-    /* Camera3 spec: must return ASAP. The HAL cancels in-flight
-     * requests and lets the workers drain them asynchronously;
-     * tearing the pipeline down would itself cost the seconds we're
-     * trying to save.
+    /* camera3.h: return only once the HAL holds no more requests or
+     * buffers, and as soon as possible. The HAL cancels the requests
+     * in flight and lets the workers drain them; tearing the pipeline
+     * down would itself cost the seconds we're trying to save.
      *
      * cancelInFlight cancels every tracked context (one that already
-     * failed or was committed keeps its outcome); pipeline stages check the status at
-     * entry and short-circuit to ResultDispatch, which emits
-     * notify(ERROR_REQUEST) and returns the framework's output buffers
-     * in error. notifyForAbort wakes any RequestThread
+     * failed or was committed keeps its outcome); pipeline stages
+     * check the status at entry and short-circuit to ResultDispatch,
+     * which emits notify(ERROR_REQUEST) and returns the framework's
+     * output buffers in error. Committed frames, too late to cancel,
+     * complete normally. notifyForAbort wakes any RequestThread
      * blocked inside CaptureStage::acquireNextFrame waiting on a long
      * manual exposure — the abortCheck callback registered there sees
      * the status and the acquire returns null instead of holding the
      * pipeline another frame period.
      *
+     * The wait runs without mMutex: process_capture_request may be
+     * called while flush is in progress and must return quickly. A
+     * request arriving then is cancelled like the ones in flight
+     * (mFlushing, see processCaptureRequest).
+     *
      * The in-flight V4L2 capture finishes naturally; we don't
      * STREAMOFF here. The next process_capture_request after flush
      * acquires the following bayer normally. */
-    cancelInFlight([](const PipelineContext &) { return true; });
+    InFlightTracker *tracker = nullptr;
+    {
+        Mutex::Autolock lock(mMutex);
+        if (!mTracker) return OK;
+        tracker = mTracker.get();
+        ALOGD("flush: inFlight=%zu", tracker->count());
+        mFlushing.store(true);
+        cancelInFlight([](const PipelineContext &) { return true; });
+    }
+
+    const bool drained = tracker->waitEmpty(kFlushTimeoutMs);
+    mFlushing.store(false);
+    if (!drained) {
+        ALOGE("flush: %zu requests still in flight after %d ms",
+              tracker->count(), kFlushTimeoutMs);
+    }
     return OK;
 }
 
 int Camera::sFlush(const camera3_device *device) {
-    /* Framework occasionally invokes flush via a stale ops vtable
-     * during teardown — Camera2Client::disconnect → stopPreviewL →
-     * flush can fire after the device has been logically torn down.
-     * Guard both the device pointer and its priv field so we exit
-     * cleanly instead of dereferencing NULL. */
-    if (!device || !device->priv) {
-        ALOGE("sFlush: NULL device/priv");
+    /* Camera is the camera3_device, like every other entry point here;
+     * priv is never set (it was read here, so flush always failed with
+     * -ENODEV). A flush after close finds no tracker and returns at
+     * once. */
+    if (!device) {
+        ALOGE("sFlush: NULL device");
         return -ENODEV;
     }
-    Camera *thiz = static_cast<Camera *>(device->priv);
+    Camera *thiz = static_cast<Camera *>(const_cast<camera3_device *>(device));
     return thiz->flush();
 }
 

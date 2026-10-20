@@ -1,6 +1,7 @@
 #ifndef CAMERA_H
 #define CAMERA_H
 
+#include <atomic>
 #include <functional>
 #include <memory>
 
@@ -126,6 +127,11 @@ private:
      * flush() on the mode change so we can't rely on the framework.
      * 0xff = sentinel "no prior request seen". */
     uint8_t                                       mLastAeMode = 0xff;
+
+    /* Set while flush() waits for the HAL to drain; a request arriving
+     * then is cancelled at once. */
+    std::atomic<bool>                             mFlushing{false};
+    static constexpr int                          kFlushTimeoutMs = 1000;
 
     /* Build the long-lived per-camera infrastructure (ISP, 3A,
      * BufferProcessor, BayerSource, tracker, pipeline, worker

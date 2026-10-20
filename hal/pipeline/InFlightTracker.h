@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <functional>
+#include <condition_variable>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -40,12 +41,17 @@ public:
      * the AE mode switch to cancel in-flight requests asynchronously
      * without ripping the pipeline apart. */
     void cancelIf(const std::function<bool(const PipelineContext &)> &which);
-    void cancelAll();
+
+    /* Wait until no context is tracked, up to timeoutMs. True if the
+     * tracker emptied. flush() returns only once the HAL holds no more
+     * requests. */
+    bool waitEmpty(int timeoutMs);
 
     size_t count() const;
 
 private:
     mutable std::mutex mutex;
+    std::condition_variable emptied;
     std::map<uint32_t, std::unique_ptr<PipelineContext>> contexts;
 };
 

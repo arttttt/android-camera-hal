@@ -1,5 +1,6 @@
 #include "InFlightTracker.h"
 
+#include <chrono>
 #include <utility>
 
 namespace android {
@@ -17,6 +18,7 @@ std::unique_ptr<PipelineContext> InFlightTracker::removeBySequence(uint32_t seq)
     if (it == contexts.end()) return nullptr;
     std::unique_ptr<PipelineContext> owned = std::move(it->second);
     contexts.erase(it);
+    if (contexts.empty()) emptied.notify_all();
     return owned;
 }
 
@@ -28,6 +30,7 @@ std::vector<std::unique_ptr<PipelineContext>> InFlightTracker::drainAll() {
         out.push_back(std::move(entry.second));
     }
     contexts.clear();
+    emptied.notify_all();
     return out;
 }
 
@@ -39,8 +42,10 @@ void InFlightTracker::cancelIf(
     }
 }
 
-void InFlightTracker::cancelAll() {
-    cancelIf([](const PipelineContext &) { return true; });
+bool InFlightTracker::waitEmpty(int timeoutMs) {
+    std::unique_lock<std::mutex> lock(mutex);
+    return emptied.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                            [this] { return contexts.empty(); });
 }
 
 size_t InFlightTracker::count() const {
