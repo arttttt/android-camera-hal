@@ -53,6 +53,7 @@
 #include "pipeline/CaptureRequest.h"
 #include "pipeline/PipelineContext.h"
 #include "pipeline/Pipeline.h"
+#include "pipeline/DeviceErrorReporter.h"
 #include "pipeline/InFlightTracker.h"
 #include "pipeline/RequestThread.h"
 #include "pipeline/PipelineThread.h"
@@ -285,6 +286,7 @@ int Camera::closeDevice() {
     mLastAeMode       = 0xff;
     if (mAf)              mAf->reset();
     if (mApplySettingsStage) mApplySettingsStage->reset();
+    if (mDeviceError)     mDeviceError->rearm();
     if (mIsp)             mIsp->onSessionClose();
     if (mIpa)             mIpa->reset();
     if (mDelayedControls) mDelayedControls->reset();
@@ -661,6 +663,7 @@ void Camera::buildInfrastructure() {
     mPartialEmitter.reset(new CameraCallbackEmitter(&mCallbackOps));
     mBayerSource.reset(new V4l2Source(mDev));
     mTracker.reset(new InFlightTracker());
+    mDeviceError.reset(new DeviceErrorReporter(&mCallbackOps));
     mRequestQueue.reset(new EventQueue<PipelineContext*>(REQUEST_QUEUE_CAPACITY));
     mPipelineQueue.reset(new EventQueue<PipelineContext*>(PIPELINE_QUEUE_CAPACITY));
     mResultQueue.reset(new EventQueue<PipelineContext*>(RESULT_QUEUE_CAPACITY));
@@ -727,6 +730,7 @@ void Camera::buildInfrastructure() {
         d.bufferProcessor = mBufferProcessor;
         d.bayerSource     = mBayerSource.get();
         d.isp             = mIsp;
+        d.deviceError     = mDeviceError.get();
         mDemosaicBlitStage.reset(new DemosaicBlitStage(d));
     }
 
@@ -801,6 +805,7 @@ void Camera::destroyInfrastructure() {
     mDelayedControls.reset();
     mIpa.reset();
     mTracker.reset();
+    mDeviceError.reset();
     mJpegQueue.reset();
     mJpegCompletionWake.reset();
     mResultQueue.reset();

@@ -182,13 +182,21 @@ void VulkanIspPipeline::recordAndSubmit(int slot, unsigned width, unsigned heigh
 
 /* --- produce-once API --- */
 
-void VulkanIspPipeline::recordDemosaicOpen(int slot, unsigned srcW, unsigned srcH) {
+bool VulkanIspPipeline::vkOk(VkResult r, const char *what) {
+    if (r == VK_SUCCESS) return true;
+    ALOGE("%s failed: %d", what, (int)r);
+    if (r == VK_ERROR_DEVICE_LOST) mDeviceLost.store(true);
+    return false;
+}
+
+bool VulkanIspPipeline::recordDemosaicOpen(int slot, unsigned srcW, unsigned srcH) {
     VkCommandBuffer cb = mCmdBuf[slot];
     VkCommandBufferBeginInfo bi = {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    mDeviceState.pfn()->ResetCommandBuffer(cb, 0);
-    mDeviceState.pfn()->BeginCommandBuffer(cb, &bi);
+    if (!vkOk(mDeviceState.pfn()->ResetCommandBuffer(cb, 0), "vkResetCommandBuffer") ||
+        !vkOk(mDeviceState.pfn()->BeginCommandBuffer(cb, &bi), "vkBeginCommandBuffer"))
+        return false;
 
     /* Compute: Bayer → mScratchImg. */
     mDeviceState.pfn()->CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
@@ -216,6 +224,7 @@ void VulkanIspPipeline::recordDemosaicOpen(int slot, unsigned srcW, unsigned src
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
             | VK_PIPELINE_STAGE_TRANSFER_BIT,
         0, 0, NULL, 0, NULL, 1, &scratchB);
+    return true;
 }
 
 void VulkanIspPipeline::recordRgbaBlitRenderPass(int slot,
@@ -315,7 +324,7 @@ bool VulkanIspPipeline::importAcquireSemaphore(int acquireFence, VkSemaphore *ou
 
 bool VulkanIspPipeline::beginFrame(unsigned srcW, unsigned srcH, uint32_t pixFmt,
                                      int srcInputSlot) {
-    if (!mReady) return false;
+    if (!mReady || mDeviceLost.load()) return false;
     if (mRec.active) {
         ALOGE("beginFrame called while a frame is already recording");
         return false;
@@ -338,7 +347,8 @@ bool VulkanIspPipeline::beginFrame(unsigned srcW, unsigned srcH, uint32_t pixFmt
     uploadParams(slot, params);
     rebindInputDescriptor(slot, srcInputSlot);
 
-    recordDemosaicOpen(slot, srcW, srcH);
+    if (!recordDemosaicOpen(slot, srcW, srcH))
+        return false;
 
     mRec.active = true;
     mRec.slot   = slot;
@@ -353,13 +363,19 @@ bool VulkanIspPipeline::blitToGralloc(void *nativeBuffer,
                                         int acquireFence,
                                         int *releaseFenceOut) {
     *releaseFenceOut = -1;
-    if (!mRec.active || !nativeBuffer || !mDeviceState.nativeBufferAvailable())
+    /* acquireFence is consumed on every path, failures included: the
+     * caller gives it up when it calls. */
+    if (!mRec.active || !nativeBuffer || !mDeviceState.nativeBufferAvailable()) {
+        if (acquireFence >= 0) ::close(acquireFence);
         return false;
+    }
 
     ANativeWindowBuffer *anwb = (ANativeWindowBuffer *)nativeBuffer;
     VulkanGrallocCache::Entry *entry = NULL;
-    if (!mGrallocCache.getOrCreate(anwb, dstW, dstH, &entry))
+    if (!mGrallocCache.getOrCreate(anwb, dstW, dstH, &entry)) {
+        if (acquireFence >= 0) ::close(acquireFence);
         return false;
+    }
 
     /* Acquire ownership of the gralloc image from the framework per the
      * VK_ANDROID_native_buffer contract. Without this the image's
@@ -447,7 +463,14 @@ bool VulkanIspPipeline::endFrame(int *submitFenceOut) {
     }
     int slot = mRec.slot;
     VkCommandBuffer cb = mCmdBuf[slot];
-    mDeviceState.pfn()->EndCommandBuffer(cb);
+    if (!vkOk(mDeviceState.pfn()->EndCommandBuffer(cb), "vkEndCommandBuffer")) {
+        for (VkSemaphore sem : mRec.waitSemaphores) {
+            if (sem != VK_NULL_HANDLE)
+                mDeviceState.pfn()->DestroySemaphore(mDeviceState.device(), sem, NULL);
+        }
+        mRec.reset();
+        return false;
+    }
 
     /* Submit waits on each imported acquire-fence semaphore. Stage mask is
      * ALL_COMMANDS so demosaic + every blit serialises behind the framework's
@@ -464,8 +487,8 @@ bool VulkanIspPipeline::endFrame(int *submitFenceOut) {
     si.waitSemaphoreCount   = (uint32_t)mRec.waitSemaphores.size();
     si.pWaitSemaphores      = mRec.waitSemaphores.empty() ? NULL : mRec.waitSemaphores.data();
     si.pWaitDstStageMask    = waitStages.empty() ? NULL : waitStages.data();
-    if (mDeviceState.pfn()->QueueSubmit(mDeviceState.queue(), 1, &si, mFence[slot]) != VK_SUCCESS) {
-        ALOGE("endFrame: vkQueueSubmit failed");
+    if (!vkOk(mDeviceState.pfn()->QueueSubmit(mDeviceState.queue(), 1, &si, mFence[slot]),
+              "endFrame: vkQueueSubmit")) {
         for (VkSemaphore sem : mRec.waitSemaphores) {
             if (sem != VK_NULL_HANDLE)
                 mDeviceState.pfn()->DestroySemaphore(mDeviceState.device(), sem, NULL);
@@ -503,7 +526,8 @@ bool VulkanIspPipeline::endFrame(int *submitFenceOut) {
         gi.fence      = mFence[slot];
         gi.handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT_KHR;
         int fd = -1;
-        if (mDeviceState.pfn()->GetFenceFdKHR(mDeviceState.device(), &gi, &fd) == VK_SUCCESS) {
+        if (vkOk(mDeviceState.pfn()->GetFenceFdKHR(mDeviceState.device(), &gi, &fd),
+                 "vkGetFenceFdKHR")) {
             mSlotSyncFd[slot] = fd;
             if (submitFenceOut) {
                 int dupFd = ::dup(fd);

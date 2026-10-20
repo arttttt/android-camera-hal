@@ -13,6 +13,7 @@
 #include "BufferProcessor.h"
 #include "BayerSource.h"
 #include "IspPipeline.h"
+#include "DeviceErrorReporter.h"
 
 #undef  LOG_TAG
 #define LOG_TAG "Cam-DemosaicBlitStage"
@@ -20,6 +21,11 @@
 namespace android {
 
 DemosaicBlitStage::DemosaicBlitStage(const Deps &d) : deps(d) {}
+
+void DemosaicBlitStage::reportIfDeviceLost() {
+    if (deps.deviceError && deps.isp->deviceLost())
+        deps.deviceError->report("ISP GPU device lost");
+}
 
 void DemosaicBlitStage::process(PipelineContext &ctx) {
     Resolution res = deps.bayerSource->resolution();
@@ -48,6 +54,7 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
     if (!deps.isp->beginFrame(res.width, res.height, fctx.pixFmt, fctx.frameSlotIdx)) {
         ALOGE("beginFrame failed for frame %u", ctx.request.frameNumber);
         ctx.status.fail(NO_INIT);
+        reportIfDeviceLost();
         ctx.outputNeedsFinalUnlock.assign(n, false);
         return;
     }
@@ -84,36 +91,22 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
                                                      &state,
                                                      &ctx.outputReleaseFences[i],
                                                      &ctx.outputJpegSnapshots[i]);
+        /* processOne owns the acquire fence from here, whatever it
+         * returns: it waited on it, imported it, or closed it — unless
+         * it deferred the output to the VIC bridge, which takes the
+         * fence in pass 3. */
+        if (e != NO_ERROR || !state.deferredNvBlit)
+            sbs[i].acquire_fence = -1;
         if (e != NO_ERROR) {
+            /* One output that cannot be produced does not cost the
+             * frame its other outputs: nothing was recorded for this
+             * one, so the frame goes on and ResultDispatch reports the
+             * buffer with ERROR_BUFFER. */
             ALOGE("processOne failed at output %zu for frame %u: %d",
                   i, ctx.request.frameNumber, (int)e);
-            for (size_t j = 0; j <= i; ++j) {
-                GraphicBufferMapper::get().unlock(*ctx.request.outputBuffers[j].buffer);
-            }
-            for (size_t j = 0; j < i; ++j) {
-                if (ctx.outputReleaseFences[j] >= 0) {
-                    ::close(ctx.outputReleaseFences[j]);
-                    ctx.outputReleaseFences[j] = -1;
-                }
-            }
-            /* Close acquire fences we already took ownership of via
-             * outBuf.acquireFence.release() but haven't yet handed off
-             * (NvBlit / acquire-fence semaphore import). */
-            for (size_t j = 0; j <= i; ++j) {
-                if (sbs[j].acquire_fence >= 0) {
-                    ::close(sbs[j].acquire_fence);
-                    sbs[j].acquire_fence = -1;
-                }
-            }
-            ctx.outputNeedsFinalUnlock.assign(n, false);
-            ctx.status.fail(e);
-            /* Submit the partial recording anyway so slot fences end up in a
-             * consistent state for the next frame; release fences for any
-             * already-recorded blits get dropped above. */
-            int submitFd = -1;
-            (void)deps.isp->endFrame(&submitFd);
-            if (submitFd >= 0) ::close(submitFd);
-            return;
+            ctx.outputStatuses[i]         = CAMERA3_BUFFER_STATUS_ERROR;
+            ctx.outputNeedsFinalUnlock[i] = false;
+            continue;
         }
         ctx.outputNeedsFinalUnlock[i] = state.needsFinalUnlock;
         ctx.outputDeferredNvBlit[i]   = state.deferredNvBlit;
@@ -128,14 +121,10 @@ void DemosaicBlitStage::process(PipelineContext &ctx) {
                 ::close(ctx.outputReleaseFences[j]);
                 ctx.outputReleaseFences[j] = -1;
             }
-            /* Same cleanup as the processOne-failure path. */
-            if (sbs[j].acquire_fence >= 0) {
-                ::close(sbs[j].acquire_fence);
-                sbs[j].acquire_fence = -1;
-            }
         }
         ctx.outputNeedsFinalUnlock.assign(n, false);
         ctx.status.fail(NO_INIT);
+        reportIfDeviceLost();
         return;
     }
 

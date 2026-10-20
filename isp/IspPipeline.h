@@ -187,6 +187,11 @@ public:
      * doesn't overwrite a slot the shader is still reading. */
     virtual void waitForPreviousFrame() {}
 
+    /* The backend's device is gone (VK_ERROR_DEVICE_LOST): nothing it
+     * records will run again, and the camera must report ERROR_DEVICE.
+     * Sticky until the backend is rebuilt. */
+    virtual bool deviceLost() const { return false; }
+
     /* Called by Camera::closeDevice after workers have been stopped
      * and GPU drained. The backend should release any per-session
      * references it is holding — notably cached bindings into

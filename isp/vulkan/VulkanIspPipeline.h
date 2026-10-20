@@ -57,6 +57,7 @@ public:
     size_t inputBufferSize()  const override { return mInputRing.slotSize(); }
     int    exportInputBufferFd(int idx) override { return mInputRing.exportFd(idx); }
     void   waitForPreviousFrame() override;
+    bool   deviceLost() const override { return mDeviceLost.load(); }
     void   onSessionClose() override;
 
     const void *bayerHost(int slot)   const override { return mInputRing.mapped(slot); }
@@ -104,7 +105,13 @@ private:
 
     /* Open the slot's cmd buffer and record demosaic compute + scratch
      * write→read barrier. Buffer stays open for blit append calls. */
-    void recordDemosaicOpen(int slot, unsigned srcW, unsigned srcH);
+    bool recordDemosaicOpen(int slot, unsigned srcW, unsigned srcH);
+
+    /* Result check for the calls a frame cannot do without. Logs a
+     * failure; VK_ERROR_DEVICE_LOST also marks the device lost. Costs
+     * a compare on the value the call returns anyway. */
+    bool vkOk(VkResult r, const char *what);
+    std::atomic<bool> mDeviceLost{false};
 
     /* Append a sampler-blit render pass (scratch → gralloc framebuffer)
      * to the open cmd buffer. */

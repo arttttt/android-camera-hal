@@ -9,6 +9,7 @@ namespace android {
 
 class BufferProcessor;
 class BayerSource;
+class DeviceErrorReporter;
 class IspPipeline;
 
 /* Opens the ISP recording for the frame, runs BufferProcessor::processOne
@@ -20,9 +21,10 @@ class IspPipeline;
 class DemosaicBlitStage : public PipelineStage {
 public:
     struct Deps {
-        BufferProcessor *bufferProcessor;
-        BayerSource     *bayerSource;   /* for resolution() */
-        IspPipeline     *isp;
+        BufferProcessor     *bufferProcessor;
+        BayerSource         *bayerSource;   /* for resolution() */
+        IspPipeline         *isp;
+        DeviceErrorReporter *deviceError;   /* may be null */
     };
 
     explicit DemosaicBlitStage(const Deps &deps);
@@ -31,6 +33,8 @@ public:
     void process(PipelineContext &context) override;
 
 private:
+    void reportIfDeviceLost();
+
     Deps deps;
 };
 

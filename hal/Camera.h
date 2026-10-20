@@ -33,6 +33,7 @@ class Pipeline;
 class PipelineStage;
 class ApplySettingsStage;
 class InFlightTracker;
+class DeviceErrorReporter;
 class RequestThread;
 class PipelineThread;
 class ResultThread;
@@ -95,6 +96,7 @@ private:
     std::unique_ptr<CameraCallbackEmitter>        mPartialEmitter;
     std::unique_ptr<BayerSource>                  mBayerSource;
     std::unique_ptr<InFlightTracker>              mTracker;
+    std::unique_ptr<DeviceErrorReporter>          mDeviceError;
     std::unique_ptr<EventQueue<PipelineContext*>> mRequestQueue;
     std::unique_ptr<EventQueue<PipelineContext*>> mPipelineQueue;
     std::unique_ptr<EventQueue<PipelineContext*>> mResultQueue;

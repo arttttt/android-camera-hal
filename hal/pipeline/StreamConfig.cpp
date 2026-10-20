@@ -87,6 +87,18 @@ status_t StreamConfig::normalize(camera3_stream_configuration_t *streamList,
                 newStream->format = HAL_PIXEL_FORMAT_RGBA_8888;
         }
 
+        /* What the pipeline can produce: RGBA preview, YCbCr_420_888
+         * and JPEG. Anything else (RAW10 / RAW16 / RAW_OPAQUE, which
+         * the static metadata does not advertise) would be returned
+         * unwritten, so it is refused here, as camera3.h asks of an
+         * unsupported stream. */
+        if (newStream->format != HAL_PIXEL_FORMAT_RGBA_8888 &&
+            newStream->format != HAL_PIXEL_FORMAT_YCbCr_420_888 &&
+            newStream->format != HAL_PIXEL_FORMAT_BLOB) {
+            ALOGE("Stream[%zu]: format 0x%x not supported", i, newStream->format);
+            return BAD_VALUE;
+        }
+
         if (newStream->usage & GRALLOC_USAGE_HW_CAMERA_ZSL) {
             ALOGE("ZSL not supported. Add camera.disable_zsl_mode=1 to build.prop");
             return BAD_VALUE;

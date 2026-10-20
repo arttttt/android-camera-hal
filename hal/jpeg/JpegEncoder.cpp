@@ -2,6 +2,7 @@
 
 #include "JpegEncoder.h"
 
+#include <setjmp.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +18,22 @@ namespace android {
 namespace {
 
 constexpr uint8_t kDefaultJpegQuality = 95;
+
+/* libjpeg's default error_exit calls exit(): one bad encode would take
+ * the whole camera provider down with it. This one logs the message
+ * and jumps back to the encoder, which reports the encode as failed. */
+struct JpegErrorMgr {
+    struct jpeg_error_mgr pub;
+    jmp_buf               jump;
+};
+
+void jpegErrorExit(j_common_ptr cinfo) {
+    JpegErrorMgr *err = reinterpret_cast<JpegErrorMgr *>(cinfo->err);
+    char msg[JMSG_LENGTH_MAX];
+    (*cinfo->err->format_message)(cinfo, msg);
+    ALOGE("libjpeg: %s", msg);
+    longjmp(err->jump, 1);
+}
 
 /* Map ANDROID_JPEG_ORIENTATION (CW degrees) to EXIF Orientation tag:
  *   0°  → 1 (normal)
@@ -38,20 +55,34 @@ uint16_t exifOrientationFromAndroid(int32_t androidOrientation) {
  * stream at `dst`, injecting an EXIF Orientation APP1 marker so viewers
  * rotate on display instead of us rotating pixels in HAL.
  *
- * Returns the number of bytes written, or 0 on failure (output exceeded
- * `dstLen`). */
+ * Returns the number of bytes written, or 0 on failure (libjpeg error,
+ * or output exceeded `dstLen`). */
 size_t encodeRgbaToJpeg(const uint8_t *rgba, uint8_t *dst, size_t dstLen,
                          unsigned width, unsigned height,
                          uint8_t quality, int32_t androidOrientation) {
     struct jpeg_compress_struct cinfo;
-    struct jpeg_error_mgr jerr;
+    JpegErrorMgr jerr;
 
-    cinfo.err = jpeg_std_error(&jerr);
+    /* Everything the error path frees is set up before setjmp and is
+     * volatile where it changes after, so the longjmp leaves no stale
+     * copy in a register. No C++ object with a destructor lives across
+     * the jump. */
+    uint8_t *row = (uint8_t *)malloc((size_t)width * 3);
+    if (!row) return 0;
+    unsigned long  outSize = dstLen;
+    unsigned char *volatile outBuf = dst;
+
+    cinfo.err = jpeg_std_error(&jerr.pub);
+    jerr.pub.error_exit = jpegErrorExit;
+    if (setjmp(jerr.jump)) {
+        jpeg_destroy_compress(&cinfo);
+        if (outBuf != dst) free(outBuf);
+        free(row);
+        return 0;
+    }
     jpeg_create_compress(&cinfo);
 
-    unsigned long outSize  = dstLen;
-    unsigned char *outBuf  = dst;
-    jpeg_mem_dest(&cinfo, &outBuf, &outSize);
+    jpeg_mem_dest(&cinfo, (unsigned char **)&outBuf, &outSize);
 
     cinfo.image_width      = width;
     cinfo.image_height     = height;
@@ -77,7 +108,6 @@ size_t encodeRgbaToJpeg(const uint8_t *rgba, uint8_t *dst, size_t dstLen,
     jpeg_write_marker(&cinfo, JPEG_APP0 + 1, exifApp1, sizeof(exifApp1));
 
     /* RGBA → RGB row by row (libjpeg doesn't consume alpha). */
-    uint8_t *row = new uint8_t[width * 3];
     while (cinfo.next_scanline < cinfo.image_height) {
         const uint8_t *srcRow = rgba + cinfo.next_scanline * width * 4;
         for (unsigned x = 0; x < width; x++) {
@@ -88,10 +118,10 @@ size_t encodeRgbaToJpeg(const uint8_t *rgba, uint8_t *dst, size_t dstLen,
         JSAMPROW rowPtr = row;
         jpeg_write_scanlines(&cinfo, &rowPtr, 1);
     }
-    delete[] row;
 
     jpeg_finish_compress(&cinfo);
     jpeg_destroy_compress(&cinfo);
+    free(row);
 
     /* jpeg_mem_dest may realloc if the output didn't fit. Copy back
      * to the caller's buffer; fail if it grew past dstLen. */

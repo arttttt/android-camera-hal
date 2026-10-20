@@ -3,6 +3,7 @@
 #include "BufferProcessor.h"
 
 #include <string.h>
+#include <unistd.h>
 #include <linux/videodev2.h>
 
 #include <hardware/gralloc.h>
@@ -311,17 +312,17 @@ status_t BufferProcessor::recordBlobOutput(const camera3_stream_buffer &srcBuf,
     return NO_ERROR;
 }
 
-void BufferProcessor::finalizeBlobOutput(const CaptureRequest::Buffer &outBuf,
+bool BufferProcessor::finalizeBlobOutput(const CaptureRequest::Buffer &outBuf,
                                           const CameraMetadata &metadata,
                                           const JpegSnapshot &snap,
                                           uint32_t frameNumber) {
-    if (snap.ringSlot < 0) return;
+    if (snap.ringSlot < 0) return false;
     const size_t blobCapacity = mDeps.jpegBufferSize ? *mDeps.jpegBufferSize : 0;
     if (blobCapacity <= sizeof(camera3_jpeg_blob)) {
         ALOGE("buffer %p  frame %-4u  BLOB capacity %zu too small",
               outBuf.buffer, frameNumber, blobCapacity);
         mDeps.isp->releaseJpegSnapshot(snap);
-        return;
+        return false;
     }
     const size_t maxImageSize = blobCapacity - sizeof(camera3_jpeg_blob);
 
@@ -334,7 +335,7 @@ void BufferProcessor::finalizeBlobOutput(const CaptureRequest::Buffer &outBuf,
     if (e != NO_ERROR) {
         ALOGE("buffer %p  frame %-4u  BLOB lock failed", outBuf.buffer, frameNumber);
         mDeps.isp->releaseJpegSnapshot(snap);
-        return;
+        return false;
     }
 
     mDeps.isp->invalidateJpegSnapshot(snap);
@@ -355,6 +356,7 @@ void BufferProcessor::finalizeBlobOutput(const CaptureRequest::Buffer &outBuf,
 
     GraphicBufferMapper::get().unlock(*outBuf.buffer);
     mDeps.isp->releaseJpegSnapshot(snap);
+    return ok;
 }
 
 status_t BufferProcessor::processOne(const camera3_stream_buffer &srcBuf,
@@ -414,9 +416,13 @@ status_t BufferProcessor::processOne(const camera3_stream_buffer &srcBuf,
             return NO_ERROR;
         }
         default:
-            ALOGE("Unknown pixel format %d in buffer %p (stream %p), ignoring",
+            /* StreamConfig refuses any other format at configure time;
+             * this is only reached if that check and this switch part
+             * ways. */
+            ALOGE("Unknown pixel format %d in buffer %p (stream %p)",
                   srcBuf.stream->format, srcBuf.buffer, srcBuf.stream);
-            return NO_ERROR;
+            if (srcBuf.acquire_fence >= 0) ::close(srcBuf.acquire_fence);
+            return BAD_VALUE;
     }
 }
 

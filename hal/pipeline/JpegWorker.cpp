@@ -25,11 +25,16 @@ void JpegWorker::runJob(const Job &job) {
     if (job.outputIndex >= job.ctx->request.outputBuffers.size()) return;
     if (job.outputIndex >= job.ctx->outputJpegSnapshots.size()) return;
 
-    deps.bufferProcessor->finalizeBlobOutput(
+    const bool encoded = deps.bufferProcessor->finalizeBlobOutput(
         job.ctx->request.outputBuffers[job.outputIndex],
         job.ctx->request.settings,
         job.ctx->outputJpegSnapshots[job.outputIndex],
         job.ctx->request.frameNumber);
+    /* A BLOB with no image in it goes back as a failed buffer, not as
+     * a good one. ResultThread reads the status only once jpegPending
+     * reaches 0, which the decrement below orders after this store. */
+    if (!encoded)
+        job.ctx->outputStatuses[job.outputIndex] = CAMERA3_BUFFER_STATUS_ERROR;
 
     /* Atomic decrement; the prev-value tells us whether this was the
      * last outstanding BLOB for the ctx. memory_order_acq_rel matches

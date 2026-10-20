@@ -117,8 +117,9 @@ public:
     /* Lock the BLOB gralloc, libjpeg-encode from the snapshot, write the
      * camera3_jpeg_blob trailer, unlock, release the snapshot. Called
      * by JpegWorker on its own thread once the frame's submit fence has
-     * signalled. */
-    void finalizeBlobOutput(const CaptureRequest::Buffer &outBuf,
+     * signalled. False when the BLOB holds no image: the snapshot is
+     * released either way. */
+    bool finalizeBlobOutput(const CaptureRequest::Buffer &outBuf,
                              const CameraMetadata &metadata,
                              const JpegSnapshot &snap,
                              uint32_t frameNumber);
