@@ -14,7 +14,7 @@ LOCAL_MODULE_RELATIVE_PATH := hw
 # that dlopens it, which is itself a vendor binary.
 LOCAL_PROPRIETARY_MODULE := true
 
-LOCAL_CFLAGS += -std=c++17
+LOCAL_CFLAGS += -std=c++20
 LOCAL_CFLAGS += -fno-short-enums
 LOCAL_CFLAGS += -Wno-unused-parameter -Wno-missing-field-initializers
 LOCAL_CFLAGS += -pthread
