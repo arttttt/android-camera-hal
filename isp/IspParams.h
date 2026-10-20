@@ -1,13 +1,15 @@
 #ifndef ISP_PARAMS_H
 #define ISP_PARAMS_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 namespace android {
 
 /* Per-frame ISP parameter block. Layout matches the std430 SSBO
  * the Vulkan demosaic + WB + CCM shader expects — edit the two in
- * lock-step or the shader reads garbage. Plain-data on purpose so
+ * lock-step (the offsets below are checked) or the shader reads
+ * garbage. Plain-data on purpose so
  * memcpy into the mapped param buffer is well-defined. */
 struct IspParams {
     uint32_t width;
@@ -43,6 +45,14 @@ struct IspParams {
     /* V4L2 Bayer fourcc → 0..3 matching SRGGB / SGRBG / SGBRG / SBGGR. */
     static uint32_t bayerPhaseFromFourcc(uint32_t fourcc);
 };
+
+/* The std430 layout of the shader's Params block (DemosaicCompute.h):
+ * scalars and scalar arrays at a 4-byte stride, no padding. */
+static_assert(offsetof(IspParams, ccm)           == 32,   "IspParams.ccm");
+static_assert(offsetof(IspParams, blackLevel)    == 68,   "IspParams.blackLevel");
+static_assert(offsetof(IspParams, denomRecip255) == 72,   "IspParams.denomRecip255");
+static_assert(offsetof(IspParams, gammaLut)      == 76,   "IspParams.gammaLut");
+static_assert(sizeof(IspParams)                  == 1100, "IspParams size");
 
 }; /* namespace android */
 

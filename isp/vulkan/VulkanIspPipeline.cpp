@@ -1,5 +1,6 @@
 #define LOG_TAG "Cam-VulkanISP"
 #include <utils/Log.h>
+#include <cstddef>
 #include <cstring>
 #include <errno.h>
 #include <unistd.h>
@@ -20,19 +21,6 @@ static inline int64_t nowMs() {
 #include "runtime/loader/VulkanPfn.h"
 #include "shaders/DemosaicCompute.h"
 #include "shaders/Blit.h"
-
-/* VK_ANDROID_native_buffer — duplicated here because the android-24
- * vulkan.h doesn't expose it. Same layout as in VulkanGrallocCache.cpp;
- * keep in sync if either copy is updated. */
-#define VK_STRUCTURE_TYPE_NATIVE_BUFFER_ANDROID ((VkStructureType)1000010000)
-typedef struct VkNativeBufferANDROID {
-    VkStructureType    sType;
-    const void        *pNext;
-    const void        *handle;
-    int                stride;
-    int                format;
-    int                usage;
-} VkNativeBufferANDROID;
 
 namespace android {
 
@@ -278,13 +266,16 @@ void VulkanIspPipeline::recordRgbaBlitRenderPass(int slot,
     mDeviceState.pfn()->CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                                mPipeLayout, 0, 1, &mDescSet[slot], 0, NULL);
 
-    /* Mirrors the push_constant block declared in shaders/Blit.h. */
+    /* Mirrors the push_constant block declared in shaders/Blit.h:
+     * eight ints, then two vec2 -- 48 bytes, no padding. */
     struct BlitPushConstants {
         int32_t cropX, cropY, cropW, cropH;
         int32_t srcW,  srcH,  outW,  outH;
         float   uvOffsetX, uvOffsetY;
         float   uvStepX,   uvStepY;
     };
+    static_assert(sizeof(BlitPushConstants) == 48, "Blit push constants");
+    static_assert(offsetof(BlitPushConstants, uvOffsetX) == 32, "Blit uvOffset");
     BlitPushConstants pc = {};
     pc.cropX = crop.x;
     pc.cropY = crop.y;

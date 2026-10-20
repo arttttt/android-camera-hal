@@ -8,21 +8,6 @@
 #include "runtime/VulkanDeviceState.h"
 #include "runtime/loader/VulkanPfn.h"
 
-/* VK_ANDROID_native_buffer type — absent from the android-24 NDK vulkan.h
- * but exposed by the HAL-variant loader. */
-#ifndef VK_ANDROID_NATIVE_BUFFER_NUMBER
-#define VK_ANDROID_NATIVE_BUFFER_NUMBER 11
-#define VK_STRUCTURE_TYPE_NATIVE_BUFFER_ANDROID ((VkStructureType)1000010000)
-typedef struct VkNativeBufferANDROID {
-    VkStructureType sType;
-    const void *pNext;
-    const struct native_handle *handle;
-    int stride;
-    int format;
-    int usage;
-} VkNativeBufferANDROID;
-#endif
-
 namespace android {
 
 namespace {

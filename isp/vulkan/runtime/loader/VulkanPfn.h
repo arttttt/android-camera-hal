@@ -15,6 +15,22 @@ typedef VkResult (VKAPI_PTR *PFN_vkQueueSignalReleaseImageANDROID)(
     const VkSemaphore *pWaitSemaphores, VkImage image, int *pNativeFenceFd);
 #endif
 
+/* VK_ANDROID_native_buffer image import struct — absent from the
+ * android-24 NDK vulkan.h, exposed by the HAL-variant loader. The one
+ * definition for the gralloc import and the scratch image. */
+#ifndef VK_ANDROID_NATIVE_BUFFER_NUMBER
+#define VK_ANDROID_NATIVE_BUFFER_NUMBER 11
+#define VK_STRUCTURE_TYPE_NATIVE_BUFFER_ANDROID ((VkStructureType)1000010000)
+typedef struct VkNativeBufferANDROID {
+    VkStructureType              sType;
+    const void                  *pNext;
+    const struct native_handle  *handle;
+    int                          stride;
+    int                          format;
+    int                          usage;
+} VkNativeBufferANDROID;
+#endif
+
 /* VK_KHR_external_memory + VK_KHR_external_memory_fd — absent in the
  * android-24 NDK header; O+ platform vulkan.h ships them (and defines
  * VK_KHR_external_memory_fd), so polyfill only when it doesn't. */
