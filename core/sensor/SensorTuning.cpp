@@ -57,13 +57,16 @@ SensorTuning::SensorTuning()
 SensorTuning::~SensorTuning() = default;
 
 bool SensorTuning::load(const char *sensor, const char *integrator) {
+    return loadFile(std::string(kTuningDir) + filenameFor(sensor, integrator));
+}
+
+bool SensorTuning::loadFile(const std::string &path) {
     mLoaded = false;
     mHasAf = false;
     mCcmSets.clear();
 
-    std::string fn = filenameFor(sensor, integrator);
     Json::Value root;
-    if (!readJson(std::string(kTuningDir) + fn, &root))
+    if (!readJson(path, &root))
         return false;
 
     if (root["schema_version"].asInt() != 1) {
@@ -118,12 +121,12 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
         for (const char *key : kCdafKeys) {
             if (cdafComplete && !cdaf.isMember(key)) {
                 ALOGE("tuning %s: hal_overrides.af.%s missing — AF disabled",
-                      fn.c_str(), key);
+                      path.c_str(), key);
                 cdafComplete = false;
             }
         }
         if (!cdaf.isObject())
-            ALOGE("tuning %s: hal_overrides.af missing — AF disabled", fn.c_str());
+            ALOGE("tuning %s: hal_overrides.af missing — AF disabled", path.c_str());
         if (cdafComplete) {
             mAf.stepCoarse             = cdaf["step_coarse"].asInt();
             mAf.stepFine               = cdaf["step_fine"].asInt();
@@ -428,8 +431,8 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
             mAeParams.closeSpeedZone = halAe["close_speed_zone"].asFloat();
     }
 
-    ALOGD("tuning loaded: %s (%s/%s) — %zu CCM sets, AF=%d, BL=(%d,%d,%d,%d)",
-          fn.c_str(), sensor, integrator, mCcmSets.size(), mHasAf,
+    ALOGD("tuning loaded: %s — %zu CCM sets, AF=%d, BL=(%d,%d,%d,%d)",
+          path.c_str(), mCcmSets.size(), mHasAf,
           mOpticalBlack.r, mOpticalBlack.gr, mOpticalBlack.gb, mOpticalBlack.b);
 
     mLoaded = true;

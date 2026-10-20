@@ -138,6 +138,7 @@ struct SensorConfig {
              * request N+3 well ahead of that request reaching the
              * sensor; with 2 the push lost that race now and then. */
             .controlDelay    = { 3, 3 },
+            .focalLengthMm   = 0.f,
         };
     }
 
@@ -159,6 +160,7 @@ struct SensorConfig {
              * transitions. The scene was dim, so the luma ratio was off,
              * but the frame of the step was not. */
             .controlDelay    = { 3, 3 },
+            .focalLengthMm   = 0.f,
         };
     }
 };

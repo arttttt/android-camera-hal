@@ -191,6 +191,9 @@ public:
      * the vendor dir; no code change. */
     bool load(const char *sensor, const char *integrator);
 
+    /* The same from a given file (the host tests load the repo's). */
+    bool loadFile(const std::string &path);
+
     bool        isLoaded()      const { return mLoaded; }
     bool        hasAf()         const { return mHasAf; }
     const char *bayerPattern()  const { return mBayerPattern.c_str(); }
