@@ -60,6 +60,8 @@ public:
         unsigned    height;
         uint32_t    pixFmt;
         uint32_t    sequence;
+        /* When the frame's exposure began (systemTime; 0 = unknown). */
+        int64_t     exposureStartNs;
 
         /* Patch-grid window the NEON kernel restricts Sobel /
          * greenSq accumulation to. Producer reads it from
@@ -92,10 +94,11 @@ public:
      * not-yet-started job. Safe from any thread. */
     void submit(const Job &job);
 
-    /* Copy the latest published IpaStats into `out` and its source
-     * frame sequence into `*sequence`. Returns false on cold start
-     * (no publication yet). Safe from any thread. */
-    bool peek(IpaStats *out, uint32_t *sequence);
+    /* Copy the latest published IpaStats into `out`, its source frame
+     * sequence into `*sequence` and, when given, the source frame's
+     * exposure start into `*exposureStartNs`. Returns false on cold
+     * start (no publication yet). Safe from any thread. */
+    bool peek(IpaStats *out, uint32_t *sequence, int64_t *exposureStartNs = nullptr);
 
     /* Drop the pending job, the in-progress cycle, and the latest
      * publication. Call between sessions so stats from the previous
@@ -138,6 +141,7 @@ private:
     std::mutex outLock;
     IpaStats   latest;
     uint32_t   latestSeq;
+    int64_t    latestStartNs;
     bool       latestValid;
 };
 

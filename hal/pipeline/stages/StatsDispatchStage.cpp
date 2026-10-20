@@ -39,6 +39,7 @@ void StatsDispatchStage::process(PipelineContext &ctx) {
     job.height   = res.height;
     job.pixFmt   = ctx.bayerFrame->pixFmt;
     job.sequence = ctx.sequence;
+    job.exposureStartNs = ctx.bayerFrame->exposureStartNs();
 
     /* Pull the latest AF region (set by AutoFocusController::onSettings
      * from ANDROID_CONTROL_AF_REGIONS) into the job. Fallback when AF

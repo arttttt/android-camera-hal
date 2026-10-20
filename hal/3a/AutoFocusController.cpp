@@ -5,6 +5,7 @@
 #include <math.h>
 
 #include <utils/Log.h>
+#include <utils/Timers.h>
 #include <system/camera_metadata.h>
 
 #include "sensor/SensorTuning.h"
@@ -116,8 +117,7 @@ AutoFocusController::AutoFocusController(const SensorTuning *tuning,
     , mRetriggerRatio(0.f)
     , mRetriggerDelay(0)
     , mPdafEnabled(false)
-    , mSettleFramesCoarse(0)
-    , mSettleFramesFine(0)
+    , mSettleNs(0)
     , mMinFramesBetweenSweeps(0)
     , mMinFocusRoiPatches(0)
     , mVcmPerDiopter(0.f)
@@ -128,7 +128,7 @@ AutoFocusController::AutoFocusController(const SensorTuning *tuning,
     , mSweepStep(0)
     , mSweepBestPos(0)
     , mSweepBestScore(0.f)
-    , mSettleFrames(0)
+    , mLensMovedNs(0)
     , mCoarsePhaseStart(0)
     , mFinePhaseStart(0)
     , mCoarseReversed(false)    , mSceneFocusSnapshot(0.f)
@@ -159,8 +159,7 @@ AutoFocusController::AutoFocusController(const SensorTuning *tuning,
         mContrastRatio      = af.contrastRatio;
         mRetriggerRatio     = af.retriggerRatio;
         mRetriggerDelay     = af.retriggerDelay;
-        mSettleFramesCoarse = af.settleFramesCoarse;
-        mSettleFramesFine   = af.settleFramesFine;
+        mSettleNs           = (int64_t)af.settleTimeMs * 1000000LL;
         mPdafEnabled        = af.pdafEnabled;
         mMinFramesBetweenSweeps = (uint32_t)af.minFramesBetweenSweeps;
         mMinFocusRoiPatches     = af.minFocusRoiPatches;
@@ -180,12 +179,12 @@ AutoFocusController::AutoFocusController(const SensorTuning *tuning,
         }
 
         ALOGD("AF tuning: cal=%d inf=%d macro=%d auto_end=%d "
-              "step=%d/%d settle=%d/%d ratios=%.2f/%.2f delay=%d pdaf=%d "
+              "step=%d/%d settle=%lldms ratios=%.2f/%.2f delay=%d pdaf=%d "
               "vcm_per_diopter=%.2f",
               af.moduleCalEnable ? 1 : 0,
               mVcmInfinity, mVcmMacroEnd, mVcmAutoEnd,
               mStepCoarse, mStepFine,
-              mSettleFramesCoarse, mSettleFramesFine,
+              (long long)(mSettleNs / 1000000),
               (double)mContrastRatio, (double)mRetriggerRatio, mRetriggerDelay,
               mPdafEnabled ? 1 : 0,
               (double)mVcmPerDiopter);
@@ -261,7 +260,6 @@ void AutoFocusController::startSweep(uint8_t afMode, SweepKind kind) {
                     ? ANDROID_CONTROL_AF_STATE_ACTIVE_SCAN
                     : ANDROID_CONTROL_AF_STATE_PASSIVE_SCAN;
     mLastSweepRoi = currentFocusRoi();
-    mSettleFrames     = 0;
     mSweepBestScore   = 0.f;
     mScanData.clear();
     mCoarsePhaseStart = 0;
@@ -357,7 +355,6 @@ int32_t AutoFocusController::findPeak(size_t start, size_t end) const {
 }
 
 void AutoFocusController::advanceCoarse(float score) {
-    const int32_t prevPos = mSweepPos;
     recordSample(mSweepPos, score);
 
     /* How many Coarse-phase samples have advanced the running max.
@@ -436,11 +433,9 @@ void AutoFocusController::advanceCoarse(float score) {
         mSweepPos = clampVcm(mSweepPos + mSweepStep);
     }
 
-    setSettleForMove(prevPos, mSweepPos);
 }
 
 void AutoFocusController::advanceFine(float score) {
-    const int32_t prevPos = mSweepPos;
     recordSample(mSweepPos, score);
 
     /* Three Fine samples bracket the peak well enough to interpolate
@@ -458,22 +453,6 @@ void AutoFocusController::advanceFine(float score) {
         mSweepPos = clampVcm(mSweepPos + mSweepStep);
     }
 
-    setSettleForMove(prevPos, mSweepPos);
-}
-
-void AutoFocusController::setSettleForMove(int32_t fromPos, int32_t toPos) {
-    /* Pick settle frames from the magnitude of the actual VCM move,
-     * not from the state we're about to be in. Coarse-magnitude
-     * moves (initial probe steps, direction reversal back to the
-     * running peak, the jump from coarse position into the Fine
-     * bracket) all need the longer wait to let the open-loop motor
-     * physically arrive — there's no V4L2 feedback on actual lens
-     * position, so we wait by frame count instead. Fine-magnitude
-     * moves take the shorter wait. */
-    const int32_t mag = (toPos > fromPos) ? (toPos - fromPos)
-                                          : (fromPos - toPos);
-    mSettleFrames = (mag > mStepFine) ? mSettleFramesCoarse
-                                      : mSettleFramesFine;
 }
 
 void AutoFocusController::commitSweep(bool focused) {
@@ -674,7 +653,9 @@ void AutoFocusController::applyCommand(const Command &cmd) {
         startSweep(cmd.afMode, SweepKind::Triggered);
 }
 
-AfResult AutoFocusController::process(const IpaStats &stats, bool aeConverged) {
+AfResult AutoFocusController::process(const IpaStats &stats, bool fresh,
+                                      int64_t statsExposureStartNs,
+                                      bool aeConverged) {
     AfResult out;
 
     /* Apply what the requests since the last tick asked for, in
@@ -775,13 +756,17 @@ AfResult AutoFocusController::process(const IpaStats &stats, bool aeConverged) {
         goto finish;
     }
 
-    /* After a VCM move, give the lens a few frames to settle before
-     * reading the score. settleFrames was set by the previous step
-     * based on its move magnitude. */
-    if (mSettleFrames > 0) {
-        mSettleFrames--;
+    /* Take a sample only from stats of a frame exposed entirely with
+     * the lens settled where the last move put it: fresh stats (not
+     * the previous tick's again) of a frame whose exposure began at
+     * least settle_time after the move. Stats trail the frame they
+     * come from by a StatsWorker cycle, so the stats of the frames
+     * right after a move still show the old position; a sample taken
+     * from them would credit the old position's sharpness to the new
+     * one and shift the whole score curve by a step. */
+    if (!fresh || statsExposureStartNs <= 0 ||
+        statsExposureStartNs < mLensMovedNs + mSettleNs)
         goto finish;
-    }
 
     ALOGD("AF: state=%d pos=%d score=%.0f best=%d/%.0f",
           (int)mState, mSweepPos, (double)score,
@@ -867,7 +852,7 @@ void AutoFocusController::reset() {
     mSweepStep          = 0;
     mSweepBestPos       = mVcmInfinity;
     mSweepBestScore     = 0.f;
-    mSettleFrames       = 0;
+    mLensMovedNs        = 0;
     mScanData.clear();
     mCoarsePhaseStart   = 0;
     mFinePhaseStart     = 0;

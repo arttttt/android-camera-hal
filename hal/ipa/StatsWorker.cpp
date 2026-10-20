@@ -17,6 +17,7 @@ StatsWorker::StatsWorker()
       pendingValid(false),
       phase(0),
       latestSeq(0),
+      latestStartNs(0),
       latestValid(false) {
     memset(&pending,    0, sizeof(pending));
     memset(&currentJob, 0, sizeof(currentJob));
@@ -41,12 +42,13 @@ void StatsWorker::submit(const Job &job) {
     jobEvent.notify();
 }
 
-bool StatsWorker::peek(IpaStats *out, uint32_t *sequence) {
+bool StatsWorker::peek(IpaStats *out, uint32_t *sequence, int64_t *exposureStartNs) {
     if (!out || !sequence) return false;
     std::lock_guard<std::mutex> lock(outLock);
     if (!latestValid) return false;
     *out      = latest;
     *sequence = latestSeq;
+    if (exposureStartNs) *exposureStartNs = latestStartNs;
     return true;
 }
 
@@ -139,8 +141,9 @@ void StatsWorker::threadLoop() {
             {
                 std::lock_guard<std::mutex> lock(outLock);
                 latest      = result;
-                latestSeq   = currentJob.sequence;
-                latestValid = true;
+                latestSeq     = currentJob.sequence;
+                latestStartNs = currentJob.exposureStartNs;
+                latestValid   = true;
             }
             /* The cycle is done reading its frame. */
             release(currentJob.hold);

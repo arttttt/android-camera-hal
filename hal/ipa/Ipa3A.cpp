@@ -114,6 +114,7 @@ void Ipa3A::reset() {
         afHoldsLocks = false;
     }
     haveStatsSeq = false;
+    haveSeenStatsSeq = false;
     lastAeResult = AeResult();
 
     /* Re-seed the shader with the priors so the next session starts
@@ -147,6 +148,16 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
         emptyBatch.val[i] = 0;
     }
 
+    /* Stats come in once per StatsWorker cycle, while this runs on
+     * every frame: most ticks see the stats of the tick before again.
+     * Controllers that integrate over time (AWB's smoothing, AF's
+     * sweep samples) run only on fresh stats, or each would count one
+     * measurement twice. */
+    const bool statsFresh = !haveSeenStatsSeq
+                         || params.inputSequence != lastSeenStatsSeq;
+    haveSeenStatsSeq = true;
+    lastSeenStatsSeq = params.inputSequence;
+
     /* AWB — coordinator-side gating. The controller is pure compute,
      * never hits the ISP / DelayedControls itself. The Awb impl
      * accepts the Camera2 awbMode value: gray-world ignores it,
@@ -171,7 +182,7 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
         awbResult = mAwb->applyManualGains(meta.manualWbR,
                                            meta.manualWbG,
                                            meta.manualWbB);
-    } else if (awbRun) {
+    } else if (awbRun && statsFresh) {
         awbResult = mAwb->process(stats, lastLuxIndex, meta.awbMode);
     }
 
@@ -314,7 +325,9 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
      * (going through DelayedControls like exposure would cost a
      * sweep step several frames). */
     if (af) {
-        const AfResult afResult = af->process(stats, aeResult.converged);
+        const AfResult afResult = af->process(stats, statsFresh,
+                                              params.inputExposureStartNs,
+                                              aeResult.converged);
         if (afResult.vcmPosition && lensWriter)
             lensWriter(*afResult.vcmPosition);
         if (afResult.sweeping != afHoldsLocks) {

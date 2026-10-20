@@ -5,6 +5,8 @@
 #include <mutex>
 #include <vector>
 
+#include <utils/Timers.h>
+
 #include "CameraMetadataCompat.h"
 
 #include "AfResult.h"
@@ -95,6 +97,11 @@ public:
      * Caller hands over the same stats buffer the IPA has already
      * finished with.
      *
+     * `fresh` says these stats were not handed in on an earlier tick;
+     * `statsExposureStartNs` is when the frame they come from began
+     * exposing (systemTime, 0 = unknown). A sweep only samples fresh
+     * stats of a frame exposed after the lens settled.
+     *
      * `aeConverged` gates continuous-AF retrigger — refuses to scan
      * while AE is still chasing exposure (brightness changes from AE
      * catching up would look like scene changes). The coordinator
@@ -105,7 +112,8 @@ public:
      * set, is where the lens has to go now; the coordinator writes it
      * on this same tick, which keeps a sweep step on the frame the
      * state machine decided it. */
-    AfResult process(const IpaStats &stats, bool aeConverged);
+    AfResult process(const IpaStats &stats, bool fresh,
+                     int64_t statsExposureStartNs, bool aeConverged);
 
     /* The state as of the last process() tick. Safe from any thread. */
     Report report() const;
@@ -177,7 +185,6 @@ private:
      * sample at the boundary or when the parabolic fit degenerates. */
     int32_t findPeak(size_t start, size_t end) const;
     bool   nearLimit(int32_t pos, int32_t limit) const;
-    void   setSettleForMove(int32_t fromPos, int32_t toPos);
 
     /* Clamp `pos` to the calibrated VCM range
      * [mVcmInfinity, mVcmMacroEnd] — sweep / manual-focus / etc.
@@ -197,7 +204,10 @@ private:
     void applyCommand(const Command &cmd);
 
     /* Ask for the lens to move to `pos` on this tick. */
-    void moveLens(int32_t pos) { mLensTarget = pos; }
+    void moveLens(int32_t pos) {
+        mLensTarget  = pos;
+        mLensMovedNs = systemTime();
+    }
     void publishReport();
     Report buildReport() const;
 
@@ -247,8 +257,7 @@ private:
     float    mRetriggerRatio;
     int32_t  mRetriggerDelay;
     bool     mPdafEnabled;
-    int32_t  mSettleFramesCoarse;
-    int32_t  mSettleFramesFine;
+    int64_t  mSettleNs;      /* VCM settle after a move (tuning settle_time) */
     uint32_t mMinFramesBetweenSweeps;   /* tuning */
     int      mMinFocusRoiPatches;       /* tuning */
 
@@ -268,7 +277,7 @@ private:
     int32_t   mSweepStep;     /* signed: positive toward macro       */
     int32_t   mSweepBestPos;
     float     mSweepBestScore;
-    int32_t   mSettleFrames;
+    int64_t   mLensMovedNs;   /* systemTime of the last lens move */
     /* Full per-sweep score history. Every Coarse / Fine sample
      * appends; cleared on startSweep. Parabolic peak interpolation
      * runs over phase-bounded slices of this vector so coarse-step

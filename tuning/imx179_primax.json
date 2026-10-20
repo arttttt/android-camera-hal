@@ -45,8 +45,6 @@
         "retrigger_ratio": 0.75,
         "retrigger_delay_frames": 10,
         "pdaf_enabled": false,
-        "settle_frames_coarse": 2,
-        "settle_frames_fine": 1,
         "min_frames_between_sweeps": 30,
         "min_focus_roi_patches": 5
       }

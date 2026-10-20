@@ -112,7 +112,6 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
         static const char *const kCdafKeys[] = {
             "step_coarse", "step_fine", "contrast_ratio",
             "retrigger_ratio", "retrigger_delay_frames", "pdaf_enabled",
-            "settle_frames_coarse", "settle_frames_fine",
             "min_frames_between_sweeps", "min_focus_roi_patches",
         };
         bool cdafComplete = cdaf.isObject();
@@ -132,8 +131,6 @@ bool SensorTuning::load(const char *sensor, const char *integrator) {
             mAf.retriggerRatio         = cdaf["retrigger_ratio"].asFloat();
             mAf.retriggerDelay         = cdaf["retrigger_delay_frames"].asInt();
             mAf.pdafEnabled            = cdaf["pdaf_enabled"].asBool();
-            mAf.settleFramesCoarse     = cdaf["settle_frames_coarse"].asInt();
-            mAf.settleFramesFine       = cdaf["settle_frames_fine"].asInt();
             mAf.minFramesBetweenSweeps = cdaf["min_frames_between_sweeps"].asInt();
             mAf.minFocusRoiPatches     = cdaf["min_focus_roi_patches"].asInt();
             mHasAf = true;

@@ -28,6 +28,9 @@ class DelayedControls;
 
 struct IpaProcessParams {
     uint32_t                 inputSequence;
+    int64_t                  inputExposureStartNs;  /* stats frame's exposure
+                                                     * start (systemTime; 0 =
+                                                     * unknown)             */
     uint32_t                 frameNumber;
     int64_t                  timestampNs;
     const IpaStats          &stats;

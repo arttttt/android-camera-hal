@@ -35,6 +35,7 @@ void V4l2CaptureThread::threadLoop() {
      * per stall; a frame arriving afterwards rearms it. */
     nsecs_t lastFrame = systemTime();
     bool    stallReported = false;
+    nsecs_t prevGood  = 0;   /* dequeue time of the previous good frame */
 
     while (!stopRequested()) {
         /* Consumer-released buffers stay in owner->toRelease until the
@@ -121,6 +122,17 @@ void V4l2CaptureThread::threadLoop() {
         if (!frame) {
             ALOGE("slotAt(%d) returned null", id);
             continue;
+        }
+        {
+            /* The slot belongs to this thread until it is handed out
+             * below. Frames dropped by drain-to-latest stretch the
+             * interval, which only makes the exposure start earlier
+             * than it was: the safe direction for the AF freshness
+             * gate reading it. */
+            V4l2Device::VBuffer *slot = const_cast<V4l2Device::VBuffer *>(frame);
+            slot->dequeuedNs = lastFrame;
+            slot->intervalNs = prevGood ? lastFrame - prevGood : 0;
+            prevGood = lastFrame;
         }
 
         /* Handoff: if the previous latest was never consumed, drop it

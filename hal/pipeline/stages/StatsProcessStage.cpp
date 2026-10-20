@@ -30,7 +30,8 @@ void StatsProcessStage::process(PipelineContext &ctx) {
 
     IpaStats stats;
     uint32_t statsSeq = 0;
-    if (!deps.statsWorker->peek(&stats, &statsSeq)) return;
+    int64_t  statsStartNs = 0;
+    if (!deps.statsWorker->peek(&stats, &statsSeq, &statsStartNs)) return;
 
     const nsecs_t tPeek = systemTime();
 
@@ -99,6 +100,7 @@ void StatsProcessStage::process(PipelineContext &ctx) {
      * lookup via DelayedControls, the request-settings seed). */
     IpaProcessParams params = {
         statsSeq,
+        statsStartNs,
         ctx.request.frameNumber,
         ctx.tShutter ? ctx.tShutter : ctx.tAccepted,
         stats,
