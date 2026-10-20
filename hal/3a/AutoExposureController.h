@@ -135,6 +135,9 @@ private:
      * shipping tuning has `active.ae` populated. */
     float aeSetpoint;
     float aeDamping;
+    /* 2^-MaxFstopDeltaNeg / 2^MaxFstopDeltaPos: the most the command
+     * may fall / rise per frame. A slew limit on the command, not a
+     * clamp on the measured ratio. */
     float aeRatioMin;
     float aeRatioMax;
     float aeCloseSpeedZone;

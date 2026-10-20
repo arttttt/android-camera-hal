@@ -412,16 +412,19 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
      * strictest wins (RPi / libcamera convention). Cap = 0.8: top
      * 2% of patches sit at 80% of dynamic range, ~0.3-stop headroom
      * before sensor clip. */
-    float ratioMean = effectiveSetpoint / meanLuma;
-    if (ratioMean < aeRatioMin) ratioMean = aeRatioMin;
-    if (ratioMean > aeRatioMax) ratioMean = aeRatioMax;
+    /* The ratios are not clamped. MaxFstopDelta{Pos,Neg} limit how
+     * fast the COMMAND may move per frame (NVIDIA: "limit the
+     * effective fstop change per frame"), applied after the LPF
+     * below. Clamping the ratio instead limited each measurement to
+     * half a stop, and with the correction based on the measured
+     * frame's exposure that became half a stop per ~5-frame control
+     * cycle: ~12 s to come back from a flashlight. */
+    const float ratioMean = effectiveSetpoint / meanLuma;
 
     constexpr float kAeHighlightCap = 0.8f;
-    float ratioHighlight = (iqmHighlight > 0.f)
-                         ? (kAeHighlightCap / iqmHighlight)
-                         : aeRatioMax;
-    if (ratioHighlight < aeRatioMin) ratioHighlight = aeRatioMin;
-    if (ratioHighlight > aeRatioMax) ratioHighlight = aeRatioMax;
+    const float ratioHighlight = (iqmHighlight > 0.f)
+                               ? (kAeHighlightCap / iqmHighlight)
+                               : ratioMean;
 
     const float ratio = ratioMean < ratioHighlight ? ratioMean : ratioHighlight;
 
@@ -486,8 +489,18 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
                                        ? sqrtf(aeDamping)
                                        : aeDamping,
                                    framesElapsed);
-    filteredTotalUs = speed * targetTotalUs
-                    + (1.0f - speed) * filteredTotalUs;
+    float next = speed * targetTotalUs + (1.0f - speed) * filteredTotalUs;
+
+    /* Slew limit on the command, per elapsed frame. */
+    if (aeRatioMax > 1.f) {
+        const float up = filteredTotalUs * powf(aeRatioMax, (float)framesElapsed);
+        if (next > up) next = up;
+    }
+    if (aeRatioMin > 0.f && aeRatioMin < 1.f) {
+        const float down = filteredTotalUs * powf(aeRatioMin, (float)framesElapsed);
+        if (next < down) next = down;
+    }
+    filteredTotalUs = next;
     lastEvComp = meta.aeExposureCompensation;
 
     int32_t newExposureUs;
