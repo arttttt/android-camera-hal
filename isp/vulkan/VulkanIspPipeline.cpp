@@ -329,6 +329,9 @@ bool VulkanIspPipeline::beginFrame(unsigned srcW, unsigned srcH, uint32_t pixFmt
         return false;
 
     int slot = acquireSlot();
+    /* The slot's previous submit is done, and with it every submit at
+     * least SLOT_COUNT frames old: buffers idle that long can go. */
+    mGrallocCache.tick();
 
     IspParams params;
     fillParams(&params, srcW, srcH, is16, pixFmt);

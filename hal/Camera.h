@@ -31,6 +31,7 @@ namespace android {
 struct PipelineContext;
 class Pipeline;
 class PipelineStage;
+class ApplySettingsStage;
 class InFlightTracker;
 class RequestThread;
 class PipelineThread;
@@ -100,6 +101,8 @@ private:
     std::unique_ptr<EventQueue<JpegWorker::Job>>  mJpegQueue;
     std::unique_ptr<EventFd>                      mJpegCompletionWake;
     std::unique_ptr<Pipeline>                     mRequestPipeline;
+    /* Owned by mRequestPipeline; kept to reset it on session close. */
+    ApplySettingsStage                           *mApplySettingsStage = nullptr;
     std::unique_ptr<PipelineStage>                mDemosaicBlitStage;
     std::unique_ptr<PipelineStage>                mStatsProcessStage;
     std::unique_ptr<PipelineStage>                mResultDispatchStage;

@@ -40,6 +40,8 @@ public:
          * dma-buf. Mismatch on either invalidates the entry. */
         uint32_t      handleHash;
         uint64_t      dmabufInode;
+        /* Frame (tick count) the entry was last handed out on. */
+        uint64_t      lastUsed;
     };
 
     explicit VulkanGrallocCache(const VulkanDeviceState &dev);
@@ -63,10 +65,23 @@ public:
      * already gone. */
     void clear();
 
+    /* Called once per frame, after the frame's slot fence has been
+     * waited on. Destroys the wrappers of buffers not handed out for
+     * kIdleFrames frames: the framework replaces a session's buffers
+     * whenever the stream set changes, and the cache would otherwise
+     * keep one VkImage per buffer ever seen until the session closes.
+     * kIdleFrames must stay above the pipeline's slot count, so no
+     * submit still in flight refers to an evicted entry. */
+    static constexpr uint64_t kIdleFrames = 64;
+    void tick();
+
 private:
     const VulkanDeviceState                           &mDev;
     VkRenderPass                                       mRenderPass;
     std::unordered_map<const native_handle_t *, Entry> mEntries;
+    uint64_t                                           mFrame;
+
+    void destroyEntry(Entry &e);
 };
 
 }; /* namespace android */

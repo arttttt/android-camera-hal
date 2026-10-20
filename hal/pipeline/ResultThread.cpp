@@ -78,12 +78,10 @@ void ResultThread::threadLoop() {
         dispatchReadyPrefix();
     }
 
-    /* Stop drain: wait for pending ctxs to become ready (best-effort)
-     * then dispatch. JpegWorker is stopped after us in the lifecycle
-     * (since we depend on it for jpegPending decrements), so any
-     * pending ctxs here that are still parked on jpegPending will be
-     * unblocked by JpegWorker's own stop drain that processes its
-     * remaining jobs before exiting. */
+    /* Stop drain: dispatch whatever is ready. JpegWorker is stopped
+     * before us (Camera::stopWorkers), and its own stop drain encodes
+     * every job left in its queue, so by now every jpegPending has
+     * come down and the pending ctxs are ready. */
     drainQueueIntoPending();
     dispatchReadyPrefix();
     /* Anything still pending at this point: snapshot encode never

@@ -57,7 +57,8 @@ uint64_t dmabufInodeFor(const native_handle_t *h) {
 
 VulkanGrallocCache::VulkanGrallocCache(const VulkanDeviceState &dev)
     : mDev(dev)
-    , mRenderPass(VK_NULL_HANDLE) {}
+    , mRenderPass(VK_NULL_HANDLE)
+    , mFrame(0) {}
 
 VulkanGrallocCache::~VulkanGrallocCache() {
     clear();
@@ -67,23 +68,36 @@ void VulkanGrallocCache::setRenderPass(VkRenderPass rp) {
     mRenderPass = rp;
 }
 
+void VulkanGrallocCache::destroyEntry(Entry &e) {
+    if (e.framebuffer)
+        mDev.pfn()->DestroyFramebuffer(mDev.device(), e.framebuffer, NULL);
+    if (e.view)
+        mDev.pfn()->DestroyImageView(mDev.device(), e.view, NULL);
+    if (e.image)
+        mDev.pfn()->DestroyImage(mDev.device(), e.image, NULL);
+}
+
 void VulkanGrallocCache::clear() {
     if (!mDev.isReady() || mDev.device() == VK_NULL_HANDLE) {
         mEntries.clear();
         return;
     }
-    for (auto &kv : mEntries) {
-        if (kv.second.framebuffer) {
-            mDev.pfn()->DestroyFramebuffer(mDev.device(), kv.second.framebuffer, NULL);
-        }
-        if (kv.second.view) {
-            mDev.pfn()->DestroyImageView(mDev.device(), kv.second.view, NULL);
-        }
-        if (kv.second.image) {
-            mDev.pfn()->DestroyImage(mDev.device(), kv.second.image, NULL);
+    for (auto &kv : mEntries)
+        destroyEntry(kv.second);
+    mEntries.clear();
+}
+
+void VulkanGrallocCache::tick() {
+    ++mFrame;
+    if (!mDev.isReady() || mDev.device() == VK_NULL_HANDLE) return;
+    for (auto it = mEntries.begin(); it != mEntries.end(); ) {
+        if (it->second.lastUsed + kIdleFrames < mFrame) {
+            destroyEntry(it->second);
+            it = mEntries.erase(it);
+        } else {
+            ++it;
         }
     }
-    mEntries.clear();
 }
 
 bool VulkanGrallocCache::getOrCreate(ANativeWindowBuffer *anwb,
@@ -96,6 +110,7 @@ bool VulkanGrallocCache::getOrCreate(ANativeWindowBuffer *anwb,
     if (it != mEntries.end()) {
         Entry &e = it->second;
         if (e.handleHash == curHash && e.dmabufInode == curInode) {
+            e.lastUsed = mFrame;
             *outEntry = &e;
             return true;
         }
@@ -114,12 +129,7 @@ bool VulkanGrallocCache::getOrCreate(ANativeWindowBuffer *anwb,
               (unsigned long long)e.dmabufInode,
               (unsigned long long)curInode);
         mDev.pfn()->DeviceWaitIdle(mDev.device());
-        if (e.framebuffer)
-            mDev.pfn()->DestroyFramebuffer(mDev.device(), e.framebuffer, NULL);
-        if (e.view)
-            mDev.pfn()->DestroyImageView(mDev.device(), e.view, NULL);
-        if (e.image)
-            mDev.pfn()->DestroyImage(mDev.device(), e.image, NULL);
+        destroyEntry(e);
         mEntries.erase(it);
     }
 
@@ -187,6 +197,7 @@ bool VulkanGrallocCache::getOrCreate(ANativeWindowBuffer *anwb,
     entry.layoutReady = false;
     entry.handleHash  = curHash;
     entry.dmabufInode = curInode;
+    entry.lastUsed    = mFrame;
     auto res = mEntries.emplace(anwb->handle, entry);
     *outEntry = &res.first->second;
     return true;

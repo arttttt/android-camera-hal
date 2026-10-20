@@ -44,6 +44,11 @@ public:
     const char *name() const override { return "ApplySettings"; }
     void process(PipelineContext &context) override;
 
+    /* Forget the last auto write. Called when a session closes: the
+     * next one starts from the driver defaults configureStreams
+     * writes, not from the exposure the previous session ended on. */
+    void reset();
+
 private:
     Deps deps;
 

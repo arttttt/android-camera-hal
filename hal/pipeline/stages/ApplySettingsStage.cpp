@@ -90,6 +90,12 @@ ApplySettingsStage::ApplySettingsStage(const Deps &d)
     }
 }
 
+void ApplySettingsStage::reset() {
+    lastAutoValid      = false;
+    lastAutoExposureUs = 0;
+    lastAutoGain       = 0;
+}
+
 void ApplySettingsStage::process(PipelineContext &ctx) {
     if (deps.sensorCfg) {
         ctx.appliedExposureUs = deps.sensorCfg->exposureDefault;

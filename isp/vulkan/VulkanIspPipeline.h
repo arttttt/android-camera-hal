@@ -130,6 +130,8 @@ private:
      * anyway, so one scratch image shared across slots is safe — the
      * ring buys CPU↔GPU overlap, not parallel GPU execution. */
     static constexpr size_t SLOT_COUNT = 4;
+    static_assert(VulkanGrallocCache::kIdleFrames > SLOT_COUNT,
+                  "an evicted gralloc entry must be past every submit in flight");
 
     /* JPEG snapshot ring depth — sized for the in-flight BLOB encode
      * pipeline, not the per-submit slot ring. JpegWorker holds one

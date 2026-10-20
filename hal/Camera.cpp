@@ -284,6 +284,7 @@ int Camera::closeDevice() {
     mLastConfigHeight = 0;
     mLastAeMode       = 0xff;
     if (mAf)              mAf->reset();
+    if (mApplySettingsStage) mApplySettingsStage->reset();
     if (mIsp)             mIsp->onSessionClose();
     if (mIpa)             mIpa->reset();
     if (mDelayedControls) mDelayedControls->reset();
@@ -313,7 +314,13 @@ int Camera::initialize(const camera3_callback_ops_t *callbackOps) {
 const camera_metadata_t * Camera::constructDefaultRequestSettings(int type) {
     DBGUTILS_AUTOLOGCALL(__func__);
     Mutex::Autolock lock(mMutex);
-    /* TODO: validate type */
+
+    /* camera3.h: an unknown template type (vendor ones included) gets
+     * NULL. mDefaultRequestSettings is indexed by type. */
+    if (type < CAMERA3_TEMPLATE_PREVIEW || type >= CAMERA3_TEMPLATE_COUNT) {
+        ALOGE("constructDefaultRequestSettings: unknown template %d", type);
+        return NULL;
+    }
 
     if(mDefaultRequestSettings[type])
         return mDefaultRequestSettings[type];
@@ -688,8 +695,9 @@ void Camera::buildInfrastructure() {
         d.af              = mAf;
         d.sensorCfg       = &mSensorCfg;
         d.delayedControls = mDelayedControls.get();
+        mApplySettingsStage = new ApplySettingsStage(d);
         mRequestPipeline->appendStage(
-            std::unique_ptr<PipelineStage>(new ApplySettingsStage(d)));
+            std::unique_ptr<PipelineStage>(mApplySettingsStage));
     }
 
     mRequestPipeline->appendStage(
@@ -787,6 +795,7 @@ void Camera::destroyInfrastructure() {
     mResultDispatchStage.reset();
     mStatsProcessStage.reset();
     mDemosaicBlitStage.reset();
+    mApplySettingsStage = nullptr;
     mRequestPipeline.reset();
     mStatsWorker.reset();
     mDelayedControls.reset();
