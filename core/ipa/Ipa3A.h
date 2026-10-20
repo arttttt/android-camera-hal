@@ -41,7 +41,7 @@ public:
      * selection: every AWB tick that updates the gains also writes a
      * fresh row-major Q10 CCM into `ccmBufferQ10`, picking / blending
      * between the sensor's calibrated (wbGain, ccMatrix) anchors.
-     * The buffer is caller-owned (Camera's mCcmQ10) and the same
+     * The buffer is caller-owned (the session's ccmQ10) and the same
      * pointer the ISP has already been handed via setCcm — updating
      * it in place lets the next demosaic submit read fresh
      * coefficients without any extra plumbing. Pass tuning == nullptr

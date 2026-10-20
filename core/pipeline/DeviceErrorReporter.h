@@ -16,7 +16,7 @@ namespace android {
  * framework closes it and the app reopens or reports the failure.
  * Whichever part of the pipeline finds that out first calls report();
  * it goes to the result sink once per session, however many parts find
- * it. Camera rearms the reporter when the session closes. */
+ * it. Session::close rearms it. */
 class DeviceErrorReporter {
 public:
     explicit DeviceErrorReporter(mocha::camera::ResultSink *sink)

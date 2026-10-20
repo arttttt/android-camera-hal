@@ -55,7 +55,7 @@ public:
                                         float bGainAbs) = 0;
 
     /* Reset to the cold-start prior. Called on session boundary
-     * (Camera::closeDevice → Ipa::reset). */
+     * (Session::close → Ipa::reset). */
     virtual void reset() = 0;
 
     /* Snapshot of the controller's smoothed gains, normalised with

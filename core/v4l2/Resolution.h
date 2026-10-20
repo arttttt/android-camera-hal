@@ -5,7 +5,7 @@ namespace android {
 
 /* Width x height pair used across V4L2 + stream/metadata code. Lives
  * here rather than nested inside V4l2Device because non-V4L2 consumers
- * (static metadata, Camera::processCaptureRequest, StreamConfig) all
+ * (the capability probe, the frame source, the session) all
  * work with the same shape. */
 struct Resolution {
     unsigned width;

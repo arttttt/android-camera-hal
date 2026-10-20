@@ -52,7 +52,7 @@ public:
 
     /* Drops every cached write. All applyControls() queries fall back
      * to Config.defaultValue until the next push(). Called on session
-     * boundary (closeDevice). */
+     * boundary (Session::close). */
     void reset();
 
     /* Stores each set control (batch.has[id] == true) into slot

@@ -15,7 +15,7 @@ namespace android {
  * - `gains` (when present) — push to `IspControls::setWbGains`. The
  *   shader's WB stage applies on the next `vkQueueSubmit` with zero
  *   silicon delay; no DelayedControls timing dance.
- * - `ccm` (when present) — copy into the shared `Camera::mCcmQ10`
+ * - `ccm` (when present) — copy into the session's shared `ccmQ10`
  *   buffer the demosaic shader reads by pointer. CCM updates are
  *   gated on the same conditions as gain updates (no CCM drift
  *   while WB is frozen would otherwise produce visible hue shifts

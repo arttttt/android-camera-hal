@@ -184,7 +184,7 @@ public:
      * first real frame. */
     virtual void prewarm(unsigned width, unsigned height, uint32_t pixFmt) = 0;
 
-    /* Called by closeDevice after the engines have stopped and the GPU
+    /* Called by Session::close after the engines have stopped and the GPU
      * drained. The backend releases per-session references -- notably
      * cached bindings into framework-owned gralloc buffers, which become
      * invalid the moment the session ends. Core Vulkan resources

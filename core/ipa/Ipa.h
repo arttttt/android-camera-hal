@@ -88,7 +88,7 @@ public:
     virtual DelayedControls::Batch processStats(const IpaProcessParams &params) = 0;
 
     /* Drops any internal averaging / peak-tracking state. Called
-     * on session boundary (closeDevice) alongside the other
+     * on session boundary (Session::close) alongside the other
      * per-session resets. */
     virtual void reset() = 0;
 

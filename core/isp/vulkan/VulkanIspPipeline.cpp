@@ -1401,7 +1401,7 @@ void VulkanIspPipeline::waitForPreviousFrame() {
     for (size_t s = 0; s < SLOT_COUNT; s++) {
         if (!waitSlotFence((int)s)) {
             /* Hung GPU: give up on the slot rather than block the
-             * caller (configureStreams holds Camera's mutex here). */
+             * caller (configureStreams holds the device mutex here). */
             ::close(mSlotSyncFd[s]);
             mSlotSyncFd[s] = -1;
         }

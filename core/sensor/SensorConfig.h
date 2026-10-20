@@ -10,9 +10,9 @@ namespace android {
 /*
  * Per-sensor configuration. Fields split by source:
  *
- *  - Driver-queried at openDevice via VIDIOC_QUERYCTRL. The per-sensor
+ *  - Driver-queried at Session::open via VIDIOC_QUERYCTRL. The per-sensor
  *    builders (imx179() / ov5693()) leave these at 0 since
- *    Camera::populateSensorConfigFromDriver() always runs before any
+ *    Session::Impl::populateSensorConfigFromDriver() always runs before any
  *    consumer reads them. If QUERYCTRL fails, the HAL won't start AE
  *    anyway — zero is the honest "not yet known" value.
  *
@@ -114,8 +114,8 @@ struct SensorConfig {
     }
 
     /* Pre-built configs for known sensors — carry only the fields
-     * QUERYCTRL can't give us. Camera::populateSensorConfigFromDriver
-     * fills the rest before any consumer reads mSensorCfg. */
+     * QUERYCTRL can't give us. Session's populateSensorConfigFromDriver
+     * fills the rest before any consumer reads the config. */
     static SensorConfig imx179() {
         return {
             .frameLenDefault = 0,
