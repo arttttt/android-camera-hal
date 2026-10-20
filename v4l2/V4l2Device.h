@@ -75,7 +75,10 @@ public:
      * invoke these while isStreaming(). */
     int  fd() const { return mFd; }
     int  dequeueBufferBlocking();            /* waits via poll(); returns slot or -1 */
-    int  dequeueBufferNonBlockingExt();      /* EAGAIN -> -1; otherwise slot */
+    /* EAGAIN -> -1; otherwise slot. `corrupt` (optional) reports
+     * V4L2_BUF_FLAG_ERROR: the driver filled the slot but the frame in
+     * it is damaged. */
+    int  dequeueBufferNonBlockingExt(bool *corrupt = nullptr);
     bool queueBufferExt(unsigned id);        /* V4L2 QBUF; returns false on error */
     const VBuffer* slotAt(int id) const;     /* accessor into mBuf[id]; null on range error */
 
@@ -110,7 +113,7 @@ public:
 private:
     bool queueBuffer(unsigned id);
     int dequeueBuffer();
-    int dequeueBufferNonBlocking();
+    int dequeueBufferNonBlocking(bool *corrupt = nullptr);
 
     bool iocStreamOff();
     bool iocStreamOn();

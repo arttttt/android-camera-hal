@@ -19,6 +19,9 @@ protected:
     void threadLoop() override;
 
 private:
+    static constexpr int kStallMs        = 3000;
+    static constexpr int kErrorBackoffMs = 20;
+
     V4l2Source *owner;
 };
 

@@ -87,7 +87,16 @@ private:
      * has already signalled so the wait is a no-op — the ring buys
      * CPU↔GPU overlap. Also destroys any leftover acquire-fence
      * semaphores from the slot's previous submit. */
-    int acquireSlot();
+    int acquireSlot();     /* -1: the slot's fence timed out (GPU hung) */
+
+    /* Waits for a slot's previous submit, at most kGpuFenceTimeoutMs.
+     * On timeout the device is marked lost and false returned. */
+    static constexpr int kGpuFenceTimeoutMs = 1000;
+    /* One-off setup submits (scratch layout, prewarm) may include the
+     * driver's first pipeline compile; give them more room. */
+    static constexpr int kGpuSetupTimeoutMs = 5000;
+    bool waitSlotFence(int slot);
+    void waitFenceInline(int slot, int timeoutMs);
 
     /* Write `p` into the slot's param buffer and flush the memory range
      * so the GPU sees the new parameters on the next dispatch. */

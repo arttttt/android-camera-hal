@@ -4,6 +4,7 @@
 #include <poll.h>
 
 #include <utils/Log.h>
+#include <utils/Timers.h>
 
 #include "V4l2Device.h"
 #include "V4l2Source.h"
@@ -28,6 +29,13 @@ void V4l2CaptureThread::threadLoop() {
     pfds[1].fd = stopFd();
     pfds[1].events = POLLIN;
 
+    /* Stall watch: no good frame for kStallMs means the sensor or VI
+     * has stopped (a manual exposure is at most 1 s, and the driver
+     * stretches a frame to ~0.85 s at most). The owner is told once
+     * per stall; a frame arriving afterwards rearms it. */
+    nsecs_t lastFrame = systemTime();
+    bool    stallReported = false;
+
     while (!stopRequested()) {
         /* Consumer-released buffers stay in owner->toRelease until the
          * request thread's CaptureStage flushes them via
@@ -36,41 +44,78 @@ void V4l2CaptureThread::threadLoop() {
          * V4l2Device::unlock here; all QBUF-back-to-sensor calls on
          * this thread come from the drain-to-latest loop below, whose
          * buffers have never been handed to the GPU. */
+        const int sinceMs = (int)((systemTime() - lastFrame) / 1000000);
+        if (sinceMs >= kStallMs) {
+            if (!stallReported) {
+                stallReported = true;
+                ALOGE("no frame from the sensor for %d ms", sinceMs);
+                if (owner->onStall) owner->onStall();
+            }
+        }
+        const int timeoutMs = stallReported ? -1 : kStallMs - sinceMs;
+
         pfds[0].revents = 0;
         pfds[1].revents = 0;
-        int n = ::poll(pfds, 2, -1);
+        int n = ::poll(pfds, 2, timeoutMs);
         if (n < 0) {
             if (errno == EINTR) continue;
             ALOGE("poll failed, errno=%d", errno);
             break;
         }
         if (pfds[1].revents & POLLIN) break;
-        if (!(pfds[0].revents & POLLIN)) continue;
-
-        /* First DQBUF — non-blocking: the V4L2 fd said ready. */
-        int id = dev->dequeueBufferNonBlockingExt();
-        if (id < 0) {
-            /* ESPIPE-like: ready signalled but nothing there (can
-             * happen on STREAMOFF). Loop back to check stopFd. */
+        if (n == 0) continue;   /* timeout: the stall check above */
+        if (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            /* vb2 reports POLLERR while the queue is not streaming or
+             * holds no buffer; poll would return at once forever. Wait
+             * on the stop fd alone for a moment instead of spinning;
+             * the stall watch still runs. */
+            struct pollfd stopOnly = { stopFd(), POLLIN, 0 };
+            ::poll(&stopOnly, 1, kErrorBackoffMs);
             continue;
         }
+        if (!(pfds[0].revents & POLLIN)) continue;
 
-        /* Drain-to-latest: requeue any older slots that piled up
-         * behind while the consumer was slow. Leaves only the newest
-         * frame in hand. */
+        /* DQBUF everything ready — non-blocking: the V4L2 fd said
+         * ready. Drain-to-latest keeps only the newest good frame and
+         * requeues older slots that piled up behind while the consumer
+         * was slow. A slot the driver flagged V4L2_BUF_FLAG_ERROR holds
+         * a damaged frame: it goes straight back and is never handed
+         * on. */
+        int id = -1;
         int dropped = 0;
+        int damaged = 0;
         for (;;) {
-            int next = dev->dequeueBufferNonBlockingExt();
+            bool corrupt = false;
+            int next = dev->dequeueBufferNonBlockingExt(&corrupt);
             if (next < 0) break;
-            if (!dev->queueBufferExt(id)) {
-                ALOGE("drain-to-latest: QBUF slot %d failed: errno=%d",
-                      id, errno);
+            if (corrupt) {
+                if (!dev->queueBufferExt(next)) {
+                    ALOGE("requeue of damaged slot %d failed: errno=%d",
+                          next, errno);
+                }
+                ++damaged;
+                continue;
+            }
+            if (id >= 0) {
+                if (!dev->queueBufferExt(id)) {
+                    ALOGE("drain-to-latest: QBUF slot %d failed: errno=%d",
+                          id, errno);
+                }
+                ++dropped;
             }
             id = next;
-            ++dropped;
         }
+        if (damaged)
+            ALOGW("capture-thread: %d damaged frame(s) requeued", damaged);
         if (dropped)
             ALOGD("capture-thread: dropped %d stale frame(s)", dropped);
+        if (id < 0) {
+            /* Ready signalled but nothing good there (can happen on
+             * STREAMOFF). Loop back to check stopFd. */
+            continue;
+        }
+        lastFrame     = systemTime();
+        stallReported = false;
 
         const V4l2Device::VBuffer *frame = dev->slotAt(id);
         if (!frame) {

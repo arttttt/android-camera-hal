@@ -59,6 +59,12 @@ public:
      * reference is released. */
     virtual void retainFrame(const V4l2Device::VBuffer*) = 0;
 
+    /* Called, from the source's own thread, when it has produced no
+     * frame for longer than any frame the sensor can take: the sensor
+     * or the capture hardware has stopped. Called once per stall; a
+     * frame arriving afterwards rearms it. Set before start(). */
+    virtual void setStallHandler(std::function<void()> handler) = 0;
+
     /* Return all previously-released buffers to the V4L2 device.
      * The caller must guarantee the GPU (or any other consumer)
      * has finished reading from them — typically by calling

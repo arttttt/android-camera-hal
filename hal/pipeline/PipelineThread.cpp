@@ -8,10 +8,12 @@
 
 #include <hardware/camera3.h>
 #include <utils/Log.h>
+#include <utils/Timers.h>
 
 #include "PipelineStage.h"
 #include "BufferProcessor.h"
 #include "BayerSource.h"
+#include "DeviceErrorReporter.h"
 
 #undef  LOG_TAG
 #define LOG_TAG "Cam-PipelineThread"
@@ -21,6 +23,10 @@ namespace {
  * flush() expectation (< 1000 ms) and keeps a GPU hang from blocking
  * closeDevice forever. */
 constexpr int stopDrainTimeoutMs = 1000;
+
+/* Longest a frame's GPU work may take before the GPU counts as hung;
+ * matches VulkanIspPipeline's own slot-fence limit. */
+constexpr int gpuFenceTimeoutMs = 1000;
 } /* namespace */
 
 namespace android {
@@ -158,13 +164,37 @@ void PipelineThread::threadLoop() {
         /* FIFO by single-queue submit order — the oldest in-flight
          * ctx always completes first, so only its fds need to be
          * watched to know when the next ResultDispatch can fire. */
+        int timeoutMs = -1;
         if (!inFlight.empty()) {
-            for (int fd : inFlight.front()->pendingFenceFds) {
+            PipelineContext *head = inFlight.front();
+            for (int fd : head->pendingFenceFds) {
                 if (fd >= 0) pfds.push_back({ fd, POLLIN, 0 });
+            }
+            /* GPU watch: a frame's work is a few ms. The head waiting
+             * on its fence for gpuFenceTimeoutMs is a hung GPU: the
+             * device is reported once and the frames stay in flight
+             * until the framework closes the camera, whose stop drain
+             * gives up on them with a timeout of its own. */
+            if (head != watchedHead) {
+                watchedHead     = head;
+                watchedSince    = systemTime();
+                watchedReported = false;
+            }
+            if (!watchedReported && !head->pendingFenceFds.empty()) {
+                const int waitedMs = (int)((systemTime() - watchedSince) / 1000000);
+                if (waitedMs >= gpuFenceTimeoutMs) {
+                    watchedReported = true;
+                    ALOGE("frame %u: GPU fence not signalled after %d ms",
+                          head->request.frameNumber, waitedMs);
+                    if (deps.deviceError)
+                        deps.deviceError->report("ISP GPU fence never signalled");
+                } else {
+                    timeoutMs = gpuFenceTimeoutMs - waitedMs;
+                }
             }
         }
 
-        int n = ::poll(pfds.data(), pfds.size(), -1);
+        int n = ::poll(pfds.data(), pfds.size(), timeoutMs);
         if (n < 0) {
             if (errno == EINTR) continue;
             ALOGE("poll failed, errno=%d", errno);
@@ -206,6 +236,8 @@ void PipelineThread::threadLoop() {
             if (!reapFences(head)) break;
             completeCtx(head);
             inFlight.pop_front();
+            /* The ctx is gone; a new one may reuse its address. */
+            watchedHead = nullptr;
         }
     }
 
@@ -220,6 +252,7 @@ void PipelineThread::threadLoop() {
         completeCtx(head);
         inFlight.pop_front();
     }
+    watchedHead = nullptr;
 }
 
 } /* namespace android */

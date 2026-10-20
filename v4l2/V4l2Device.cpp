@@ -826,8 +826,8 @@ int V4l2Device::dequeueBufferBlocking() {
     return dequeueBuffer();
 }
 
-int V4l2Device::dequeueBufferNonBlockingExt() {
-    return dequeueBufferNonBlocking();
+int V4l2Device::dequeueBufferNonBlockingExt(bool *corrupt) {
+    return dequeueBufferNonBlocking(corrupt);
 }
 
 bool V4l2Device::queueBufferExt(unsigned id) {
@@ -867,7 +867,7 @@ int V4l2Device::dequeueBuffer() {
  * drain any newer frames sitting in the done-queue after the first
  * (blocking) DQBUF — bounds preview staleness to one frame.
  */
-int V4l2Device::dequeueBufferNonBlocking() {
+int V4l2Device::dequeueBufferNonBlocking(bool *corrupt) {
     assert(mFd >= 0);
 
     struct v4l2_buffer bufInfo;
@@ -880,6 +880,7 @@ int V4l2Device::dequeueBufferNonBlocking() {
     if(ioctl(mFd, VIDIOC_DQBUF, &bufInfo) < 0)
         return -1;
 
+    if (corrupt) *corrupt = (bufInfo.flags & V4L2_BUF_FLAG_ERROR) != 0;
     return (int)bufInfo.index;
 }
 

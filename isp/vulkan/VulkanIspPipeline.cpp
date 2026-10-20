@@ -112,15 +112,47 @@ void VulkanIspPipeline::fillParams(IspParams *p, unsigned w, unsigned h,
 
 /* --- frame helpers shared between the process* paths --- */
 
+void VulkanIspPipeline::waitFenceInline(int slot, int timeoutMs) {
+    const VkResult r = mDeviceState.pfn()->WaitForFences(
+        mDeviceState.device(), 1, &mFence[slot], VK_TRUE,
+        (uint64_t)timeoutMs * 1000000ull);
+    if (r == VK_TIMEOUT) {
+        ALOGE("slot %d fence not signalled after %d ms — GPU hung",
+              slot, timeoutMs);
+        mDeviceLost.store(true);
+        return;
+    }
+    if (vkOk(r, "vkWaitForFences"))
+        mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[slot]);
+}
+
+bool VulkanIspPipeline::waitSlotFence(int slot) {
+    if (mSlotSyncFd[slot] < 0) return true;
+    struct pollfd pfd = { mSlotSyncFd[slot], POLLIN, 0 };
+    int r;
+    do {
+        r = ::poll(&pfd, 1, kGpuFenceTimeoutMs);
+    } while (r < 0 && errno == EINTR);
+    if (r == 0) {
+        /* A frame's GPU work is a few ms; a second without the fence
+         * signalling is a hung GPU, and the device is treated as lost.
+         * The fd stays: the slot is not reused while the GPU may still
+         * write through it. */
+        ALOGE("slot %d fence not signalled after %d ms — GPU hung",
+              slot, kGpuFenceTimeoutMs);
+        mDeviceLost.store(true);
+        return false;
+    }
+    ::close(mSlotSyncFd[slot]);
+    mSlotSyncFd[slot] = -1;
+    return true;
+}
+
 int VulkanIspPipeline::acquireSlot() {
     int slot = (int)mNextSlot;
+    if (!waitSlotFence(slot))
+        return -1;
     mNextSlot = (mNextSlot + 1) % SLOT_COUNT;
-    if (mSlotSyncFd[slot] >= 0) {
-        struct pollfd pfd = { mSlotSyncFd[slot], POLLIN, 0 };
-        ::poll(&pfd, 1, -1);
-        ::close(mSlotSyncFd[slot]);
-        mSlotSyncFd[slot] = -1;
-    }
     /* Acquire-fence semaphores from the slot's prior submit are consumed
      * at submit-start; once the slot's fence has signalled (poll above or
      * the synchronous WaitForFences in legacy paths) they are safe to
@@ -338,6 +370,8 @@ bool VulkanIspPipeline::beginFrame(unsigned srcW, unsigned srcH, uint32_t pixFmt
         return false;
 
     int slot = acquireSlot();
+    if (slot < 0)
+        return false;
     /* The slot's previous submit is done, and with it every submit at
      * least SLOT_COUNT frames old: buffers idle that long can go. */
     mGrallocCache.tick();
@@ -540,14 +574,10 @@ bool VulkanIspPipeline::endFrame(int *submitFenceOut) {
             }
         } else {
             ALOGW("vkGetFenceFdKHR(SYNC_FD) failed; falling back to inline wait");
-            mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1,
-                                               &mFence[slot], VK_TRUE, UINT64_MAX);
-            mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[slot]);
+            waitFenceInline(slot, kGpuFenceTimeoutMs);
         }
     } else {
-        mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1,
-                                           &mFence[slot], VK_TRUE, UINT64_MAX);
-        mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[slot]);
+        waitFenceInline(slot, kGpuFenceTimeoutMs);
     }
 
     /* Hand acquire-fence semaphores over to the slot for delayed
@@ -1171,10 +1201,11 @@ bool VulkanIspPipeline::createScratchImage(unsigned width, unsigned height) {
     si.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers    = &cb;
-    mDeviceState.pfn()->QueueSubmit(mDeviceState.queue(), 1, &si, mFence[0]);
-    mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1, &mFence[0], VK_TRUE, UINT64_MAX);
-    mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[0]);
-    return true;
+    if (!vkOk(mDeviceState.pfn()->QueueSubmit(mDeviceState.queue(), 1, &si, mFence[0]),
+              "vkQueueSubmit (scratch layout)"))
+        return false;
+    waitFenceInline(0, kGpuSetupTimeoutMs);
+    return !mDeviceLost.load();
 }
 
 void VulkanIspPipeline::writeStaticDescriptors() {
@@ -1245,6 +1276,8 @@ void VulkanIspPipeline::prewarm(unsigned width, unsigned height, uint32_t pixFmt
         return;
 
     int slot = acquireSlot();
+    if (slot < 0)
+        return;
 
     IspParams params;
     params.reset();
@@ -1258,9 +1291,7 @@ void VulkanIspPipeline::prewarm(unsigned width, unsigned height, uint32_t pixFmt
 
     int64_t start = nowMs();
     recordAndSubmit(slot, width, height);
-    mDeviceState.pfn()->WaitForFences(mDeviceState.device(), 1,
-                                       &mFence[slot], VK_TRUE, UINT64_MAX);
-    mDeviceState.pfn()->ResetFences(mDeviceState.device(), 1, &mFence[slot]);
+    waitFenceInline(slot, kGpuSetupTimeoutMs);
     ALOGD("Vulkan ISP prewarm %ux%u is16=%d: %lldms",
           width, height, is16 ? 1 : 0, nowMs() - start);
 }
@@ -1409,11 +1440,12 @@ void VulkanIspPipeline::onSessionClose() {
 void VulkanIspPipeline::waitForPreviousFrame() {
     if (!mReady) return;
     for (size_t s = 0; s < SLOT_COUNT; s++) {
-        if (mSlotSyncFd[s] < 0) continue;
-        struct pollfd pfd = { mSlotSyncFd[s], POLLIN, 0 };
-        ::poll(&pfd, 1, -1);
-        ::close(mSlotSyncFd[s]);
-        mSlotSyncFd[s] = -1;
+        if (!waitSlotFence((int)s)) {
+            /* Hung GPU: give up on the slot rather than block the
+             * caller (configureStreams holds Camera's mutex here). */
+            ::close(mSlotSyncFd[s]);
+            mSlotSyncFd[s] = -1;
+        }
     }
 }
 

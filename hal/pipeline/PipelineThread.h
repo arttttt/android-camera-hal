@@ -14,6 +14,7 @@ namespace android {
 class PipelineStage;
 class BufferProcessor;
 class BayerSource;
+class DeviceErrorReporter;
 
 /* GPU-submit side of the async pipeline.
  *
@@ -38,6 +39,7 @@ public:
         PipelineStage                  *statsProcess;    /* may be null */
         BufferProcessor                *bufferProcessor; /* CPU finalize for YUV outputs */
         BayerSource                    *bayerSource;     /* frame's Bayer back once the GPU is done */
+        DeviceErrorReporter            *deviceError;     /* hung GPU → ERROR_DEVICE; may be null */
         std::size_t                     maxInFlight;
     };
 
@@ -63,6 +65,12 @@ private:
 
     Deps deps;
     std::deque<PipelineContext*> inFlight;
+
+    /* GPU watch on the head of inFlight: since when it has been the
+     * head, and whether its hang was already reported. */
+    PipelineContext *watchedHead     = nullptr;
+    int64_t          watchedSince    = 0;
+    bool             watchedReported = false;
 };
 
 } /* namespace android */

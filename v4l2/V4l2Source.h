@@ -38,6 +38,9 @@ public:
     void notifyForAbort() override;
     void releaseFrame(const V4l2Device::VBuffer*) override;
     void retainFrame(const V4l2Device::VBuffer*) override;
+    void setStallHandler(std::function<void()> handler) override {
+        onStall = std::move(handler);
+    }
     void flushPendingReleases() override;
 
     Resolution resolution()       const override;
@@ -50,6 +53,7 @@ private:
 
     V4l2Device                        *dev;
     std::unique_ptr<V4l2CaptureThread> thread;
+    std::function<void()>              onStall;
 
     std::mutex                         mutex;
     std::condition_variable            frameReady;

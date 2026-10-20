@@ -664,6 +664,12 @@ void Camera::buildInfrastructure() {
     mBayerSource.reset(new V4l2Source(mDev));
     mTracker.reset(new InFlightTracker());
     mDeviceError.reset(new DeviceErrorReporter(&mCallbackOps));
+    {
+        DeviceErrorReporter *deviceError = mDeviceError.get();
+        mBayerSource->setStallHandler([deviceError] {
+            deviceError->report("sensor stopped sending frames");
+        });
+    }
     mRequestQueue.reset(new EventQueue<PipelineContext*>(REQUEST_QUEUE_CAPACITY));
     mPipelineQueue.reset(new EventQueue<PipelineContext*>(PIPELINE_QUEUE_CAPACITY));
     mResultQueue.reset(new EventQueue<PipelineContext*>(RESULT_QUEUE_CAPACITY));
@@ -773,6 +779,7 @@ void Camera::buildInfrastructure() {
         d.statsProcess    = mStatsProcessStage.get();
         d.bufferProcessor = mBufferProcessor;
         d.bayerSource     = mBayerSource.get();
+        d.deviceError     = mDeviceError.get();
         d.maxInFlight     = PIPELINE_MAX_IN_FLIGHT;
         mPipelineThread.reset(new PipelineThread(d));
     }
