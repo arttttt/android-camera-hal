@@ -235,18 +235,35 @@ void testGrayWorld() {
     check(static_cast<bool>(manual.gains));
 }
 
-/* Convergence with hysteresis: in within 2 %, out only past 5 %. */
+/* Convergence on the trend of the gap between the smoothed gains and
+ * the target: a cold start far off searches, noise around a settled
+ * point stays converged, a new light searches again within a tick or
+ * two. */
 void testAwbConvergence() {
     AwbConvergence c;
     check(!c.isConverged());
     check(!c.update(1.10f, 1.f, 1.f, 1.f));
-    check(c.update(1.015f, 1.f, 1.f, 1.f));
-    check(c.update(1.04f, 0.97f, 1.f, 1.f));
-    check(!c.update(1.f, 1.06f, 1.f, 1.f));
-    check(!c.update(1.f, 1.03f, 1.f, 1.f));
-    check(c.update(1.f, 1.01f, 1.f, 1.f));
+
+    /* Gains closing on the target, as the damping moves them. */
+    float wb = 1.10f;
+    for (int tick = 0; tick < 60; ++tick) {
+        wb += 0.1f * (1.f - wb);
+        c.update(wb, 1.f, 1.f, 1.f);
+    }
+    check(c.isConverged());
+
+    /* The Bayes estimate stepping between CT points: +-6 % about the
+     * gains, tick to tick. */
+    for (int tick = 0; tick < 100; ++tick)
+        check(c.update(1.f, 1.f, tick % 2 ? 1.06f : 0.94f, 1.f));
+
+    /* A new light: the gap stays one way. */
+    c.update(1.f, 1.f, 1.f, 1.30f);
+    check(!c.update(1.f, 1.f, 1.f, 1.30f));
+
     c.reset();
     check(!c.isConverged());
+    check(!c.update(1.f, 1.f, 1.f, 1.03f));
 }
 
 /* AF: a triggered sweep in Auto runs as ActiveScan, holds AE / AWB for

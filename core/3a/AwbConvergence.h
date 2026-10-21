@@ -22,37 +22,60 @@
 namespace android {
 
 /* Whether AWB has converged: the published (smoothed) gains have
- * reached the tick's target -- what Camera2 reports as CONVERGED, and
- * SEARCHING while they move toward it.
+ * reached the target the controller moves them toward -- what Camera2
+ * reports as CONVERGED, and SEARCHING while they move.
  *
- * With hysteresis: in within kEnter of the target on both R and B, out
- * only past kLeave on either, so the search noise of a settled scene
- * (the Bayes estimate jitters by a few per cent tick to tick, and the
- * damping lags it) does not flicker the state. kEnter matches AE's
- * dead-band. */
+ * Judged on the trend, not the tick: the target is a noisy estimate
+ * (the Bayes search steps between neighbouring CT points and its fine
+ * search adds more, several per cent tick to tick), and the smoothed
+ * gains are its moving average, so on a settled scene the gap between
+ * them changes sign and averages out, while a new light keeps it one
+ * way. The gap is averaged signed (kTrend a tick, ~5 ticks), the first
+ * tick after a reset taking it whole; converged once the average is
+ * within kEnter on both R and B, searching again only past kLeave.
+ * kEnter matches AE's dead-band. */
 class AwbConvergence {
 public:
     static constexpr float kEnter = 0.02f;
     static constexpr float kLeave = 0.05f;
+    static constexpr float kTrend = 0.2f;
 
     /* One AWB tick: the gains it published and the target it moves
      * them toward. Returns whether AWB is converged now. */
     bool update(float wbR, float wbB, float targetR, float targetB) {
-        const float off = std::fmax(offBy(wbR, targetR), offBy(wbB, targetB));
+        const float gapR = gap(wbR, targetR);
+        const float gapB = gap(wbB, targetB);
+        if (primed) {
+            trendR = kTrend * gapR + (1.0f - kTrend) * trendR;
+            trendB = kTrend * gapB + (1.0f - kTrend) * trendB;
+        } else {
+            trendR = gapR;
+            trendB = gapB;
+            primed = true;
+        }
+        const float off = std::fmax(std::fabs(trendR), std::fabs(trendB));
         converged = converged ? off <= kLeave : off <= kEnter;
         return converged;
     }
 
     bool isConverged() const { return converged; }
 
-    void reset() { converged = false; }
-
-private:
-    static float offBy(float value, float target) {
-        return target > 0.f ? std::fabs(value / target - 1.0f) : 0.f;
+    void reset() {
+        converged = false;
+        primed    = false;
+        trendR    = 0.f;
+        trendB    = 0.f;
     }
 
-    bool converged = false;
+private:
+    static float gap(float value, float target) {
+        return value > 0.f ? target / value - 1.0f : 0.f;
+    }
+
+    bool  converged = false;
+    bool  primed    = false;
+    float trendR    = 0.f;
+    float trendB    = 0.f;
 };
 
 } /* namespace android */
