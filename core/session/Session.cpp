@@ -273,8 +273,10 @@ bool Session::Impl::buildInfrastructure() {
     }
     isp->setCcm(ccmQ10);
 
-    /* AF before the IPA, which drives it from its tick. */
-    if (config.softIsp) {
+    /* AF before the IPA, which drives it from its tick -- only for a
+     * module whose lens open() found: without one AF has nothing to
+     * move, and the frame ROI stays the centre default. */
+    if (config.softIsp && focuser.isOpen()) {
         const Resolution sensorRes = dev->sensorResolution();
         af.reset(new AutoFocusController(&tuning, (int)sensorRes.width,
                                          (int)sensorRes.height));
