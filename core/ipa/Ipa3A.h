@@ -66,6 +66,7 @@ public:
     DelayedControls::Batch processStats(const IpaProcessParams &params) override;
     void reset() override;
     bool isAeConverged() const override;
+    bool isAwbConverged() const override;
     void setAeLock(bool lock) override;
 
 private:

@@ -200,10 +200,14 @@ the stats engine published (`Ipa3A::processStats`).
   patch footprint; the same ROI restricts the NEON focus metric and
   weights AE / AWB metering. The lens is written by the IPA through
   `Focuser` on the same tick AF decides it.
-- **States** (`describe3A`): AE Off → Inactive, locked → Locked,
-  converged → Converged, else Searching; AWB Auto → Locked while
-  locked or while AF sweeps, else Converged; other AWB modes →
-  Inactive. The same derivation feeds the partial and final results.
+- **States** (`describe3A`, as Camera2's state tables have them): AE
+  Off → Inactive, locked → Locked, converged → Converged, else
+  Searching. AWB Auto → Locked while the request locks it, else
+  Converged or Searching as the controller judges it
+  (`AwbConvergence`: the smoothed gains within 2 % of the tick's
+  target, out again past 5 %); holding AWB through an AF sweep keeps
+  the state it had. Off and the presets → Inactive. The same
+  derivation feeds the partial and final results.
 
 ## Configuration knobs
 

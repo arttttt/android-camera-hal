@@ -36,6 +36,9 @@ struct AwbResult {
      * gate input. Used by the throttled diagnostic log to surface
      * gray-world confidence per frame. */
     int                                   validPatchCount = -1;
+    /* Whether the published gains have reached this tick's target
+     * (AwbConvergence); Camera2's CONVERGED, else SEARCHING. */
+    bool                                  converged = false;
 };
 
 } /* namespace android */

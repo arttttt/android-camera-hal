@@ -1,6 +1,7 @@
 #ifndef HAL_3A_GRAY_WORLD_AWB_CONTROLLER_H
 #define HAL_3A_GRAY_WORLD_AWB_CONTROLLER_H
 
+#include "AwbConvergence.h"
 #include "Awb.h"
 
 namespace android {
@@ -65,6 +66,7 @@ public:
     float    currentWbB()     const override { return current.wbB; }
     WbGains  currentGainsQ8() const override;
     int      currentEstCct()  const override { return current.estCct; }
+    bool     isConverged()    const override { return convergence.isConverged(); }
 
 private:
     const SensorTuning *tuning;
@@ -89,6 +91,7 @@ private:
         int   estCct;
     };
     State current;
+    AwbConvergence convergence;
 };
 
 } /* namespace android */

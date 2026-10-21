@@ -28,6 +28,7 @@
 
 #include "3a/AutoExposureController.h"
 #include "3a/AutoFocusController.h"
+#include "3a/AwbConvergence.h"
 #include "3a/GrayWorldAwbController.h"
 #include "3a/ThreeAReport.h"
 #include "ipa/IpaFrameMeta.h"
@@ -86,10 +87,11 @@ IpaStats uniformStats(float r, float g, float b, float focus = 0.f) {
     return s;
 }
 
-/* AE states from the frame's own mode and lock; AWB Locked while AF
- * sweeps or the request locks it, Converged otherwise in Auto, Inactive
- * in any other mode; the exposure in effect is what was written a delay
- * before, or the defaults. */
+/* AE and AWB states as Camera2's tables have them: from the frame's own
+ * mode and lock and the controllers' convergence -- Locked only when the
+ * request locks it, an AF sweep showing no state of its own, Inactive
+ * in any mode but Auto; the exposure in effect is what was written a
+ * delay before, or the defaults. */
 void testDescribe3A() {
     const SensorConfig cfg = imx179();
     DelayedControls::Config dcc{};
@@ -99,29 +101,32 @@ void testDescribe3A() {
     AutoFocusController::Report af{AfState::Inactive, AfMode::Off, 0.f};
     FrameSettings s;
 
-    auto r = describe3A(s, af, false, 10, &dc, cfg);
+    auto r = describe3A(s, af, {false, false}, 10, &dc, cfg);
     check(r.aeState == AeState::Searching);
-    check(r.awbState == AwbState::Converged);
+    check(r.awbState == AwbState::Searching);
     check(r.exposureTimeNs == (int64_t)cfg.exposureDefault * 1000);
     check(r.sensitivityIso == 100);
 
-    r = describe3A(s, af, true, 10, &dc, cfg);
+    r = describe3A(s, af, {true, true}, 10, &dc, cfg);
     check(r.aeState == AeState::Converged);
+    check(r.awbState == AwbState::Converged);
 
     s.ae.lock = true;
     s.awb.lock = true;
-    r = describe3A(s, af, false, 10, &dc, cfg);
+    r = describe3A(s, af, {false, false}, 10, &dc, cfg);
     check(r.aeState == AeState::Locked);
     check(r.awbState == AwbState::Locked);
 
     s = FrameSettings();
     af.afState = AfState::PassiveScan;
-    r = describe3A(s, af, false, 10, &dc, cfg);
-    check(r.awbState == AwbState::Locked);
+    r = describe3A(s, af, {false, true}, 10, &dc, cfg);
+    check(r.awbState == AwbState::Converged);
+    r = describe3A(s, af, {false, false}, 10, &dc, cfg);
+    check(r.awbState == AwbState::Searching);
 
     s.ae.mode  = AeMode::Off;
     s.awb.mode = AwbMode::Daylight;
-    r = describe3A(s, af, false, 10, &dc, cfg);
+    r = describe3A(s, af, {true, true}, 10, &dc, cfg);
     check(r.aeState == AeState::Inactive);
     check(r.awbState == AwbState::Inactive);
 
@@ -131,7 +136,7 @@ void testDescribe3A() {
     written.has[DelayedControls::GAIN]     = true;
     written.val[DelayedControls::GAIN]     = 512;
     dc.commit(8, written);
-    r = describe3A(FrameSettings(), af, false, 10, &dc, cfg);
+    r = describe3A(FrameSettings(), af, {false, false}, 10, &dc, cfg);
     check(r.exposureTimeNs == 20000000LL);
     check(r.sensitivityIso == 200);
 }
@@ -205,13 +210,43 @@ void testGrayWorld() {
     const float prior[3] = {1.f, 1.f, 1.f};
     GrayWorldAwbController awb(&tuning, prior);
     const IpaStats stats = uniformStats(0.30f, 0.40f, 0.50f);
-    for (int tick = 0; tick < 300; ++tick)
-        awb.process(stats, 0.f, AwbMode::Auto);
+    check(!awb.isConverged());
+    bool searchedFirst = false;
+    for (int tick = 0; tick < 300; ++tick) {
+        const AwbResult r = awb.process(stats, 0.f, AwbMode::Auto);
+        if (tick == 0) searchedFirst = !r.converged;
+    }
+    check(searchedFirst);
+    check(awb.isConverged());
     check(fabsf(awb.currentWbR() - 0.40f / 0.30f) < 0.03f);
     check(fabsf(awb.currentWbB() - 0.40f / 0.50f) < 0.03f);
 
+    /* A new light: searching again, then converged on it. */
+    const IpaStats warm = uniformStats(0.50f, 0.40f, 0.25f);
+    check(!awb.process(warm, 0.f, AwbMode::Auto).converged);
+    for (int tick = 0; tick < 300; ++tick)
+        awb.process(warm, 0.f, AwbMode::Auto);
+    check(awb.isConverged());
+
+    awb.reset();
+    check(!awb.isConverged());
+
     const AwbResult manual = awb.applyManualGains(2.f, 1.f, 1.5f);
     check(static_cast<bool>(manual.gains));
+}
+
+/* Convergence with hysteresis: in within 2 %, out only past 5 %. */
+void testAwbConvergence() {
+    AwbConvergence c;
+    check(!c.isConverged());
+    check(!c.update(1.10f, 1.f, 1.f, 1.f));
+    check(c.update(1.015f, 1.f, 1.f, 1.f));
+    check(c.update(1.04f, 0.97f, 1.f, 1.f));
+    check(!c.update(1.f, 1.06f, 1.f, 1.f));
+    check(!c.update(1.f, 1.03f, 1.f, 1.f));
+    check(c.update(1.f, 1.01f, 1.f, 1.f));
+    c.reset();
+    check(!c.isConverged());
 }
 
 /* AF: a triggered sweep in Auto runs as ActiveScan, holds AE / AWB for
@@ -270,6 +305,7 @@ int main() {
     testDescribe3A();
     testManualExposure();
     testAeLoop();
+    testAwbConvergence();
     testGrayWorld();
     testAfSweep();
     return finish("three_a_test");

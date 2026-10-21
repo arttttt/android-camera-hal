@@ -28,21 +28,33 @@ namespace android {
 class DelayedControls;
 struct SensorConfig;
 
+/* Whether AE and AWB have reached their targets, as their controllers
+ * judge it. */
+struct ThreeAConvergence {
+    bool ae  = false;
+    bool awb = false;
+};
+
 /* What 3A shows the framework for one frame: the states derived from
- * the frame's own modes and locks, AF's report, and the sensor values
- * in effect on it -- what was written a control delay before, or the
- * defaults configureStreams wrote before the first write landed.
+ * the frame's own modes and locks, the controllers' convergence, AF's
+ * report, and the sensor values in effect on it -- what was written a
+ * control delay before, or the defaults configureStreams wrote before
+ * the first write landed.
  *
  * The one derivation of the states, for the partial results of the 3A
- * tick and for the final result alike:
+ * tick and for the final result alike, as Camera2's state tables have
+ * them:
  *   AE:  Off -> Inactive; locked -> Locked; converged -> Converged;
  *        otherwise Searching.
- *   AWB: Auto -> Locked while locked or while AF sweeps (AF holds it),
- *        otherwise Converged; any other mode -> Inactive. */
+ *   AWB: Auto -> Locked while the request locks it; otherwise Converged
+ *        or Searching by the controller. Holding AWB through an AF
+ *        sweep is the HAL's own and shows no state of its own: AWB
+ *        keeps the one it had. Any other mode (Off, the presets) ->
+ *        Inactive. */
 mocha::camera::Core3AResult describe3A(
         const mocha::camera::FrameSettings &settings,
         const AutoFocusController::Report  &af,
-        bool                                aeConverged,
+        ThreeAConvergence                   converged,
         uint32_t                            frameNumber,
         const DelayedControls              *delayedControls,
         const SensorConfig                 &sensorCfg);

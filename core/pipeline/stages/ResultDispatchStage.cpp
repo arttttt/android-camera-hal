@@ -59,7 +59,8 @@ void ResultDispatchStage::process(Frame &frame) {
         af.afMode       = mocha::camera::AfMode::Off;
         af.focusDiopter = 0.0f;
         if (deps.af) af = deps.af->report();
-        result.a3 = describe3A(frame.settings, af, frame.aeConverged,
+        result.a3 = describe3A(frame.settings, af,
+                               {frame.aeConverged, frame.awbConverged},
                                frame.frameNumber, deps.delayedControls,
                                *deps.sensorCfg);
     }

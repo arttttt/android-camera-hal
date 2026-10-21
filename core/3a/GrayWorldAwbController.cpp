@@ -80,6 +80,7 @@ void GrayWorldAwbController::reset() {
     current.wbR    = wbRPrior;
     current.wbB    = wbBPrior;
     current.estCct = 0;
+    convergence.reset();
 }
 
 AwbResult GrayWorldAwbController::process(const IpaStats &stats,
@@ -109,6 +110,17 @@ AwbResult GrayWorldAwbController::process(const IpaStats &stats,
     }
     out.validPatchCount = nValid;
 
+    /* What the smoothed gains move toward this tick. Below the
+     * confidence gate it is the calibrated daylight prior, at the same
+     * damping the forward path uses. Without that, a brief moment of
+     * sufficient valid-patch coverage would land lastWb at a
+     * possibly-biased gray-world reading and that bias would freeze in
+     * place once the patch count fell back below the gate — a "stuck
+     * cast". Symmetric pull-to-prior makes the controller treat
+     * gate-failure scenes as low-confidence: trust the sensor's
+     * calibrated neutral over a stale gray-world estimate. */
+    float targetR = wbRPrior;
+    float targetB = wbBPrior;
     if (nValid >= awbMinValidPatches) {
         const float meanR = sumR / (float)nValid;
         const float meanG = sumG / (float)nValid;
@@ -117,37 +129,24 @@ AwbResult GrayWorldAwbController::process(const IpaStats &stats,
         /* Gains boost each channel toward the G mean. Divide-by-
          * zero guarded by the awbMinChannel floor above (every
          * summed channel is at least awbMinChannel). */
-        float rGain = meanG / meanR;
-        float bGain = meanG / meanB;
-        if (rGain < awbGainMin) rGain = awbGainMin;
-        if (rGain > awbGainMax) rGain = awbGainMax;
-        if (bGain < awbGainMin) bGain = awbGainMin;
-        if (bGain > awbGainMax) bGain = awbGainMax;
-
-        /* Always damp. The old "first-tick snap" skipped damping on
-         * the very first valid tick and let lastWb jump from the
-         * FusionLights prior straight to the current frame's gray-
-         * world output — a visible WB shock even if the new state
-         * was closer to correct. With the priors coming from a real
-         * calibration anchor, the EMA at SmoothingWpTrackingFraction
-         * = 0.1 crawls to the scene colour in ~20 frames with no
-         * single-frame pops. */
-        current.wbR = awbDamping * rGain + (1.0f - awbDamping) * current.wbR;
-        current.wbB = awbDamping * bGain + (1.0f - awbDamping) * current.wbB;
-    } else {
-        /* Below the confidence gate: relax back toward the
-         * calibrated daylight prior at the same damping the forward
-         * path uses. Without this branch, a brief moment of
-         * sufficient valid-patch coverage would land lastWb at a
-         * possibly-biased gray-world reading and that bias would
-         * freeze in place once the patch count fell back below the
-         * gate — a "stuck cast". Symmetric pull-to-prior makes the
-         * controller treat gate-failure scenes as low-confidence:
-         * trust the sensor's calibrated neutral over a stale gray-
-         * world estimate. */
-        current.wbR = awbDamping * wbRPrior + (1.0f - awbDamping) * current.wbR;
-        current.wbB = awbDamping * wbBPrior + (1.0f - awbDamping) * current.wbB;
+        targetR = meanG / meanR;
+        targetB = meanG / meanB;
+        if (targetR < awbGainMin) targetR = awbGainMin;
+        if (targetR > awbGainMax) targetR = awbGainMax;
+        if (targetB < awbGainMin) targetB = awbGainMin;
+        if (targetB > awbGainMax) targetB = awbGainMax;
     }
+
+    /* Always damp. The old "first-tick snap" skipped damping on the
+     * very first valid tick and let lastWb jump from the FusionLights
+     * prior straight to the current frame's gray-world output — a
+     * visible WB shock even if the new state was closer to correct.
+     * With the priors coming from a real calibration anchor, the EMA
+     * at SmoothingWpTrackingFraction = 0.1 crawls to the scene colour
+     * in ~20 frames with no single-frame pops. */
+    current.wbR = awbDamping * targetR + (1.0f - awbDamping) * current.wbR;
+    current.wbB = awbDamping * targetB + (1.0f - awbDamping) * current.wbB;
+    out.converged = convergence.update(current.wbR, current.wbB, targetR, targetB);
 
     /* Publish the smoothed gains. We always emit them, even when the
      * gate failed, so the coordinator's lock → unlock transition

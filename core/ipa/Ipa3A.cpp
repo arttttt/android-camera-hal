@@ -136,6 +136,10 @@ bool Ipa3A::isAeConverged() const {
     return mAe->isConverged();
 }
 
+bool Ipa3A::isAwbConverged() const {
+    return mAwb->isConverged();
+}
+
 void Ipa3A::setAeLock(bool lock) {
     mAe->setLock(lock);
 }
@@ -199,8 +203,8 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
         for (int i = 0; i < 9; ++i) ccmBufferQ10[i] = awbResult.ccm->v[i];
     }
 
-    /* The AF report as of the last tick — the AWB state reads it (AF
-     * holds AWB locked through a sweep). */
+    /* The AF report as of the last tick, for the AF keys of the
+     * partial results. */
     AutoFocusController::Report afReport;
     afReport.afState = mocha::camera::AfState::Inactive;
     afReport.afMode  = mocha::camera::AfMode::Off;
@@ -211,7 +215,8 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
      * without waiting for the buffer-bearing final result. */
     if (params.sink) {
         params.sink->partial(params.frameNumber, PartialResult::Awb,
-                             describe3A(params.settings, afReport, false,
+                             describe3A(params.settings, afReport,
+                                        {mAe->isConverged(), mAwb->isConverged()},
                                         params.frameNumber,
                                         params.delayedControls,
                                         params.sensorCfg));
@@ -273,7 +278,7 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
     if (params.sink) {
         params.sink->partial(params.frameNumber, PartialResult::Ae,
                              describe3A(params.settings, afReport,
-                                        mAe->isConverged(),
+                                        {mAe->isConverged(), mAwb->isConverged()},
                                         params.frameNumber,
                                         params.delayedControls,
                                         params.sensorCfg));

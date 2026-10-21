@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 
+#include "AwbConvergence.h"
 #include "Awb.h"
 #include "sensor/SensorTuning.h"
 
@@ -60,6 +61,7 @@ public:
     float    currentWbB()     const override { return current.wbB; }
     WbGains  currentGainsQ8() const override;
     int      currentEstCct()  const override { return current.estCct; }
+    bool     isConverged()    const override { return convergence.isConverged(); }
 
 private:
     const SensorTuning *tuning;
@@ -91,6 +93,7 @@ private:
         int   estCct;
     };
     State current;
+    AwbConvergence convergence;
 
     /* The CCT the colour matrix is interpolated at: estCct smoothed
      * at the gains' own rate, in mireds (CCT differences are

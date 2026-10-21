@@ -65,6 +65,10 @@ public:
     virtual float    currentWbB()     const = 0;
     virtual WbGains  currentGainsQ8() const = 0;
     virtual int      currentEstCct()  const = 0;
+
+    /* Whether the last tick that ran had converged (AwbConvergence);
+     * holds while AWB does not run -- an AF sweep, a dark scene. */
+    virtual bool     isConverged()    const = 0;
 };
 
 } /* namespace android */

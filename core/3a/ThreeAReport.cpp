@@ -23,7 +23,6 @@ namespace android {
 
 using mocha::camera::AeMode;
 using mocha::camera::AeState;
-using mocha::camera::AfState;
 using mocha::camera::AwbMode;
 using mocha::camera::AwbState;
 using mocha::camera::Core3AResult;
@@ -31,7 +30,7 @@ using mocha::camera::FrameSettings;
 
 Core3AResult describe3A(const FrameSettings &settings,
                         const AutoFocusController::Report &af,
-                        bool aeConverged,
+                        ThreeAConvergence converged,
                         uint32_t frameNumber,
                         const DelayedControls *delayedControls,
                         const SensorConfig &cfg) {
@@ -56,19 +55,19 @@ Core3AResult describe3A(const FrameSettings &settings,
         r.aeState = AeState::Inactive;
     else if (settings.ae.lock)
         r.aeState = AeState::Locked;
-    else if (aeConverged)
+    else if (converged.ae)
         r.aeState = AeState::Converged;
     else
         r.aeState = AeState::Searching;
 
-    if (settings.awb.mode == AwbMode::Auto) {
-        const bool afSweeps = af.afState == AfState::ActiveScan ||
-                              af.afState == AfState::PassiveScan;
-        r.awbState = (afSweeps || settings.awb.lock) ? AwbState::Locked
-                                                     : AwbState::Converged;
-    } else {
+    if (settings.awb.mode != AwbMode::Auto)
         r.awbState = AwbState::Inactive;
-    }
+    else if (settings.awb.lock)
+        r.awbState = AwbState::Locked;
+    else if (converged.awb)
+        r.awbState = AwbState::Converged;
+    else
+        r.awbState = AwbState::Searching;
 
     r.afState               = af.afState;
     r.afMode                = af.afMode;

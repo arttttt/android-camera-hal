@@ -96,6 +96,7 @@ struct Frame {
     int32_t appliedExposureUs = 0;
     int32_t appliedGain       = 0;
     bool    aeConverged       = false;
+    bool    awbConverged      = false;
 
     /* Timestamps for PERF diagnostics. */
     int64_t tAccepted   = 0;

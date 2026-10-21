@@ -165,6 +165,7 @@ void BayesianAwbController::reset() {
     current.estCct = 0;
     frameCounter   = 0;
     ccmMired       = 0.f;
+    convergence.reset();
 }
 
 void BayesianAwbController::attachCcm(float targetCct, float speed,
@@ -189,6 +190,8 @@ AwbResult BayesianAwbController::process(const IpaStats &stats,
      * below; both keep `current` unchanged so the next valid tick
      * resumes from the prior, not a stale estimate. */
     if (!bayes) {
+        out.converged = convergence.update(current.wbR, current.wbB,
+                                           current.wbR, current.wbB);
         WbGains gainsQ8;
         gainsQ8.r = (uint16_t)toQ8(current.wbR);
         gainsQ8.g = 256;
@@ -241,6 +244,8 @@ AwbResult BayesianAwbController::process(const IpaStats &stats,
             current.wbR = wbRPrior;
             current.wbB = wbBPrior;
         }
+        out.converged = convergence.update(current.wbR, current.wbB,
+                                           wbRPrior, wbBPrior);
         WbGains gainsQ8;
         gainsQ8.r = (uint16_t)toQ8(current.wbR);
         gainsQ8.g = 256;
@@ -415,6 +420,8 @@ AwbResult BayesianAwbController::process(const IpaStats &stats,
 
     current.wbR    = speed * gainRTarget + (1.0f - speed) * current.wbR;
     current.wbB    = speed * gainBTarget + (1.0f - speed) * current.wbB;
+    out.converged  = convergence.update(current.wbR, current.wbB,
+                                        gainRTarget, gainBTarget);
     current.estCct = (int)(bestT + 0.5f);
     if (frameCounter < UINT32_MAX) ++frameCounter;
 

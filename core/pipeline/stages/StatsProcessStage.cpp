@@ -95,7 +95,8 @@ void StatsProcessStage::process(mocha::camera::Frame &ctx) {
         deps.sink,
     };
     DelayedControls::Batch batch = deps.ipa->processStats(params);
-    ctx.aeConverged = deps.ipa->isAeConverged();
+    ctx.aeConverged  = deps.ipa->isAeConverged();
+    ctx.awbConverged = deps.ipa->isAwbConverged();
 
     const nsecs_t tIpa = systemTime();
 

@@ -102,6 +102,11 @@ public:
      * AF on builds that do their own framework-side exposure. */
     virtual bool isAeConverged() const = 0;
 
+    /* Whether AWB has reached its target (AwbConvergence) -- Camera2's
+     * CONVERGED in AWB Auto, else SEARCHING. Holds while AWB does not
+     * run. Implementations without an AWB loop return true. */
+    virtual bool isAwbConverged() const = 0;
+
     /* Toggle "hold the converged AE target" mode. The IPA stops
      * proposing new exposure / gain values for the duration of the
      * lock — DelayedControls keeps re-publishing the last queued

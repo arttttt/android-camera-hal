@@ -18,6 +18,7 @@ public:
     /* No AE loop here — always reports converged so the AF gate
      * doesn't block on stub builds; lock is a structural no-op. */
     bool isAeConverged() const override { return true; }
+    bool isAwbConverged() const override { return true; }
     void setAeLock(bool /*lock*/) override {}
 };
 
