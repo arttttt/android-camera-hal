@@ -63,7 +63,12 @@ cc_library_static {
         "-fno-short-enums",
         "-DV4L2DEVICE_BUF_COUNT=8",
     ],
-    header_libs: ["libhardware_headers"],
+    // The kernel's uapi headers, installed from this device's kernel
+    // source: the tegra camera controls come from there.
+    header_libs: [
+        "generated_kernel_headers",
+        "libhardware_headers",
+    ],
     static_libs: [
         "libjsoncpp",
         "libyuv_static",

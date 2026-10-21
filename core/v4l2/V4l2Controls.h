@@ -4,21 +4,11 @@
 #include <stdint.h>
 #include <linux/videodev2.h>
 
-/* Tegra camera vendor CIDs (kernel include/media/camera_common.h), not
- * in the mainline V4L2 headers; defined here once for the whole HAL.
- *  - FRAME_LENGTH: sensor lines per frame -- the frame period, and the
- *    longest exposure that fits in it. Its range is the current mode's
- *    (minimum = the mode's own frame length). The HAL decides it; the
- *    drivers no longer stretch it to fit an exposure.
- *  - GROUP_HOLD: latch the writes between 1 and 0 on the same frame.
- *  - VI_CAPTURE_TIMEOUT: on the capture node -- how long VI waits for a
- *    frame, µs, set from the period of the frames in flight.
- *  - LINE_TIME_NS: read-only, the current mode's line time. */
-#define V4L2_CID_TEGRA_CAMERA_BASE  (V4L2_CTRL_CLASS_CAMERA | 0x2000)
-#define V4L2_CID_FRAME_LENGTH       (V4L2_CID_TEGRA_CAMERA_BASE + 0)
-#define V4L2_CID_GROUP_HOLD         (V4L2_CID_TEGRA_CAMERA_BASE + 3)
-#define V4L2_CID_VI_CAPTURE_TIMEOUT (V4L2_CID_TEGRA_CAMERA_BASE + 10)
-#define V4L2_CID_LINE_TIME_NS       (V4L2_CID_TEGRA_CAMERA_BASE + 11)
+/* The Tegra camera controls (FRAME_LENGTH, GROUP_HOLD,
+ * VI_CAPTURE_TIMEOUT, LINE_TIME_NS) come from the kernel's own uapi
+ * header, installed from this device's kernel source
+ * (generated_kernel_headers): the HAL keeps no copy of the numbers. */
+#include <linux/tegra-v4l2-camera.h>
 
 namespace android {
 
