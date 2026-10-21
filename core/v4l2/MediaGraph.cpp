@@ -128,8 +128,10 @@ std::string lensSubdevFor(const char *videoNode)
     ALOGI("lensSubdevFor: sensor entity id=%u, lens entity id=%u",
           sensorId, lensId);
     if (!lensId) {
-        ALOGW("lensSubdevFor: no lens link from sensor (video=%u sensor=%u)",
-              videoId, sensorId);
+        /* A fixed-focus module: the kernel links a lens into its sensor
+         * only where the DT pairs one (associated-sensor). */
+        ALOGI("lensSubdevFor: no lens in front of sensor %u (fixed focus)",
+              sensorId);
         close(mediaFd);
         return std::string();
     }
@@ -144,6 +146,11 @@ std::string lensSubdevFor(const char *videoNode)
         return std::string();
     }
     close(mediaFd);
+    if (ent.type != MEDIA_ENT_T_V4L2_SUBDEV_LENS) {
+        ALOGW("lensSubdevFor: entity '%s' linked into the sensor is not a lens (type 0x%x)",
+              ent.name, ent.type);
+        return std::string();
+    }
 
     const unsigned lensMajor = ent.v4l.major;
     const unsigned lensMinor = ent.v4l.minor;

@@ -283,13 +283,15 @@ bool Session::Impl::buildInfrastructure() {
     }
 
     {
-        Ipa3A *ipa3a = new Ipa3A(sensorCfg, isp.get(), af.get(), &tuning,
-                                 wbGainPrior, ccmQ10, probe().ae.evStep);
         /* The one place the lens is moved from: AF decides, the IPA
          * coordinator writes, on the IPA's own thread. */
-        Focuser *lens = &focuser;
-        ipa3a->setLensWriter([lens](int32_t pos) { lens->setPosition(pos); });
-        ipa.reset(ipa3a);
+        std::function<void(int32_t)> lensWriter;
+        if (af) {
+            Focuser *lens = &focuser;
+            lensWriter = [lens](int32_t pos) { lens->setPosition(pos); };
+        }
+        ipa.reset(new Ipa3A(sensorCfg, isp.get(), af.get(), std::move(lensWriter),
+                            &tuning, wbGainPrior, ccmQ10, probe().ae.evStep));
     }
 
     jpeg.reset(new JpegEncoder());
@@ -511,11 +513,11 @@ bool Session::open() {
     Impl &s = *impl;
     s.dev->connect();
 
-    /* The lens, if the tuning says the module has one; found through
-     * the media controller -- no paths or hardware ids in config. */
-    ALOGI("open: front=%d hasAf=%d", (int)s.config.facingFront, (int)s.tuning.hasAf());
-    if (s.tuning.hasAf() && !s.focuser.open(s.dev->devNode()))
-        ALOGW("open: focuser open failed; AF will be inactive");
+    /* The lens, if the device has one: the media graph links it into
+     * the sensor -- no paths or hardware ids in config. */
+    ALOGI("open: front=%d lens=%d", (int)s.config.facingFront, (int)s.dev->hasLens());
+    if (s.dev->hasLens() && !s.focuser.open(s.dev->lensNode()))
+        ALOGW("open: the lens did not open; AF will be inactive");
 
     /* Driver-advertised ranges into the sensor config before anything
      * consumes it: Ipa3A's constructor seeds AE from them. */

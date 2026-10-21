@@ -62,7 +62,7 @@ void probeSensor(Capability &cap, android::V4l2Device &dev,
     } else {
         cap.sensor.physicalSizeMm[0]      = 5.0f;
         cap.sensor.physicalSizeMm[1]      = 5.0f * (float)res.height / (float)res.width;
-        cap.lens.minFocusDistanceDiopters = cap.facingFront ? 0.0f : 10.0f;
+        cap.lens.minFocusDistanceDiopters = dev.hasLens() ? 10.0f : 0.0f;
     }
     cap.lens.focalLengthMm = cfg.focalLengthMm;
     cap.sensor.orientationDegrees = tuning ? tuning->module().sensorOrientationDegrees : 0;
@@ -183,8 +183,8 @@ Capability probeCapability(android::V4l2Device &dev, bool facingFront,
      * sensitivity (ApplySettingsStage's manual path). */
     cap.ae.modes = {AeMode::Off, AeMode::On};
 
-    /* The back module has a VCM; the front lens is fixed. */
-    if (facingFront) {
+    /* AF modes where the device has a lens to move. */
+    if (!dev.hasLens()) {
         cap.af.modes      = {AfMode::Off};
         cap.af.maxRegions = 1;
     } else {

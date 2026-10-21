@@ -19,11 +19,13 @@
 
 #include <stdint.h>
 
+#include <string>
+
 namespace android {
 
-/* The lens VCM, through its V4L2 subdev. Found from the capture node by
- * the media graph; a camera without one has no focuser and AF stays
- * inactive. */
+/* The lens VCM, through its V4L2 subdev -- the one V4l2Device finds
+ * linked into its sensor. A camera without one has no focuser and no
+ * AF. */
 class Focuser {
 public:
     Focuser() = default;
@@ -32,12 +34,13 @@ public:
     Focuser(const Focuser &) = delete;
     Focuser &operator=(const Focuser &) = delete;
 
-    /* Find and open the lens behind `videoNode`. Idempotent. */
-    bool open(const char *videoNode);
+    /* Open the lens subdev (V4l2Device::lensNode). Idempotent. */
+    bool open(const std::string &lensNode);
     void close();
     bool isOpen() const { return fd >= 0; }
 
-    /* V4L2_CID_FOCUS_ABSOLUTE, in the driver's units. */
+    /* V4L2_CID_FOCUS_ABSOLUTE, in the driver's units. Only on an open
+     * focuser: AF, the one caller, exists only with one. */
     bool setPosition(int32_t position);
 
 private:

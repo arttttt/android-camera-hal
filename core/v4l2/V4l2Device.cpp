@@ -36,6 +36,7 @@
 
 #include "V4l2Device.h"
 #include "V4l2Controls.h"
+#include "MediaGraph.h"
 
 namespace android {
 
@@ -898,6 +899,14 @@ void V4l2Device::VBuffer::unmap() {
         buf         = NULL;
         len         = 0;
     }
+}
+
+const std::string &V4l2Device::lensNode() {
+    if (!mLensWalked) {
+        mLensNode   = MediaGraph::lensSubdevFor(mDevNode);
+        mLensWalked = true;
+    }
+    return mLensNode;
 }
 
 }; /* namespace android */

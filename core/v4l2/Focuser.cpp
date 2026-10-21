@@ -27,22 +27,17 @@
 #include <linux/videodev2.h>
 #include <utils/Log.h>
 
-#include "MediaGraph.h"
-
 namespace android {
 
-bool Focuser::open(const char *videoNode) {
+bool Focuser::open(const std::string &lensNode) {
     if (fd >= 0)
         return true;
-    const std::string path = MediaGraph::lensSubdevFor(videoNode);
-    if (path.empty())
-        return false;
-    fd = ::open(path.c_str(), O_RDWR);
+    fd = ::open(lensNode.c_str(), O_RDWR);
     if (fd < 0) {
-        ALOGW("open %s: %s", path.c_str(), strerror(errno));
+        ALOGW("open %s: %s", lensNode.c_str(), strerror(errno));
         return false;
     }
-    ALOGI("opened %s fd=%d", path.c_str(), fd);
+    ALOGI("opened %s fd=%d", lensNode.c_str(), fd);
     return true;
 }
 
@@ -54,10 +49,6 @@ void Focuser::close() {
 }
 
 bool Focuser::setPosition(int32_t position) {
-    if (fd < 0) {
-        ALOGW("setPosition(%d): focuser not open", position);
-        return false;
-    }
     struct v4l2_control ctrl;
     memset(&ctrl, 0, sizeof(ctrl));
     ctrl.id    = V4L2_CID_FOCUS_ABSOLUTE;

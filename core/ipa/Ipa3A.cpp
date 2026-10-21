@@ -68,6 +68,7 @@ float meanLumaInRoiForLog(const IpaStats &stats, const IpaFrameMeta &meta) {
 
 Ipa3A::Ipa3A(const SensorConfig &cfg, IspControls *ispPipeline,
                    AutoFocusController *afCtrl,
+                   std::function<void(int32_t)> lensWrite,
                    const SensorTuning *sensorTuning,
                    const float wbGainPrior[3],
                    int16_t *ccmBufQ10,
@@ -75,6 +76,7 @@ Ipa3A::Ipa3A(const SensorConfig &cfg, IspControls *ispPipeline,
     : sensorCfg(cfg),
       isp(ispPipeline),
       af(afCtrl),
+      lensWriter(std::move(lensWrite)),
       tuning(sensorTuning),
       ccmBufferQ10(ccmBufQ10),
       awbSceneLightFloor(awbSceneLightFloorOf(sensorTuning)),
@@ -288,7 +290,7 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
         const AfResult afResult = af->process(stats, statsFresh,
                                               params.inputExposureStartNs,
                                               aeResult.converged);
-        if (afResult.vcmPosition && lensWriter)
+        if (afResult.vcmPosition)
             lensWriter(*afResult.vcmPosition);
         if (afResult.sweeping != afHoldsLocks) {
             afHoldsLocks = afResult.sweeping;

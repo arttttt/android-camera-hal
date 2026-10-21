@@ -45,9 +45,14 @@ public:
      * pointer the ISP has already been handed via setCcm — updating
      * it in place lets the next demosaic submit read fresh
      * coefficients without any extra plumbing. Pass tuning == nullptr
-     * to disable the CCT drive. */
+     * to disable the CCT drive.
+     *
+     * `af` and `lensWriter` come together: the writer moves the lens to
+     * the position AF asks for, on the IPA's thread. Without a lens,
+     * both are left out. */
     Ipa3A(const SensorConfig &sensorCfg, IspControls *isp,
              AutoFocusController *af,
+             std::function<void(int32_t)> lensWriter,
              const SensorTuning *tuning,
              const float wbGainPrior[3],
              int16_t *ccmBufferQ10,
@@ -58,10 +63,6 @@ public:
      * include cycle between Ipa3A and the controllers it owns. */
     ~Ipa3A() override;
 
-    /* How the lens is moved to the position AF asks for. Set before
-     * the first processStats; called on the IPA's thread. */
-    void setLensWriter(std::function<void(int32_t)> w) { lensWriter = std::move(w); }
-
     DelayedControls::Batch processStats(const IpaProcessParams &params) override;
     void reset() override;
     bool isAeConverged() const override;
@@ -70,7 +71,7 @@ public:
 private:
     const SensorConfig  &sensorCfg;
     IspControls         *isp;
-    AutoFocusController *af;          /* not owned — lifetime ≤ Camera */
+    AutoFocusController *af;          /* not owned — lifetime ≤ the session */
     std::function<void(int32_t)> lensWriter;
     bool                 afHoldsLocks = false;  /* AE / AWB locked for an AF sweep */
     bool                 haveSeenStatsSeq = false;  /* any stats seen this session */

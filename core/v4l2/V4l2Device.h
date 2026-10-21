@@ -4,6 +4,7 @@
 #include <linux/videodev2.h>
 #include <sys/poll.h>
 #include <stdint.h>
+#include <string>
 #include <utils/Vector.h>
 #include <utils/Log.h>
 #include <utils/Mutex.h>
@@ -110,6 +111,12 @@ public:
     /* The capture node's path, for the media graph walk. */
     const char *devNode() const { return mDevNode; }
 
+    /* The /dev/v4l-subdev* of the lens in front of this node's sensor,
+     * from the media graph; empty for a fixed-focus module. Walked once,
+     * on first ask; the node need not be connected. */
+    const std::string &lensNode();
+    bool hasLens() { return !lensNode().empty(); }
+
 private:
     bool iocStreamOff();
     bool iocStreamOn();
@@ -127,6 +134,8 @@ private:
     bool mConnected;
     bool mStreaming;
     const char *mDevNode;
+    std::string mLensNode;
+    bool mLensWalked = false;
     uint32_t mPixelFormat;
     uint32_t mMemoryType;                   /* V4L2_MEMORY_MMAP or _DMABUF */
     int mDmaBufFds[V4L2DEVICE_BUF_COUNT];   /* for DMABUF mode; -1 = unused */
