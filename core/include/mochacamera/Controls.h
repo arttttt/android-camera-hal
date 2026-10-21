@@ -112,7 +112,10 @@ struct CropRegion {
     int32_t height = 0;
 };
 
-/* A metering region: a rectangle and its weight. */
+/* A metering region: a rectangle and its weight, 0..1000. A weight of
+ * 0 takes no part in metering (Camera2's METERING_WEIGHT_DONT_CARE):
+ * a region of weight 0 is as no region at all -- apps send it to drop
+ * a tap. */
 struct MeteringRegion {
     SensorRect rect;
     int32_t    weight = 0;

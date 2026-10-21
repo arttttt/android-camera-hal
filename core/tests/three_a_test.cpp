@@ -49,6 +49,7 @@ using mocha::camera::AfTrigger;
 using mocha::camera::AwbMode;
 using mocha::camera::AwbState;
 using mocha::camera::FrameSettings;
+using mocha::camera::MeteringRegion;
 using mocha::camera::Rational;
 
 using mocha::camera::test::check;
@@ -266,6 +267,48 @@ void testAwbConvergence() {
     check(!c.update(1.f, 1.f, 1.f, 1.03f));
 }
 
+/* AF_REGIONS: a tap moves the focus ROI to it; the same rectangle at
+ * weight 0 -- how apps drop a tap -- is no region, the centre default. */
+void testAfRegionWeight() {
+    SensorTuning tuning;
+    check(tuning.loadFile("tuning/imx179_primax.json"));
+    AutoFocusController af(&tuning, 3280, 2464);
+
+    auto isCentre = [](const AutoFocusController::FocusRoi &r) {
+        return r.pyLo == IpaStats::FOCUS_ROI_PY_LO && r.pyHi == IpaStats::FOCUS_ROI_PY_HI &&
+               r.pxLo == IpaStats::FOCUS_ROI_PX_LO && r.pxHi == IpaStats::FOCUS_ROI_PX_HI;
+    };
+    check(isCentre(af.currentFocusRoi()));
+
+    FrameSettings s;
+    s.af.mode = AfMode::Auto;
+    MeteringRegion tap;
+    tap.rect.xMin = 0;
+    tap.rect.yMin = 0;
+    tap.rect.xMax = 300;
+    tap.rect.yMax = 200;
+    tap.weight    = 1000;
+    s.af.region = tap;
+    af.onSettings(s, 0);
+    AutoFocusController::FocusRoi roi = af.currentFocusRoi();
+    check(!isCentre(roi));
+    check(roi.pxLo == 0 && roi.pyLo == 0);
+
+    tap.weight = 0;
+    s.af.region = tap;
+    af.onSettings(s, 1);
+    check(isCentre(af.currentFocusRoi()));
+
+    tap.weight = 1;
+    s.af.region = tap;
+    af.onSettings(s, 2);
+    check(!isCentre(af.currentFocusRoi()));
+
+    s.af.region.reset();
+    af.onSettings(s, 3);
+    check(isCentre(af.currentFocusRoi()));
+}
+
 /* AF: a triggered sweep in Auto runs as ActiveScan, holds AE / AWB for
  * its length, and locks focused near the sharpness peak; CANCEL
  * returns it to Inactive. */
@@ -324,6 +367,7 @@ int main() {
     testAeLoop();
     testAwbConvergence();
     testGrayWorld();
+    testAfRegionWeight();
     testAfSweep();
     return finish("three_a_test");
 }

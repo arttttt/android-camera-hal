@@ -535,11 +535,13 @@ void AutoFocusController::onSettings(const FrameSettings &settings,
      * use centre defaults". A real region from a tap shrinks the
      * stats integration window so AF locks onto whatever the user
      * pointed at instead of the centre. Single region only —
-     * MAX_REGIONS advertises 1 in static metadata. */
+     * MAX_REGIONS advertises 1 in static metadata. A region of weight 0
+     * takes no part (MeteringRegion): the centre default, as with no
+     * region. */
     {
         FocusRoi roi{IpaStats::FOCUS_ROI_PY_LO, IpaStats::FOCUS_ROI_PY_HI,
                      IpaStats::FOCUS_ROI_PX_LO, IpaStats::FOCUS_ROI_PX_HI};
-        if (settings.af.region) {
+        if (settings.af.region && settings.af.region->weight > 0) {
             const int32_t xMin = settings.af.region->rect.xMin;
             const int32_t yMin = settings.af.region->rect.yMin;
             const int32_t xMax = settings.af.region->rect.xMax;
