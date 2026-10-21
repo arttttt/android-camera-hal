@@ -153,6 +153,21 @@ float top2pcMaxPostWbMean(const IpaStats &stats, const IpaFrameMeta &meta,
 
 constexpr int32_t kAeConvergedFramesRequired = 5;
 
+/* One AE decision: exposure and gain, in the mode's own frame. Auto AE
+ * never stretches the frame (splitExposureGain keeps the exposure
+ * inside it and puts the rest into gain), but it still names the frame
+ * length: the driver keeps whatever was last written, so a frame a
+ * manual long exposure stretched would otherwise stay stretched. */
+void fillAeBatch(DelayedControls::Batch *batch, const SensorConfig &cfg,
+                 int32_t exposureUs, int32_t gain) {
+    batch->has[DelayedControls::EXPOSURE]     = true;
+    batch->val[DelayedControls::EXPOSURE]     = exposureUs;
+    batch->has[DelayedControls::GAIN]         = true;
+    batch->val[DelayedControls::GAIN]         = gain;
+    batch->has[DelayedControls::FRAME_LENGTH] = true;
+    batch->val[DelayedControls::FRAME_LENGTH] = cfg.frameLenDefault;
+}
+
 /* A per-frame smoothing coefficient applied once over `frames` frames:
  * leaving (1 - k) of the error per frame leaves (1 - k)^n over n. */
 inline float overFrames(float perFrame, int frames) {
@@ -334,10 +349,7 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
                                      * heldExtraGainQ8 + 128) / 256);
         if (heldGain < 1)                 heldGain = 1;
         if (heldGain > sensorCfg.gainMax) heldGain = sensorCfg.gainMax;
-        batch.has[DelayedControls::EXPOSURE] = true;
-        batch.val[DelayedControls::EXPOSURE] = heldExposureUs;
-        batch.has[DelayedControls::GAIN]     = true;
-        batch.val[DelayedControls::GAIN]     = heldGain;
+        fillAeBatch(&batch, sensorCfg, heldExposureUs, heldGain);
         return out;
     }
 
@@ -414,7 +426,7 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
     const int32_t gainUnit = sensorCfg.gainUnit;
     const float   maxTotal = (float)sensorCfg.maxExposureUsDefault()
                            * (float)sensorCfg.gainMax / (float)gainUnit;
-    const float   minTotal = (float)sensorCfg.lineTimeUs * 2.0f;
+    const float   minTotal = (float)sensorCfg.lineTimeNs * 2.0f / 1000.0f;
     /* The correction was measured on a frame exposed at
      * `appliedTotalUs`, so it applies to that, not to whatever the
      * controller has commanded since. Using the latest command here
@@ -442,10 +454,7 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
                                      * heldExtraGainQ8 + 128) / 256);
         if (heldGain < 1)                 heldGain = 1;
         if (heldGain > sensorCfg.gainMax) heldGain = sensorCfg.gainMax;
-        batch.has[DelayedControls::EXPOSURE] = true;
-        batch.val[DelayedControls::EXPOSURE] = heldExposureUs;
-        batch.has[DelayedControls::GAIN]     = true;
-        batch.val[DelayedControls::GAIN]     = heldGain;
+        fillAeBatch(&batch, sensorCfg, heldExposureUs, heldGain);
         if (aeConvergedFrames < INT32_MAX) aeConvergedFrames++;
         lastEvComp = meta.aeExposureCompensation;
         out.converged = (aeConvergedFrames >= kAeConvergedFramesRequired);
@@ -487,10 +496,7 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
     if (newGain < 1)                 newGain = 1;
     if (newGain > sensorCfg.gainMax) newGain = sensorCfg.gainMax;
 
-    batch.has[DelayedControls::EXPOSURE] = true;
-    batch.val[DelayedControls::EXPOSURE] = newExposureUs;
-    batch.has[DelayedControls::GAIN]     = true;
-    batch.val[DelayedControls::GAIN]     = newGain;
+    fillAeBatch(&batch, sensorCfg, newExposureUs, newGain);
     out.luxIndex = computeLuxIndex(filteredTotalUs, meanLuma);
     return out;
 }

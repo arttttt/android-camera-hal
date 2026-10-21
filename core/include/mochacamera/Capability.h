@@ -44,6 +44,9 @@ struct Capability {
         /* Absent (zero) when the driver could not tell. */
         int64_t exposureMinNs = 0;
         int64_t exposureMaxNs = 0;
+        /* The longest frame the sensor runs: its frame length range's
+         * top at the mode's line time. */
+        int64_t maxFrameDurationNs = 0;
         int32_t sensitivityMinIso = 0;
         int32_t sensitivityMaxIso = 0;
     } sensor;

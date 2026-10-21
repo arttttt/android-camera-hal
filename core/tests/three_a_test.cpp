@@ -63,7 +63,8 @@ constexpr Rational kThirdStop{1, 3};
 SensorConfig imx179() {
     SensorConfig c = SensorConfig::imx179();
     c.frameLenDefault = 2564;
-    c.frameLenMax     = 3 * 2564;
+    c.frameLenMax     = 0xFFFF;
+    c.lineTimeNs      = 13271;   /* HTS 3440 at 259.2 MHz */
     c.gainMin         = 256;
     c.gainDefault     = 256;
     c.gainMax         = 4096;
@@ -96,7 +97,7 @@ IpaStats uniformStats(float r, float g, float b, float focus = 0.f) {
 void testDescribe3A() {
     const SensorConfig cfg = imx179();
     DelayedControls::Config dcc{};
-    dcc.delay[0] = dcc.delay[1] = 2;
+    dcc.delay[0] = dcc.delay[1] = dcc.delay[2] = 2;
     DelayedControls dc(dcc);
 
     AutoFocusController::Report af{AfState::Inactive, AfMode::Off, 0.f};
@@ -107,6 +108,7 @@ void testDescribe3A() {
     check(r.awbState == AwbState::Searching);
     check(r.exposureTimeNs == (int64_t)cfg.exposureDefault * 1000);
     check(r.sensitivityIso == 100);
+    check(r.frameDurationNs == 2564LL * 13271);
 
     r = describe3A(s, af, {true, true}, 10, &dc, cfg);
     check(r.aeState == AeState::Converged);
@@ -136,10 +138,13 @@ void testDescribe3A() {
     written.val[DelayedControls::EXPOSURE] = 20000;
     written.has[DelayedControls::GAIN]     = true;
     written.val[DelayedControls::GAIN]     = 512;
+    written.has[DelayedControls::FRAME_LENGTH] = true;
+    written.val[DelayedControls::FRAME_LENGTH] = 4000;
     dc.commit(8, written);
     r = describe3A(FrameSettings(), af, {false, false}, 10, &dc, cfg);
     check(r.exposureTimeNs == 20000000LL);
     check(r.sensitivityIso == 200);
+    check(r.frameDurationNs == 4000LL * 13271);
 }
 
 /* Manual AE: the requested exposure verbatim, the frame grown to fit a
@@ -152,7 +157,8 @@ void testManualExposure() {
     s.sensor.sensitivityIso = 400;
     ExposureWriteValues v = AutoExposureController::parseManualSettings(s, cfg, kThirdStop);
     check(v.exposureUs == 60000);
-    check(v.frameLen > cfg.frameLenDefault);
+    /* 60 ms is 4521.1 lines: 4522 to hold it whole, plus the margin. */
+    check(v.frameLen == 4522 + cfg.maxCoarseDiff);
     check(v.gain == 4 * cfg.gainUnit);
 
     s.sensor.exposureTimeNs = 10000000;
@@ -177,6 +183,10 @@ float settleAe(AutoExposureController &ae, const SensorConfig &cfg,
         const IpaStats stats = uniformStats(luma, luma, luma);
         const AeResult r = ae.process(stats, meta, 1.f, 1.f, totalUs, 1);
         if (r.batch.has[DelayedControls::EXPOSURE] && r.batch.has[DelayedControls::GAIN]) {
+            /* Auto AE keeps the mode's own frame and names it. */
+            check(r.batch.has[DelayedControls::FRAME_LENGTH] &&
+                  r.batch.val[DelayedControls::FRAME_LENGTH] == cfg.frameLenDefault);
+            check(r.batch.val[DelayedControls::EXPOSURE] <= cfg.maxExposureUsDefault());
             lastTotal = totalUs;
             totalUs = (float)r.batch.val[DelayedControls::EXPOSURE]
                     * (float)r.batch.val[DelayedControls::GAIN] / (float)cfg.gainUnit;
@@ -201,6 +211,11 @@ void testAeLoop() {
     check(converged);
     const float ratio = plusOne / base;
     check(ratio > 1.7f && ratio < 2.3f);
+
+    /* In the dark AE runs out of exposure inside the frame and goes on
+     * in gain; the frame stays the mode's (checked in settleAe). */
+    AutoExposureController aeDark(cfg, &tuning, kThirdStop);
+    settleAe(aeDark, cfg, 0, 1.f / 80000000.f, &converged);
 }
 
 /* Gray-world finds the scene's neutral: gains move from the prior to

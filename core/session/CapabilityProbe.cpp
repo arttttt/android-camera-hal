@@ -25,6 +25,7 @@
 #include <utils/Log.h>
 
 #include "OutputResolutionCap.h"
+#include "V4l2Controls.h"
 #include "V4l2Device.h"
 #include "sensor/SensorConfig.h"
 #include "sensor/SensorTuning.h"
@@ -84,6 +85,13 @@ void probeSensor(Capability &cap, android::V4l2Device &dev,
         cap.sensor.exposureMaxNs = (int64_t)expMaxUs * 1000LL;
     } else {
         ALOGE("V4L2_CID_EXPOSURE query failed: no exposure range");
+    }
+    int32_t flMin = 0, flMax = 0, flDef = 0, lineNs = 0;
+    if (dev.queryControl(V4L2_CID_FRAME_LENGTH, &flMin, &flMax, &flDef) &&
+        dev.getControl(V4L2_CID_LINE_TIME_NS, &lineNs) && lineNs > 0) {
+        cap.sensor.maxFrameDurationNs = (int64_t)flMax * lineNs;
+    } else {
+        ALOGE("frame length / line time query failed: no max frame duration");
     }
     int32_t gMin = 0, gMax = 0, gDef = 0;
     if (dev.queryControl(V4L2_CID_GAIN, &gMin, &gMax, &gDef)) {

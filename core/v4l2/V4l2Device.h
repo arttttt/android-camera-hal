@@ -108,6 +108,10 @@ public:
 
     bool queryControl(uint32_t id, int32_t *min, int32_t *max, int32_t *def);
 
+    /* VIDIOC_G_CTRL: the current value -- for read-only, volatile
+     * controls (the line time) whose QUERYCTRL range says nothing. */
+    bool getControl(uint32_t id, int32_t *value);
+
     /* The capture node's path, for the media graph walk. */
     const char *devNode() const { return mDevNode; }
 

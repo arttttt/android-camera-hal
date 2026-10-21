@@ -24,13 +24,20 @@ namespace android {
  *  - Silicon / convention properties that can't change at runtime.
  */
 struct SensorConfig {
-    /* Driver-queried — V4L2_CID_FRAME_LENGTH min/max/def. */
+    /* Driver-queried for the configured mode — V4L2_CID_FRAME_LENGTH:
+     * its minimum (= default) is the mode's own frame, the frame AE runs
+     * at; its maximum the longest the sensor takes, for long manual
+     * exposures. */
     int32_t frameLenDefault;
     int32_t frameLenMax;
 
-    /* Sensor-physical — not exposed via stock V4L2 today. */
-    int32_t lineTimeUs;         /* per-line time (µs) at default mode */
-    int32_t maxCoarseDiff;      /* frame_length - max_coarse_time */
+    /* Driver-queried for the configured mode — V4L2_CID_LINE_TIME_NS,
+     * read from the mode's own register table. */
+    int32_t lineTimeNs;
+
+    /* Sensor-physical — frame_length - max_coarse_time, the margin the
+     * drivers clamp the coarse time to. */
+    int32_t maxCoarseDiff;
 
     /* Gain convention: Q8 fixed-point throughout (256 = 1.0x) for
      * the sensors we ship now. The builder records the unit so
@@ -64,7 +71,12 @@ struct SensorConfig {
 
     /* Max exposure (µs) at the given frame_length */
     int32_t maxExposureUs(int32_t frameLen) const {
-        return (frameLen - maxCoarseDiff) * lineTimeUs;
+        return (int32_t)((int64_t)(frameLen - maxCoarseDiff) * lineTimeNs / 1000);
+    }
+
+    /* The period of a frame of `frameLen` lines (ns). */
+    int64_t frameDurationNs(int32_t frameLen) const {
+        return (int64_t)frameLen * lineTimeNs;
     }
 
     /* Max exposure (µs) at default frame_length (no FPS drop) */
@@ -72,12 +84,16 @@ struct SensorConfig {
         return maxExposureUs(frameLenDefault);
     }
 
-    /* Frame_length needed for a given exposure (µs) */
+    /* Frame_length needed for a given exposure (µs): the lines it takes,
+     * rounded up, plus the margin; never below the mode's frame. */
     int32_t frameLenForExposure(int32_t exposureUs) const {
-        int32_t fl = exposureUs / lineTimeUs + maxCoarseDiff;
+        if (lineTimeNs <= 0) return frameLenDefault;
+        const int64_t lines =
+            ((int64_t)exposureUs * 1000 + lineTimeNs - 1) / lineTimeNs;
+        int64_t fl = lines + maxCoarseDiff;
         if (fl < frameLenDefault) fl = frameLenDefault;
         if (fl > frameLenMax) fl = frameLenMax;
-        return fl;
+        return (int32_t)fl;
     }
 
     /* Camera2 spec convention: ISO sensitivity scale is anchored at
@@ -120,7 +136,7 @@ struct SensorConfig {
         return {
             .frameLenDefault = 0,
             .frameLenMax     = 0,
-            .lineTimeUs      = 13,
+            .lineTimeNs      = 0,
             .maxCoarseDiff   = 6,
             .gainUnit        = 256,
             .gainMin         = 0,
@@ -137,7 +153,7 @@ struct SensorConfig {
              * does not transfer. 3 also keeps the IPA's push for
              * request N+3 well ahead of that request reaching the
              * sensor; with 2 the push lost that race now and then. */
-            .controlDelay    = { 3, 3 },
+            .controlDelay    = { 3, 3, 3 },
             .focalLengthMm   = 0.f,
         };
     }
@@ -146,7 +162,7 @@ struct SensorConfig {
         return {
             .frameLenDefault = 0,
             .frameLenMax     = 0,
-            .lineTimeUs      = 17,
+            .lineTimeNs      = 0,
             .maxCoarseDiff   = 6,
             .gainUnit        = 256,
             .gainMin         = 0,
@@ -159,7 +175,7 @@ struct SensorConfig {
              * trace as IMX179: request N shows in frame N+3 on all five
              * transitions. The scene was dim, so the luma ratio was off,
              * but the frame of the step was not. */
-            .controlDelay    = { 3, 3 },
+            .controlDelay    = { 3, 3, 3 },
             .focalLengthMm   = 0.f,
         };
     }

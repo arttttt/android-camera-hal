@@ -674,6 +674,29 @@ bool V4l2Device::queryControl(uint32_t id, int32_t *min, int32_t *max, int32_t *
     return ok;
 }
 
+bool V4l2Device::getControl(uint32_t id, int32_t *value) {
+    /* Same temporary-fd allowance as queryControl. */
+    int fd = mFd;
+    bool fdNeedsClose = false;
+    if (fd < 0) {
+        fd = openFd(mDevNode);
+        if (fd < 0)
+            return false;
+        fdNeedsClose = true;
+    }
+
+    struct v4l2_control ctrl;
+    memset(&ctrl, 0, sizeof(ctrl));
+    ctrl.id = id;
+    const bool ok = (ioctl(fd, VIDIOC_G_CTRL, &ctrl) == 0);
+    if (!ok)
+        ALOGW("getControl(0x%x) FAILED: %s", id, strerror(errno));
+    else if (value)
+        *value = ctrl.value;
+    if (fdNeedsClose) ::close(fd);
+    return ok;
+}
+
 bool V4l2Device::iocStreamOff() {
     assert(mFd >= 0);
     assert(mFormat.type);

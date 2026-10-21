@@ -20,11 +20,9 @@ struct SensorConfig;
 
 /* Output of `AutoExposureController::parseManualSettings` — the V4L2
  * triple to push for a manual-AE frame (or the auto-AE cold-start
- * fallback path). DelayedControls::Batch only carries EXPOSURE +
- * GAIN; the manual path also needs a frame_length sized for the
- * requested exposure (long shutter has to grow the readout window
- * past the default frame period), so the helper returns all three
- * values in one struct. ApplySettingsStage builds a V4l2Controls
+ * fallback path): the frame_length sized for the requested exposure
+ * (a long shutter has to grow the readout window past the default
+ * frame period), the exposure and the gain, in one struct. ApplySettingsStage builds a V4l2Controls
  * write from this. */
 struct ExposureWriteValues {
     int32_t frameLen;

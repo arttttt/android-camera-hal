@@ -141,6 +141,9 @@ void writeSensorRanges(CameraMetadata &cm, const Capability &cap) {
         const int64_t range[] = { cap.sensor.exposureMinNs, cap.sensor.exposureMaxNs };
         cm.update(ANDROID_SENSOR_INFO_EXPOSURE_TIME_RANGE, range, NELEM(range));
     }
+    if (cap.sensor.maxFrameDurationNs > 0)
+        cm.update(ANDROID_SENSOR_INFO_MAX_FRAME_DURATION,
+                  &cap.sensor.maxFrameDurationNs, 1);
     if (cap.sensor.sensitivityMaxIso > 0) {
         const int32_t range[] = { cap.sensor.sensitivityMinIso, cap.sensor.sensitivityMaxIso };
         cm.update(ANDROID_SENSOR_INFO_SENSITIVITY_RANGE, range, NELEM(range));
@@ -582,6 +585,7 @@ void writeAvailableKeys(CameraMetadata &cm) {
         ANDROID_SENSOR_INFO_ACTIVE_ARRAY_SIZE,
         ANDROID_SENSOR_INFO_COLOR_FILTER_ARRANGEMENT,
         ANDROID_SENSOR_INFO_EXPOSURE_TIME_RANGE,
+        ANDROID_SENSOR_INFO_MAX_FRAME_DURATION,
         ANDROID_SENSOR_INFO_PHYSICAL_SIZE,
         ANDROID_SENSOR_INFO_PIXEL_ARRAY_SIZE,
         ANDROID_SENSOR_INFO_SENSITIVITY_RANGE,

@@ -34,8 +34,10 @@ DelayedControls::Config config() {
     DelayedControls::Config c;
     c.delay[DelayedControls::EXPOSURE]        = 2;
     c.delay[DelayedControls::GAIN]            = 2;
+    c.delay[DelayedControls::FRAME_LENGTH]    = 2;
     c.defaultValue[DelayedControls::EXPOSURE] = 0;
     c.defaultValue[DelayedControls::GAIN]     = 0;
+    c.defaultValue[DelayedControls::FRAME_LENGTH] = 0;
     return c;
 }
 
@@ -75,6 +77,19 @@ void testInEffect() {
     check(b.val[DelayedControls::EXPOSURE] == 33000);
 }
 
+/* The frame length rides with exposure and gain: written for frame N,
+ * in effect on N + delay, the frame before still on the fallback. */
+void testFrameLength() {
+    DelayedControls dc(config());
+    DelayedControls::Batch b = batch(2000, 300);
+    b.has[DelayedControls::FRAME_LENGTH] = true;
+    b.val[DelayedControls::FRAME_LENGTH] = 5000;
+    dc.commit(5, b);
+    const int32_t fallback[DelayedControls::COUNT] = {33000, 100, 2564};
+    check(dc.applyControls(7, fallback).val[DelayedControls::FRAME_LENGTH] == 5000);
+    check(dc.applyControls(6, fallback).val[DelayedControls::FRAME_LENGTH] == 2564);
+}
+
 /* A late IPA push for a frame already written does not rewrite the
  * record: result metadata reports what the sensor really got. */
 void testSealAgainstLatePush() {
@@ -112,6 +127,7 @@ void testReset() {
 int main() {
     testPendingWrite();
     testInEffect();
+    testFrameLength();
     testSealAgainstLatePush();
     testRingWrap();
     testReset();

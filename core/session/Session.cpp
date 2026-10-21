@@ -34,6 +34,7 @@
 #include "CapabilityProbe.h"
 #include "CaptureSize.h"
 #include "CaptureEngine.h"
+#include "CaptureTimeout.h"
 #include "DeviceErrorReporter.h"
 #include "FinishEngine.h"
 #include "Focuser.h"
@@ -44,6 +45,7 @@
 #include "JpegEngine.h"
 #include "ResultEngine.h"
 #include "StatsEngine.h"
+#include "V4l2Controls.h"
 #include "V4l2Device.h"
 #include "V4l2Source.h"
 #include "3a/AutoFocusController.h"
@@ -61,11 +63,6 @@
 #include "sensor/DelayedControls.h"
 #include "sensor/SensorConfig.h"
 #include "sensor/SensorTuning.h"
-
-/* Tegra camera CIDs — not in standard V4L2 headers */
-#ifndef V4L2_CID_FRAME_LENGTH
-#define V4L2_CID_FRAME_LENGTH   (V4L2_CTRL_CLASS_CAMERA | 0x2000)
-#endif
 
 namespace mocha::camera {
 
@@ -146,6 +143,8 @@ struct Session::Impl {
     std::unique_ptr<ResultDispatchStage> resultDispatchStage;
     std::unique_ptr<Ipa>                 ipa;
     std::unique_ptr<DelayedControls>     delayedControls;
+    /* Null when the VI has no capture timeout control. */
+    std::unique_ptr<CaptureTimeout>      captureTimeout;
     std::unique_ptr<ResultEngine>        resultEngine;
     std::unique_ptr<JpegEngine>          jpegEngine;
     std::unique_ptr<FinishEngine>        finishEngine;
@@ -204,16 +203,24 @@ const Capability &Session::Impl::probe() {
 }
 
 void Session::Impl::populateSensorConfigFromDriver() {
+    /* The mode's timing is the driver's: its frame length range starts
+     * at the mode's own frame (AE runs there and never stretches it)
+     * and tops out at the longest the sensor takes, for manual long
+     * exposures. */
     int32_t flMin, flMax, flDef;
     if (dev->queryControl(V4L2_CID_FRAME_LENGTH, &flMin, &flMax, &flDef)) {
         sensorCfg.frameLenDefault = flDef;
-        /* Cap at 3× default so AE can't stretch frame_length to
-         * 30 kilo-lines in a dark scene; beyond 3× the fps drop is
-         * more disruptive than the extra exposure headroom is
-         * worth. */
-        sensorCfg.frameLenMax = (flMax > flDef * 3) ? flDef * 3 : flMax;
-        ALOGD("Frame length: def=%d max=%d (driver max=%d)",
-              sensorCfg.frameLenDefault, sensorCfg.frameLenMax, flMax);
+        sensorCfg.frameLenMax     = flMax;
+        ALOGD("Frame length: def=%d max=%d", flDef, flMax);
+    } else {
+        ALOGE("V4L2_CID_FRAME_LENGTH query failed: no frame length range");
+    }
+    int32_t lineNs;
+    if (dev->getControl(V4L2_CID_LINE_TIME_NS, &lineNs) && lineNs > 0) {
+        sensorCfg.lineTimeNs = lineNs;
+        ALOGD("Line time: %d ns", lineNs);
+    } else {
+        ALOGE("V4L2_CID_LINE_TIME_NS read failed: exposure cannot be timed");
     }
     int32_t gMin, gMax, gDef;
     if (dev->queryControl(V4L2_CID_GAIN, &gMin, &gMax, &gDef)) {
@@ -327,6 +334,23 @@ bool Session::Impl::buildInfrastructure() {
         delayedControls.reset(new DelayedControls(cfg));
     }
 
+    /* The VI's frame wait, kept to the frame lengths ApplySettings
+     * writes. */
+    {
+        int32_t mn, mx, df;
+        if (dev->queryControl(V4L2_CID_VI_CAPTURE_TIMEOUT, &mn, &mx, &df)) {
+            V4l2Device *d = dev.get();
+            captureTimeout.reset(new CaptureTimeout(
+                [d](int32_t us) {
+                    if (!d->setControl(V4L2_CID_VI_CAPTURE_TIMEOUT, us))
+                        ALOGE("VI capture timeout %d us not set", us);
+                },
+                sensorCfg.controlDelay[DelayedControls::FRAME_LENGTH], mn, mx));
+        } else {
+            ALOGW("VI has no capture timeout control; it waits its default");
+        }
+    }
+
     /* The request's settings and its shutter, run by the capture
      * engine as each frame is captured. */
     settingsPipeline.reset(new Pipeline());
@@ -336,6 +360,7 @@ bool Session::Impl::buildInfrastructure() {
         d.af              = af.get();
         d.sensorCfg       = &sensorCfg;
         d.delayedControls = delayedControls.get();
+        d.captureTimeout  = captureTimeout.get();
         d.evStep          = probe().ae.evStep;
         applySettingsStage = new ApplySettingsStage(d);
         settingsPipeline->appendStage(std::unique_ptr<PipelineStage>(applySettingsStage));
@@ -422,6 +447,7 @@ void Session::Impl::destroyInfrastructure() {
     settingsPipeline.reset();
     statsEngine.reset();
     delayedControls.reset();
+    captureTimeout.reset();
     ipa.reset();
     registry.reset();
     deviceError.reset();
@@ -617,10 +643,18 @@ Session::ConfigureResult Session::configure(std::span<const StreamSpec> outputs)
         return ConfigureResult::Failed;
     }
 
-    /* Exposure / gain defaults so the sensor has a sane baseline before
-     * STREAMON; the IPA takes over from frame 1. */
-    s.dev->setControl(V4L2_CID_EXPOSURE, s.sensorCfg.exposureDefault);
-    s.dev->setControl(V4L2_CID_GAIN,     s.sensorCfg.gainDefault);
+    /* The mode's timing, as the driver set it for this format. */
+    s.populateSensorConfigFromDriver();
+
+    /* The mode's own frame and the exposure / gain defaults, so the
+     * sensor has a sane baseline before STREAMON; the IPA takes over
+     * from frame 1. The frame length too: the driver keeps the last
+     * one written, which a manual long exposure may have stretched. */
+    if (s.captureTimeout)
+        s.captureTimeout->reset(s.sensorCfg.frameDurationNs(s.sensorCfg.frameLenDefault));
+    s.dev->setControl(V4L2_CID_FRAME_LENGTH, s.sensorCfg.frameLenDefault);
+    s.dev->setControl(V4L2_CID_EXPOSURE,     s.sensorCfg.exposureDefault);
+    s.dev->setControl(V4L2_CID_GAIN,         s.sensorCfg.gainDefault);
 
     if (!s.dev->setStreaming(true)) {
         ALOGE("Could not start streaming");

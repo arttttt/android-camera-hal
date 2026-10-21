@@ -13,22 +13,13 @@
 #include "3a/AutoFocusController.h"
 #include "sensor/DelayedControls.h"
 #include "sensor/SensorConfig.h"
+#include "CaptureTimeout.h"
 #include "V4l2Controls.h"
 #include "V4l2Device.h"
 
 namespace android {
 
 namespace {
-
-/* Tegra-specific frame_length CID — not in the standard V4L2 headers.
- * Same magic the IMX179 / OV5693 kernel drivers expose; matches the
- * value used elsewhere in this HAL. */
-#ifndef V4L2_CID_FRAME_LENGTH
-#define V4L2_CID_FRAME_LENGTH (V4L2_CTRL_CLASS_CAMERA | 0x2000)
-#endif
-#ifndef V4L2_CID_GROUP_HOLD
-#define V4L2_CID_GROUP_HOLD   (V4L2_CTRL_CLASS_CAMERA | 0x2003)
-#endif
 
 /* Brackets a set of sensor writes with the driver's group hold, so the
  * sensor latches them on the same frame. Without it exposure and gain
@@ -48,38 +39,12 @@ private:
     bool        active;
 };
 
-void writeAeTriple(V4l2Device *dev, const ExposureWriteValues &v,
-                   bool groupHold) {
-    GroupHold hold(dev, groupHold);
-    /* Single VIDIOC_S_EXT_CTRLS — frame_length must reach the sensor
-     * before / together with the exposure that needs it, otherwise
-     * the driver clamps the exposure into the old (smaller) frame
-     * and the user sees nothing change. */
-    V4l2Controls ctrls;
-    ctrls.add(V4L2_CID_FRAME_LENGTH, v.frameLen);
-    ctrls.add(V4L2_CID_EXPOSURE,     v.exposureUs);
-    ctrls.add(V4L2_CID_GAIN,         v.gain);
-    dev->setControls(ctrls);
-}
-
-void writeAeBatch(V4l2Device *dev, const DelayedControls::Batch &batch,
-                  bool groupHold) {
-    GroupHold hold(dev, groupHold);
-    V4l2Controls ctrls;
-    if (batch.has[DelayedControls::EXPOSURE])
-        ctrls.add(V4L2_CID_EXPOSURE, batch.val[DelayedControls::EXPOSURE]);
-    if (batch.has[DelayedControls::GAIN])
-        ctrls.add(V4L2_CID_GAIN, batch.val[DelayedControls::GAIN]);
-    if (ctrls.count > 0) dev->setControls(ctrls);
-}
-
 } /* namespace */
 
 ApplySettingsStage::ApplySettingsStage(const Deps &d)
     : deps(d),
       lastAutoValid(false),
-      lastAutoExposureUs(0),
-      lastAutoGain(0),
+      lastAuto{},
       groupHold(false) {
     if (deps.dev) {
         int32_t mn = 0, mx = 0, df = 0;
@@ -90,9 +55,25 @@ ApplySettingsStage::ApplySettingsStage(const Deps &d)
 }
 
 void ApplySettingsStage::reset() {
-    lastAutoValid      = false;
-    lastAutoExposureUs = 0;
-    lastAutoGain       = 0;
+    lastAutoValid = false;
+    for (int32_t &v : lastAuto) v = 0;
+}
+
+void ApplySettingsStage::write(int32_t frameLen, int32_t exposureUs,
+                               int32_t gain) {
+    if (deps.captureTimeout)
+        deps.captureTimeout->frame(deps.sensorCfg->frameDurationNs(frameLen));
+
+    GroupHold hold(deps.dev, groupHold);
+    /* Single VIDIOC_S_EXT_CTRLS — frame_length must reach the sensor
+     * before / together with the exposure that needs it, otherwise
+     * the driver clamps the exposure into the old (smaller) frame
+     * and the user sees nothing change. */
+    V4l2Controls ctrls;
+    ctrls.add(V4L2_CID_FRAME_LENGTH, frameLen);
+    ctrls.add(V4L2_CID_EXPOSURE,     exposureUs);
+    ctrls.add(V4L2_CID_GAIN,         gain);
+    deps.dev->setControls(ctrls);
 }
 
 void ApplySettingsStage::process(mocha::camera::Frame &ctx) {
@@ -112,28 +93,32 @@ void ApplySettingsStage::process(mocha::camera::Frame &ctx) {
              * exposure / gain rather than freezing. */
             DelayedControls::Batch batch =
                 deps.delayedControls->pendingWrite(ctx.frameNumber);
-            const bool landed = batch.has[DelayedControls::EXPOSURE]
-                             || batch.has[DelayedControls::GAIN];
+            bool landed = false;
+            for (int id = 0; id < DelayedControls::COUNT; ++id)
+                landed = landed || batch.has[id];
             if (landed || lastAutoValid) {
                 /* Fill whatever the IPA did not decide for this
-                 * request from the last auto write, so the sensor
-                 * stays on the auto operating point either way. */
-                if (!batch.has[DelayedControls::EXPOSURE] && lastAutoValid) {
-                    batch.has[DelayedControls::EXPOSURE] = true;
-                    batch.val[DelayedControls::EXPOSURE] = lastAutoExposureUs;
+                 * request from the last auto write -- or, before the
+                 * first, from the defaults configure wrote -- so the
+                 * sensor stays on the auto operating point either
+                 * way. */
+                int32_t defaults[DelayedControls::COUNT];
+                defaults[DelayedControls::EXPOSURE]     = deps.sensorCfg->exposureDefault;
+                defaults[DelayedControls::GAIN]         = deps.sensorCfg->gainDefault;
+                defaults[DelayedControls::FRAME_LENGTH] = deps.sensorCfg->frameLenDefault;
+                for (int id = 0; id < DelayedControls::COUNT; ++id) {
+                    if (batch.has[id]) continue;
+                    batch.has[id] = true;
+                    batch.val[id] = lastAutoValid ? lastAuto[id] : defaults[id];
                 }
-                if (!batch.has[DelayedControls::GAIN] && lastAutoValid) {
-                    batch.has[DelayedControls::GAIN] = true;
-                    batch.val[DelayedControls::GAIN] = lastAutoGain;
-                }
-                writeAeBatch(deps.dev, batch, groupHold);
-                if (batch.has[DelayedControls::EXPOSURE])
-                    ctx.appliedExposureUs = batch.val[DelayedControls::EXPOSURE];
-                if (batch.has[DelayedControls::GAIN])
-                    ctx.appliedGain       = batch.val[DelayedControls::GAIN];
-                lastAutoExposureUs = ctx.appliedExposureUs;
-                lastAutoGain       = ctx.appliedGain;
-                lastAutoValid      = true;
+                write(batch.val[DelayedControls::FRAME_LENGTH],
+                      batch.val[DelayedControls::EXPOSURE],
+                      batch.val[DelayedControls::GAIN]);
+                ctx.appliedExposureUs = batch.val[DelayedControls::EXPOSURE];
+                ctx.appliedGain       = batch.val[DelayedControls::GAIN];
+                for (int id = 0; id < DelayedControls::COUNT; ++id)
+                    lastAuto[id] = batch.val[id];
+                lastAutoValid = true;
                 deps.delayedControls->commit(ctx.frameNumber, batch);
                 appliedFromRing = true;
             }
@@ -146,7 +131,7 @@ void ApplySettingsStage::process(mocha::camera::Frame &ctx) {
             const ExposureWriteValues v =
                 AutoExposureController::parseManualSettings(
                     ctx.settings, *deps.sensorCfg, deps.evStep);
-            writeAeTriple(deps.dev, v, groupHold);
+            write(v.frameLen, v.exposureUs, v.gain);
             ctx.appliedExposureUs = v.exposureUs;
             ctx.appliedGain       = v.gain;
 
@@ -164,6 +149,8 @@ void ApplySettingsStage::process(mocha::camera::Frame &ctx) {
                 published.val[DelayedControls::EXPOSURE] = v.exposureUs;
                 published.has[DelayedControls::GAIN]     = true;
                 published.val[DelayedControls::GAIN]     = v.gain;
+                published.has[DelayedControls::FRAME_LENGTH] = true;
+                published.val[DelayedControls::FRAME_LENGTH] = v.frameLen;
                 deps.delayedControls->commit(ctx.frameNumber, published);
             }
         }

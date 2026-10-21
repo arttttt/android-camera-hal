@@ -30,14 +30,20 @@ namespace android {
 class DelayedControls {
 public:
     enum ControlId {
-        EXPOSURE = 0,
-        GAIN     = 1,
+        EXPOSURE     = 0,
+        GAIN         = 1,
+        /* Lines per frame: the frame period the exposure fits in. The
+         * HAL owns it (the drivers no longer stretch it), and the VI
+         * capture timeout follows the frames in flight by it. */
+        FRAME_LENGTH = 2,
         COUNT
     };
 
+    /* Empty unless set: a control not named in a batch is not
+     * written, whoever builds it. */
     struct Batch {
-        bool    has[COUNT];
-        int32_t val[COUNT];
+        bool    has[COUNT] = {};
+        int32_t val[COUNT] = {};
     };
 
     struct Config {
