@@ -318,12 +318,13 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
             diagGain > sensorCfg.gainMax ? sensorCfg.gainMax
                                           : (diagGain < 1 ? 1 : diagGain);
         const WbGains gQ8 = mAwb->currentGainsQ8();
-        ALOGD("3A: frame=%u luma=%.3f iqmHi=%.3f nValid=%d awbRun=%d "
+        ALOGD("3A: frame=%u luma=%.3f iqmHi=%.3f nValid=%d awbRun=%d awbConv=%d "
               "lastWb=(%.3f,%.3f) Q8=(%u,%u) estCct=%d "
               "totalUs=%.0f exp=%d gain=%d gainClamp=%d evComp=%d "
               "lux=%.0f",
               frameCount, (double)sceneLuma, (double)aeResult.iqmHighlight,
               awbResult.validPatchCount, awbRun ? 1 : 0,
+              mAwb->isConverged() ? 1 : 0,
               (double)mAwb->currentWbR(), (double)mAwb->currentWbB(),
               gQ8.r, gQ8.b,
               mAwb->currentEstCct(), (double)totalUs, diagExp,
