@@ -69,6 +69,7 @@ namespace mocha::camera {
 using android::ApplySettingsStage;
 using android::AutoFocusController;
 using android::BufferProcessor;
+using android::CaptureTimeout;
 using android::DelayedControls;
 using android::DemosaicBlitStage;
 using android::DeviceErrorReporter;
