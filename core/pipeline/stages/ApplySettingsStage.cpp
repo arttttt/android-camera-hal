@@ -59,10 +59,11 @@ void ApplySettingsStage::reset() {
     for (int32_t &v : lastAuto) v = 0;
 }
 
-void ApplySettingsStage::write(int32_t frameLen, int32_t exposureUs,
-                               int32_t gain) {
+void ApplySettingsStage::write(int32_t frameLen, int32_t lineLength,
+                               int32_t exposureUs, int32_t gain) {
     if (deps.viController)
-        deps.viController->beforeFrame(deps.sensorCfg->frameDurationNs(frameLen));
+        deps.viController->beforeFrame(
+            deps.sensorCfg->frameDurationNs(frameLen, lineLength));
 
     GroupHold hold(deps.dev, groupHold);
     /* Single VIDIOC_S_EXT_CTRLS — frame_length must reach the sensor
@@ -71,6 +72,12 @@ void ApplySettingsStage::write(int32_t frameLen, int32_t exposureUs,
      * and the user sees nothing change. */
     V4l2Controls ctrls;
     ctrls.add(V4L2_CID_FRAME_LENGTH, frameLen);
+    /* The line before the exposure counted in it: the driver converts
+     * µs to lines of the length in effect, and setControls sends the
+     * camera class (frame and line length) before the user class
+     * (exposure, gain). */
+    if (deps.sensorCfg->lineLengthMax > 0)
+        ctrls.add(V4L2_CID_LINE_LENGTH, lineLength);
     ctrls.add(V4L2_CID_EXPOSURE,     exposureUs);
     ctrls.add(V4L2_CID_GAIN,         gain);
     deps.dev->setControls(ctrls);
@@ -106,12 +113,14 @@ void ApplySettingsStage::process(mocha::camera::Frame &ctx) {
                 defaults[DelayedControls::EXPOSURE]     = deps.sensorCfg->exposureDefault;
                 defaults[DelayedControls::GAIN]         = deps.sensorCfg->gainDefault;
                 defaults[DelayedControls::FRAME_LENGTH] = deps.sensorCfg->frameLenDefault;
+                defaults[DelayedControls::LINE_LENGTH]  = deps.sensorCfg->lineLengthDefault;
                 for (int id = 0; id < DelayedControls::COUNT; ++id) {
                     if (batch.has[id]) continue;
                     batch.has[id] = true;
                     batch.val[id] = lastAutoValid ? lastAuto[id] : defaults[id];
                 }
                 write(batch.val[DelayedControls::FRAME_LENGTH],
+                      batch.val[DelayedControls::LINE_LENGTH],
                       batch.val[DelayedControls::EXPOSURE],
                       batch.val[DelayedControls::GAIN]);
                 ctx.appliedExposureUs = batch.val[DelayedControls::EXPOSURE];
@@ -131,7 +140,7 @@ void ApplySettingsStage::process(mocha::camera::Frame &ctx) {
             const ExposureWriteValues v =
                 AutoExposureController::parseManualSettings(
                     ctx.settings, *deps.sensorCfg, deps.evStep);
-            write(v.frameLen, v.exposureUs, v.gain);
+            write(v.frameLen, v.lineLength, v.exposureUs, v.gain);
             ctx.appliedExposureUs = v.exposureUs;
             ctx.appliedGain       = v.gain;
 
@@ -151,6 +160,8 @@ void ApplySettingsStage::process(mocha::camera::Frame &ctx) {
                 published.val[DelayedControls::GAIN]     = v.gain;
                 published.has[DelayedControls::FRAME_LENGTH] = true;
                 published.val[DelayedControls::FRAME_LENGTH] = v.frameLen;
+                published.has[DelayedControls::LINE_LENGTH]  = true;
+                published.val[DelayedControls::LINE_LENGTH]  = v.lineLength;
                 deps.delayedControls->commit(ctx.frameNumber, published);
             }
         }

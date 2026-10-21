@@ -36,6 +36,10 @@ public:
          * HAL owns it (the drivers no longer stretch it), and the VI
          * capture timeout follows the frames in flight by it. */
         FRAME_LENGTH = 2,
+        /* Pixel clocks per line: the mode's own, longer only for an
+         * exposure the line counter cannot hold at the mode's line time
+         * (a long manual exposure). Times the frame with FRAME_LENGTH. */
+        LINE_LENGTH  = 3,
         COUNT
     };
 

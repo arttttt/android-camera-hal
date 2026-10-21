@@ -39,20 +39,23 @@ Core3AResult describe3A(const FrameSettings &settings,
     int32_t exposureUs = cfg.exposureDefault;
     int32_t gain       = cfg.gainDefault;
     int32_t frameLen   = cfg.frameLenDefault;
+    int32_t lineLength = cfg.lineLengthDefault;
     if (delayedControls) {
         int32_t fallback[DelayedControls::COUNT];
         fallback[DelayedControls::EXPOSURE]     = cfg.exposureDefault;
         fallback[DelayedControls::GAIN]         = cfg.gainDefault;
         fallback[DelayedControls::FRAME_LENGTH] = cfg.frameLenDefault;
+        fallback[DelayedControls::LINE_LENGTH]  = cfg.lineLengthDefault;
         const DelayedControls::Batch live =
             delayedControls->applyControls(frameNumber, fallback);
         exposureUs = live.val[DelayedControls::EXPOSURE];
         gain       = live.val[DelayedControls::GAIN];
         frameLen   = live.val[DelayedControls::FRAME_LENGTH];
+        lineLength = live.val[DelayedControls::LINE_LENGTH];
     }
     r.exposureTimeNs  = (int64_t)exposureUs * 1000LL;
     r.sensitivityIso  = cfg.gainToIso(gain);
-    r.frameDurationNs = cfg.frameDurationNs(frameLen);
+    r.frameDurationNs = cfg.frameDurationNs(frameLen, lineLength);
 
     if (settings.ae.mode == AeMode::Off)
         r.aeState = AeState::Inactive;

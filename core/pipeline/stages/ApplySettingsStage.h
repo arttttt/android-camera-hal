@@ -61,9 +61,10 @@ private:
     Deps deps;
 
     /* Writes one frame's sensor controls: raises the VI frame wait for
-     * the frame length first, then FRAME_LENGTH / EXPOSURE / GAIN in
-     * one group hold. */
-    void write(int32_t frameLen, int32_t exposureUs, int32_t gain);
+     * the frame's period first, then FRAME_LENGTH / LINE_LENGTH /
+     * EXPOSURE / GAIN in one group hold. */
+    void write(int32_t frameLen, int32_t lineLength,
+               int32_t exposureUs, int32_t gain);
 
     /* Last controls the auto path actually wrote, by DelayedControls
      * id. When the IPA's decision for a request has not landed yet,

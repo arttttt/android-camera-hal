@@ -156,8 +156,9 @@ constexpr int32_t kAeConvergedFramesRequired = 5;
 /* One AE decision: exposure and gain, in the mode's own frame. Auto AE
  * never stretches the frame (splitExposureGain keeps the exposure
  * inside it and puts the rest into gain), but it still names the frame
- * length: the driver keeps whatever was last written, so a frame a
- * manual long exposure stretched would otherwise stay stretched. */
+ * and line length: the driver keeps whatever was last written, so a
+ * frame a manual long exposure stretched would otherwise stay
+ * stretched. */
 void fillAeBatch(DelayedControls::Batch *batch, const SensorConfig &cfg,
                  int32_t exposureUs, int32_t gain) {
     batch->has[DelayedControls::EXPOSURE]     = true;
@@ -166,6 +167,8 @@ void fillAeBatch(DelayedControls::Batch *batch, const SensorConfig &cfg,
     batch->val[DelayedControls::GAIN]         = gain;
     batch->has[DelayedControls::FRAME_LENGTH] = true;
     batch->val[DelayedControls::FRAME_LENGTH] = cfg.frameLenDefault;
+    batch->has[DelayedControls::LINE_LENGTH]  = true;
+    batch->val[DelayedControls::LINE_LENGTH]  = cfg.lineLengthDefault;
 }
 
 /* A per-frame smoothing coefficient applied once over `frames` frames:
@@ -269,8 +272,10 @@ ExposureWriteValues AutoExposureController::parseManualSettings(
          * frame_length, grow frame_length so it does (FPS drops
          * accordingly — that's the user's choice when they set a 1 s
          * shutter). No splitExposureGain, no fps preservation. */
+        const SensorConfig::FrameTiming t = cfg.timingForExposure(exposureUs);
         out.exposureUs = exposureUs;
-        out.frameLen   = cfg.frameLenForExposure(exposureUs);
+        out.frameLen   = t.frameLen;
+        out.lineLength = t.lineLength;
     } else {
         /* Auto AE cold-start fallback (IPA hasn't pushed yet). Hold
          * fps at the default frame_length and trade overflow exposure
@@ -281,6 +286,7 @@ ExposureWriteValues AutoExposureController::parseManualSettings(
         gain = (int32_t)((int64_t)gain * extraGainQ8 / cfg.gainUnit);
         out.exposureUs = actualExposureUs;
         out.frameLen   = cfg.frameLenDefault;
+        out.lineLength = cfg.lineLengthDefault;
     }
 
     out.gain = clampInt(gain, cfg.gainMin, cfg.gainMax);

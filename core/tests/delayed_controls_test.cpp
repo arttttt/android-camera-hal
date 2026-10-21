@@ -35,9 +35,11 @@ DelayedControls::Config config() {
     c.delay[DelayedControls::EXPOSURE]        = 2;
     c.delay[DelayedControls::GAIN]            = 2;
     c.delay[DelayedControls::FRAME_LENGTH]    = 2;
+    c.delay[DelayedControls::LINE_LENGTH]     = 2;
     c.defaultValue[DelayedControls::EXPOSURE] = 0;
     c.defaultValue[DelayedControls::GAIN]     = 0;
     c.defaultValue[DelayedControls::FRAME_LENGTH] = 0;
+    c.defaultValue[DelayedControls::LINE_LENGTH]  = 0;
     return c;
 }
 

@@ -65,6 +65,8 @@ SensorConfig imx179() {
     c.frameLenDefault = 2564;
     c.frameLenMax     = 0xFFFF;
     c.lineTimeNs      = 13271;   /* HTS 3440 at 259.2 MHz */
+    c.lineLengthDefault = 3440;
+    c.lineLengthMax   = 0x7FFF;
     c.gainMin         = 256;
     c.gainDefault     = 256;
     c.gainMax         = 4096;
@@ -97,7 +99,7 @@ IpaStats uniformStats(float r, float g, float b, float focus = 0.f) {
 void testDescribe3A() {
     const SensorConfig cfg = imx179();
     DelayedControls::Config dcc{};
-    dcc.delay[0] = dcc.delay[1] = dcc.delay[2] = 2;
+    dcc.delay[0] = dcc.delay[1] = dcc.delay[2] = dcc.delay[3] = 2;
     DelayedControls dc(dcc);
 
     AutoFocusController::Report af{AfState::Inactive, AfMode::Off, 0.f};
@@ -175,6 +177,57 @@ void testManualExposure() {
     check(v.frameLen == cfg.frameLenDefault);
 }
 
+/* The OV5693 as the driver reports it: 15-bit line counter, 1080p. */
+SensorConfig ov5693() {
+    SensorConfig c = SensorConfig::ov5693();
+    c.frameLenDefault   = 1654;
+    c.frameLenMax       = 0x7FFF;
+    c.lineTimeNs        = 25200;   /* HTS 4032 at 160 MHz */
+    c.lineLengthDefault = 4032;
+    c.lineLengthMax     = 0x7FFF;
+    c.gainMin = c.gainDefault = 256;
+    c.gainMax         = 4096;
+    c.exposureMin     = 51;
+    c.exposureDefault = 41530;
+    c.exposureMax     = 6700000;
+    return c;
+}
+
+/* An exposure the line counter holds at the mode's line keeps that line
+ * and grows the frame; a longer one takes the shortest line whose
+ * longest frame holds it, and the frame is sized in those lines. */
+void testLongExposureTiming() {
+    const SensorConfig cfg = ov5693();
+    const int64_t maxLines = cfg.frameLenMax - cfg.maxCoarseDiff;
+
+    SensorConfig::FrameTiming t = cfg.timingForExposure(800000);
+    check(t.lineLength == cfg.lineLengthDefault);
+    check(t.frameLen == (int32_t)((800000000LL + 25199) / 25200) + cfg.maxCoarseDiff);
+
+    for (int32_t us : {900000, 1600000, 5000000}) {
+        t = cfg.timingForExposure(us);
+        const int64_t ns = (int64_t)us * 1000;
+        check(t.lineLength > cfg.lineLengthDefault);
+        check(t.frameLen <= cfg.frameLenMax);
+        /* The frame holds the whole exposure... */
+        check((int64_t)(t.frameLen - cfg.maxCoarseDiff) * cfg.lineTimeNsAt(t.lineLength) >= ns);
+        /* ...and a line one clock shorter could not. */
+        check(maxLines * cfg.lineTimeNsAt(t.lineLength - 1) < ns);
+    }
+
+    /* The period follows the line: 1.6 s takes a ~1.6 s frame. */
+    t = cfg.timingForExposure(1600000);
+    const int64_t period = cfg.frameDurationNs(t.frameLen, t.lineLength);
+    check(period >= 1600000000LL && period < 1610000000LL);
+
+    /* Manual AE carries the line to the sensor write. */
+    FrameSettings s;
+    s.ae.mode = AeMode::Off;
+    s.sensor.exposureTimeNs = 1600000000LL;
+    const ExposureWriteValues v = AutoExposureController::parseManualSettings(s, cfg, kThirdStop);
+    check(v.lineLength == t.lineLength && v.frameLen == t.frameLen);
+}
+
 /* AE on a linear sensor: luma proportional to exposure x gain. It
  * converges and holds; one stop of EV compensation doubles the
  * exposure it settles on. */
@@ -193,6 +246,8 @@ float settleAe(AutoExposureController &ae, const SensorConfig &cfg,
             /* Auto AE keeps the mode's own frame and names it. */
             check(r.batch.has[DelayedControls::FRAME_LENGTH] &&
                   r.batch.val[DelayedControls::FRAME_LENGTH] == cfg.frameLenDefault);
+            check(r.batch.has[DelayedControls::LINE_LENGTH] &&
+                  r.batch.val[DelayedControls::LINE_LENGTH] == cfg.lineLengthDefault);
             check(r.batch.val[DelayedControls::EXPOSURE] <= cfg.maxExposureUsDefault());
             lastTotal = totalUs;
             totalUs = (float)r.batch.val[DelayedControls::EXPOSURE]
@@ -386,6 +441,7 @@ void testAfSweep() {
 int main() {
     testDescribe3A();
     testManualExposure();
+    testLongExposureTiming();
     testAeLoop();
     testAwbConvergence();
     testGrayWorld();

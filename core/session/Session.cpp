@@ -216,6 +216,16 @@ void Session::Impl::populateSensorConfigFromDriver() {
     } else {
         ALOGE("V4L2_CID_FRAME_LENGTH query failed: no frame length range");
     }
+    int32_t llMin, llMax, llDef;
+    if (dev->queryControl(V4L2_CID_LINE_LENGTH, &llMin, &llMax, &llDef)) {
+        sensorCfg.lineLengthDefault = llDef;
+        sensorCfg.lineLengthMax     = llMax;
+        ALOGD("Line length: def=%d max=%d", llDef, llMax);
+    } else {
+        sensorCfg.lineLengthDefault = 0;
+        sensorCfg.lineLengthMax     = 0;
+        ALOGW("no V4L2_CID_LINE_LENGTH: exposures stop at the longest frame");
+    }
     int32_t lineNs;
     if (dev->getControl(V4L2_CID_LINE_TIME_NS, &lineNs) && lineNs > 0) {
         sensorCfg.lineTimeNs = lineNs;
@@ -649,11 +659,15 @@ Session::ConfigureResult Session::configure(std::span<const StreamSpec> outputs)
 
     /* The mode's own frame and the exposure / gain defaults, so the
      * sensor has a sane baseline before STREAMON; the IPA takes over
-     * from frame 1. The frame length too: the driver keeps the last
-     * one written, which a manual long exposure may have stretched. */
+     * from frame 1. The frame and line length too: the driver keeps
+     * the last written, which a manual long exposure may have
+     * stretched. */
     if (s.viController)
-        s.viController->startStream(s.sensorCfg.frameDurationNs(s.sensorCfg.frameLenDefault));
+        s.viController->startStream(s.sensorCfg.frameDurationNs(
+            s.sensorCfg.frameLenDefault, s.sensorCfg.lineLengthDefault));
     s.dev->setControl(V4L2_CID_FRAME_LENGTH, s.sensorCfg.frameLenDefault);
+    if (s.sensorCfg.lineLengthMax > 0)
+        s.dev->setControl(V4L2_CID_LINE_LENGTH, s.sensorCfg.lineLengthDefault);
     s.dev->setControl(V4L2_CID_EXPOSURE,     s.sensorCfg.exposureDefault);
     s.dev->setControl(V4L2_CID_GAIN,         s.sensorCfg.gainDefault);
 

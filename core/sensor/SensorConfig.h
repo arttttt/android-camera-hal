@@ -32,8 +32,18 @@ struct SensorConfig {
     int32_t frameLenMax;
 
     /* Driver-queried for the configured mode — V4L2_CID_LINE_TIME_NS,
-     * read from the mode's own register table. */
+     * read from the mode's own register table: the line time at the
+     * mode's own line length. */
     int32_t lineTimeNs;
+
+    /* Driver-queried for the configured mode — V4L2_CID_LINE_LENGTH
+     * (pixel clocks): its minimum (= default) is the mode's own line,
+     * its maximum the longest the sensor takes. A longer line is a
+     * longer line time, in proportion; it is how an exposure longer
+     * than the line counter holds at the mode's line time still fits.
+     * lineLengthMax == 0: the driver has no such control. */
+    int32_t lineLengthDefault;
+    int32_t lineLengthMax;
 
     /* Sensor-physical — frame_length - max_coarse_time, the margin the
      * drivers clamp the coarse time to. */
@@ -74,9 +84,15 @@ struct SensorConfig {
         return (int32_t)((int64_t)(frameLen - maxCoarseDiff) * lineTimeNs / 1000);
     }
 
-    /* The period of a frame of `frameLen` lines (ns). */
-    int64_t frameDurationNs(int32_t frameLen) const {
-        return (int64_t)frameLen * lineTimeNs;
+    /* The line time (ns) at `lineLength` pixel clocks. */
+    int64_t lineTimeNsAt(int32_t lineLength) const {
+        if (lineLengthDefault <= 0 || lineLength <= 0) return lineTimeNs;
+        return (int64_t)lineTimeNs * lineLength / lineLengthDefault;
+    }
+
+    /* The period of a frame of `frameLen` lines of `lineLength` (ns). */
+    int64_t frameDurationNs(int32_t frameLen, int32_t lineLength) const {
+        return (int64_t)frameLen * lineTimeNsAt(lineLength);
     }
 
     /* Max exposure (µs) at default frame_length (no FPS drop) */
@@ -84,16 +100,36 @@ struct SensorConfig {
         return maxExposureUs(frameLenDefault);
     }
 
-    /* Frame_length needed for a given exposure (µs): the lines it takes,
-     * rounded up, plus the margin; never below the mode's frame. */
-    int32_t frameLenForExposure(int32_t exposureUs) const {
-        if (lineTimeNs <= 0) return frameLenDefault;
-        const int64_t lines =
-            ((int64_t)exposureUs * 1000 + lineTimeNs - 1) / lineTimeNs;
-        int64_t fl = lines + maxCoarseDiff;
+    /* The frame a sensor runs one exposure in. */
+    struct FrameTiming {
+        int32_t frameLen;
+        int32_t lineLength;
+    };
+
+    /* The frame for an exposure (µs): the mode's own line while the
+     * longest frame holds the exposure in it, else the shortest line
+     * that does; the lines the exposure takes in that line, rounded up,
+     * plus the margin; never below the mode's frame. */
+    FrameTiming timingForExposure(int32_t exposureUs) const {
+        FrameTiming t{frameLenDefault, lineLengthDefault};
+        if (lineTimeNs <= 0) return t;
+        const int64_t exposureNs = (int64_t)exposureUs * 1000;
+        const int64_t maxLines = frameLenMax - maxCoarseDiff;
+        if (lineLengthMax > lineLengthDefault && maxLines > 0 &&
+            maxLines * lineTimeNs < exposureNs) {
+            int64_t ll = (exposureNs * lineLengthDefault
+                          + maxLines * lineTimeNs - 1) / (maxLines * lineTimeNs);
+            /* lineTimeNsAt floors: step up until the frame holds it. */
+            while (ll < lineLengthMax && maxLines * lineTimeNsAt((int32_t)ll) < exposureNs)
+                ++ll;
+            t.lineLength = (int32_t)(ll > lineLengthMax ? lineLengthMax : ll);
+        }
+        const int64_t lineNs = lineTimeNsAt(t.lineLength);
+        int64_t fl = (exposureNs + lineNs - 1) / lineNs + maxCoarseDiff;
         if (fl < frameLenDefault) fl = frameLenDefault;
         if (fl > frameLenMax) fl = frameLenMax;
-        return (int32_t)fl;
+        t.frameLen = (int32_t)fl;
+        return t;
     }
 
     /* Camera2 spec convention: ISO sensitivity scale is anchored at
@@ -139,6 +175,8 @@ struct SensorConfig {
             .frameLenDefault = 0,
             .frameLenMax     = 0,
             .lineTimeNs      = 0,
+            .lineLengthDefault = 0,
+            .lineLengthMax   = 0,
             .maxCoarseDiff   = 6,
             .gainUnit        = 256,
             .gainMin         = 0,
@@ -155,7 +193,7 @@ struct SensorConfig {
              * does not transfer. 3 also keeps the IPA's push for
              * request N+3 well ahead of that request reaching the
              * sensor; with 2 the push lost that race now and then. */
-            .controlDelay    = { 3, 3, 3 },
+            .controlDelay    = { 3, 3, 3, 3 },
             .focalLengthMm   = 0.f,
         };
     }
@@ -165,6 +203,8 @@ struct SensorConfig {
             .frameLenDefault = 0,
             .frameLenMax     = 0,
             .lineTimeNs      = 0,
+            .lineLengthDefault = 0,
+            .lineLengthMax   = 0,
             .maxCoarseDiff   = 6,
             .gainUnit        = 256,
             .gainMin         = 0,
@@ -177,7 +217,7 @@ struct SensorConfig {
              * trace as IMX179: request N shows in frame N+3 on all five
              * transitions. The scene was dim, so the luma ratio was off,
              * but the frame of the step was not. */
-            .controlDelay    = { 3, 3, 3 },
+            .controlDelay    = { 3, 3, 3, 3 },
             .focalLengthMm   = 0.f,
         };
     }

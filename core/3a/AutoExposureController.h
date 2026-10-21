@@ -18,14 +18,15 @@ class SensorTuning;
 struct IpaStats;
 struct SensorConfig;
 
-/* Output of `AutoExposureController::parseManualSettings` — the V4L2
- * triple to push for a manual-AE frame (or the auto-AE cold-start
- * fallback path): the frame_length sized for the requested exposure
- * (a long shutter has to grow the readout window past the default
- * frame period), the exposure and the gain, in one struct. ApplySettingsStage builds a V4l2Controls
- * write from this. */
+/* Output of `AutoExposureController::parseManualSettings` — the sensor
+ * controls to write for a manual-AE frame (or the auto-AE cold-start
+ * fallback path): the frame sized for the requested exposure (a long
+ * shutter grows the frame past the default period, and past the line
+ * counter it grows the line too -- SensorConfig::timingForExposure),
+ * the exposure and the gain. ApplySettingsStage writes it. */
 struct ExposureWriteValues {
     int32_t frameLen;
+    int32_t lineLength;
     int32_t exposureUs;
     int32_t gain;
 };
