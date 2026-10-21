@@ -204,9 +204,10 @@ the stats engine published (`Ipa3A::processStats`).
   Off → Inactive, locked → Locked, converged → Converged, else
   Searching. AWB Auto → Locked while the request locks it, else
   Converged or Searching as the controller judges it
-  (`AwbConvergence`: the smoothed gains within 2 % of the tick's
-  target, out again past 5 %); holding AWB through an AF sweep keeps
-  the state it had. Off and the presets → Inactive. The same
+  (`AwbConvergence`: the signed gap between the smoothed gains and
+  the tick's target, averaged over ~5 ticks so the Bayes search noise
+  cancels, within 2 %, out again past 5 %); holding AWB through an AF
+  sweep keeps the state it had. Off and the presets → Inactive. The same
   derivation feeds the partial and final results.
 
 ## Configuration knobs
