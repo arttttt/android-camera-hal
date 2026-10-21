@@ -152,10 +152,8 @@ int Camera3Device::configureStreams(camera3_stream_configuration_t *streamList) 
               s, s->format, s->stream_type, s->usage, s->width, s->height, s->max_buffers);
     }
 
-    unsigned width  = 0;
-    unsigned height = 0;
     {
-        status_t e = StreamConfig::normalize(streamList, &width, &height);
+        status_t e = StreamConfig::normalize(streamList);
         if (e != NO_ERROR)
             return e;
     }
@@ -163,8 +161,8 @@ int Camera3Device::configureStreams(camera3_stream_configuration_t *streamList) 
     /* The streams by the core's ids: their index in this configuration.
      * The framework sends no request across a configuration, so no
      * frame holds an id of the old table. */
-    const mocha::camera::Capability &cap = mSession->capability();
     std::vector<std::pair<camera3_stream_t *, mocha::camera::StreamSpec>> streams;
+    std::vector<mocha::camera::StreamSpec> specs;
     std::vector<camera3_stream_t *> ids;
     for (size_t i = 0; i < streamList->num_streams; ++i) {
         camera3_stream_t *s = streamList->streams[i];
@@ -176,23 +174,23 @@ int Camera3Device::configureStreams(camera3_stream_configuration_t *streamList) 
             ALOGE("configureStreams: stream %zu format 0x%x not produced", i, s->format);
             return BAD_VALUE;
         }
-        /* A YUV output is the capture itself: its encoder does not
-         * scale. Refused here rather than failing every frame. */
-        if (spec.format == mocha::camera::PixelFormat::Ycbcr420 &&
-            cap.yuvAtCaptureSizeOnly &&
-            (spec.width != width || spec.height != height)) {
-            ALOGE("configureStreams: YUV stream %zu is %ux%u, the capture %ux%u",
-                  i, spec.width, spec.height, width, height);
-            return BAD_VALUE;
-        }
         streams.emplace_back(s, spec);
+        specs.push_back(spec);
         ids.push_back(s);
+    }
+
+    /* The core picks the capture; streams no sensor mode feeds are
+     * refused before anything changes, as camera3.h asks. */
+    switch (mSession->configure(specs)) {
+    case mocha::camera::Session::ConfigureResult::Ok:
+        break;
+    case mocha::camera::Session::ConfigureResult::Unsupported:
+        return BAD_VALUE;
+    case mocha::camera::Session::ConfigureResult::Failed:
+        return NO_INIT;
     }
     mStreams = std::move(streams);
     mResultSink->setStreams(std::move(ids));
-
-    if (!mSession->configure(mocha::camera::Size{width, height}))
-        return NO_INIT;
     return NO_ERROR;
 }
 

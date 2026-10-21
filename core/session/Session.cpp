@@ -32,6 +32,7 @@
 #include <utils/Timers.h>
 
 #include "CapabilityProbe.h"
+#include "CaptureSize.h"
 #include "CaptureEngine.h"
 #include "DeviceErrorReporter.h"
 #include "FinishEngine.h"
@@ -547,9 +548,15 @@ void Session::close() {
     s.dev->disconnect();
 }
 
-bool Session::configure(Size capture) {
+Session::ConfigureResult Session::configure(std::span<const StreamSpec> outputs) {
     Impl &s = *impl;
-    if (!s.infrastructureBuilt) return false;
+    if (!s.infrastructureBuilt) return ConfigureResult::Failed;
+
+    std::optional<Size> running;
+    if (s.enginesRunning) running = s.captureSize;
+    const std::optional<Size> chosen = chooseCaptureSize(s.probe(), outputs, running);
+    if (!chosen) return ConfigureResult::Unsupported;
+    const Size capture = *chosen;
 
     /* Skip the V4L2/Vulkan reinit when the capture size has not
      * changed. Apps like Open Camera reissue configure_streams on
@@ -562,7 +569,7 @@ bool Session::configure(Size capture) {
         s.captureSize.height == capture.height) {
         ALOGD("configure: same %ux%u capture as last — no reinit",
               capture.width, capture.height);
-        return true;
+        return ConfigureResult::Ok;
     }
 
     /* Every frame held goes back first; requests come again once the
@@ -579,7 +586,7 @@ bool Session::configure(Size capture) {
 
     if (!s.dev->setStreaming(false)) {
         ALOGE("Could not stop streaming");
-        return false;
+        return ConfigureResult::Failed;
     }
 
     /* Allocate the ISP's input buffers at the capture size before V4L2
@@ -607,7 +614,7 @@ bool Session::configure(Size capture) {
 
     if (!s.dev->setResolution(capture.width, capture.height)) {
         ALOGE("Could not set resolution");
-        return false;
+        return ConfigureResult::Failed;
     }
 
     /* Exposure / gain defaults so the sensor has a sane baseline before
@@ -617,15 +624,15 @@ bool Session::configure(Size capture) {
 
     if (!s.dev->setStreaming(true)) {
         ALOGE("Could not start streaming");
-        return false;
+        return ConfigureResult::Failed;
     }
 
     if (!s.startEngines()) {
         ALOGE("configure: the engines did not start");
-        return false;
+        return ConfigureResult::Failed;
     }
     s.captureSize = capture;
-    return true;
+    return ConfigureResult::Ok;
 }
 
 bool Session::running() const {

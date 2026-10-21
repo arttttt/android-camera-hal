@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -85,9 +86,19 @@ public:
     /* Every frame held goes back through the sink before this returns. */
     void close();
 
-    /* Capture at this size, the engines running. Every frame held goes
-     * back first. Capturing at the same size already does nothing. */
-    bool configure(Size capture);
+    /* What configure() made of a set of output streams. */
+    enum class ConfigureResult {
+        Ok,           /* capturing for them, the engines running */
+        Unsupported,  /* no sensor mode feeds them; nothing changed */
+        Failed,       /* the device did not start */
+    };
+
+    /* Capture for these output streams, the engines running. The core
+     * picks the sensor mode (chooseCaptureSize): the one running when
+     * it feeds the outputs, which then costs nothing, else the
+     * smallest that does. A mode change gives every frame held back
+     * first. */
+    ConfigureResult configure(std::span<const StreamSpec> outputs);
 
     /* Whether the engines run, so a request can be taken. */
     bool running() const;

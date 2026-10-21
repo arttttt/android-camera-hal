@@ -19,8 +19,7 @@ constexpr uint32_t kMaxBuffersPerStream = 4;
 
 } /* namespace */
 
-status_t StreamConfig::normalize(camera3_stream_configuration_t *streamList,
-                                  unsigned *v4l2Width, unsigned *v4l2Height) {
+status_t StreamConfig::normalize(camera3_stream_configuration_t *streamList) {
     /* HAL3.3 introduced the operation_mode field. We only do the
      * standard pipeline; CONSTRAINED_HIGH_SPEED requires a high-fps
      * sensor mode and a relaxed-metadata path we haven't built. */
@@ -31,8 +30,6 @@ status_t StreamConfig::normalize(camera3_stream_configuration_t *streamList,
     }
 
     camera3_stream_t *inStream = NULL;
-    unsigned width  = 0;
-    unsigned height = 0;
 
     for (size_t i = 0; i < streamList->num_streams; ++i) {
         camera3_stream_t *newStream = streamList->streams[i];
@@ -104,9 +101,6 @@ status_t StreamConfig::normalize(camera3_stream_configuration_t *streamList,
             return BAD_VALUE;
         }
 
-        /* Preserve original usage before rewrite — the framework sets
-         * HW_VIDEO_ENCODER on video streams and that drives our
-         * resolution pick below. */
         uint32_t origUsage = newStream->usage;
         ALOGD("Stream[%zu]: %ux%u fmt=0x%x usage=0x%x", i,
               newStream->width, newStream->height, newStream->format, origUsage);
@@ -143,39 +137,9 @@ status_t StreamConfig::normalize(camera3_stream_configuration_t *streamList,
         if (needsCpuWrite) newStream->usage = origUsage | GRALLOC_USAGE_SW_WRITE_OFTEN;
         else               newStream->usage = origUsage;
 
-        const bool isVideoStream = (origUsage & GRALLOC_USAGE_HW_VIDEO_ENCODER) != 0;
         newStream->max_buffers = kMaxBuffersPerStream;
-
-        /* V4L2 resolution selection:
-         *   - HW_VIDEO_ENCODER stream wins (sensor switches to matching
-         *     FPS mode, e.g. 720p@90fps).
-         *   - Otherwise the largest non-BLOB stream. */
-        if (newStream->format != HAL_PIXEL_FORMAT_BLOB) {
-            if (isVideoStream) {
-                width  = newStream->width;
-                height = newStream->height;
-                ALOGD("Video stream detected: %ux%u", width, height);
-            } else if (!width || !height ||
-                       (newStream->width * newStream->height > width * height)) {
-                width  = newStream->width;
-                height = newStream->height;
-            }
-        }
     }
 
-    /* Fallback: only BLOB streams in the config → pick the largest. */
-    if (!width || !height) {
-        for (size_t i = 0; i < streamList->num_streams; ++i) {
-            camera3_stream_t *s = streamList->streams[i];
-            if (s->width * s->height > width * height) {
-                width  = s->width;
-                height = s->height;
-            }
-        }
-    }
-
-    *v4l2Width  = width;
-    *v4l2Height = height;
     return NO_ERROR;
 }
 

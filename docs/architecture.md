@@ -109,19 +109,29 @@ complete normally.
 `StreamConfig::normalize` validates the stream list (no rotation, no
 depth, no ZSL usage, one input at most), maps
 `IMPLEMENTATION_DEFINED` to RGBA (or YCbCr for a video encoder
-consumer), sets usage bits and `max_buffers` (4), and picks the
-capture size: a video-encoder stream wins, else the largest non-BLOB,
-else the largest BLOB.
+consumer), and sets usage bits and `max_buffers` (4).
 
 `Camera3Device::configureStreams` then builds the stream table
-(`StreamId` = index in this configuration) and refuses a YUV stream at
-any size but the capture's -- the NV12 encoder does not scale
-(`Capability::yuvAtCaptureSizeOnly`). `Session::configure(size)` stops
-the engines (every frame held goes back first), reconfigures V4L2 and
-the ISP (input buffers exported to V4L2 as DMA-BUFs), and starts them
-again. A configuration at the size already running does nothing: apps
-like Open Camera reconfigure on every AE auto↔manual toggle, and the
-full cycle costs ~3 s on Tegra K1.
+(`StreamId` = index in this configuration) and hands the outputs to
+`Session::configure`, which picks the sensor mode
+(`chooseCaptureSize`, among the sizes the capability lists):
+
+- a YUV output is the capture itself -- the NV12 encoder does not
+  scale (`Capability::yuvAtCaptureSizeOnly`) -- so it names the mode,
+  and every other output must fit in it;
+- otherwise the mode already running is kept when it is at least as
+  wide and as tall as every output, since RGBA and JPEG outputs scale
+  in the blit;
+- otherwise the smallest mode that is.
+
+Outputs no mode feeds are refused (`BAD_VALUE`) before anything
+changes. Keeping the running mode is what lets apps switch stream sets
+without a restart: Open Camera reconfigures on every AE auto↔manual
+toggle, and after a recording stops it configures one 320×240 RGBA
+output that no sensor mode has. A mode change stops the engines (every
+frame held goes back first), reconfigures V4L2 and the ISP (input
+buffers exported to V4L2 as DMA-BUFs), and starts them again -- ~3 s
+on Tegra K1.
 
 ## Capability, static characteristics, templates
 

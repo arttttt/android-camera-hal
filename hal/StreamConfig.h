@@ -19,16 +19,12 @@ public:
      *     SW_READ_OFTEN).
      *   - Set `max_buffers`.
      *
-     * Pick the V4L2 capture resolution:
-     *   - An HW_VIDEO_ENCODER stream wins (the sensor locks to the
-     *     matching FPS mode, e.g. 720p@90fps).
-     *   - Otherwise the largest non-BLOB stream.
-     *   - Otherwise the largest BLOB stream.
+     * The capture size is the core's choice (Session::configure), from
+     * the streams as this leaves them.
      *
      * Returns NO_ERROR on success; BAD_VALUE on validation failures
      * (two input streams, ZSL usage). */
-    static status_t normalize(camera3_stream_configuration_t *streamList,
-                              unsigned *v4l2Width, unsigned *v4l2Height);
+    static status_t normalize(camera3_stream_configuration_t *streamList);
 };
 
 }; /* namespace android */
