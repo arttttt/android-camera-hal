@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef HAL_V4L2_CAPTURE_TIMEOUT_H
-#define HAL_V4L2_CAPTURE_TIMEOUT_H
+#ifndef HAL_VI_VI_CONTROLLER_H
+#define HAL_VI_VI_CONTROLLER_H
 
 #include <stdint.h>
 
@@ -24,43 +24,46 @@
 
 namespace android {
 
-/* How long the VI waits for a frame (V4L2_CID_VI_CAPTURE_TIMEOUT),
- * kept to the frames in flight.
+/* The VI -- the capture unit that waits on the sensor's frames -- as the
+ * HAL drives it. What it is told today is how long to wait for a frame
+ * (V4L2_CID_VI_CAPTURE_TIMEOUT), kept to the frames in flight; the
+ * control reaches it through the injected writer, so this object knows
+ * nothing of V4L2.
  *
  * The frame period is ours: the HAL writes the frame length, and a
  * write lands `controlDelay` frames later. Until it lands, and until
  * the frames of the old length have been captured, the VI can be
- * waiting on either length; so the timeout covers the longest period
+ * waiting on either length; so the wait covers the longest period
  * written over the last controlDelay + kLatchSlack frames. A longer
  * frame raises it at once -- before its write reaches the sensor --
  * and a shorter one lowers it only once the longer frames have left
  * the window.
  *
  * Not thread-safe: fed by the one thread that writes the sensor. */
-class CaptureTimeout {
+class ViController {
 public:
-    /* Writes the timeout, in µs, to the VI. */
+    /* Sets the VI's frame wait, in µs. */
     using Writer = std::function<void(int32_t us)>;
 
-    /* `minUs` / `maxUs`: the range the VI takes the control in. */
-    CaptureTimeout(Writer writer, int controlDelay,
-                   int32_t minUs, int32_t maxUs);
+    /* `minUs` / `maxUs`: the range the VI takes the wait in. */
+    ViController(Writer writer, int controlDelay,
+                 int32_t minUs, int32_t maxUs);
 
-    /* A new stream: every frame in flight is `periodNs` long. Writes
-     * the timeout for it. */
-    void reset(int64_t periodNs);
+    /* A new stream: every frame in flight is `periodNs` long. Sets the
+     * wait for it. */
+    void startStream(int64_t periodNs);
 
     /* A frame of `periodNs` is about to be written to the sensor.
      * Call before the write. */
-    void frame(int64_t periodNs);
+    void beforeFrame(int64_t periodNs);
 
-    /* The timeout last written, µs; 0 before the first. */
-    int32_t current() const { return written; }
+    /* The wait last set, µs; 0 before the first. */
+    int32_t frameWaitUs() const { return written; }
 
-    /* What the VI waits, for frames up to `periodNs` long: the wait
-     * for a frame to start can take a whole period and its readout
-     * another, plus slack for scheduling. Never below kFloorUs. */
-    static int32_t timeoutUsFor(int64_t periodNs);
+    /* The wait for frames up to `periodNs` long: a frame can take a
+     * whole period to start and another to read out, plus slack for
+     * scheduling. Never below kFloorUs. */
+    static int32_t frameWaitUsFor(int64_t periodNs);
 
     /* Frames a write can land past its control delay. */
     static constexpr int     kLatchSlack = 2;
@@ -80,4 +83,4 @@ private:
 
 } /* namespace android */
 
-#endif /* HAL_V4L2_CAPTURE_TIMEOUT_H */
+#endif /* HAL_VI_VI_CONTROLLER_H */

@@ -33,7 +33,7 @@ CXXFLAGS=(-std=c++20 -Wall -Wextra -Werror -fsanitize=thread -g -pthread
           -DV4L2DEVICE_BUF_COUNT=8
           -Icore/tests/stub -Icore -Icore/include -Icore/base -Icore/engine
           -Icore/engines -Icore/pipeline -Icore/pipeline/stages -Icore/ipa
-          -Icore/isp -Icore/util -Icore/session -Icore/v4l2)
+          -Icore/isp -Icore/util -Icore/session -Icore/v4l2 -Icore/vi)
 
 failed=0
 
@@ -75,8 +75,8 @@ run crop_test           core/tests/crop_test.cpp core/isp/CropRect.cpp
 run capture_size_test   core/tests/capture_size_test.cpp core/session/CaptureSize.cpp
 run delayed_controls_test core/tests/delayed_controls_test.cpp \
                          core/sensor/DelayedControls.cpp
-run capture_timeout_test core/tests/capture_timeout_test.cpp \
-                         core/v4l2/CaptureTimeout.cpp
+run vi_controller_test core/tests/vi_controller_test.cpp \
+                         core/vi/ViController.cpp
 run result_engine_test   core/tests/result_engine_test.cpp \
                          core/engines/ResultEngine.cpp \
                          core/pipeline/stages/ResultDispatchStage.cpp \

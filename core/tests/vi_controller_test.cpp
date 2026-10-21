@@ -14,17 +14,17 @@
  * limitations under the License.
  */
 
-/* Host test for CaptureTimeout: the VI's frame wait follows the frame
+/* Host test for ViController: the VI's frame wait follows the frame
  * lengths written -- up at once, down only once the longer frames are
  * through. Run by core/tests/run_host_tests.sh. */
 
-#include "CaptureTimeout.h"
+#include "ViController.h"
 
 #include <vector>
 
 #include "Check.h"
 
-using android::CaptureTimeout;
+using android::ViController;
 using mocha::camera::test::check;
 using mocha::camera::test::finish;
 
@@ -38,57 +38,57 @@ constexpr int64_t kLongNs  = 1000000000;    /* a 1 s manual frame */
 
 struct Vi {
     std::vector<int32_t> writes;
-    CaptureTimeout::Writer writer() {
+    ViController::Writer writer() {
         return [this](int32_t us) { writes.push_back(us); };
     }
 };
 
 /* Twice the period and some slack; never below the floor. */
 void testFormula() {
-    check(CaptureTimeout::timeoutUsFor(kFrameNs) == CaptureTimeout::kFloorUs);
-    check(CaptureTimeout::timeoutUsFor(kLongNs) ==
-          2 * 1000000 + CaptureTimeout::kSlackUs);
+    check(ViController::frameWaitUsFor(kFrameNs) == ViController::kFloorUs);
+    check(ViController::frameWaitUsFor(kLongNs) ==
+          2 * 1000000 + ViController::kSlackUs);
 }
 
-/* A new stream writes the timeout for its frame once; the same frame
+/* A new stream writes the wait for its frame once; the same frame
  * again writes nothing. */
 void testReset() {
     Vi vi;
-    CaptureTimeout t(vi.writer(), kDelay, kMinUs, kMaxUs);
-    t.reset(kFrameNs);
-    check(vi.writes.size() == 1 && vi.writes[0] == CaptureTimeout::kFloorUs);
-    for (int i = 0; i < 20; ++i) t.frame(kFrameNs);
+    ViController t(vi.writer(), kDelay, kMinUs, kMaxUs);
+    t.startStream(kFrameNs);
+    check(vi.writes.size() == 1 && vi.writes[0] == ViController::kFloorUs);
+    for (int i = 0; i < 20; ++i) t.beforeFrame(kFrameNs);
     check(vi.writes.size() == 1);
 }
 
-/* A long frame raises the timeout on its own write -- before it can
- * reach the sensor -- and the timeout stays up for every frame that
+/* A long frame raises the wait on its own write -- before it can
+ * reach the sensor -- and the wait stays up for every frame that
  * can still be the long one: the control delay plus the latch slack. */
 void testRaiseThenLower() {
     Vi vi;
-    CaptureTimeout t(vi.writer(), kDelay, kMinUs, kMaxUs);
-    t.reset(kFrameNs);
-    const int32_t longUs = CaptureTimeout::timeoutUsFor(kLongNs);
+    ViController t(vi.writer(), kDelay, kMinUs, kMaxUs);
+    t.startStream(kFrameNs);
+    const int32_t longUs = ViController::frameWaitUsFor(kLongNs);
 
-    t.frame(kLongNs);
-    check(t.current() == longUs);
+    t.beforeFrame(kLongNs);
+    check(t.frameWaitUs() == longUs);
 
-    const int held = kDelay + CaptureTimeout::kLatchSlack;
+    const int held = kDelay + ViController::kLatchSlack;
     for (int i = 0; i < held; ++i) {
-        t.frame(kFrameNs);
-        check(t.current() == longUs);
+        t.beforeFrame(kFrameNs);
+        check(t.frameWaitUs() == longUs);
     }
-    t.frame(kFrameNs);
-    check(t.current() == CaptureTimeout::kFloorUs);
+    t.beforeFrame(kFrameNs);
+    check(t.frameWaitUs() == ViController::kFloorUs);
     check(vi.writes.size() == 3);
 }
 
 /* Never outside the range the VI takes. */
 void testClamp() {
     Vi vi;
-    CaptureTimeout t(vi.writer(), kDelay, kMinUs, 1500000);
-    t.reset(kLongNs);
-    check(t.current() == 1500000);
+    ViController t(vi.writer(), kDelay, kMinUs, 1500000);
+    t.startStream(kLongNs);
+    check(t.frameWaitUs() == 1500000);
 }
 
 } // namespace
@@ -98,5 +98,5 @@ int main() {
     testReset();
     testRaiseThenLower();
     testClamp();
-    return finish("capture_timeout_test");
+    return finish("vi_controller_test");
 }

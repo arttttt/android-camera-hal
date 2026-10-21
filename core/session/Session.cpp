@@ -34,7 +34,6 @@
 #include "CapabilityProbe.h"
 #include "CaptureSize.h"
 #include "CaptureEngine.h"
-#include "CaptureTimeout.h"
 #include "DeviceErrorReporter.h"
 #include "FinishEngine.h"
 #include "Focuser.h"
@@ -48,6 +47,7 @@
 #include "V4l2Controls.h"
 #include "V4l2Device.h"
 #include "V4l2Source.h"
+#include "ViController.h"
 #include "3a/AutoFocusController.h"
 #include "ipa/Ipa3A.h"
 #include "jpeg/JpegEncoder.h"
@@ -69,7 +69,6 @@ namespace mocha::camera {
 using android::ApplySettingsStage;
 using android::AutoFocusController;
 using android::BufferProcessor;
-using android::CaptureTimeout;
 using android::DelayedControls;
 using android::DemosaicBlitStage;
 using android::DeviceErrorReporter;
@@ -87,6 +86,7 @@ using android::SensorTuning;
 using android::ShutterNotifyStage;
 using android::StatsProcessStage;
 using android::V4l2Device;
+using android::ViController;
 using android::V4l2Source;
 
 namespace {
@@ -144,8 +144,8 @@ struct Session::Impl {
     std::unique_ptr<ResultDispatchStage> resultDispatchStage;
     std::unique_ptr<Ipa>                 ipa;
     std::unique_ptr<DelayedControls>     delayedControls;
-    /* Null when the VI has no capture timeout control. */
-    std::unique_ptr<CaptureTimeout>      captureTimeout;
+    /* Null when the VI has no frame wait control. */
+    std::unique_ptr<ViController>        viController;
     std::unique_ptr<ResultEngine>        resultEngine;
     std::unique_ptr<JpegEngine>          jpegEngine;
     std::unique_ptr<FinishEngine>        finishEngine;
@@ -341,7 +341,7 @@ bool Session::Impl::buildInfrastructure() {
         int32_t mn, mx, df;
         if (dev->queryControl(V4L2_CID_VI_CAPTURE_TIMEOUT, &mn, &mx, &df)) {
             V4l2Device *d = dev.get();
-            captureTimeout.reset(new CaptureTimeout(
+            viController.reset(new ViController(
                 [d](int32_t us) {
                     if (!d->setControl(V4L2_CID_VI_CAPTURE_TIMEOUT, us))
                         ALOGE("VI capture timeout %d us not set", us);
@@ -361,7 +361,7 @@ bool Session::Impl::buildInfrastructure() {
         d.af              = af.get();
         d.sensorCfg       = &sensorCfg;
         d.delayedControls = delayedControls.get();
-        d.captureTimeout  = captureTimeout.get();
+        d.viController    = viController.get();
         d.evStep          = probe().ae.evStep;
         applySettingsStage = new ApplySettingsStage(d);
         settingsPipeline->appendStage(std::unique_ptr<PipelineStage>(applySettingsStage));
@@ -448,7 +448,7 @@ void Session::Impl::destroyInfrastructure() {
     settingsPipeline.reset();
     statsEngine.reset();
     delayedControls.reset();
-    captureTimeout.reset();
+    viController.reset();
     ipa.reset();
     registry.reset();
     deviceError.reset();
@@ -651,8 +651,8 @@ Session::ConfigureResult Session::configure(std::span<const StreamSpec> outputs)
      * sensor has a sane baseline before STREAMON; the IPA takes over
      * from frame 1. The frame length too: the driver keeps the last
      * one written, which a manual long exposure may have stretched. */
-    if (s.captureTimeout)
-        s.captureTimeout->reset(s.sensorCfg.frameDurationNs(s.sensorCfg.frameLenDefault));
+    if (s.viController)
+        s.viController->startStream(s.sensorCfg.frameDurationNs(s.sensorCfg.frameLenDefault));
     s.dev->setControl(V4L2_CID_FRAME_LENGTH, s.sensorCfg.frameLenDefault);
     s.dev->setControl(V4L2_CID_EXPOSURE,     s.sensorCfg.exposureDefault);
     s.dev->setControl(V4L2_CID_GAIN,         s.sensorCfg.gainDefault);

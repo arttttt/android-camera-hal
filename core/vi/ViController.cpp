@@ -14,13 +14,13 @@
  * limitations under the License.
  */
 
-#include "CaptureTimeout.h"
+#include "ViController.h"
 
 #include <algorithm>
 
 namespace android {
 
-CaptureTimeout::CaptureTimeout(Writer w, int controlDelay,
+ViController::ViController(Writer w, int controlDelay,
                                int32_t mn, int32_t mx)
     : writer(std::move(w)),
       minUs(mn),
@@ -30,27 +30,27 @@ CaptureTimeout::CaptureTimeout(Writer w, int controlDelay,
       written(0) {
 }
 
-int32_t CaptureTimeout::timeoutUsFor(int64_t periodNs) {
+int32_t ViController::frameWaitUsFor(int64_t periodNs) {
     const int64_t us = 2 * (periodNs / 1000) + kSlackUs;
     return (int32_t)std::min<int64_t>(std::max<int64_t>(us, kFloorUs), INT32_MAX);
 }
 
-void CaptureTimeout::reset(int64_t periodNs) {
+void ViController::startStream(int64_t periodNs) {
     std::fill(window.begin(), window.end(), periodNs);
     next    = 0;
     written = 0;
     update();
 }
 
-void CaptureTimeout::frame(int64_t periodNs) {
+void ViController::beforeFrame(int64_t periodNs) {
     window[next] = periodNs;
     next = (next + 1) % window.size();
     update();
 }
 
-void CaptureTimeout::update() {
+void ViController::update() {
     const int64_t longest = *std::max_element(window.begin(), window.end());
-    const int32_t us = std::clamp(timeoutUsFor(longest), minUs, maxUs);
+    const int32_t us = std::clamp(frameWaitUsFor(longest), minUs, maxUs);
     if (us == written) return;
     writer(us);
     written = us;

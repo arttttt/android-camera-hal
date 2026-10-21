@@ -9,9 +9,9 @@
 namespace android {
 
 class  AutoFocusController;
-class  CaptureTimeout;
 class  V4l2Device;
 struct SensorConfig;
+class  ViController;
 
 /* Applies per-request exposure + AF settings to the sensor/VCM.
  *
@@ -31,8 +31,8 @@ struct SensorConfig;
  *     the sensor is never left frozen during bring-up.
  *
  * Either way the frame length is written every frame, and the VI
- * capture timeout is raised for it before the write reaches the
- * sensor (CaptureTimeout).
+ * frame wait is raised for it before the write reaches the
+ * sensor (ViController).
  *
  * AF is independent of AE mode; the stage forwards request settings
  * to AutoFocusController unchanged. */
@@ -43,7 +43,7 @@ public:
         AutoFocusController *af;               /* may be null            */
         const SensorConfig  *sensorCfg;
         DelayedControls     *delayedControls;  /* may be null            */
-        CaptureTimeout      *captureTimeout;   /* may be null            */
+        ViController        *viController;     /* may be null            */
         mocha::camera::Rational evStep;        /* Capability::ae.evStep  */
     };
 
@@ -60,7 +60,7 @@ public:
 private:
     Deps deps;
 
-    /* Writes one frame's sensor controls: raises the VI timeout for
+    /* Writes one frame's sensor controls: raises the VI frame wait for
      * the frame length first, then FRAME_LENGTH / EXPOSURE / GAIN in
      * one group hold. */
     void write(int32_t frameLen, int32_t exposureUs, int32_t gain);

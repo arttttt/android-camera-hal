@@ -13,7 +13,7 @@
 #include "3a/AutoFocusController.h"
 #include "sensor/DelayedControls.h"
 #include "sensor/SensorConfig.h"
-#include "CaptureTimeout.h"
+#include "ViController.h"
 #include "V4l2Controls.h"
 #include "V4l2Device.h"
 
@@ -61,8 +61,8 @@ void ApplySettingsStage::reset() {
 
 void ApplySettingsStage::write(int32_t frameLen, int32_t exposureUs,
                                int32_t gain) {
-    if (deps.captureTimeout)
-        deps.captureTimeout->frame(deps.sensorCfg->frameDurationNs(frameLen));
+    if (deps.viController)
+        deps.viController->beforeFrame(deps.sensorCfg->frameDurationNs(frameLen));
 
     GroupHold hold(deps.dev, groupHold);
     /* Single VIDIOC_S_EXT_CTRLS — frame_length must reach the sensor

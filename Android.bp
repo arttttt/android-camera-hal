@@ -47,6 +47,7 @@ cc_library_static {
         "core/session",
         "core/util",
         "core/v4l2",
+        "core/vi",
     ],
     include_dirs: [
         "external/libyuv/files/include",
