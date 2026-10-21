@@ -103,9 +103,11 @@ struct SensorConfig {
      * the per-frame result reports. */
     static constexpr int32_t kIsoAtUnityGain = 100;
 
-    /* Convert ISO (100-based) to sensor gain units */
+    /* Convert ISO (100-based) to sensor gain units, to the nearest
+     * unit: the gain is fractional (Q `gainUnit`), so ISO 150 is 1.5x. */
     int32_t isoToGain(int32_t iso) const {
-        int32_t g = (iso / kIsoAtUnityGain) * gainUnit;
+        const int32_t g = (int32_t)(((int64_t)iso * gainUnit
+                                     + kIsoAtUnityGain / 2) / kIsoAtUnityGain);
         return (g < 1) ? 1 : g;
     }
 

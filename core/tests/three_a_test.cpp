@@ -161,6 +161,13 @@ void testManualExposure() {
     check(v.frameLen == 4522 + cfg.maxCoarseDiff);
     check(v.gain == 4 * cfg.gainUnit);
 
+    /* ISO between whole multiples is a fractional gain, not the
+     * multiple below it. */
+    s.sensor.sensitivityIso = 150;
+    v = AutoExposureController::parseManualSettings(s, cfg, kThirdStop);
+    check(v.gain == cfg.gainUnit * 3 / 2);
+    check(cfg.gainToIso(cfg.isoToGain(1250)) == 1250);
+
     s.sensor.exposureTimeNs = 10000000;
     s.ae.evCompensationSteps = 3;          /* one stop */
     v = AutoExposureController::parseManualSettings(s, cfg, kThirdStop);
