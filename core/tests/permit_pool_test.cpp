@@ -33,21 +33,15 @@
 
 #include "EventFd.h"
 #include "PermitPool.h"
+#include "Check.h"
 
 using namespace mocha::camera;
 using android::EventFd;
 
+using mocha::camera::test::check;
+using mocha::camera::test::finish;
+
 namespace {
-
-int failures = 0;
-
-#define CHECK(cond)                                                \
-    do {                                                           \
-        if (!(cond)) {                                             \
-            std::printf("%s:%d: %s\n", __FILE__, __LINE__, #cond); \
-            failures++;                                            \
-        }                                                          \
-    } while (0)
 
 bool readable(int fd) {
     pollfd p{fd, POLLIN, 0};
@@ -61,25 +55,25 @@ void testBound() {
     PermitPool pool(2, &wake);
     auto a = pool.tryAcquire();
     auto b = pool.tryAcquire();
-    CHECK(a && b);
-    CHECK(!pool.tryAcquire());
-    CHECK(pool.free() == 0);
-    CHECK(!readable(wake.fd()));
+    check(a && b);
+    check(!pool.tryAcquire());
+    check(pool.free() == 0);
+    check(!readable(wake.fd()));
 
     Permit moved = std::move(*a);
-    CHECK(!*a);
-    CHECK(pool.free() == 0);
+    check(!*a);
+    check(pool.free() == 0);
     a.reset();
-    CHECK(pool.free() == 0);
+    check(pool.free() == 0);
 
     moved = Permit();
-    CHECK(pool.free() == 1);
-    CHECK(readable(wake.fd()));
+    check(pool.free() == 1);
+    check(readable(wake.fd()));
     wake.drain();
-    CHECK(pool.tryAcquire().has_value());   /* taken and given back */
-    CHECK(pool.free() == 1);
+    check(pool.tryAcquire().has_value());   /* taken and given back */
+    check(pool.free() == 1);
     b.reset();
-    CHECK(pool.free() == 2);
+    check(pool.free() == 2);
 }
 
 /* Many threads taking and giving back: never more out than the pool
@@ -106,8 +100,8 @@ void testRace() {
     }
     for (std::thread &t : threads)
         t.join();
-    CHECK(most.load() <= 3);
-    CHECK(pool.free() == 3);
+    check(most.load() <= 3);
+    check(pool.free() == 3);
 }
 
 } // namespace
@@ -115,7 +109,5 @@ void testRace() {
 int main() {
     testBound();
     testRace();
-    if (failures == 0)
-        std::printf("permit_pool_test: all passed\n");
-    return failures == 0 ? 0 : 1;
+    return finish("permit_pool_test");
 }

@@ -30,20 +30,14 @@
 #include <vector>
 
 #include "JobQueue.h"
+#include "Check.h"
 
 using namespace mocha::camera;
 
+using mocha::camera::test::check;
+using mocha::camera::test::finish;
+
 namespace {
-
-int failures = 0;
-
-#define CHECK(cond)                                              \
-    do {                                                         \
-        if (!(cond)) {                                           \
-            std::printf("%s:%d: %s\n", __FILE__, __LINE__, #cond); \
-            failures++;                                          \
-        }                                                        \
-    } while (0)
 
 /* A job that says when it is let go, as a job holding a frame would let
  * the frame go. */
@@ -64,15 +58,15 @@ void testOrdinary() {
     Queue q;
     const auto id = q.queue(Job{1, nullptr}, kBounded);
     auto taken = q.take();
-    CHECK(taken.has_value());
-    CHECK(taken->first == id);
-    CHECK(taken->second.frame == 1);
+    check(taken.has_value());
+    check(taken->first == id);
+    check(taken->second.frame == 1);
     q.done(id, true, std::string("fence-1"));
     const auto out = q.resolve(id, true);
-    CHECK(out.state == State::Done);
-    CHECK(out.result && *out.result == "fence-1");
+    check(out.state == State::Done);
+    check(out.result && *out.result == "fence-1");
     /* Collected once; asked again it is gone. */
-    CHECK(q.resolve(id, true).state == State::Cancelled);
+    check(q.resolve(id, true).state == State::Cancelled);
 }
 
 /* A newer job drops a droppable one the worker has not taken, and lets
@@ -81,21 +75,21 @@ void testLatestWins() {
     Queue q;
     auto held = std::make_shared<int>(0);
     const auto first = q.queue(Job{1, held}, kBounded);
-    CHECK(held.use_count() == 2);
+    check(held.use_count() == 2);
     const auto second = q.queue(Job{2, nullptr}, kBounded);
-    CHECK(held.use_count() == 1);
-    CHECK(q.resolve(first, true).state == State::Dropped);
-    CHECK(q.droppedCount() == 1);
+    check(held.use_count() == 1);
+    check(q.resolve(first, true).state == State::Dropped);
+    check(q.droppedCount() == 1);
 
     auto taken = q.take();
-    CHECK(taken && taken->first == second);
+    check(taken && taken->first == second);
     q.done(second, true, std::string("fence-2"));
-    CHECK(q.resolve(second, true).state == State::Done);
+    check(q.resolve(second, true).state == State::Done);
 
     const auto keep = q.queue(Job{3, nullptr}, kNone);
     q.queue(Job{4, nullptr}, kBounded);
     taken = q.take();
-    CHECK(taken && taken->first == keep);
+    check(taken && taken->first == keep);
 }
 
 /* Bounded: never two drops in a row -- the second superseded job is run
@@ -105,19 +99,19 @@ void testNotTwiceInARow() {
     const auto a = q.queue(Job{1, nullptr}, kBounded);
     const auto b = q.queue(Job{2, nullptr}, kBounded);
     const auto c = q.queue(Job{3, nullptr}, kBounded);
-    CHECK(q.resolve(a, true).state == State::Dropped);
+    check(q.resolve(a, true).state == State::Dropped);
     auto taken = q.take();
-    CHECK(taken && taken->first == b);
+    check(taken && taken->first == b);
     q.done(b, true, std::string("b"));
     taken = q.take();
-    CHECK(taken && taken->first == c);
+    check(taken && taken->first == c);
     q.done(c, true, std::string("c"));
-    CHECK(q.resolve(b, true).state == State::Done);
-    CHECK(q.resolve(c, true).state == State::Done);
+    check(q.resolve(b, true).state == State::Done);
+    check(q.resolve(c, true).state == State::Done);
 
     const auto d = q.queue(Job{4, nullptr}, kBounded);
     q.queue(Job{5, nullptr}, kBounded);
-    CHECK(q.resolve(d, true).state == State::Dropped);
+    check(q.resolve(d, true).state == State::Dropped);
 }
 
 /* LatestOnly: every job still queued is superseded, however many in a
@@ -128,20 +122,20 @@ void testLatestOnly() {
     const auto a = q.queue(Job{1, held}, kLatest);
     const auto b = q.queue(Job{2, held}, kLatest);
     const auto c = q.queue(Job{3, held}, kLatest);
-    CHECK(held.use_count() == 2);
-    CHECK(q.resolve(a, true).state == State::Dropped);
-    CHECK(q.resolve(b, true).state == State::Dropped);
-    CHECK(q.droppedCount() == 2);
+    check(held.use_count() == 2);
+    check(q.resolve(a, true).state == State::Dropped);
+    check(q.resolve(b, true).state == State::Dropped);
+    check(q.droppedCount() == 2);
 
     auto taken = q.take();
-    CHECK(taken && taken->first == c);
+    check(taken && taken->first == c);
     const auto d = q.queue(Job{4, nullptr}, kLatest);
     const auto e = q.queue(Job{5, nullptr}, kLatest);
-    CHECK(q.resolve(d, true).state == State::Dropped);
+    check(q.resolve(d, true).state == State::Dropped);
     q.done(c, true, std::string("c"));
-    CHECK(q.resolve(c, true).state == State::Done);
+    check(q.resolve(c, true).state == State::Done);
     taken = q.take();
-    CHECK(taken && taken->first == e);
+    check(taken && taken->first == e);
 }
 
 /* Without waiting: a queued droppable job is dropped then and there; one
@@ -149,8 +143,8 @@ void testLatestOnly() {
 void testResolveWithoutWaiting() {
     Queue q;
     const auto id = q.queue(Job{1, nullptr}, kBounded);
-    CHECK(q.resolve(id, false).state == State::Dropped);
-    CHECK(q.waiting() == 0);
+    check(q.resolve(id, false).state == State::Dropped);
+    check(q.waiting() == 0);
 
     const auto kept = q.queue(Job{2, nullptr}, kNone);
     std::thread worker([&q] {
@@ -159,8 +153,8 @@ void testResolveWithoutWaiting() {
         q.done(taken->first, true, std::string("late"));
     });
     const auto out = q.resolve(kept, false);
-    CHECK(out.state == State::Done);
-    CHECK(out.result && *out.result == "late");
+    check(out.state == State::Done);
+    check(out.result && *out.result == "late");
     worker.join();
 }
 
@@ -170,21 +164,21 @@ void testTryResolve() {
     Queue q;
     Queue::Outcome out{};
     const auto id = q.queue(Job{1, nullptr}, kNone);
-    CHECK(!q.tryResolve(id, &out));
+    check(!q.tryResolve(id, &out));
     auto taken = q.take();
-    CHECK(!q.tryResolve(id, &out));
+    check(!q.tryResolve(id, &out));
     q.done(id, false, std::string("why"));
-    CHECK(q.tryResolve(id, &out));
-    CHECK(out.state == State::Refused);
-    CHECK(out.result && *out.result == "why");
-    CHECK(q.tryResolve(id, &out));
-    CHECK(out.state == State::Cancelled);
+    check(q.tryResolve(id, &out));
+    check(out.state == State::Refused);
+    check(out.result && *out.result == "why");
+    check(q.tryResolve(id, &out));
+    check(out.state == State::Cancelled);
 
     /* Stopped: a job still queued has no outcome coming. */
     const auto late = q.queue(Job{2, nullptr}, kNone);
     q.stop();
-    CHECK(q.tryResolve(late, &out));
-    CHECK(out.state == State::Cancelled);
+    check(q.tryResolve(late, &out));
+    check(out.state == State::Cancelled);
 }
 
 /* A refusal comes back as such; a cancelled job is never taken, and one
@@ -194,23 +188,23 @@ void testRefusedAndCancelled() {
     const auto refused = q.queue(Job{1, nullptr}, kNone);
     auto taken = q.take();
     q.done(taken->first, false, std::nullopt);
-    CHECK(q.resolve(refused, true).state == State::Refused);
+    check(q.resolve(refused, true).state == State::Refused);
 
     const auto gone = q.queue(Job{2, nullptr}, kNone);
     q.cancel(gone);
     const auto next = q.queue(Job{3, nullptr}, kNone);
     taken = q.take();
-    CHECK(taken && taken->first == next);
+    check(taken && taken->first == next);
     q.cancel(next);
     q.done(next, true, std::string("unwanted"));
-    CHECK(q.resolve(next, true).state == State::Cancelled);
+    check(q.resolve(next, true).state == State::Cancelled);
 
     /* An owner already waiting on a job cancelled while running is woken
      * when the worker is done with it. */
     const auto waited = q.queue(Job{4, nullptr}, kNone);
     taken = q.take();
     std::thread owner([&q, waited] {
-        CHECK(q.resolve(waited, true).state == State::Cancelled);
+        check(q.resolve(waited, true).state == State::Cancelled);
     });
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     q.cancel(waited);
@@ -224,25 +218,25 @@ void testNoOutcomesKept() {
     Queue q(false);
     const auto a = q.queue(Job{1, nullptr}, kLatest);
     q.queue(Job{2, nullptr}, kLatest);
-    CHECK(q.resolve(a, false).state == State::Cancelled);
+    check(q.resolve(a, false).state == State::Cancelled);
     auto taken = q.take();
-    CHECK(taken && taken->second.frame == 2);
+    check(taken && taken->second.frame == 2);
     q.done(taken->first, true, std::string("x"));
-    CHECK(q.resolve(taken->first, false).state == State::Cancelled);
-    CHECK(q.waiting() == 0);
+    check(q.resolve(taken->first, false).state == State::Cancelled);
+    check(q.waiting() == 0);
 }
 
 /* A worker that cannot wait: nothing when nothing is queued, the job
  * when one is, and nothing for one dropped before it looked. */
 void testTryTake() {
     Queue q;
-    CHECK(!q.tryTake().has_value());
+    check(!q.tryTake().has_value());
     const auto a = q.queue(Job{1, nullptr}, kBounded);
     q.queue(Job{2, nullptr}, kBounded);
     auto taken = q.tryTake();
-    CHECK(taken && taken->second.frame == 2);
-    CHECK(q.resolve(a, true).state == State::Dropped);
-    CHECK(!q.tryTake().has_value());
+    check(taken && taken->second.frame == 2);
+    check(q.resolve(a, true).state == State::Dropped);
+    check(!q.tryTake().has_value());
 }
 
 /* Stopping answers the worker and whoever waits, and lets jobs go. */
@@ -251,13 +245,13 @@ void testStop() {
     auto held = std::make_shared<int>(0);
     const auto id = q.queue(Job{1, held}, kNone);
     std::thread waiter([&q, id] {
-        CHECK(q.resolve(id, true).state == State::Cancelled);
+        check(q.resolve(id, true).state == State::Cancelled);
     });
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     q.stop();
     waiter.join();
-    CHECK(held.use_count() == 1);
-    CHECK(!q.take().has_value());
+    check(held.use_count() == 1);
+    check(!q.take().has_value());
 }
 
 /* A worker and an owner racing over many jobs: every job gets an
@@ -286,14 +280,14 @@ void testRace() {
         if (out.state == State::Dropped)
             dropped++;
         else
-            CHECK(out.state == State::Done &&
+            check(out.state == State::Done &&
                   *out.result == std::to_string(frame));
     }
     q.stop();
     worker.join();
-    CHECK(answered == 300);
-    CHECK(dropped + ran.load() >= 300);
-    CHECK(static_cast<int>(q.droppedCount()) == dropped);
+    check(answered == 300);
+    check(dropped + ran.load() >= 300);
+    check(static_cast<int>(q.droppedCount()) == dropped);
 }
 
 } // namespace
@@ -310,7 +304,5 @@ int main() {
     testTryTake();
     testStop();
     testRace();
-    if (failures == 0)
-        std::printf("job_queue_test: all passed\n");
-    return failures == 0 ? 0 : 1;
+    return finish("job_queue_test");
 }

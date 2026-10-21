@@ -38,21 +38,15 @@
 #include "sensor/DelayedControls.h"
 #include "sensor/SensorConfig.h"
 #include "stages/ResultDispatchStage.h"
+#include "Check.h"
 
 using namespace mocha::camera;
 using namespace std::chrono_literals;
 
+using mocha::camera::test::check;
+using mocha::camera::test::finish;
+
 namespace {
-
-int failures = 0;
-
-#define CHECK(cond)                                                \
-    do {                                                           \
-        if (!(cond)) {                                             \
-            std::printf("%s:%d: %s\n", __FILE__, __LINE__, #cond); \
-            failures++;                                            \
-        }                                                          \
-    } while (0)
 
 struct Delivered {
     uint32_t frameNumber;
@@ -106,7 +100,7 @@ struct Rig {
     FrameRegistry registry{16};
     ResultEngine  engine{{&dispatch, &registry}};
 
-    Rig() { CHECK(engine.start()); }
+    Rig() { check(engine.start()); }
 
     /* A frame accepted the way Session::submit accepts it; the token
      * that keeps it in the pipeline is the caller's. */
@@ -121,7 +115,7 @@ struct Rig {
         f->settled = engine.settledWake();
         FrameToken token(f);
         registry.add(f);
-        CHECK(engine.submit(f));
+        check(engine.submit(f));
         return token;
     }
 };
@@ -140,14 +134,14 @@ void testOrder() {
         tokens[n] = FrameToken();
         std::this_thread::sleep_for(2ms);
     }
-    CHECK(rig.sink.waitFor(5));
+    check(rig.sink.waitFor(5));
     const auto got = rig.sink.snapshot();
-    CHECK(got.size() == 5);
+    check(got.size() == 5);
     for (uint32_t n = 0; n < got.size(); ++n) {
-        CHECK(got[n].frameNumber == n);
-        CHECK(got[n].outcome == FrameOutcome::Completed);
+        check(got[n].frameNumber == n);
+        check(got[n].outcome == FrameOutcome::Completed);
     }
-    CHECK(rig.registry.waitEmpty(1000));
+    check(rig.registry.waitEmpty(1000));
 }
 
 /* A frame whose last token goes before it was committed did not
@@ -156,16 +150,16 @@ void testOrder() {
 void testUncommittedFails() {
     Rig rig;
     int pipes[2];
-    CHECK(::pipe(pipes) == 0);
+    check(::pipe(pipes) == 0);
     {
         FrameToken token = rig.accept(7);
         token->outputs[0].acquireFence.reset(pipes[0]);
     }
-    CHECK(rig.sink.waitFor(1));
+    check(rig.sink.waitFor(1));
     const auto got = rig.sink.snapshot();
-    CHECK(got.size() == 1 && got[0].outcome == FrameOutcome::Failed);
-    CHECK(got[0].buffers[0].status == BufferStatus::Error);
-    CHECK(got[0].buffers[0].releaseFence == pipes[0]);
+    check(got.size() == 1 && got[0].outcome == FrameOutcome::Failed);
+    check(got[0].buffers[0].status == BufferStatus::Error);
+    check(got[0].buffers[0].releaseFence == pipes[0]);
     ::close(pipes[0]);
     ::close(pipes[1]);
 }
@@ -175,22 +169,22 @@ void testUncommittedFails() {
 void testOutputErrorAndFence() {
     Rig rig;
     int pipes[2];
-    CHECK(::pipe(pipes) == 0);
+    check(::pipe(pipes) == 0);
     {
         FrameToken token = rig.accept(3, 2);
         token->outputs[0].releaseFence = pipes[0];
         token->outputs[1].status = BufferStatus::Error;
         token->status.commit();
     }
-    CHECK(rig.sink.waitFor(1));
+    check(rig.sink.waitFor(1));
     const auto got = rig.sink.snapshot();
-    CHECK(got.size() == 1 && got[0].outcome == FrameOutcome::Completed);
-    CHECK(got[0].buffers[0].status == BufferStatus::Ok);
-    CHECK(got[0].buffers[0].releaseFence == pipes[0]);
-    CHECK(got[0].buffers[1].status == BufferStatus::Error);
-    CHECK(rig.registry.waitEmpty(1000));
+    check(got.size() == 1 && got[0].outcome == FrameOutcome::Completed);
+    check(got[0].buffers[0].status == BufferStatus::Ok);
+    check(got[0].buffers[0].releaseFence == pipes[0]);
+    check(got[0].buffers[1].status == BufferStatus::Error);
+    check(rig.registry.waitEmpty(1000));
     /* The frame is gone and did not close what it handed over. */
-    CHECK(isOpen(pipes[0]));
+    check(isOpen(pipes[0]));
     ::close(pipes[0]);
     ::close(pipes[1]);
 }
@@ -202,14 +196,14 @@ void testStopHandsBack() {
     FrameToken held = rig.accept(11);
     std::this_thread::sleep_for(10ms);
     rig.engine.stop();
-    CHECK(rig.sink.snapshot().empty());
+    check(rig.sink.snapshot().empty());
     for (const FrameRef &f : rig.registry.takeAll())
         rig.engine.dispatchFailed(*f);
     const auto got = rig.sink.snapshot();
-    CHECK(got.size() == 1 && got[0].frameNumber == 11);
-    CHECK(got[0].outcome == FrameOutcome::Failed);
+    check(got.size() == 1 && got[0].frameNumber == 11);
+    check(got[0].outcome == FrameOutcome::Failed);
     held = FrameToken();
-    CHECK(rig.sink.snapshot().size() == 1);
+    check(rig.sink.snapshot().size() == 1);
 }
 
 /* Tokens dropped on other threads, many frames: every frame out once,
@@ -227,12 +221,12 @@ void testManyThreads() {
         });
     }
     for (std::thread &w : workers) w.join();
-    CHECK(rig.sink.waitFor(kFrames, 5000ms));
+    check(rig.sink.waitFor(kFrames, 5000ms));
     const auto got = rig.sink.snapshot();
-    CHECK(got.size() == kFrames);
+    check(got.size() == kFrames);
     for (uint32_t n = 0; n < got.size(); ++n) {
-        CHECK(got[n].frameNumber == n);
-        CHECK(got[n].outcome == ((n % 3) ? FrameOutcome::Completed : FrameOutcome::Failed));
+        check(got[n].frameNumber == n);
+        check(got[n].outcome == ((n % 3) ? FrameOutcome::Completed : FrameOutcome::Failed));
     }
 }
 
@@ -244,7 +238,5 @@ int main() {
     testOutputErrorAndFence();
     testStopHandsBack();
     testManyThreads();
-    if (failures == 0)
-        std::printf("result_engine_test: all passed\n");
-    return failures == 0 ? 0 : 1;
+    return finish("result_engine_test");
 }

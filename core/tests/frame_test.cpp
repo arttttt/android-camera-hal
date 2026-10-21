@@ -31,21 +31,15 @@
 #include "Frame.h"
 #include "FrameRegistry.h"
 #include "IspPipeline.h"
+#include "Check.h"
 
 using namespace mocha::camera;
 using namespace std::chrono_literals;
 
+using mocha::camera::test::check;
+using mocha::camera::test::finish;
+
 namespace {
-
-int failures = 0;
-
-#define CHECK(cond)                                                \
-    do {                                                           \
-        if (!(cond)) {                                             \
-            std::printf("%s:%d: %s\n", __FILE__, __LINE__, #cond); \
-            failures++;                                            \
-        }                                                          \
-    } while (0)
 
 bool readable(int fd) {
     pollfd p{fd, POLLIN, 0};
@@ -71,26 +65,26 @@ public:
 void testStatus() {
     {
         android::FrameStatus s;
-        CHECK(s.ok());
-        CHECK(s.commit());
-        CHECK(s.ok());
-        CHECK(!s.cancel());
-        CHECK(!s.fail(-1));
-        CHECK(s.kind() == android::FrameStatus::Kind::Committed);
+        check(s.ok());
+        check(s.commit());
+        check(s.ok());
+        check(!s.cancel());
+        check(!s.fail(-1));
+        check(s.kind() == android::FrameStatus::Kind::Committed);
     }
     {
         android::FrameStatus s;
-        CHECK(s.fail(-22));
-        CHECK(!s.ok());
-        CHECK(!s.cancel());
-        CHECK(!s.commit());
-        CHECK(s.reason() == -22);
+        check(s.fail(-22));
+        check(!s.ok());
+        check(!s.cancel());
+        check(!s.commit());
+        check(s.reason() == -22);
     }
     {
         android::FrameStatus s;
-        CHECK(s.cancel());
-        CHECK(!s.commit());
-        CHECK(s.kind() == android::FrameStatus::Kind::Cancelled);
+        check(s.cancel());
+        check(!s.commit());
+        check(s.kind() == android::FrameStatus::Kind::Cancelled);
     }
 }
 
@@ -102,18 +96,18 @@ void testTokens() {
     frame->settled = &settled;
     {
         FrameToken a(frame);
-        CHECK(frame->inPipeline.load() == 1);
+        check(frame->inPipeline.load() == 1);
         FrameToken b = a.share();
-        CHECK(frame->inPipeline.load() == 2);
+        check(frame->inPipeline.load() == 2);
         FrameToken c = std::move(a);
-        CHECK(!a);
-        CHECK(frame->inPipeline.load() == 2);
+        check(!a);
+        check(frame->inPipeline.load() == 2);
         b = FrameToken();
-        CHECK(frame->inPipeline.load() == 1);
-        CHECK(!readable(settled.fd()));
+        check(frame->inPipeline.load() == 1);
+        check(!readable(settled.fd()));
     }
-    CHECK(frame->inPipeline.load() == 0);
-    CHECK(readable(settled.fd()));
+    check(frame->inPipeline.load() == 0);
+    check(readable(settled.fd()));
 }
 
 /* Tokens going on several threads at once: exactly one wake per drop
@@ -135,8 +129,8 @@ void testTokensRace() {
         }
         root = FrameToken();
         for (std::thread &t : threads) t.join();
-        CHECK(frame->inPipeline.load() == 0);
-        CHECK(readable(settled.fd()));
+        check(frame->inPipeline.load() == 0);
+        check(readable(settled.fd()));
     }
 }
 
@@ -151,30 +145,30 @@ void testRegistry() {
         f->frameNumber = n;
         frames.push_back(f);
     }
-    CHECK(registry.add(frames[0]));
-    CHECK(registry.add(frames[1]));
-    CHECK(!registry.add(frames[2]));
-    CHECK(registry.count() == 3);
+    check(registry.add(frames[0]));
+    check(registry.add(frames[1]));
+    check(!registry.add(frames[2]));
+    check(registry.count() == 3);
 
     frames[1]->status.commit();
     registry.cancelIf([](const Frame &f) { return f.frameNumber != 2; });
-    CHECK(frames[0]->status.kind() == android::FrameStatus::Kind::Cancelled);
-    CHECK(frames[1]->status.kind() == android::FrameStatus::Kind::Committed);
-    CHECK(frames[2]->status.ok());
+    check(frames[0]->status.kind() == android::FrameStatus::Kind::Cancelled);
+    check(frames[1]->status.kind() == android::FrameStatus::Kind::Committed);
+    check(frames[2]->status.ok());
 
-    CHECK(!registry.waitEmpty(20));
+    check(!registry.waitEmpty(20));
     std::thread remover([&registry] {
         std::this_thread::sleep_for(20ms);
         registry.remove(0);
         registry.remove(1);
         registry.remove(2);
     });
-    CHECK(registry.waitEmpty(2000));
+    check(registry.waitEmpty(2000));
     remover.join();
 
     registry.add(frames[0]);
-    CHECK(registry.takeAll().size() == 1);
-    CHECK(registry.count() == 0);
+    check(registry.takeAll().size() == 1);
+    check(registry.count() == 0);
 }
 
 /* A frame that goes without its result having gone out gives back the
@@ -183,7 +177,7 @@ void testRegistry() {
 void testFrameGivesBack() {
     FakeJpegRing ring;
     int pipes[2];
-    CHECK(::pipe(pipes) == 0);
+    check(::pipe(pipes) == 0);
     {
         auto frame = std::make_shared<Frame>();
         frame->jpegRing = &ring;
@@ -192,8 +186,8 @@ void testFrameGivesBack() {
         frame->outputs[1].jpeg.ringSlot = -1;     /* used up */
         frame->outputs[2].releaseFence  = pipes[0];
     }
-    CHECK(ring.released.size() == 1 && ring.released[0] == 1);
-    CHECK(!isOpen(pipes[0]));
+    check(ring.released.size() == 1 && ring.released[0] == 1);
+    check(!isOpen(pipes[0]));
     ::close(pipes[1]);
 }
 
@@ -205,7 +199,5 @@ int main() {
     testTokensRace();
     testRegistry();
     testFrameGivesBack();
-    if (failures == 0)
-        std::printf("frame_test: all passed\n");
-    return failures == 0 ? 0 : 1;
+    return finish("frame_test");
 }

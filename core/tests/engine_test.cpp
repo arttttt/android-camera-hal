@@ -38,22 +38,16 @@
 
 #include "Engine.h"
 #include "EventFd.h"
+#include "Check.h"
 
 using namespace mocha::camera;
 using android::EventFd;
 using namespace std::chrono_literals;
 
+using mocha::camera::test::check;
+using mocha::camera::test::finish;
+
 namespace {
-
-int failures = 0;
-
-#define CHECK(cond)                                                \
-    do {                                                           \
-        if (!(cond)) {                                             \
-            std::printf("%s:%d: %s\n", __FILE__, __LINE__, #cond); \
-            failures++;                                            \
-        }                                                          \
-    } while (0)
 
 /* A job that says when it is let go, as a job holding a frame would let
  * the frame go. */
@@ -86,14 +80,14 @@ void testSynchronous() {
     Eng e("sync", [](Eng::Id, Job &j) {
         return j.n < 0 ? Step::refused(j.n) : Step::done(j.n * 10);
     }, keep());
-    CHECK(e.start());
+    check(e.start());
     const auto a = e.submit(Job{1, nullptr});
     const auto b = e.submit(Job{-2, nullptr});
-    CHECK(a && b);
+    check(a && b);
     auto out = e.resolve(*a, true);
-    CHECK(out.state == State::Done && out.result && *out.result == 10);
+    check(out.state == State::Done && out.result && *out.result == 10);
     out = e.resolve(*b, true);
-    CHECK(out.state == State::Refused && out.result && *out.result == -2);
+    check(out.state == State::Refused && out.result && *out.result == -2);
     e.stop();
 }
 
@@ -110,23 +104,23 @@ void testAsynchronousAndRearm() {
             first.drain();
             return Step::wait(second.fd(), [&]() {
                 continuations++;
-                CHECK(std::this_thread::get_id() == engineThread);
+                check(std::this_thread::get_id() == engineThread);
                 return Step::done(job.n + 100);
             });
         });
     }, keep());
-    CHECK(e.start());
+    check(e.start());
     const auto id = e.submit(Job{7, nullptr});
     Eng::Outcome out{};
     std::this_thread::sleep_for(20ms);
-    CHECK(!e.tryResolve(*id, &out));
+    check(!e.tryResolve(*id, &out));
     first.notify();
-    CHECK(waitFor([&] { return continuations.load() == 1; }));
-    CHECK(!e.tryResolve(*id, &out));
+    check(waitFor([&] { return continuations.load() == 1; }));
+    check(!e.tryResolve(*id, &out));
     second.notify();
     out = e.resolve(*id, true);
-    CHECK(out.state == State::Done && out.result && *out.result == 107);
-    CHECK(continuations.load() == 2);
+    check(out.state == State::Done && out.result && *out.result == 107);
+    check(continuations.load() == 2);
     e.stop();
 }
 
@@ -141,19 +135,19 @@ void testMaxRunning() {
         const int n = j.n;
         return Step::wait(fences[n]->fd(), [n] { return Step::done(n); });
     }, keep(2));
-    CHECK(e.start());
+    check(e.start());
     const auto a = e.submit(Job{0, nullptr});
     e.submit(Job{1, nullptr});
     const auto c = e.submit(Job{2, nullptr});
-    CHECK(waitFor([&] { return started.load() == 2; }));
+    check(waitFor([&] { return started.load() == 2; }));
     std::this_thread::sleep_for(30ms);
-    CHECK(started.load() == 2);
+    check(started.load() == 2);
     fences[0]->notify();
-    CHECK(e.resolve(*a, true).state == State::Done);
-    CHECK(waitFor([&] { return started.load() == 3; }));
+    check(e.resolve(*a, true).state == State::Done);
+    check(waitFor([&] { return started.load() == 3; }));
     fences[1]->notify();
     fences[2]->notify();
-    CHECK(e.resolve(*c, true).state == State::Done);
+    check(e.resolve(*c, true).state == State::Done);
     e.stop();
 }
 
@@ -181,36 +175,36 @@ void testCancel() {
             return Step::done(0);
         });
     }, keep());
-    CHECK(e.start());
+    check(e.start());
 
     auto waitingHeld = std::make_shared<int>(0);
     auto queuedHeld = std::make_shared<int>(0);
     const auto waitingId = e.submit(Job{1, waitingHeld});
-    CHECK(waitFor([&] { return handled.load() == 1; }));
+    check(waitFor([&] { return handled.load() == 1; }));
     const auto queuedId = e.submit(Job{2, queuedHeld});
 
     e.cancel(*queuedId);
-    CHECK(queuedHeld.use_count() == 1);
+    check(queuedHeld.use_count() == 1);
     e.cancel(*waitingId);
-    CHECK(waitFor([&] { return waitingHeld.use_count() == 1; }));
+    check(waitFor([&] { return waitingHeld.use_count() == 1; }));
     fence.notify();
     std::this_thread::sleep_for(20ms);
-    CHECK(continued.load() == 0);
-    CHECK(handled.load() == 1);
+    check(continued.load() == 0);
+    check(handled.load() == 1);
     Eng::Outcome out{};
-    CHECK(e.tryResolve(*waitingId, &out) && out.state == State::Cancelled);
-    CHECK(e.tryResolve(*queuedId, &out) && out.state == State::Cancelled);
+    check(e.tryResolve(*waitingId, &out) && out.state == State::Cancelled);
+    check(e.tryResolve(*queuedId, &out) && out.state == State::Cancelled);
 
     /* The room is free: a running job can be taken, and cancelled. */
     const auto runningId = e.submit(Job{3, nullptr});
-    CHECK(waitFor([&] { return inGate.load(); }));
+    check(waitFor([&] { return inGate.load(); }));
     e.cancel(*runningId);
     {
         std::lock_guard<std::mutex> lock(gateMutex);
         gateOpen = true;
     }
     gateCv.notify_all();
-    CHECK(e.resolve(*runningId, true).state == State::Cancelled);
+    check(e.resolve(*runningId, true).state == State::Cancelled);
     e.stop();
 }
 
@@ -234,28 +228,28 @@ void testLatestOnly() {
         }
         return Step::done(j.n);
     });
-    CHECK(e.start());
+    check(e.start());
     auto held = std::make_shared<int>(0);
     e.submit(Job{0, nullptr}, DropPolicy::LatestOnly);
-    CHECK(waitFor([&] { return inGate.load(); }));
+    check(waitFor([&] { return inGate.load(); }));
     for (int n = 1; n <= 4; ++n)
         e.submit(Job{n, held}, DropPolicy::LatestOnly);
-    CHECK(held.use_count() == 2);
+    check(held.use_count() == 2);
     {
         std::lock_guard<std::mutex> lock(gateMutex);
         gateOpen = true;
     }
     gateCv.notify_all();
-    CHECK(waitFor([&] {
+    check(waitFor([&] {
         std::lock_guard<std::mutex> lock(seenMutex);
         return seen.size() == 2;
     }));
     std::this_thread::sleep_for(20ms);
     {
         std::lock_guard<std::mutex> lock(seenMutex);
-        CHECK(seen == (std::vector<int>{0, 4}));
+        check(seen == (std::vector<int>{0, 4}));
     }
-    CHECK(waitFor([&] { return held.use_count() == 1; }));
+    check(waitFor([&] { return held.use_count() == 1; }));
     e.stop();
 }
 
@@ -272,20 +266,20 @@ void testStop() {
                           [n] { return Step::done(n); });
     }, Eng::Options{.maxRunning = 2, .keepOutcomes = true,
                     .stopGrace = 150ms});
-    CHECK(e.setStallWatch(10s, [] {}));
-    CHECK(e.start());
-    CHECK(!e.setStallWatch(10ms, [] {}));
+    check(e.setStallWatch(10s, [] {}));
+    check(e.start());
+    check(!e.setStallWatch(10ms, [] {}));
 
     auto neverHeld = std::make_shared<int>(0);
     auto queuedHeld = std::make_shared<int>(0);
     const auto lateId = e.submit(Job{0, nullptr});
     const auto neverId = e.submit(Job{1, neverHeld});
-    CHECK(waitFor([&] { return handled.load() == 2; }));
+    check(waitFor([&] { return handled.load() == 2; }));
     const auto queuedId = e.submit(Job{2, queuedHeld});
 
     std::atomic<bool> answered{false};
     std::thread resolver([&] {
-        CHECK(e.resolve(*queuedId, true).state == State::Cancelled);
+        check(e.resolve(*queuedId, true).state == State::Cancelled);
         answered = true;
     });
     std::thread fencer([&] {
@@ -299,15 +293,15 @@ void testStop() {
     resolver.join();
     fencer.join();
 
-    CHECK(answered.load());
-    CHECK(took >= 140ms && took < 1000ms);
-    CHECK(queuedHeld.use_count() == 1);
-    CHECK(neverHeld.use_count() == 1);
-    CHECK(handled.load() == 2);
-    CHECK(e.resolve(*lateId, true).state == State::Done);
-    CHECK(e.resolve(*neverId, true).state == State::Cancelled);
-    CHECK(!e.submit(Job{3, nullptr}).has_value());
-    CHECK(!e.start());
+    check(answered.load());
+    check(took >= 140ms && took < 1000ms);
+    check(queuedHeld.use_count() == 1);
+    check(neverHeld.use_count() == 1);
+    check(handled.load() == 2);
+    check(e.resolve(*lateId, true).state == State::Done);
+    check(e.resolve(*neverId, true).state == State::Cancelled);
+    check(!e.submit(Job{3, nullptr}).has_value());
+    check(!e.start());
 }
 
 /* A job waiting past the limit stalls once, and keeps waiting. */
@@ -317,14 +311,14 @@ void testStall() {
     Eng e("stall", [&](Eng::Id, Job &) {
         return Step::wait(fence.fd(), [] { return Step::done(1); });
     }, keep());
-    CHECK(e.setStallWatch(40ms, [&] { stalls++; }));
-    CHECK(e.start());
+    check(e.setStallWatch(40ms, [&] { stalls++; }));
+    check(e.start());
     const auto id = e.submit(Job{0, nullptr});
-    CHECK(waitFor([&] { return stalls.load() == 1; }, 500ms));
+    check(waitFor([&] { return stalls.load() == 1; }, 500ms));
     std::this_thread::sleep_for(120ms);
-    CHECK(stalls.load() == 1);
+    check(stalls.load() == 1);
     fence.notify();
-    CHECK(e.resolve(*id, true).state == State::Done);
+    check(e.resolve(*id, true).state == State::Done);
     e.stop();
 }
 
@@ -339,21 +333,21 @@ void testWatch() {
         engineThread = std::this_thread::get_id();
         return Step::done(0);
     }, keep());
-    CHECK(e.watch(node.fd(), [&](short revents) {
-        CHECK(revents & POLLIN);
+    check(e.watch(node.fd(), [&](short revents) {
+        check(revents & POLLIN);
         node.drain();
         reads++;
         onEngine = std::this_thread::get_id() == engineThread;
     }));
-    CHECK(e.start());
-    CHECK(!e.watch(node.fd(), [](short) {}));
+    check(e.start());
+    check(!e.watch(node.fd(), [](short) {}));
     const auto id = e.submit(Job{0, nullptr});
-    CHECK(e.resolve(*id, true).state == State::Done);
+    check(e.resolve(*id, true).state == State::Done);
     node.notify();
-    CHECK(waitFor([&] { return reads.load() == 1; }));
-    CHECK(onEngine.load());
+    check(waitFor([&] { return reads.load() == 1; }));
+    check(onEngine.load());
     node.notify();
-    CHECK(waitFor([&] { return reads.load() == 2; }));
+    check(waitFor([&] { return reads.load() == 2; }));
     e.stop();
 }
 
@@ -362,7 +356,7 @@ void testOutcomeFd() {
     constexpr int kJobs = 200;
     Eng e("outcomes", [](Eng::Id, Job &j) { return Step::done(j.n); },
           keep());
-    CHECK(e.start());
+    check(e.start());
     std::vector<Eng::Id> ids;
     for (int n = 0; n < kJobs; ++n)
         ids.push_back(*e.submit(Job{n, nullptr}));
@@ -375,13 +369,13 @@ void testOutcomeFd() {
         e.ackOutcomes();
         Eng::Outcome out{};
         while (next < ids.size() && e.tryResolve(ids[next], &out)) {
-            CHECK(out.state == State::Done && *out.result ==
+            check(out.state == State::Done && *out.result ==
                   static_cast<int>(next));
             next++;
             collected++;
         }
     }
-    CHECK(collected == kJobs);
+    check(collected == kJobs);
     e.stop();
 }
 
@@ -396,16 +390,16 @@ void testNoLostWake() {
         return Step::done(0);
     });
     Eng first("first", [&](Eng::Id, Job &j) {
-        CHECK(last.submit(Job{j.n, std::move(j.held)}).has_value());
+        check(last.submit(Job{j.n, std::move(j.held)}).has_value());
         return Step::done(0);
     });
-    CHECK(last.start());
-    CHECK(first.start());
+    check(last.start());
+    check(first.start());
     std::vector<std::thread> producers;
     for (int p = 0; p < kProducers; ++p) {
         producers.emplace_back([&first, p] {
             for (int i = 0; i < kPerProducer; ++i) {
-                CHECK(first.submit(Job{p * kPerProducer + i, nullptr})
+                check(first.submit(Job{p * kPerProducer + i, nullptr})
                               .has_value());
                 if (i % 64 == 0)
                     std::this_thread::yield();
@@ -414,7 +408,7 @@ void testNoLostWake() {
     }
     for (std::thread &t : producers)
         t.join();
-    CHECK(waitFor([&] { return atEnd.load() == kProducers * kPerProducer; },
+    check(waitFor([&] { return atEnd.load() == kProducers * kPerProducer; },
                   5000ms));
     first.stop();
     last.stop();
@@ -428,25 +422,25 @@ void testNoGrace() {
         return Step::wait(never.fd(), [] { return Step::done(); });
     }, Eng::Options{.maxRunning = 1, .keepOutcomes = true,
                     .stopGrace = 0ms});
-    CHECK(e.start());
+    check(e.start());
     auto held = std::make_shared<int>(0);
     const auto id = e.submit(Job{0, held});
-    CHECK(waitFor([&] { return held.use_count() == 2; }));
+    check(waitFor([&] { return held.use_count() == 2; }));
     const auto t0 = std::chrono::steady_clock::now();
     e.stop();
-    CHECK(std::chrono::steady_clock::now() - t0 < 100ms);
-    CHECK(held.use_count() == 1);
-    CHECK(e.resolve(*id, true).state == State::Cancelled);
+    check(std::chrono::steady_clock::now() - t0 < 100ms);
+    check(held.use_count() == 1);
+    check(e.resolve(*id, true).state == State::Cancelled);
 }
 
 /* An engine never started stops cleanly and refuses work. */
 void testNeverStarted() {
     Eng e("idle", [](Eng::Id, Job &) { return Step::done(0); });
     auto held = std::make_shared<int>(0);
-    CHECK(e.submit(Job{0, held}).has_value());
+    check(e.submit(Job{0, held}).has_value());
     e.stop();
-    CHECK(held.use_count() == 1);
-    CHECK(!e.submit(Job{1, nullptr}).has_value());
+    check(held.use_count() == 1);
+    check(!e.submit(Job{1, nullptr}).has_value());
 }
 
 } // namespace
@@ -464,7 +458,5 @@ int main() {
     testNoLostWake();
     testNoGrace();
     testNeverStarted();
-    if (failures == 0)
-        std::printf("engine_test: all passed\n");
-    return failures == 0 ? 0 : 1;
+    return finish("engine_test");
 }

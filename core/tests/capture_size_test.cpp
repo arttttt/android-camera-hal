@@ -23,20 +23,14 @@
 #include <vector>
 
 #include "CaptureSize.h"
+#include "Check.h"
 
 using namespace mocha::camera;
 
+using mocha::camera::test::check;
+using mocha::camera::test::finish;
+
 namespace {
-
-int failures = 0;
-
-#define CHECK(cond)                                                \
-    do {                                                           \
-        if (!(cond)) {                                             \
-            std::printf("%s:%d: %s\n", __FILE__, __LINE__, #cond); \
-            failures++;                                            \
-        }                                                          \
-    } while (0)
 
 constexpr Size k1080{1920, 1080};
 constexpr Size k720{1280, 720};
@@ -73,16 +67,16 @@ const Capability cap = mochaCapability();
  * feeds it. */
 void testSmallOutputKeepsTheRunningMode() {
     const std::vector<StreamSpec> outs{out(PixelFormat::Rgba8888, 320, 240)};
-    CHECK(is(chooseCaptureSize(cap, outs, k1080), k1080));
-    CHECK(is(chooseCaptureSize(cap, outs, std::nullopt), k720));
+    check(is(chooseCaptureSize(cap, outs, k1080), k1080));
+    check(is(chooseCaptureSize(cap, outs, std::nullopt), k720));
 }
 
 /* The running mode is kept only while it feeds every output. */
 void testRunningModeTooSmallIsLeft() {
     const std::vector<StreamSpec> outs{out(PixelFormat::Rgba8888, 1280, 720),
                                        out(PixelFormat::Blob, 1920, 1080)};
-    CHECK(is(chooseCaptureSize(cap, outs, k720), k1080));
-    CHECK(is(chooseCaptureSize(cap, outs, std::nullopt), k1080));
+    check(is(chooseCaptureSize(cap, outs, k720), k1080));
+    check(is(chooseCaptureSize(cap, outs, std::nullopt), k1080));
 }
 
 /* A YUV output is the capture: it names the mode, over the running one
@@ -92,18 +86,18 @@ void testYuvNamesTheMode() {
     const std::vector<StreamSpec> video{out(PixelFormat::Rgba8888, 1280, 720),
                                         out(PixelFormat::Ycbcr420, 1280, 720),
                                         out(PixelFormat::Blob, 1280, 720)};
-    CHECK(is(chooseCaptureSize(cap, video, k1080), k720));
+    check(is(chooseCaptureSize(cap, video, k1080), k720));
 
     const std::vector<StreamSpec> odd{out(PixelFormat::Ycbcr420, 640, 480)};
-    CHECK(!chooseCaptureSize(cap, odd, k1080));
+    check(!chooseCaptureSize(cap, odd, k1080));
 
     const std::vector<StreamSpec> larger{out(PixelFormat::Ycbcr420, 1280, 720),
                                          out(PixelFormat::Blob, 1920, 1080)};
-    CHECK(!chooseCaptureSize(cap, larger, std::nullopt));
+    check(!chooseCaptureSize(cap, larger, std::nullopt));
 
     const std::vector<StreamSpec> two{out(PixelFormat::Ycbcr420, 1920, 1080),
                                       out(PixelFormat::Ycbcr420, 1280, 720)};
-    CHECK(!chooseCaptureSize(cap, two, std::nullopt));
+    check(!chooseCaptureSize(cap, two, std::nullopt));
 }
 
 /* Where the YUV encoder scales, a YUV output is just another output. */
@@ -111,20 +105,20 @@ void testScalingYuvIsAnOutput() {
     Capability scaling = cap;
     scaling.yuvAtCaptureSizeOnly = false;
     const std::vector<StreamSpec> outs{out(PixelFormat::Ycbcr420, 640, 480)};
-    CHECK(is(chooseCaptureSize(scaling, outs, std::nullopt), k720));
+    check(is(chooseCaptureSize(scaling, outs, std::nullopt), k720));
 }
 
 /* An output larger than any mode has nothing to feed it. */
 void testNoModeFeeds() {
     const std::vector<StreamSpec> outs{out(PixelFormat::Blob, 3264, 2448)};
-    CHECK(!chooseCaptureSize(cap, outs, k1080));
+    check(!chooseCaptureSize(cap, outs, k1080));
 }
 
 /* Covering is per side: a 4:3 output wider than tall still needs a mode
  * at least as tall as it. */
 void testCoverIsPerSide() {
     const std::vector<StreamSpec> outs{out(PixelFormat::Rgba8888, 1024, 768)};
-    CHECK(is(chooseCaptureSize(cap, outs, std::nullopt), k1080));
+    check(is(chooseCaptureSize(cap, outs, std::nullopt), k1080));
 }
 
 } // namespace
@@ -136,7 +130,5 @@ int main() {
     testScalingYuvIsAnOutput();
     testNoModeFeeds();
     testCoverIsPerSide();
-    if (failures == 0)
-        std::printf("capture_size_test: all passed\n");
-    return failures == 0 ? 0 : 1;
+    return finish("capture_size_test");
 }
