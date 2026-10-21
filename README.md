@@ -12,7 +12,7 @@ the raw Bayer pixel onward.
 | Property | Value |
 |----------|-------|
 | HAL device API | `CAMERA_DEVICE_API_VERSION_3_4` |
-| Module API | `CAMERA_MODULE_API_VERSION_2_3` |
+| Module API | `CAMERA_MODULE_API_VERSION_2_4` (no flash: `set_torch_mode` → `-ENOSYS`) |
 | Camera2 hardware level | `LIMITED` |
 | Capabilities | `BACKWARD_COMPATIBLE` |
 | Cameras | IMX179 rear (8 MP RGGB), OV5693 front (5 MP BGGR) |

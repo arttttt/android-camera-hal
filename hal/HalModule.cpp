@@ -40,6 +40,13 @@ namespace HalModule {
 static Camera3Device *sCameras[MAX_CAMERAS];
 static int sNumCameras = 0;
 
+/* The cameras' ids as the framework names them ("0", "1", ...), and for
+ * each camera the ids of the others: the conflicting_devices of its
+ * camera_info. Built once, with the cameras; the framework keeps the
+ * pointers. */
+static char  sIds[MAX_CAMERAS][4];
+static char *sConflicts[MAX_CAMERAS][MAX_CAMERAS];
+
 static bool isV4l2CaptureDevice(const char *path) {
     int fd = open(path, O_RDWR | O_NONBLOCK);
     if (fd < 0)
@@ -82,6 +89,17 @@ static void enumerateCameras() {
         sCameras[sNumCameras++] = new Camera3Device(path, facing);
     }
 
+    /* One sensor path and one ISP: the cameras stream one at a time,
+     * so each conflicts with every other. */
+    for (int i = 0; i < sNumCameras; i++)
+        snprintf(sIds[i], sizeof(sIds[i]), "%d", i);
+    for (int i = 0; i < sNumCameras; i++) {
+        int n = 0;
+        for (int j = 0; j < sNumCameras; j++)
+            if (j != i)
+                sConflicts[i][n++] = sIds[j];
+    }
+
     ALOGI("Enumerated %d camera(s)", sNumCameras);
 }
 
@@ -90,13 +108,48 @@ static int getNumberOfCameras() {
     return sNumCameras;
 }
 
+/* A camera id as the framework sends it: the decimal index, nothing
+ * after it. False for anything else or a camera that is not there. */
+static bool parseCameraId(const char *name, int *cameraId) {
+    if (name == NULL || *name == '\0')
+        return false;
+    errno = 0;
+    char *end = NULL;
+    const long id = strtol(name, &end, 10);
+    if (errno || *end != '\0' || id < 0 || id >= sNumCameras)
+        return false;
+    *cameraId = (int)id;
+    return true;
+}
+
 static int getCameraInfo(int cameraId, struct camera_info *info) {
     enumerateCameras();
     if (cameraId < 0 || cameraId >= sNumCameras) {
         ALOGE("%s: invalid camera ID (%d)", __FUNCTION__, cameraId);
         return -ENODEV;
     }
-    return sCameras[cameraId]->cameraInfo(info);
+    const int res = sCameras[cameraId]->cameraInfo(info);
+    if (res != NO_ERROR)
+        return res;
+
+    /* Module 2.4 arbitration: a camera takes the whole of what streams
+     * (resource_cost 100), and lists the others as conflicting, so the
+     * service never has two open at once. */
+    info->resource_cost               = 100;
+    info->conflicting_devices         = sNumCameras > 1 ? sConflicts[cameraId] : NULL;
+    info->conflicting_devices_length  = (size_t)(sNumCameras - 1);
+    return NO_ERROR;
+}
+
+/* No camera of this module has a flash unit (FLASH_INFO_AVAILABLE is
+ * false in the static characteristics), which camera_common.h answers
+ * with -ENOSYS, and only that. */
+static int setTorchMode(const char *cameraIdName, bool /*enabled*/) {
+    enumerateCameras();
+    int cameraId;
+    if (!parseCameraId(cameraIdName, &cameraId))
+        return -EINVAL;
+    return -ENOSYS;
 }
 
 static int setCallbacks(const camera_module_callbacks_t * /*callbacks*/) {
@@ -115,9 +168,8 @@ static int openDevice(const hw_module_t *module, const char *name, hw_device_t *
 
     enumerateCameras();
 
-    errno = 0;
-    int cameraId = (int)strtol(name, NULL, 10);
-    if (errno || cameraId < 0 || cameraId >= sNumCameras) {
+    int cameraId;
+    if (!parseCameraId(name, &cameraId)) {
         ALOGE("%s: invalid camera ID (%s)", __FUNCTION__, name);
         return -EINVAL;
     }
@@ -134,7 +186,7 @@ static struct hw_module_methods_t moduleMethods = {
 camera_module_t HAL_MODULE_INFO_SYM = {
     .common = {
         .tag                = HARDWARE_MODULE_TAG,
-        .module_api_version = CAMERA_MODULE_API_VERSION_2_3,
+        .module_api_version = CAMERA_MODULE_API_VERSION_2_4,
         .hal_api_version    = HARDWARE_HAL_API_VERSION,
         .id                 = CAMERA_HARDWARE_MODULE_ID,
         .name               = "V4l2 Camera",
@@ -146,4 +198,8 @@ camera_module_t HAL_MODULE_INFO_SYM = {
     .get_number_of_cameras  = android::HalModule::getNumberOfCameras,
     .get_camera_info        = android::HalModule::getCameraInfo,
     .set_callbacks          = android::HalModule::setCallbacks,
+    .get_vendor_tag_ops     = NULL,
+    .open_legacy            = NULL,
+    .set_torch_mode         = android::HalModule::setTorchMode,
+    .init                   = NULL,
 };

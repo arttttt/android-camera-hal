@@ -1,7 +1,7 @@
 # Camera3 / Camera2 contract surface
 
 The HAL claims `CAMERA_DEVICE_API_VERSION_3_4` /
-`CAMERA_MODULE_API_VERSION_2_3` /
+`CAMERA_MODULE_API_VERSION_2_4` /
 `ANDROID_INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED` /
 `ANDROID_REQUEST_AVAILABLE_CAPABILITIES = [BACKWARD_COMPATIBLE]`.
 The full Camera2 contract surface that flows from those declarations
