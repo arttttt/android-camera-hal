@@ -22,6 +22,7 @@ public:
     JpegEncoder() {}
 
     bool process(const JpegSnapshot &src,
+                  unsigned width, unsigned height,
                   uint8_t *dst, size_t dstCapacity,
                   const mocha::camera::FrameSettings::Jpeg &settings,
                   size_t *bytesWritten) override;

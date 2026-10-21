@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <jpeglib.h>
+#include <libyuv.h>
 
 #include <utils/Log.h>
 
@@ -236,11 +237,28 @@ constexpr size_t kExifOverhead   = 6 + 8 + (2 + 12 + 4) + (2 + 12 * 3 + 4);
 } /* namespace */
 
 bool JpegEncoder::process(const JpegSnapshot &src,
+                           unsigned width, unsigned height,
                            uint8_t *dst, size_t dstCapacity,
                            const mocha::camera::FrameSettings::Jpeg &settings,
                            size_t *bytesWritten) {
     if (bytesWritten) *bytesWritten = 0;
-    if (!src.rgba || !dst || !bytesWritten) return false;
+    if (!src.rgba || !dst || !bytesWritten || width == 0 || height == 0) return false;
+
+    /* The snapshot is the output's crop at capture resolution; the JPEG
+     * is the output's size. Byte order does not matter to the scaler,
+     * four bytes a pixel. */
+    const uint8_t *image = src.rgba;
+    std::vector<uint8_t> scaled;
+    if (src.width != width || src.height != height) {
+        scaled.resize((size_t)width * height * 4);
+        if (libyuv::ARGBScale(src.rgba, (int)src.width * 4, (int)src.width, (int)src.height,
+                              scaled.data(), (int)width * 4, (int)width, (int)height,
+                              libyuv::kFilterBox) != 0) {
+            ALOGE("scale %ux%u -> %ux%u failed", src.width, src.height, width, height);
+            return false;
+        }
+        image = scaled.data();
+    }
 
     const uint8_t jpegQuality  = settings.quality.value_or(kDefaultJpegQuality);
     const int32_t jpegOri      = settings.orientationDegrees;
@@ -252,7 +270,7 @@ bool JpegEncoder::process(const JpegSnapshot &src,
     std::vector<uint8_t> thumb;
     if (thumbW > 0 && thumbH > 0) {
         std::vector<uint8_t> small((size_t)thumbW * thumbH * 4);
-        downscaleRgba(src.rgba, src.width, src.height,
+        downscaleRgba(image, width, height,
                       small.data(), (unsigned)thumbW, (unsigned)thumbH);
         thumb.resize(kMaxApp1Payload - kExifOverhead);
         const size_t n = encodeRgbaToJpeg(small.data(), (unsigned)thumbW, (unsigned)thumbH,
@@ -273,7 +291,7 @@ bool JpegEncoder::process(const JpegSnapshot &src,
     buildExifApp1(exifOrientationFromAndroid(jpegOri),
                   thumb.empty() ? nullptr : thumb.data(), thumb.size(), &app1);
 
-    size_t written = encodeRgbaToJpeg(src.rgba, src.width, src.height,
+    size_t written = encodeRgbaToJpeg(image, width, height,
                                         jpegQuality, app1.data(), app1.size(),
                                         dst, dstCapacity);
     if (written == 0) {

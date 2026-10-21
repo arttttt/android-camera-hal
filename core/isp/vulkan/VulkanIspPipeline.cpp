@@ -636,7 +636,7 @@ void VulkanIspPipeline::releaseJpegRing() {
     mJpegRingH = 0;
 }
 
-bool VulkanIspPipeline::blitToJpegCpu(JpegSnapshot *out) {
+bool VulkanIspPipeline::blitToJpegCpu(const CropRect &crop, JpegSnapshot *out) {
     if (out) {
         out->rgba     = nullptr;
         out->width    = 0;
@@ -648,6 +648,14 @@ bool VulkanIspPipeline::blitToJpegCpu(JpegSnapshot *out) {
         ALOGE("blitToJpegCpu called outside of an active beginFrame");
         return false;
     }
+    if (crop.x < 0 || crop.y < 0 || crop.w <= 0 || crop.h <= 0 ||
+        (unsigned)(crop.x + crop.w) > mRec.srcW ||
+        (unsigned)(crop.y + crop.h) > mRec.srcH) {
+        ALOGE("blitToJpegCpu: crop %d,%d %dx%d outside the %ux%u frame",
+              crop.x, crop.y, crop.w, crop.h, mRec.srcW, mRec.srcH);
+        return false;
+    }
+    /* Slots are sized for the whole frame; any crop of it fits. */
     if (!ensureJpegRing(mRec.srcW, mRec.srcH))
         return false;
 
@@ -666,8 +674,10 @@ bool VulkanIspPipeline::blitToJpegCpu(JpegSnapshot *out) {
     VkBufferImageCopy region = {};
     region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.layerCount = 1;
-    region.imageExtent.width           = mRec.srcW;
-    region.imageExtent.height          = mRec.srcH;
+    region.imageOffset.x               = crop.x;
+    region.imageOffset.y               = crop.y;
+    region.imageExtent.width           = (uint32_t)crop.w;
+    region.imageExtent.height          = (uint32_t)crop.h;
     region.imageExtent.depth           = 1;
     mDeviceState.pfn()->CmdCopyImageToBuffer(mCmdBuf[mRec.slot],
         mScratchImg, VK_IMAGE_LAYOUT_GENERAL,
@@ -676,9 +686,9 @@ bool VulkanIspPipeline::blitToJpegCpu(JpegSnapshot *out) {
     mJpegRing[slot].inUse.store(true, std::memory_order_relaxed);
     if (out) {
         out->rgba     = (const uint8_t *)mJpegRing[slot].mapped;
-        out->width    = mRec.srcW;
-        out->height   = mRec.srcH;
-        out->size     = mJpegRing[slot].size;
+        out->width    = (unsigned)crop.w;
+        out->height   = (unsigned)crop.h;
+        out->size     = (size_t)crop.w * (size_t)crop.h * 4;
         out->ringSlot = slot;
     }
     return true;

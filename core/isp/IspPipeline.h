@@ -70,13 +70,14 @@ public:
                             int acquireFence,
                             int *releaseFenceOut) = 0;
 
-    /* A vkCmdCopyImageToBuffer of the scratch image into a
-     * backend-owned host-mapped RGBA8 buffer, picked from a small ring
-     * so multiple BLOB requests can be in flight without overwriting
-     * each other. On success populates *out with the buffer's CPU
-     * pointer + dimensions + an opaque ringSlot handle, given back
-     * through IspJpegRing. */
-    virtual bool blitToJpegCpu(JpegSnapshot *out) = 0;
+    /* A vkCmdCopyImageToBuffer of the `crop` region of the scratch image
+     * into a backend-owned host-mapped RGBA8 buffer, tightly packed,
+     * picked from a small ring so multiple BLOB requests can be in
+     * flight without overwriting each other. On success populates *out
+     * with the buffer's CPU pointer + the crop's dimensions + an opaque
+     * ringSlot handle, given back through IspJpegRing. The encoder
+     * scales it to the output's size. */
+    virtual bool blitToJpegCpu(const CropRect &crop, JpegSnapshot *out) = 0;
 
     /* Submit the recorded command buffer. Must be called once per
      * matching beginFrame, after all blitTo* calls.

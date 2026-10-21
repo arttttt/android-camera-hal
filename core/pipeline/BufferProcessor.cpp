@@ -39,6 +39,14 @@ struct JpegBlobTrailer {
 constexpr uint16_t kJpegBlobId = 0x00FF;
 static_assert(sizeof(JpegBlobTrailer) == 8, "camera3_jpeg_blob is 8 bytes");
 
+/* The part of the frame's crop an output samples: its own aspect,
+ * centred (cropForOutput). */
+CropRect outputCrop(const BufferProcessor::Output &out,
+                    const BufferProcessor::FrameContext &ctx) {
+    return cropForOutput(CropRect{ctx.cropX, ctx.cropY, ctx.cropW, ctx.cropH},
+                         out.stream.width, out.stream.height);
+}
+
 } /* namespace */
 
 BufferProcessor::BufferProcessor(const Deps &deps)
@@ -84,10 +92,9 @@ bool BufferProcessor::tryZeroCopy(Output &out, const FrameContext &ctx) {
      * blocking this thread. */
     bool zcOk = false;
     BENCHMARK_SECTION("Raw->RGBA") {
-        CropRect crop = { ctx.cropX, ctx.cropY, ctx.cropW, ctx.cropH };
         zcOk = mDeps.recorder->blitToGralloc(out.buffer,
                                          out.stream.width, out.stream.height,
-                                         crop,
+                                         outputCrop(out, ctx),
                                          out.acquireFence.release(),
                                          &out.releaseFence);
     }
@@ -106,11 +113,10 @@ status_t BufferProcessor::recordYuvOutput(Output &out,
         return e;
 
     int releaseFd = -1;
-    CropRect crop = { ctx.cropX, ctx.cropY, ctx.cropW, ctx.cropH };
     bool ok = false;
     BENCHMARK_SECTION("Raw->NV12") {
         ok = mDeps.recorder->blitToYuv(out.buffer, out.stream.width, out.stream.height,
-                                  crop, -1, &releaseFd);
+                                  outputCrop(out, ctx), -1, &releaseFd);
     }
     if (!ok) {
         ALOGE("buffer %p  frame %-4u  blitToYuv failed", out.buffer, frameNumber);
@@ -186,14 +192,15 @@ void BufferProcessor::releaseJpegSnapshot(Frame &frame, size_t i) {
     }
 }
 
-status_t BufferProcessor::recordBlobOutput(Output &out, uint32_t frameNumber) {
+status_t BufferProcessor::recordBlobOutput(Output &out, const FrameContext &ctx,
+                                           uint32_t frameNumber) {
     /* CPU-wait acquire_fence here so finalizeBlobOutput's lock runs
      * without blocking. Same pattern as YUV. */
     status_t e = waitAcquireFence(out, frameNumber);
     if (e != NO_ERROR)
         return e;
 
-    if (!mDeps.recorder->blitToJpegCpu(&out.jpeg)) {
+    if (!mDeps.recorder->blitToJpegCpu(outputCrop(out, ctx), &out.jpeg)) {
         ALOGE("buffer %p  frame %-4u  blitToJpegCpu failed", out.buffer, frameNumber);
         return NO_INIT;
     }
@@ -229,7 +236,8 @@ bool BufferProcessor::finalizeBlobOutput(Output &out,
     mDeps.jpegRing->invalidateJpegSnapshot(snap);
     size_t written = 0;
     int64_t t0 = systemTime();
-    bool ok = mDeps.jpeg->process(snap, dst, maxImageSize, jpeg, &written);
+    bool ok = mDeps.jpeg->process(snap, out.stream.width, out.stream.height,
+                                  dst, maxImageSize, jpeg, &written);
     int64_t encMs = (systemTime() - t0) / 1000000;
     if (ok) {
         JpegBlobTrailer trailer;
@@ -276,7 +284,7 @@ status_t BufferProcessor::processOne(Output &out, const FrameContext &ctx,
              * now; libjpeg encode runs on the JPEG engine after the
              * frame's fence is reaped; the encode does its own lock and
              * unlock. */
-            return recordBlobOutput(out, frameNumber);
+            return recordBlobOutput(out, ctx, frameNumber);
     }
     return BAD_VALUE;
 }

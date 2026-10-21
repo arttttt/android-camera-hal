@@ -120,8 +120,9 @@ consumer), and sets usage bits and `max_buffers` (4).
   scale (`Capability::yuvAtCaptureSizeOnly`) -- so it names the mode,
   and every other output must fit in it;
 - otherwise the mode already running is kept when it is at least as
-  wide and as tall as every output, since RGBA and JPEG outputs scale
-  in the blit;
+  wide and as tall as every output, since RGBA outputs scale in the
+  blit and JPEG outputs in the encoder, each from its own centred part
+  of the crop (`cropForOutput`);
 - otherwise the smallest mode that is.
 
 Outputs no mode feeds are refused (`BAD_VALUE`) before anything

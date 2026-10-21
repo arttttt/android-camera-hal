@@ -92,7 +92,8 @@ private:
     status_t waitAcquireFence(Output &out, uint32_t frameNumber);
 
     bool     tryZeroCopy(Output &out, const FrameContext &ctx);
-    status_t recordBlobOutput(Output &out, uint32_t frameNumber);
+    status_t recordBlobOutput(Output &out, const FrameContext &ctx,
+                              uint32_t frameNumber);
     status_t recordYuvOutput(Output &out, const FrameContext &ctx,
                              uint32_t frameNumber);
     void     finalizeYuvOutput(Output &out, uint32_t frameNumber);

@@ -243,9 +243,14 @@ at the start of the next tick, so AF's state has one owner. Details in
 The ISP engine demosaics a frame once into a scratch image; each
 output is a blit from it (RGBA by sampler, NV12 by compute), all in
 one command buffer and one submit. JPEG outputs take a snapshot of
-the scratch into the ISP's JPEG ring, which the JPEG engine reads
-after the GPU is done -- the next frame's demosaic runs beside the
-encode.
+their part of the scratch into the ISP's JPEG ring, which the JPEG
+engine scales to the output's size and encodes after the GPU is done
+-- the next frame's demosaic runs beside the encode.
+
+Every output samples its own part of the frame's crop
+(`cropForOutput`): the largest rectangle of its aspect ratio, centred
+in the crop, so outputs of different aspects are cut, never
+stretched.
 
 ## History
 

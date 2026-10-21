@@ -71,6 +71,7 @@ run engine_test          core/tests/engine_test.cpp core/base/EventFd.cpp
 run permit_pool_test     core/tests/permit_pool_test.cpp core/base/EventFd.cpp
 run frame_test           core/tests/frame_test.cpp core/pipeline/Frame.cpp \
                          core/pipeline/FrameRegistry.cpp core/base/EventFd.cpp
+run crop_test           core/tests/crop_test.cpp core/isp/CropRect.cpp
 run capture_size_test   core/tests/capture_size_test.cpp core/session/CaptureSize.cpp
 run delayed_controls_test core/tests/delayed_controls_test.cpp \
                          core/sensor/DelayedControls.cpp

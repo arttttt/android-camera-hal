@@ -24,8 +24,9 @@ class PostProcessor {
 public:
     virtual ~PostProcessor() {}
 
-    /* Encode `src` into the caller-provided byte buffer `dst` of
-     * `dstCapacity` bytes. On success returns true and writes the
+    /* Encode `src`, scaled to `width` x `height` (the output's size;
+     * the snapshot is already cropped to its aspect), into the
+     * caller-provided byte buffer `dst` of `dstCapacity` bytes. On success returns true and writes the
      * number of bytes consumed in `*bytesWritten` (must be non-null).
      * On failure returns false; *bytesWritten is undefined.
      *
@@ -33,6 +34,7 @@ public:
      * thumbnail). The consumer guarantees src.rgba is valid
      * (post-fence-reap + invalidate) for the duration of this call. */
     virtual bool process(const JpegSnapshot &src,
+                          unsigned width, unsigned height,
                           uint8_t *dst, size_t dstCapacity,
                           const mocha::camera::FrameSettings::Jpeg &settings,
                           size_t *bytesWritten) = 0;

@@ -45,7 +45,7 @@ public:
                     const CropRect &crop,
                     int acquireFence,
                     int *releaseFenceOut) override;
-    bool blitToJpegCpu(JpegSnapshot *out) override;
+    bool blitToJpegCpu(const CropRect &crop, JpegSnapshot *out) override;
     void invalidateJpegSnapshot(const JpegSnapshot &snap) override;
     void releaseJpegSnapshot(const JpegSnapshot &snap) override;
     bool endFrame(int *submitFenceOut) override;
