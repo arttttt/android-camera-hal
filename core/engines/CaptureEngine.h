@@ -91,6 +91,9 @@ public:
         const android::SensorConfig  *sensorCfg;
         const android::ExposureTarget *exposureTarget; /* may be null: manual only */
         Rational                      evStep;      /* Capability::ae.evStep */
+        /* A write goes this long after its frame's start is reported
+         * (Session::Config::writeDelayUs); 0: at once. */
+        int64_t                       writeDelayNs = 0;
         IspEngine                    *demosaic;
         StatsEngine                  *stats;       /* may be null */
         android::DeviceErrorReporter *deviceError; /* may be null */
@@ -139,6 +142,8 @@ private:
     /* The next frame is due within `periodNs` and the slack. */
     void armStall(int64_t periodNs);
     void onStall();
+    /* Puts the write held for writeDelayNs on the sensor, if any. */
+    void writeHeld();
     void crop(Frame &frame);
     void dispatchStats(Frame &frame);
 
@@ -156,6 +161,8 @@ private:
     /* The engine thread's own. */
     android::FrameBinder binder;
     android::UniqueFd    stallTimer;
+    android::UniqueFd    writeTimer;
+    std::optional<android::DelayedControls::Batch> held;
 };
 
 } /* namespace mocha::camera */

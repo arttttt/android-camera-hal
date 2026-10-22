@@ -67,10 +67,12 @@ bool CaptureEngine::start() {
     }
 
     stallTimer.reset(::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC));
-    if (!stallTimer.valid()) {
-        ALOGE("stall timer: timerfd_create failed, errno=%d", errno);
+    writeTimer.reset(::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC));
+    if (!stallTimer.valid() || !writeTimer.valid()) {
+        ALOGE("timers: timerfd_create failed, errno=%d", errno);
         return false;
     }
+    held.reset();
     {
         /* The first frame runs on what configure wrote. */
         const DelayedControls::Batch e = deps.controls->inEffect(0);
@@ -99,6 +101,12 @@ bool CaptureEngine::start() {
         source->requeueReturned();
     });
     engine->watch(stallTimer.get(), [this](short) { onStall(); });
+    engine->watch(writeTimer.get(), [this](short) {
+        uint64_t expirations = 0;
+        if (::read(writeTimer.get(), &expirations, sizeof(expirations)) ==
+            (ssize_t)sizeof(expirations))
+            writeHeld();
+    });
     return engine->start();
 }
 
@@ -108,6 +116,15 @@ void CaptureEngine::stop() {
     engine->stop();
     engine.reset();
     stallTimer.reset();
+    writeTimer.reset();
+    held.reset();
+}
+
+void CaptureEngine::writeHeld() {
+    if (!held)
+        return;
+    deps.writer->write(*held);
+    held.reset();
 }
 
 void CaptureEngine::armStall(int64_t periodNs) {
@@ -155,8 +172,27 @@ void CaptureEngine::onStarts(const std::vector<FrameStart> &starts) {
          * next frame, which the next write may stretch -- then the
          * sensor. */
         deps.writer->prepare(s.waitPeriodNs);
-        if (s.ticked && s.changed)
-            deps.writer->write(s.values);
+        /* A write still held is a frame late: it goes now. */
+        if (held) {
+            ALOGW("frame %u: the last frame's held write goes late",
+                  start.sequence);
+            writeHeld();
+        }
+        if (s.ticked && s.changed) {
+            if (deps.writeDelayNs <= 0) {
+                deps.writer->write(s.values);
+            } else {
+                held = s.values;
+                const int64_t at = start.timestampNs + deps.writeDelayNs;
+                itimerspec it{};
+                it.it_value.tv_sec  = (time_t)(at / 1000000000LL);
+                it.it_value.tv_nsec = (long)(at % 1000000000LL);
+                if (at <= systemTime() ||
+                    ::timerfd_settime(writeTimer.get(), TFD_TIMER_ABSTIME,
+                                      &it, nullptr) != 0)
+                    writeHeld();
+            }
+        }
         /* The next frame starts within this one's period. */
         armStall(s.periodNs);
     }

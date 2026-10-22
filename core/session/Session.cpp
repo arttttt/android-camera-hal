@@ -421,6 +421,7 @@ bool Session::Impl::buildInfrastructure() {
         d.sensorCfg   = &sensorCfg;
         d.exposureTarget = &exposureTarget;
         d.evStep      = probe().ae.evStep;
+        d.writeDelayNs = (int64_t)config.writeDelayUs * 1000;
         d.demosaic    = ispEngine.get();
         d.stats       = statsEngine.get();
         d.deviceError = deviceError.get();

@@ -73,6 +73,10 @@ public:
          * fewer shortens the preview's and the shutter's lag -- a
          * request waits this many frames. Capped by the capture slots. */
         int         requestsInFlight = 4;
+        /* For measuring where in a frame the sensor latches a write:
+         * the write goes this long after the frame's start is reported,
+         * not at once. */
+        int         writeDelayUs = 0;
     };
 
     Session(const Config &config, ResultSink *sink, GrallocPort *gralloc);

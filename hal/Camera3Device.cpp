@@ -61,6 +61,10 @@ mocha::camera::Session::Config sessionConfig(const char *devNode, int facing) {
     c.requestsInFlight = property_get_int32("persist.camera.requests_in_flight",
                                             c.requestsInFlight);
     ALOGI("requests in flight: %d", c.requestsInFlight);
+    c.writeDelayUs = property_get_int32("persist.camera.write_delay_us",
+                                        c.writeDelayUs);
+    if (c.writeDelayUs)
+        ALOGI("sensor writes %d us after a frame's start", c.writeDelayUs);
     return c;
 }
 
