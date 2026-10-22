@@ -92,14 +92,13 @@ void probeSensor(Capability &cap, android::V4l2Device &dev,
     int32_t flMin = 0, flMax = 0, flDef = 0, lineNs = 0;
     if (dev.queryControl(V4L2_CID_FRAME_LENGTH, &flMin, &flMax, &flDef) &&
         dev.getControl(V4L2_CID_LINE_TIME_NS, &lineNs) && lineNs > 0) {
-        /* The longest frame at the longest line: the line time scales
-         * with the line length from the mode's own. */
-        int64_t lineNsMax = lineNs;
-        int32_t llMin = 0, llMax = 0, llDef = 0;
-        if (dev.queryControl(V4L2_CID_LINE_LENGTH, &llMin, &llMax, &llDef) &&
-            llMin > 0)
-            lineNsMax = (int64_t)lineNs * llMax / llMin;
-        cap.sensor.maxFrameDurationNs = (int64_t)flMax * lineNsMax;
+        /* The longest frame at the mode's own line, and the longest
+         * exposure it holds: the line is not stretched for exposures
+         * (SensorConfig::timingForExposure). */
+        cap.sensor.maxFrameDurationNs = (int64_t)flMax * lineNs;
+        const int64_t longest = (int64_t)(flMax - cfg.maxCoarseDiff) * lineNs;
+        if (longest > 0 && cap.sensor.exposureMaxNs > longest)
+            cap.sensor.exposureMaxNs = longest;
     } else {
         ALOGE("frame length / line time query failed: no max frame duration");
     }

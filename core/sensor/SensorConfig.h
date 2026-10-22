@@ -149,24 +149,17 @@ struct SensorConfig {
         int32_t lineLength;
     };
 
-    /* The frame for an exposure (µs): the mode's own line while the
-     * longest frame holds the exposure in it, else the shortest line
-     * that does; the lines the exposure takes in that line, rounded up,
-     * plus the margin; never below the mode's frame. */
+    /* The frame for an exposure (µs), at the mode's own line: the lines
+     * the exposure takes, rounded up, plus the margin; never below the
+     * mode's frame, nor past the longest. The line is not stretched for
+     * a longer one: an exposure past the longest frame is cut to it
+     * (maxExposureUs) -- on mocha a line length write costs a hidden
+     * frame and the frames around it (lineLengthHidesFrame), seconds
+     * each, for exposures these sensors gain nothing from. */
     FrameTiming timingForExposure(int32_t exposureUs) const {
         FrameTiming t{frameLenDefault, lineLengthDefault};
         if (lineTimeNs <= 0) return t;
         const int64_t exposureNs = (int64_t)exposureUs * 1000;
-        const int64_t maxLines = frameLenMax - maxCoarseDiff;
-        if (lineLengthMax > lineLengthDefault && maxLines > 0 &&
-            maxLines * lineTimeNs < exposureNs) {
-            int64_t ll = (exposureNs * lineLengthDefault
-                          + maxLines * lineTimeNs - 1) / (maxLines * lineTimeNs);
-            /* lineTimeNsAt floors: step up until the frame holds it. */
-            while (ll < lineLengthMax && maxLines * lineTimeNsAt((int32_t)ll) < exposureNs)
-                ++ll;
-            t.lineLength = (int32_t)(ll > lineLengthMax ? lineLengthMax : ll);
-        }
         const int64_t lineNs = lineTimeNsAt(t.lineLength);
         int64_t fl = (exposureNs + lineNs - 1) / lineNs + maxCoarseDiff;
         if (fl < frameLenDefault) fl = frameLenDefault;

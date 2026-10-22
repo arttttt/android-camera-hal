@@ -190,12 +190,12 @@ SensorConfig ov5693() {
     return c;
 }
 
-/* An exposure the line counter holds at the mode's line keeps that line
- * and grows the frame; a longer one takes the shortest line whose
- * longest frame holds it, and the frame is sized in those lines. */
+/* An exposure is framed at the mode's own line: the frame grows to hold
+ * it, up to the longest; one past the longest frame is cut to what it
+ * holds -- the line is never stretched -- and manual AE writes that. */
 void testLongExposureTiming() {
     const SensorConfig cfg = ov5693();
-    const int64_t maxLines = cfg.frameLenMax - cfg.maxCoarseDiff;
+    const int32_t longest = cfg.maxExposureUs(cfg.frameLenMax);
 
     SensorConfig::FrameTiming t = cfg.timingForExposure(800000);
     check(t.lineLength == cfg.lineLengthDefault);
@@ -203,26 +203,22 @@ void testLongExposureTiming() {
 
     for (int32_t us : {900000, 1600000, 5000000}) {
         t = cfg.timingForExposure(us);
-        const int64_t ns = (int64_t)us * 1000;
-        check(t.lineLength > cfg.lineLengthDefault);
-        check(t.frameLen <= cfg.frameLenMax);
-        /* The frame holds the whole exposure... */
-        check((int64_t)(t.frameLen - cfg.maxCoarseDiff) * cfg.lineTimeNsAt(t.lineLength) >= ns);
-        /* ...and a line one clock shorter could not. */
-        check(maxLines * cfg.lineTimeNsAt(t.lineLength - 1) < ns);
+        check(t.lineLength == cfg.lineLengthDefault);
+        check(t.frameLen == cfg.frameLenMax);
     }
 
-    /* The period follows the line: 1.6 s takes a ~1.6 s frame. */
-    t = cfg.timingForExposure(1600000);
-    const int64_t period = cfg.frameDurationNs(t.frameLen, t.lineLength);
-    check(period >= 1600000000LL && period < 1610000000LL);
-
-    /* Manual AE carries the line to the sensor write. */
     FrameSettings s;
     s.ae.mode = AeMode::Off;
     s.sensor.exposureTimeNs = 1600000000LL;
-    const ExposureWriteValues v = AutoExposureController::parseManualSettings(s, cfg, kThirdStop);
-    check(v.lineLength == t.lineLength && v.frameLen == t.frameLen);
+    ExposureWriteValues v = AutoExposureController::parseManualSettings(s, cfg, kThirdStop);
+    check(v.lineLength == cfg.lineLengthDefault && v.frameLen == cfg.frameLenMax);
+    check(v.exposureUs == longest);
+    /* The longest frame holds the exposure it is cut to. */
+    check((int64_t)(v.frameLen - cfg.maxCoarseDiff) * cfg.lineTimeNs >= (int64_t)v.exposureUs * 1000);
+
+    s.sensor.exposureTimeNs = 500000000LL;
+    v = AutoExposureController::parseManualSettings(s, cfg, kThirdStop);
+    check(v.exposureUs == 500000);
 }
 
 /* AE on a linear sensor: luma proportional to exposure x gain. It

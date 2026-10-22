@@ -273,7 +273,10 @@ ExposureWriteValues AutoExposureController::parseManualSettings(
          * accordingly — that's the user's choice when they set a 1 s
          * shutter). No splitExposureGain, no fps preservation. */
         const SensorConfig::FrameTiming t = cfg.timingForExposure(exposureUs);
-        out.exposureUs = exposureUs;
+        /* Past the longest frame, the longest it holds: what the
+         * sensor runs, as the record must say. */
+        const int32_t longest = cfg.maxExposureUs(cfg.frameLenMax);
+        out.exposureUs = longest > 0 && exposureUs > longest ? longest : exposureUs;
         out.frameLen   = t.frameLen;
         out.lineLength = t.lineLength;
     } else {

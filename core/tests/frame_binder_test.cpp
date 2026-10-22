@@ -234,12 +234,12 @@ void testInFlight(size_t n) {
 }
 
 /* A long manual exposure among short ones: its request gets the long
- * frame, the frames after it are numbered right (a 1.2 s frame is one
+ * frame, the frames after it are numbered right (a 0.8 s frame is one
  * frame), and the requests after it get their own. */
 void testLongFrame() {
     Rig r;
-    const SensorConfig::FrameTiming t = r.cfg.timingForExposure(1200000);
-    DelayedControls::Batch longShot = settings(r.cfg, 1200000);
+    const SensorConfig::FrameTiming t = r.cfg.timingForExposure(800000);
+    DelayedControls::Batch longShot = settings(r.cfg, 800000);
     longShot.val[DelayedControls::FRAME_LENGTH] = t.frameLen;
     longShot.val[DelayedControls::LINE_LENGTH]  = t.lineLength;
 
@@ -266,11 +266,11 @@ void testLongFrame() {
             const int64_t period = r.cfg.frameDurationNs(
                     before.val[DelayedControls::FRAME_LENGTH],
                     before.val[DelayedControls::LINE_LENGTH]);
-            check(period > 1190000000 && period < 1260000000);
-            /* Its exposure began 1.2 s and a read-out before its end. */
+            check(period > 790000000 && period < 860000000);
+            /* Its exposure began 0.8 s and a read-out before its end. */
             const int64_t readout = (int64_t)kLines * r.cfg.lineTimeNsAt(
                     r.ran[got->sensorFrame].val[DelayedControls::LINE_LENGTH]);
-            check(got->exposureStartNs == r.frameEndNs() - readout - 1200000000LL);
+            check(got->exposureStartNs == r.frameEndNs() - readout - 800000000LL);
         }
         inFlight.pop_front();
         ++done;
@@ -285,8 +285,8 @@ void testLongFrame() {
  * settings, not on through its seconds-long exposure. */
 void testOneShotSettings() {
     Rig r;
-    const SensorConfig::FrameTiming t = r.cfg.timingForExposure(1200000);
-    DelayedControls::Batch longShot = settings(r.cfg, 1200000);
+    const SensorConfig::FrameTiming t = r.cfg.timingForExposure(800000);
+    DelayedControls::Batch longShot = settings(r.cfg, 800000);
     longShot.val[DelayedControls::FRAME_LENGTH] = t.frameLen;
     longShot.val[DelayedControls::LINE_LENGTH]  = t.lineLength;
 
@@ -297,9 +297,10 @@ void testOneShotSettings() {
 
     check(shot->bayer && same(ranFor(r, shot->sensorFrame), longShot));
     check(same(shot->inEffect, r.ran[shot->sensorFrame]));
-    /* The frame right after it is the preview's frame and line length,
-     * and runs hidden on the still's exposure, the slower control; from
-     * the next one on, all of it is the preview's. */
+    /* The frame right after it is the preview's frame and line length
+     * (where a line length write hides it, it runs on the still's
+     * exposure, the slower control); from the next one on, all of it
+     * is the preview's. */
     const DelayedControls::Batch &after = r.ran[shot->frame + 1];
     check(after.val[DelayedControls::FRAME_LENGTH] ==
               preview.val[DelayedControls::FRAME_LENGTH] &&
@@ -319,12 +320,14 @@ void testOneShotSettings() {
  * out on, the VI's wait covers the frame and the hidden one after it. */
 void testHiddenFrames() {
     Rig r;
-    const SensorConfig::FrameTiming t = r.cfg.timingForExposure(1200000);
-    check(t.lineLength != r.cfg.lineLengthDefault);
-    DelayedControls::Batch longShot = settings(r.cfg, 1200000);
+    /* A line of its own: the HAL does not stretch the line for an
+     * exposure, but a line length write must still be counted. */
+    const SensorConfig::FrameTiming t = r.cfg.timingForExposure(800000);
+    const int32_t line = r.cfg.lineLengthDefault * 2;
+    DelayedControls::Batch longShot = settings(r.cfg, 800000);
     longShot.val[DelayedControls::FRAME_LENGTH] = t.frameLen;
-    longShot.val[DelayedControls::LINE_LENGTH]  = t.lineLength;
-    const int64_t longPeriod = r.cfg.frameDurationNs(t.frameLen, t.lineLength);
+    longShot.val[DelayedControls::LINE_LENGTH]  = line;
+    const int64_t longPeriod = r.cfg.frameDurationNs(t.frameLen, line);
 
     std::deque<InFlight> inFlight;
     int next = 0;
@@ -356,9 +359,9 @@ void testHiddenFrames() {
     }
     check(own);
     check(done > 30);
-    check(shot && shot->bayer && shot->inEffect.val[DelayedControls::EXPOSURE] == 1200000);
+    check(shot && shot->bayer && shot->inEffect.val[DelayedControls::EXPOSURE] == 800000);
     /* The hidden frames ran, and nothing came for them. */
-    check(r.ran[shot->frame - 1].val[DelayedControls::LINE_LENGTH] == t.lineLength);
+    check(r.ran[shot->frame - 1].val[DelayedControls::LINE_LENGTH] == line);
     check(r.ran[shot->frame + 1].val[DelayedControls::LINE_LENGTH] ==
           r.cfg.lineLengthDefault);
     check(r.binder.missedFrames() == 0 && r.binder.missedStarts() == 0);
@@ -465,8 +468,8 @@ void testRequestLetGo() {
  * gets its own frame. */
 void testCancel() {
     Rig r;
-    const SensorConfig::FrameTiming t = r.cfg.timingForExposure(1200000);
-    DelayedControls::Batch longShot = settings(r.cfg, 1200000);
+    const SensorConfig::FrameTiming t = r.cfg.timingForExposure(800000);
+    DelayedControls::Batch longShot = settings(r.cfg, 800000);
     longShot.val[DelayedControls::FRAME_LENGTH] = t.frameLen;
     longShot.val[DelayedControls::LINE_LENGTH]  = t.lineLength;
 
@@ -546,8 +549,8 @@ void testViWaitAhead() {
     FrameBinder binder(&dc, &cfg);
     binder.reset(kLines);
 
-    const SensorConfig::FrameTiming t = cfg.timingForExposure(1200000);
-    DelayedControls::Batch longShot = settings(cfg, 1200000);
+    const SensorConfig::FrameTiming t = cfg.timingForExposure(800000);
+    DelayedControls::Batch longShot = settings(cfg, 800000);
     longShot.val[DelayedControls::FRAME_LENGTH] = t.frameLen;
     longShot.val[DelayedControls::LINE_LENGTH]  = t.lineLength;
     const int64_t longPeriod = cfg.frameDurationNs(t.frameLen, t.lineLength);

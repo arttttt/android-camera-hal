@@ -21,8 +21,8 @@ struct SensorConfig;
 /* Output of `AutoExposureController::parseManualSettings` — the sensor
  * controls to write for a manual-AE frame (or the auto-AE cold-start
  * fallback path): the frame sized for the requested exposure (a long
- * shutter grows the frame past the default period, and past the line
- * counter it grows the line too -- SensorConfig::timingForExposure),
+ * shutter grows the frame past the default period, up to the longest
+ * frame at the mode's line -- SensorConfig::timingForExposure),
  * the exposure and the gain. requestExposure files it. */
 struct ExposureWriteValues {
     int32_t frameLen;
