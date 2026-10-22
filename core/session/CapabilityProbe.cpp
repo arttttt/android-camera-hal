@@ -188,7 +188,8 @@ void probeAwbModes(Capability &cap, const android::SensorTuning *tuning) {
 
 Capability probeCapability(android::V4l2Device &dev, bool facingFront,
                            const android::SensorTuning *tuning,
-                           const android::SensorConfig &cfg) {
+                           const android::SensorConfig &cfg,
+                           int requestsInFlight) {
     Capability cap;
     cap.facingFront = facingFront;
 
@@ -221,20 +222,27 @@ Capability probeCapability(android::V4l2Device &dev, bool facingFront,
      * requested aspect. */
     cap.jpeg.thumbnailSizes = {Size{0, 0}, Size{320, 180}, Size{320, 240}};
 
-    /* A request waits the longest control delay for its frame, which
-     * takes a frame to come; then the GPU's frames in flight, and the
+    /* Requests in flight, as configured: a stream's max_buffers. Each
+     * can hold a capture slot from its frame on; more than the slots
+     * would starve the VI and lose frames. */
+    const int32_t slots =
+        V4L2DEVICE_BUF_COUNT - CaptureEngine::kSlotsBesidesRequests;
+    int32_t inFlight = std::max(requestsInFlight, 1);
+    if (inFlight > slots) {
+        ALOGW("%d requests in flight asked, the capture holds %d: %d",
+              requestsInFlight, slots, slots);
+        inFlight = slots;
+    }
+    cap.maxBuffersPerStream = inFlight;
+
+    /* The frames a request takes, at most: as many as are in flight
+     * before it, and no fewer than its own path -- the longest control
+     * delay to its frame, the frame, the GPU's frames in flight, the
      * finish and the result. */
     int32_t delay = 0;
     for (int32_t d : cfg.controlDelay) delay = std::max(delay, d);
-    cap.pipelineMaxDepth = delay + 1 + CaptureEngine::kPermits + 1;
-
-    /* Each request in flight can hold a capture slot from its frame on;
-     * fewer slots than requests would starve the VI and lose frames.
-     * Fewer requests than the depth only leave frames unused. */
-    const int32_t slots =
-        V4L2DEVICE_BUF_COUNT - CaptureEngine::kSlotsBesidesRequests;
-    cap.maxBuffersPerStream = std::max<int32_t>(
-        1, std::min<int32_t>(cap.pipelineMaxDepth, slots));
+    cap.pipelineMaxDepth = std::max<int32_t>(
+        inFlight, delay + 1 + CaptureEngine::kPermits + 1);
 
     return cap;
 }

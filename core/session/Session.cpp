@@ -193,7 +193,8 @@ Session::Impl::~Impl() {
 
 const Capability &Session::Impl::probe() {
     if (!capabilityProbed) {
-        capability       = probeCapability(*dev, config.facingFront, &tuning, sensorCfg);
+        capability       = probeCapability(*dev, config.facingFront, &tuning,
+                                           sensorCfg, config.requestsInFlight);
         jpegBufferSize   = capability.jpeg.maxSize;
         capabilityProbed = true;
     }

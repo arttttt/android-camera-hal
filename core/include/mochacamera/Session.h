@@ -68,6 +68,11 @@ public:
         std::string integrator;
         /* The full ISP (WB, CCM, gamma), or demosaic only. */
         bool        softIsp = true;
+        /* Requests the framework may have in flight: each stream's
+         * max_buffers. More keeps frames coming through a hiccup;
+         * fewer shortens the preview's and the shutter's lag -- a
+         * request waits this many frames. Capped by the capture slots. */
+        int         requestsInFlight = 4;
     };
 
     Session(const Config &config, ResultSink *sink, GrallocPort *gralloc);

@@ -108,12 +108,13 @@ struct Capability {
     float   maxDigitalZoom = 4.f;
 
     /* Frames between a request's acceptance and its result, at most:
-     * the control delay to its frame, the frame, and the stages after
-     * it. */
+     * the requests in flight before it, and no fewer than its own path
+     * -- the control delay to its frame, the frame, and the stages
+     * after it. */
     int32_t pipelineMaxDepth = 0;
-    /* Buffers the framework may hold per stream: requests in flight.
-     * As many as the pipeline is deep, so every sensor frame can serve
-     * one, as far as the capture slots hold them. */
+    /* Buffers the framework may hold per stream: requests in flight,
+     * as configured (Session::Config::requestsInFlight), as far as the
+     * capture slots hold them. */
     int32_t maxBuffersPerStream = 0;
     /* Outputs per request: processed ones, of which stalling (JPEG). */
     int32_t maxProcessedOutputs = 2;

@@ -33,7 +33,8 @@ namespace mocha::camera {
  * sizes the SW ISP sustains, one YUV size per capture). */
 Capability probeCapability(android::V4l2Device &dev, bool facingFront,
                            const android::SensorTuning *tuning,
-                           const android::SensorConfig &sensorCfg);
+                           const android::SensorConfig &sensorCfg,
+                           int requestsInFlight);
 
 } /* namespace mocha::camera */
 

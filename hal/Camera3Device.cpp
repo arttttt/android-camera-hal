@@ -54,6 +54,13 @@ mocha::camera::Session::Config sessionConfig(const char *devNode, int facing) {
     char propVal[PROPERTY_VALUE_MAX] = {0};
     property_get("persist.camera.soft_isp", propVal, "1");
     c.softIsp = propVal[0] == '1';
+
+    /* Requests in flight; read once per camera, and cameraserver keeps
+     * the characteristics it read: a change needs the camera provider
+     * restarted. */
+    c.requestsInFlight = property_get_int32("persist.camera.requests_in_flight",
+                                            c.requestsInFlight);
+    ALOGI("requests in flight: %d", c.requestsInFlight);
     return c;
 }
 
