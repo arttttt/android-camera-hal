@@ -317,12 +317,9 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
     /* AE locked — by the framework's AE_LOCK or by AF (across a
      * sweep). Hold the converged operating point: keep
      * `filteredTotalUs` untouched, but **re-publish the held
-     * exposure / gain into DelayedControls every frame** so
-     * ApplySettingsStage sees a populated `pendingWrite` and stays
-     * on the converged values. Returning an empty batch here would
-     * fall through to ApplySettingsStage's manual path and write
-     * the framework's request-side exposure / gain to the sensor,
-     * jumping the image off the converged operating point.
+     * exposure / gain every frame**, so the exposure target stays
+     * on the converged values -- the EV rescale below can move them
+     * while locked.
      *
      * EV compensation still applies as an additive offset on top of
      * the locked level — `filteredTotalUs` already reflects whatever

@@ -61,6 +61,7 @@
 #include "pipeline/stages/ShutterNotifyStage.h"
 #include "pipeline/stages/StatsProcessStage.h"
 #include "sensor/DelayedControls.h"
+#include "sensor/ExposureTarget.h"
 #include "sensor/SensorConfig.h"
 #include "sensor/SensorTuning.h"
 
@@ -70,6 +71,7 @@ using android::ApplySettingsStage;
 using android::AutoFocusController;
 using android::BufferProcessor;
 using android::DelayedControls;
+using android::ExposureTarget;
 using android::DemosaicBlitStage;
 using android::DeviceErrorReporter;
 using android::Focuser;
@@ -137,13 +139,13 @@ struct Session::Impl {
     std::unique_ptr<FrameRegistry>       registry;
     std::unique_ptr<DeviceErrorReporter> deviceError;
     std::unique_ptr<Pipeline>            settingsPipeline;
-    /* Owned by settingsPipeline; kept to reset it on close. */
-    ApplySettingsStage                  *applySettingsStage = nullptr;
     std::unique_ptr<DemosaicBlitStage>   demosaicBlitStage;
     std::unique_ptr<StatsProcessStage>   statsProcessStage;
     std::unique_ptr<ResultDispatchStage> resultDispatchStage;
     std::unique_ptr<Ipa>                 ipa;
     std::unique_ptr<DelayedControls>     delayedControls;
+    /* The IPA's latest exposure decision, for requests in auto AE. */
+    ExposureTarget                       exposureTarget;
     /* Null when the VI has no frame wait control. */
     std::unique_ptr<ViController>        viController;
     std::unique_ptr<ResultEngine>        resultEngine;
@@ -333,9 +335,8 @@ bool Session::Impl::buildInfrastructure() {
     if (tuning.isLoaded())
         statsEngine->setBlackLevel((uint32_t)tuning.opticalBlack().r);
 
-    /* DelayedControls: the IPA's exposure / gain decisions, filed by the
-     * frame they land on, for ApplySettings to write. Seeded from the
-     * sensor's control delays so push and apply sequences align. */
+    /* DelayedControls: what ApplySettings wrote, filed by the frame it
+     * lands on, for what was in effect on a frame. */
     {
         DelayedControls::Config cfg;
         for (int i = 0; i < DelayedControls::COUNT; ++i) {
@@ -371,10 +372,11 @@ bool Session::Impl::buildInfrastructure() {
         d.af              = af.get();
         d.sensorCfg       = &sensorCfg;
         d.delayedControls = delayedControls.get();
+        d.exposureTarget  = &exposureTarget;
         d.viController    = viController.get();
         d.evStep          = probe().ae.evStep;
-        applySettingsStage = new ApplySettingsStage(d);
-        settingsPipeline->appendStage(std::unique_ptr<PipelineStage>(applySettingsStage));
+        settingsPipeline->appendStage(
+            std::unique_ptr<PipelineStage>(new ApplySettingsStage(d)));
     }
     settingsPipeline->appendStage(
         std::unique_ptr<PipelineStage>(new ShutterNotifyStage(sink)));
@@ -400,6 +402,7 @@ bool Session::Impl::buildInfrastructure() {
         StatsProcessStage::Deps d;
         d.ipa             = ipa.get();
         d.delayedControls = delayedControls.get();
+        d.exposureTarget  = &exposureTarget;
         d.sensorCfg       = &sensorCfg;
         d.stats           = statsEngine.get();
         d.af              = af.get();
@@ -454,7 +457,6 @@ void Session::Impl::destroyInfrastructure() {
     statsProcessStage.reset();
     resultDispatchStage.reset();
     demosaicBlitStage.reset();
-    applySettingsStage = nullptr;
     settingsPipeline.reset();
     statsEngine.reset();
     delayedControls.reset();
@@ -575,11 +577,11 @@ void Session::close() {
     s.captureSize = Size{};
     s.lastAeMode.reset();
     if (s.af)                 s.af->reset();
-    if (s.applySettingsStage) s.applySettingsStage->reset();
     if (s.deviceError)        s.deviceError->rearm();
     if (s.isp)                s.isp->onSessionClose();
     if (s.ipa)                s.ipa->reset();
     if (s.delayedControls)    s.delayedControls->reset();
+    s.exposureTarget.reset();
     if (s.statsEngine)        s.statsEngine->reset();
 
     s.dev->disconnect();

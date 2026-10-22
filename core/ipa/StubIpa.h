@@ -6,9 +6,8 @@
 namespace android {
 
 /* No-op IPA. Returns an empty batch (has[*] = false) for every
- * processStats() call — DelayedControls leaves every cell untouched,
- * so ApplySettingsStage's own push() remains the sole source of
- * truth. Used while the stats shader and the real 3A math are still
+ * processStats() call — the exposure target never gets a decision, so
+ * every request takes ApplySettingsStage's manual path. Used while the stats shader and the real 3A math are still
  * being wired, and as the default when buildInfrastructure runs
  * without stats support. */
 class StubIpa : public Ipa {

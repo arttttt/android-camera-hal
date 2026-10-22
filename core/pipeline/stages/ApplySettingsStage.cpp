@@ -3,6 +3,8 @@
 
 #include "ApplySettingsStage.h"
 
+#include <optional>
+
 #include <log/log.h>
 
 #include <linux/videodev2.h>
@@ -12,6 +14,7 @@
 #include "3a/AutoExposureController.h"
 #include "3a/AutoFocusController.h"
 #include "sensor/DelayedControls.h"
+#include "sensor/ExposureTarget.h"
 #include "sensor/SensorConfig.h"
 #include "ViController.h"
 #include "V4l2Controls.h"
@@ -43,8 +46,6 @@ private:
 
 ApplySettingsStage::ApplySettingsStage(const Deps &d)
     : deps(d),
-      lastAutoValid(false),
-      lastAuto{},
       groupHold(false) {
     if (deps.dev) {
         int32_t mn = 0, mx = 0, df = 0;
@@ -52,11 +53,6 @@ ApplySettingsStage::ApplySettingsStage(const Deps &d)
                  && mx >= 1;
         ALOGI("sensor group hold %s", groupHold ? "supported" : "not supported");
     }
-}
-
-void ApplySettingsStage::reset() {
-    lastAutoValid = false;
-    for (int32_t &v : lastAuto) v = 0;
 }
 
 void ApplySettingsStage::write(int32_t frameLen, int32_t lineLength,
@@ -90,52 +86,43 @@ void ApplySettingsStage::process(mocha::camera::Frame &ctx) {
     }
 
     if (deps.dev && deps.sensorCfg) {
-        bool appliedFromRing = false;
-        if (ctx.settings.ae.mode != mocha::camera::AeMode::Off &&
-            deps.delayedControls) {
-            /* Auto AE — consume the IPA's decision if it has landed
-             * for this frame. The ring is empty on cold start and
-             * whenever the IPA returns empty batches; fall through
-             * to the manual path so the sensor keeps a valid
-             * exposure / gain rather than freezing. */
-            DelayedControls::Batch batch =
-                deps.delayedControls->pendingWrite(ctx.frameNumber);
-            bool landed = false;
-            for (int id = 0; id < DelayedControls::COUNT; ++id)
-                landed = landed || batch.has[id];
-            if (landed || lastAutoValid) {
-                /* Fill whatever the IPA did not decide for this
-                 * request from the last auto write -- or, before the
-                 * first, from the defaults configure wrote -- so the
-                 * sensor stays on the auto operating point either
-                 * way. */
-                int32_t defaults[DelayedControls::COUNT];
-                defaults[DelayedControls::EXPOSURE]     = deps.sensorCfg->exposureDefault;
-                defaults[DelayedControls::GAIN]         = deps.sensorCfg->gainDefault;
-                defaults[DelayedControls::FRAME_LENGTH] = deps.sensorCfg->frameLenDefault;
-                defaults[DelayedControls::LINE_LENGTH]  = deps.sensorCfg->lineLengthDefault;
-                for (int id = 0; id < DelayedControls::COUNT; ++id) {
-                    if (batch.has[id]) continue;
-                    batch.has[id] = true;
-                    batch.val[id] = lastAutoValid ? lastAuto[id] : defaults[id];
-                }
-                write(batch.val[DelayedControls::FRAME_LENGTH],
-                      batch.val[DelayedControls::LINE_LENGTH],
-                      batch.val[DelayedControls::EXPOSURE],
-                      batch.val[DelayedControls::GAIN]);
-                ctx.appliedExposureUs = batch.val[DelayedControls::EXPOSURE];
-                ctx.appliedGain       = batch.val[DelayedControls::GAIN];
-                for (int id = 0; id < DelayedControls::COUNT; ++id)
-                    lastAuto[id] = batch.val[id];
-                lastAutoValid = true;
-                deps.delayedControls->commit(ctx.frameNumber, batch);
-                appliedFromRing = true;
+        bool appliedFromTarget = false;
+        const std::optional<DelayedControls::Batch> target =
+            (ctx.settings.ae.mode != mocha::camera::AeMode::Off &&
+             deps.exposureTarget)
+                ? deps.exposureTarget->latest() : std::nullopt;
+        if (target) {
+            /* Auto AE: the IPA's latest decision. Before its first
+             * there is none, and the request falls through to the
+             * manual path, which keeps the sensor on a valid exposure
+             * rather than frozen. */
+            DelayedControls::Batch batch = *target;
+            /* What the IPA has never decided comes from the defaults
+             * configure wrote. */
+            int32_t defaults[DelayedControls::COUNT];
+            defaults[DelayedControls::EXPOSURE]     = deps.sensorCfg->exposureDefault;
+            defaults[DelayedControls::GAIN]         = deps.sensorCfg->gainDefault;
+            defaults[DelayedControls::FRAME_LENGTH] = deps.sensorCfg->frameLenDefault;
+            defaults[DelayedControls::LINE_LENGTH]  = deps.sensorCfg->lineLengthDefault;
+            for (int id = 0; id < DelayedControls::COUNT; ++id) {
+                if (batch.has[id]) continue;
+                batch.has[id] = true;
+                batch.val[id] = defaults[id];
             }
+            write(batch.val[DelayedControls::FRAME_LENGTH],
+                  batch.val[DelayedControls::LINE_LENGTH],
+                  batch.val[DelayedControls::EXPOSURE],
+                  batch.val[DelayedControls::GAIN]);
+            ctx.appliedExposureUs = batch.val[DelayedControls::EXPOSURE];
+            ctx.appliedGain       = batch.val[DelayedControls::GAIN];
+            if (deps.delayedControls)
+                deps.delayedControls->commit(ctx.frameNumber, batch);
+            appliedFromTarget = true;
         }
 
-        if (!appliedFromRing) {
-            /* Manual AE, or auto before the first IPA decision of the
-             * stage's lifetime: parse the request deterministically
+        if (!appliedFromTarget) {
+            /* Manual AE, or auto before the IPA's first decision of
+             * the session: parse the request deterministically
              * and write V4L2 directly. */
             const ExposureWriteValues v =
                 AutoExposureController::parseManualSettings(
@@ -146,8 +133,8 @@ void ApplySettingsStage::process(mocha::camera::Frame &ctx) {
 
             /* Record the value physically written at slot
              * frameNumber so applyControls() reports what the
-             * sensor really got, and a late IPA push cannot overwrite
-             * it. The auto path records its own write above. */
+             * sensor really got. The auto path records its own write
+             * above. */
             if (deps.delayedControls) {
                 DelayedControls::Batch published;
                 for (int i = 0; i < DelayedControls::COUNT; ++i) {

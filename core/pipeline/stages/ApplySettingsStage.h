@@ -9,6 +9,7 @@
 namespace android {
 
 class  AutoFocusController;
+class  ExposureTarget;
 class  V4l2Device;
 struct SensorConfig;
 class  ViController;
@@ -24,11 +25,11 @@ class  ViController;
  *     frameNumber so result metadata reporting sees the same
  *     trajectory.
  *   AE On → auto path.
- *     DelayedControls::pendingWrite(frameNumber) yields the
- *     IPA-decided batch; the stage pushes it through V4L2 in one
- *     VIDIOC_S_EXT_CTRLS call. If the ring is empty for this slot —
- *     cold start, or StubIpa — we fall back to the manual path so
- *     the sensor is never left frozen during bring-up.
+ *     ExposureTarget::latest() yields the IPA's latest decision; the
+ *     stage writes it through V4L2 in one VIDIOC_S_EXT_CTRLS call and
+ *     commits it as the manual path does. Before the IPA's first
+ *     decision -- cold start, or StubIpa -- we fall back to the manual
+ *     path so the sensor is never left frozen.
  *
  * Either way the frame length is written every frame, and the VI
  * frame wait is raised for it before the write reaches the
@@ -43,6 +44,7 @@ public:
         AutoFocusController *af;               /* may be null            */
         const SensorConfig  *sensorCfg;
         DelayedControls     *delayedControls;  /* may be null            */
+        const ExposureTarget *exposureTarget;  /* may be null            */
         ViController        *viController;     /* may be null            */
         mocha::camera::Rational evStep;        /* Capability::ae.evStep  */
     };
@@ -52,11 +54,6 @@ public:
     const char *name() const override { return "ApplySettings"; }
     void process(mocha::camera::Frame &context) override;
 
-    /* Forget the last auto write. Called when a session closes: the
-     * next one starts from the driver defaults configureStreams
-     * writes, not from the exposure the previous session ended on. */
-    void reset();
-
 private:
     Deps deps;
 
@@ -65,15 +62,6 @@ private:
      * EXPOSURE / GAIN in one group hold. */
     void write(int32_t frameLen, int32_t lineLength,
                int32_t exposureUs, int32_t gain);
-
-    /* Last controls the auto path actually wrote, by DelayedControls
-     * id. When the IPA's decision for a request has not landed yet,
-     * auto mode repeats this instead of falling back to the request's
-     * own sensor settings — those are framework template values, ~1x
-     * gain, and writing them mid-stream drops a frame to near black.
-     * Invalid until the first auto write of the stage's lifetime. */
-    bool    lastAutoValid;
-    int32_t lastAuto[DelayedControls::COUNT];
 
     /* Whether the sensor driver exposes V4L2_CID_GROUP_HOLD. Queried
      * once at construction; writes are bracketed with it when true. */

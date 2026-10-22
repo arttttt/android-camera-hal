@@ -11,9 +11,8 @@ namespace android {
  *
  * - `batch` carries `EXPOSURE` / `GAIN` slots in `DelayedControls`
  *   semantics: per-id `has[]` flag + value in driver units. The
- *   coordinator pushes this into `DelayedControls` at slot
- *   `request.frameNumber + sensorCfg.controlDelay[id]` so the write
- *   lands on the right future frame.
+ *   coordinator publishes it as the exposure target, which the next
+ *   request in auto AE takes.
  * - `converged` is the boolean signal AF reads to gate continuous-
  *   mode retriggers (don't retrigger while AE is still chasing
  *   exposure — brightness changes from AE catching up would look
@@ -27,7 +26,7 @@ namespace android {
  * An empty result (`!batch.has[*]`) is the
  * "controller did not run this tick" sentinel — happens when AE is
  * locked or AF is sweeping. The coordinator routes a non-result by
- * doing nothing (no DelayedControls push, no state metadata
+ * doing nothing (no exposure target update, no state metadata
  * override). */
 struct AeResult {
     DelayedControls::Batch  batch;

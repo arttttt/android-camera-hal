@@ -11,25 +11,9 @@ void DelayedControls::reset() {
     for (int s = 0; s < RING_SIZE; ++s) {
         for (int id = 0; id < COUNT; ++id) {
             ring[s][id].has = false;
-            ring[s][id].written = false;
             ring[s][id].seq = 0;
             ring[s][id].val = 0;
         }
-    }
-}
-
-void DelayedControls::push(uint32_t seq, const Batch &batch) {
-    std::lock_guard<std::mutex> lock(mutex);
-    const int slot = static_cast<int>(seq % RING_SIZE);
-    for (int id = 0; id < COUNT; ++id) {
-        if (!batch.has[id]) continue;
-        Cell &cell = ring[slot][id];
-        /* Too late: this request already went to the sensor. */
-        if (cell.has && cell.seq == seq && cell.written) continue;
-        cell.val = batch.val[id];
-        cell.seq = seq;
-        cell.has = true;
-        cell.written = false;
     }
 }
 
@@ -42,7 +26,6 @@ void DelayedControls::commit(uint32_t seq, const Batch &batch) {
         cell.val = batch.val[id];
         cell.seq = seq;
         cell.has = true;
-        cell.written = true;
     }
 }
 
@@ -64,23 +47,6 @@ DelayedControls::Batch DelayedControls::applyControls(
         } else {
             out.has[id] = true;
             out.val[id] = fallback[id];
-        }
-    }
-    return out;
-}
-
-DelayedControls::Batch DelayedControls::pendingWrite(uint32_t seq) const {
-    std::lock_guard<std::mutex> lock(mutex);
-    Batch out;
-    const int slot = static_cast<int>(seq % RING_SIZE);
-    for (int id = 0; id < COUNT; ++id) {
-        const Cell &cell = ring[slot][id];
-        if (cell.has && cell.seq == seq) {
-            out.has[id] = true;
-            out.val[id] = cell.val;
-        } else {
-            out.has[id] = false;
-            out.val[id] = 0;
         }
     }
     return out;

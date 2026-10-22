@@ -14,16 +14,19 @@
  * limitations under the License.
  */
 
-/* Host test for DelayedControls: what the IPA files for a frame, what
- * ApplySettings commits, and what result metadata reads back as in
- * effect. Run by core/tests/run_host_tests.sh. */
+/* Host test for DelayedControls and ExposureTarget: what ApplySettings
+ * commits, what result metadata reads back as in effect, and the IPA's
+ * decision requests in auto AE take. Run by
+ * core/tests/run_host_tests.sh. */
 
 #include <cstdio>
 
 #include "sensor/DelayedControls.h"
+#include "sensor/ExposureTarget.h"
 #include "Check.h"
 
 using android::DelayedControls;
+using android::ExposureTarget;
 
 using mocha::camera::test::check;
 using mocha::camera::test::finish;
@@ -50,18 +53,6 @@ DelayedControls::Batch batch(int32_t exposure, int32_t gain) {
     b.has[DelayedControls::GAIN]     = true;
     b.val[DelayedControls::GAIN]     = gain;
     return b;
-}
-
-/* The IPA files a decision for frame 12; ApplySettings finds it there
- * when frame 12 is written. */
-void testPendingWrite() {
-    DelayedControls dc(config());
-    check(!dc.pendingWrite(12).has[DelayedControls::EXPOSURE]);
-    dc.push(12, batch(1000, 256));
-    const DelayedControls::Batch b = dc.pendingWrite(12);
-    check(b.has[DelayedControls::EXPOSURE] && b.val[DelayedControls::EXPOSURE] == 1000);
-    check(b.has[DelayedControls::GAIN] && b.val[DelayedControls::GAIN] == 256);
-    check(!dc.pendingWrite(13).has[DelayedControls::EXPOSURE]);
 }
 
 /* What was written for frame N is in effect on frame N + delay; before
@@ -92,26 +83,16 @@ void testFrameLength() {
     check(dc.applyControls(6, fallback).val[DelayedControls::FRAME_LENGTH] == 2564);
 }
 
-/* A late IPA push for a frame already written does not rewrite the
- * record: result metadata reports what the sensor really got. */
-void testSealAgainstLatePush() {
-    DelayedControls dc(config());
-    dc.commit(9, batch(4000, 512));
-    dc.push(9, batch(9999, 999));
-    const DelayedControls::Batch b = dc.applyControls(11);
-    check(b.val[DelayedControls::EXPOSURE] == 4000 && b.val[DelayedControls::GAIN] == 512);
-}
-
-/* A push for a later frame in the same ring slot replaces a stale cell;
- * the stale frame then reads as never written. */
+/* A commit for a later frame in the same ring slot replaces a stale
+ * cell; the stale frame then reads as never written. */
 void testRingWrap() {
     DelayedControls dc(config());
     dc.commit(3, batch(100, 10));
-    dc.push(3 + 16, batch(200, 20));
+    dc.commit(3 + 16, batch(200, 20));
     const int32_t fallback[DelayedControls::COUNT] = {7, 8};
     DelayedControls::Batch b = dc.applyControls(3 + 2, fallback);
     check(b.val[DelayedControls::EXPOSURE] == 7);
-    b = dc.pendingWrite(3 + 16);
+    b = dc.applyControls(3 + 16 + 2, fallback);
     check(b.val[DelayedControls::EXPOSURE] == 200);
 }
 
@@ -121,17 +102,38 @@ void testReset() {
     dc.commit(1, batch(100, 10));
     dc.reset();
     check(dc.applyControls(3).val[DelayedControls::EXPOSURE] == 0);
-    check(!dc.pendingWrite(1).has[DelayedControls::EXPOSURE]);
+}
+
+/* The target is nothing until the IPA decides; then each control keeps
+ * its last decision, whichever batch it came in, until reset. */
+void testExposureTarget() {
+    ExposureTarget t;
+    check(!t.latest());
+
+    t.publish(batch(1000, 256));
+    DelayedControls::Batch fl;
+    fl.has[DelayedControls::FRAME_LENGTH] = true;
+    fl.val[DelayedControls::FRAME_LENGTH] = 2564;
+    t.publish(fl);
+    t.publish(DelayedControls::Batch{});   /* nothing decided: no change */
+
+    const std::optional<DelayedControls::Batch> b = t.latest();
+    check(b && b->has[DelayedControls::EXPOSURE] && b->val[DelayedControls::EXPOSURE] == 1000);
+    check(b && b->has[DelayedControls::GAIN] && b->val[DelayedControls::GAIN] == 256);
+    check(b && b->has[DelayedControls::FRAME_LENGTH] && b->val[DelayedControls::FRAME_LENGTH] == 2564);
+    check(b && !b->has[DelayedControls::LINE_LENGTH]);
+
+    t.reset();
+    check(!t.latest());
 }
 
 } // namespace
 
 int main() {
-    testPendingWrite();
     testInEffect();
     testFrameLength();
-    testSealAgainstLatePush();
     testRingWrap();
     testReset();
+    testExposureTarget();
     return finish("delayed_controls_test");
 }

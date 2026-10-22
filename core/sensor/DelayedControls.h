@@ -11,22 +11,15 @@ namespace android {
  * fixed, per-silicon latency in frames: the value written at request
  * sequence N lands in the kernel-captured frame at sequence N + delay.
  *
- * push() is called from two sources that share the same ring:
- *   - ApplySettingsStage on the capture engine, for the frame being
- *     dispatched to the sensor right now (seq = request.frameNumber).
- *   - Ipa::processStats result on the finish engine, with
- *     seq = inputSequence + delay, publishing a 3A decision whose
- *     effect lands one delay window ahead.
- *
+ * commit() records what ApplySettingsStage wrote for a request, and
  * applyControls(seq) reports what is physically in effect on frame
- * `seq`: for each control, the value that was pushed at slot
- * (seq - delay). That value is written into result metadata so
+ * `seq`: for each control, the value committed at slot (seq - delay).
+ * That value is written into result metadata so
  * ANDROID_SENSOR_EXPOSURE_TIME / SENSITIVITY reflect the sensor's
  * actual state rather than the request's target.
  *
- * Last-push-wins when two sources hit the same slot for the same
- * control id; the tagged per-cell sequence number rejects stale reads
- * after a wrap of the ring. */
+ * The tagged per-cell sequence number rejects stale reads after a wrap
+ * of the ring. */
 class DelayedControls {
 public:
     enum ControlId {
@@ -61,20 +54,14 @@ public:
     explicit DelayedControls(const Config &config);
 
     /* Drops every cached write. All applyControls() queries fall back
-     * to Config.defaultValue until the next push(). Called on session
+     * to Config.defaultValue until the next commit(). Called on session
      * boundary (Session::close). */
     void reset();
 
-    /* Stores each set control (batch.has[id] == true) into slot
-     * (seq % RING_SIZE), tagged with the full `seq`. Controls not
-     * flagged in the batch leave the corresponding cell untouched. */
-    void push(uint32_t seq, const Batch &batch);
-
-    /* Records what was ACTUALLY written to the sensor for request
-     * `seq` and seals the slot: a push() for the same seq arriving
-     * after this is dropped. Without the seal a late IPA push would
-     * overwrite the record, and applyControls() would then report a
-     * value the sensor never received. */
+    /* Records what was written to the sensor for request `seq`: each
+     * set control (batch.has[id] == true) into slot (seq % RING_SIZE),
+     * tagged with the full `seq`. Controls not flagged in the batch
+     * leave the corresponding cell untouched. */
     void commit(uint32_t seq, const Batch &batch);
 
     /* Reports the value that was written for slot (seq - delay[id]).
@@ -93,19 +80,11 @@ public:
      * applied yet".) */
     Batch applyControls(uint32_t seq, const int32_t fallback[COUNT]) const;
 
-    /* Reports the controls queued to be WRITTEN to the sensor at frame
-     * `seq` — slot `seq % RING_SIZE` directly, tag-checked against
-     * `seq`. has[id] == false when no push for this slot has landed.
-     * ApplySettingsStage uses this on the write path in auto mode to
-     * pull the IPA's pushed batch for the frame being dispatched. */
-    Batch pendingWrite(uint32_t seq) const;
-
 private:
     static const int RING_SIZE = 16;
 
     struct Cell {
         bool     has;
-        bool     written;  /* sealed by commit() — reflects the sensor */
         uint32_t seq;
         int32_t  val;
     };
@@ -113,10 +92,9 @@ private:
     Config config;
     Cell   ring[RING_SIZE][COUNT];
 
-    /* Producers (ApplySettingsStage on the capture engine,
-     * StatsProcessStage on the finish engine) and consumers (ApplySettingsStage,
-     * ResultMetadataBuilder) run on different threads; the ring is
-     * small enough that a single lock is fine. */
+    /* The producer (ApplySettingsStage on the capture engine) and the
+     * consumers (the IPA, result metadata) run on different threads;
+     * the ring is small enough that a single lock is fine. */
     mutable std::mutex mutex;
 };
 

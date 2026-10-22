@@ -12,6 +12,7 @@
 #include "ipa/IpaStats.h"
 #include "StatsEngine.h"
 #include "sensor/DelayedControls.h"
+#include "sensor/ExposureTarget.h"
 #include "sensor/SensorConfig.h"
 
 #undef  LOG_TAG
@@ -22,7 +23,7 @@ namespace android {
 StatsProcessStage::StatsProcessStage(const Deps &d) : deps(d) {}
 
 void StatsProcessStage::process(mocha::camera::Frame &ctx) {
-    if (!deps.ipa || !deps.delayedControls || !deps.sensorCfg
+    if (!deps.ipa || !deps.exposureTarget || !deps.sensorCfg
         || !deps.stats) return;
 
     const nsecs_t t0 = systemTime();
@@ -71,9 +72,7 @@ void StatsProcessStage::process(mocha::camera::Frame &ctx) {
     }
 
     /* Pass the frame-of-stats sequence to the IPA so it can correlate
-     * with its own history. DelayedControls::push still uses ctx.frameNumber
-     * for effect timing — the control goes into effect relative to
-     * today's frame, not to the frame the stats came from.
+     * with its own history.
      *
      * IPA also drives AF internally now (post-step-5 of the 3A
      * refactor) — the coordinator calls af->process(stats, ...) and
@@ -100,27 +99,12 @@ void StatsProcessStage::process(mocha::camera::Frame &ctx) {
 
     const nsecs_t tIpa = systemTime();
 
-    /* Publish each set control at seq + its own silicon delay.
-     * DelayedControls::push tags the whole batch with one sequence,
-     * so one push per control handles the general case where the
-     * per-control delays differ. */
-    for (int id = 0; id < DelayedControls::COUNT; ++id) {
-        if (!batch.has[id]) continue;
-        DelayedControls::Batch one;
-        for (int i = 0; i < DelayedControls::COUNT; ++i) {
-            one.has[i] = false;
-            one.val[i] = 0;
-        }
-        one.has[id] = true;
-        one.val[id] = batch.val[id];
-
-        const uint32_t effectSeq = ctx.frameNumber
-                                   + (uint32_t)deps.sensorCfg->controlDelay[id];
-        deps.delayedControls->push(effectSeq, one);
-    }
+    /* The decision is what auto exposure wants now; the next request
+     * in auto AE takes it. */
+    deps.exposureTarget->publish(batch);
 
     const nsecs_t tEnd = systemTime();
-    ALOGD("PERF: peek=%lldus ipa=%lldus push=%lldus total=%lldus f=%u",
+    ALOGD("PERF: peek=%lldus ipa=%lldus publish=%lldus total=%lldus f=%u",
           (long long)((tPeek - t0)    / 1000),
           (long long)((tIpa  - tPeek) / 1000),
           (long long)((tEnd  - tIpa)  / 1000),
