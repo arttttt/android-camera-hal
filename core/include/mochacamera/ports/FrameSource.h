@@ -46,6 +46,13 @@ struct BayerFrame {
     int64_t exposureStartNs() const {
         return intervalNs > 0 ? dequeuedNs - intervalNs : 0;
     }
+
+    /* The capture driver's count of the buffers it completed (damaged
+     * ones included; a sensor frame it had no buffer for is not
+     * counted), and when the frame's last line reached memory
+     * (CLOCK_MONOTONIC, as systemTime). */
+    uint32_t sequence    = 0;
+    int64_t  timestampNs = 0;
 };
 
 /* Where a source slot goes back to once nobody holds it. Called from

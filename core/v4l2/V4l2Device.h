@@ -40,9 +40,15 @@ public:
             return intervalNs > 0 ? dequeuedNs - intervalNs : 0;
         }
 
+        /* What the driver said of the frame now in this slot; see
+         * Dequeued. Set by the capture thread with dequeuedNs. */
+        uint32_t sequence;
+        int64_t  timestampNs;
+
     private:
         VBuffer(): buf(NULL), len(0), pixFmt(0), index(-1),
-                   dequeuedNs(0), intervalNs(0) {}
+                   dequeuedNs(0), intervalNs(0),
+                   sequence(0), timestampNs(0) {}
         ~VBuffer();
 
         bool map(int fd, unsigned offset, unsigned len, uint32_t pixelFormat);
@@ -84,10 +90,23 @@ public:
      * thread drives: it polls fd() and dequeues without blocking. Only
      * while isStreaming(). */
     int  fd() const { return mFd; }
-    /* EAGAIN -> -1; otherwise slot. `corrupt` (optional) reports
-     * V4L2_BUF_FLAG_ERROR: the driver filled the slot but the frame in
-     * it is damaged. */
-    int  dequeueBufferNonBlocking(bool *corrupt = nullptr);
+    /* What VIDIOC_DQBUF said of a frame besides its slot. */
+    struct Dequeued {
+        /* V4L2_BUF_FLAG_ERROR: the driver filled the slot but the
+         * frame in it is damaged. */
+        bool     corrupt = false;
+        /* The driver's count of the buffers it has completed, damaged
+         * ones included. A sensor frame the VI had no buffer armed for
+         * is not counted. */
+        uint32_t sequence = 0;
+        /* When the frame's last line reached memory, CLOCK_MONOTONIC
+         * (the queue's V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC), ns. */
+        int64_t  timestampNs = 0;
+    };
+
+    /* EAGAIN -> -1; otherwise slot, and what the driver said of the
+     * frame in `info` (optional). */
+    int  dequeueBufferNonBlocking(Dequeued *info = nullptr);
     bool queueBuffer(unsigned id);           /* V4L2 QBUF; returns false on error */
     const VBuffer* slotAt(int id) const;     /* accessor into mBuf[id]; null on range error */
 

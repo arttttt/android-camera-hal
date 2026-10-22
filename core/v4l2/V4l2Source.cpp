@@ -83,13 +83,14 @@ bool V4l2Source::drainToLatest(short revents) {
      * slot the driver flagged V4L2_BUF_FLAG_ERROR holds a damaged frame:
      * it goes straight back and is never handed on. */
     int id = -1;
+    V4l2Device::Dequeued kept;
     int dropped = 0;
     int damaged = 0;
     for (;;) {
-        bool corrupt = false;
-        const int next = dev->dequeueBufferNonBlocking(&corrupt);
+        V4l2Device::Dequeued info;
+        const int next = dev->dequeueBufferNonBlocking(&info);
         if (next < 0) break;
-        if (corrupt) {
+        if (info.corrupt) {
             if (!dev->queueBuffer(next))
                 ALOGE("requeue of damaged slot %d failed: errno=%d", next, errno);
             ++damaged;
@@ -100,7 +101,8 @@ bool V4l2Source::drainToLatest(short revents) {
                 ALOGE("drain-to-latest: QBUF slot %d failed: errno=%d", id, errno);
             ++dropped;
         }
-        id = next;
+        id   = next;
+        kept = info;
     }
     if (damaged) ALOGW("%d damaged frame(s) requeued", damaged);
     if (dropped) ALOGD("dropped %d stale frame(s)", dropped);
@@ -118,8 +120,10 @@ bool V4l2Source::drainToLatest(short revents) {
          * the AF freshness gate reading it. */
         const nsecs_t now = systemTime();
         V4l2Device::VBuffer *slot = const_cast<V4l2Device::VBuffer *>(frame);
-        slot->dequeuedNs = now;
-        slot->intervalNs = prevGoodNs ? now - prevGoodNs : 0;
+        slot->dequeuedNs  = now;
+        slot->intervalNs  = prevGoodNs ? now - prevGoodNs : 0;
+        slot->sequence    = kept.sequence;
+        slot->timestampNs = kept.timestampNs;
         prevGoodNs = now;
     }
 
@@ -146,6 +150,8 @@ std::optional<BayerLease> V4l2Source::takeLatest() {
     frame.pixFmt     = latest->pixFmt;
     frame.dequeuedNs = latest->dequeuedNs;
     frame.intervalNs = latest->intervalNs;
+    frame.sequence    = latest->sequence;
+    frame.timestampNs = latest->timestampNs;
     latest = nullptr;
     return BayerLease(frame, gen, this);
 }

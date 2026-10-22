@@ -565,7 +565,7 @@ const V4l2Device::VBuffer* V4l2Device::slotAt(int id) const {
  * driver has no ready frame; the capture engine polls the node and
  * drains it to the newest frame.
  */
-int V4l2Device::dequeueBufferNonBlocking(bool *corrupt) {
+int V4l2Device::dequeueBufferNonBlocking(Dequeued *info) {
     assert(mFd >= 0);
 
     struct v4l2_buffer bufInfo;
@@ -578,7 +578,12 @@ int V4l2Device::dequeueBufferNonBlocking(bool *corrupt) {
     if(ioctl(mFd, VIDIOC_DQBUF, &bufInfo) < 0)
         return -1;
 
-    if (corrupt) *corrupt = (bufInfo.flags & V4L2_BUF_FLAG_ERROR) != 0;
+    if (info) {
+        info->corrupt     = (bufInfo.flags & V4L2_BUF_FLAG_ERROR) != 0;
+        info->sequence    = bufInfo.sequence;
+        info->timestampNs = (int64_t)bufInfo.timestamp.tv_sec * 1000000000LL
+                          + (int64_t)bufInfo.timestamp.tv_usec * 1000LL;
+    }
     return (int)bufInfo.index;
 }
 
