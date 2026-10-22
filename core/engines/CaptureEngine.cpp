@@ -19,6 +19,7 @@
 #include <sys/timerfd.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <limits>
@@ -193,8 +194,9 @@ void CaptureEngine::onStarts(const std::vector<FrameStart> &starts) {
                     writeHeld();
             }
         }
-        /* The next frame starts within this one's period. */
-        armStall(s.periodNs);
+        /* The next frame starts within this one's period -- or within
+         * the longest a write may stretch it to, as for the VI. */
+        armStall(std::max(s.periodNs, s.waitPeriodNs));
     }
 }
 
