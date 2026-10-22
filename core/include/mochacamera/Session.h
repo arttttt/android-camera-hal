@@ -71,8 +71,11 @@ public:
         /* Requests the framework may have in flight: each stream's
          * max_buffers. More keeps frames coming through a hiccup;
          * fewer shortens the preview's and the shutter's lag -- a
-         * request waits this many frames. Capped by the capture slots. */
-        int         requestsInFlight = 4;
+         * request waits this many frames. Capped by the capture slots.
+         * Measured on mocha (23.10.2026, auto exposure, both cameras):
+         * 4 ran the preview at 28 fps, 5 at 29.7, 6 at 30, a request
+         * taking 142, 167 and 198 ms to its result. */
+        int         requestsInFlight = 6;
         /* For measuring where in a frame the sensor latches a write:
          * the write goes this long after the frame's start is reported,
          * not at once. */
