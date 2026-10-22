@@ -587,6 +587,35 @@ int V4l2Device::dequeueBufferNonBlocking(Dequeued *info) {
     return (int)bufInfo.index;
 }
 
+bool V4l2Device::subscribeFrameSync() {
+    if (mFd < 0) return false;
+    struct v4l2_event_subscription sub;
+    memset(&sub, 0, sizeof(sub));
+    sub.type = V4L2_EVENT_FRAME_SYNC;
+    if (ioctl(mFd, VIDIOC_SUBSCRIBE_EVENT, &sub) < 0) {
+        ALOGE("VIDIOC_SUBSCRIBE_EVENT(FRAME_SYNC) failed: %s (%d)",
+              strerror(errno), errno);
+        return false;
+    }
+    return true;
+}
+
+bool V4l2Device::dequeueFrameSync(FrameSync *out) {
+    if (mFd < 0) return false;
+    for (;;) {
+        struct v4l2_event ev;
+        memset(&ev, 0, sizeof(ev));
+        if (ioctl(mFd, VIDIOC_DQEVENT, &ev) < 0)
+            return false;
+        if (ev.type != V4L2_EVENT_FRAME_SYNC)
+            continue;
+        out->sequence    = ev.u.frame_sync.frame_sequence;
+        out->timestampNs = (int64_t)ev.timestamp.tv_sec * 1000000000LL
+                         + (int64_t)ev.timestamp.tv_nsec;
+        return true;
+    }
+}
+
 bool V4l2Device::setControl(uint32_t id, int32_t value) {
     if(mFd < 0)
         return false;

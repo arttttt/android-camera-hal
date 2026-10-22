@@ -76,9 +76,9 @@ public:
         /* V4L2_BUF_FLAG_ERROR: the driver filled the slot but the
          * frame in it is damaged. */
         bool     corrupt = false;
-        /* The driver's count of the buffers it has completed, damaged
-         * ones included. A sensor frame the VI had no buffer armed for
-         * is not counted. */
+        /* The sensor frame in it, numbered by the driver from the
+         * stream's start (the CSI's frame start counter): a frame the
+         * VI had no buffer armed for is a gap. */
         uint32_t sequence = 0;
         /* When the frame's last line reached memory, CLOCK_MONOTONIC
          * (the queue's V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC), ns. */
@@ -88,6 +88,22 @@ public:
     /* EAGAIN -> -1; otherwise slot, and what the driver said of the
      * frame in `info` (optional). */
     int  dequeueBufferNonBlocking(Dequeued *info = nullptr);
+
+    /* V4L2_EVENT_FRAME_SYNC: the driver says when a frame starts,
+     * numbered as its buffer will be. False if the driver has no such
+     * event. The node polls POLLPRI while one waits. */
+    bool subscribeFrameSync();
+
+    /* A frame's start, as the driver told it. */
+    struct FrameSync {
+        uint32_t sequence = 0;
+        int64_t  timestampNs = 0;   /* when the driver queued it, CLOCK_MONOTONIC */
+    };
+
+    /* The next frame start waiting; false when none is (VIDIOC_DQEVENT
+     * does not block on a node opened non-blocking, and an empty queue
+     * is ENOENT). Other events are skipped. */
+    bool dequeueFrameSync(FrameSync *out);
     bool queueBuffer(unsigned id);           /* V4L2 QBUF; returns false on error */
     const VBuffer* slotAt(int id) const;     /* accessor into mBuf[id]; null on range error */
 

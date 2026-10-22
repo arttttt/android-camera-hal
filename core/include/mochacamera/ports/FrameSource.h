@@ -38,9 +38,9 @@ struct BayerFrame {
     /* The sensor's pixel format (a V4L2 fourcc). */
     uint32_t       pixFmt = 0;
 
-    /* The capture driver's count of the buffers it completed (damaged
-     * ones included; a sensor frame it had no buffer for is not
-     * counted), and when the frame's last line reached memory
+    /* The sensor frame in it, as the capture driver numbers the
+     * sensor's frames from the stream's start (a frame it captured
+     * nothing of is a gap), and when its last line reached memory
      * (CLOCK_MONOTONIC, as systemTime). */
     uint32_t sequence    = 0;
     int64_t  timestampNs = 0;
@@ -107,6 +107,13 @@ private:
     std::shared_ptr<Hold> hold;
 };
 
+/* A sensor frame has started: its number, as its buffer will carry
+ * it, and when the driver said so (CLOCK_MONOTONIC). */
+struct FrameStart {
+    uint32_t sequence    = 0;
+    int64_t  timestampNs = 0;
+};
+
 /* Producer of Bayer frames for the core, driven by the capture
  * engine's thread: the engine polls fd() and returnedFd() with its own
  * work and calls back here, so the source's queue has one writer. A
@@ -137,6 +144,15 @@ public:
      * that is ready, oldest first, as leases; a damaged one goes back at
      * once. A lease let go returns its slot. */
     virtual std::vector<BayerLease> drain(short revents) = 0;
+
+    /* Ask the driver to say when each frame starts: fd() then polls
+     * POLLPRI while one waits. False if the driver cannot. Before the
+     * capture engine runs. */
+    virtual bool watchFrameStarts() = 0;
+
+    /* On the capture thread, with POLLPRI: the frame starts that came,
+     * oldest first. */
+    virtual std::vector<FrameStart> frameStarts() = 0;
 
     /* On the capture thread: give the device the slots leases returned. */
     virtual void requeueReturned() = 0;

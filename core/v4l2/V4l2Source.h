@@ -35,6 +35,8 @@ public:
     int returnedFd() const override { return returnedWake.fd(); }
 
     std::vector<mocha::camera::BayerLease> drain(short revents) override;
+    bool watchFrameStarts() override;
+    std::vector<mocha::camera::FrameStart> frameStarts() override;
     void requeueReturned() override;
 
     void returnSlot(int slot, uint32_t generation) override;

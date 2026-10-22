@@ -107,6 +107,22 @@ std::vector<BayerLease> V4l2Source::drain(short revents) {
     return frames;
 }
 
+bool V4l2Source::watchFrameStarts() {
+    return dev->subscribeFrameSync();
+}
+
+std::vector<mocha::camera::FrameStart> V4l2Source::frameStarts() {
+    std::vector<mocha::camera::FrameStart> starts;
+    V4l2Device::FrameSync sync;
+    while (dev->dequeueFrameSync(&sync)) {
+        mocha::camera::FrameStart s;
+        s.sequence    = sync.sequence;
+        s.timestampNs = sync.timestampNs;
+        starts.push_back(s);
+    }
+    return starts;
+}
+
 void V4l2Source::requeueReturned() {
     /* Drained before the list is taken: a slot returned from here on
      * wakes the next poll. */
