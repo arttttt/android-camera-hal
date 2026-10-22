@@ -30,6 +30,7 @@
 #include "mochacamera/Buffers.h"
 #include "mochacamera/FrameSettings.h"
 #include "mochacamera/ports/FrameSource.h"
+#include "sensor/DelayedControls.h"
 
 namespace android { class IspJpegRing; }
 
@@ -90,11 +91,10 @@ struct Frame {
     /* Where the outputs' JPEG snapshots come from; set by the demosaic. */
     android::IspJpegRing *jpegRing = nullptr;
 
-    /* What this request wrote to the sensor. It takes effect a control
-     * delay later; result metadata reports what was in effect from
-     * DelayedControls instead. */
-    int32_t appliedExposureUs = 0;
-    int32_t appliedGain       = 0;
+    /* The sensor controls in effect on the frame captured for this
+     * request, every control set, recorded as it is captured; empty
+     * until then. What result metadata reports. */
+    android::DelayedControls::Batch inEffect;
     bool    aeConverged       = false;
     bool    awbConverged      = false;
 

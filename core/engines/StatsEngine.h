@@ -26,6 +26,7 @@
 #include "Engine.h"
 #include "IpaStats.h"
 #include "NeonStatsEncoder.h"
+#include "sensor/DelayedControls.h"
 
 namespace mocha::camera {
 
@@ -57,6 +58,8 @@ public:
         uint32_t    sequence;
         /* When the frame's exposure began (systemTime; 0 = unknown). */
         int64_t     exposureStartNs;
+        /* The sensor controls in effect on the frame. */
+        android::DelayedControls::Batch inEffect;
         /* Patch-grid window the kernel restricts Sobel / greenSq to;
          * taken from AF at submit time. */
         android::NeonStatsEncoder::FocusRoi focusRoi;
@@ -81,10 +84,17 @@ public:
     /* Never waits. Supersedes a job still waiting. False once stopped. */
     bool submit(Job job);
 
-    /* The latest published stats, their frame's sequence and exposure
-     * start. False before the first publication. Any thread. */
-    bool peek(android::IpaStats *out, uint32_t *sequence,
-              int64_t *exposureStartNs = nullptr);
+    /* Stats as published, with what the IPA needs of their frame. */
+    struct Published {
+        android::IpaStats stats{};
+        uint32_t          sequence = 0;
+        int64_t           exposureStartNs = 0;   /* 0 = unknown */
+        android::DelayedControls::Batch inEffect;
+    };
+
+    /* The latest published stats. False before the first publication.
+     * Any thread. */
+    bool peek(Published *out);
 
     /* Drop the cycle and the publication, between sessions. The engine
      * must not be running. */
@@ -104,9 +114,7 @@ private:
     android::NeonStatsEncoder::Partial partial{};
 
     std::mutex          outLock;
-    android::IpaStats   latest{};
-    uint32_t            latestSeq = 0;
-    int64_t             latestStartNs = 0;
+    Published           latest;
     bool                latestValid = false;
 
     std::unique_ptr<Eng> engine;

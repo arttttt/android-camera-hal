@@ -28,10 +28,9 @@ void StatsProcessStage::process(mocha::camera::Frame &ctx) {
 
     const nsecs_t t0 = systemTime();
 
-    IpaStats stats;
-    uint32_t statsSeq = 0;
-    int64_t  statsStartNs = 0;
-    if (!deps.stats->peek(&stats, &statsSeq, &statsStartNs)) return;
+    mocha::camera::StatsEngine::Published published;
+    if (!deps.stats->peek(&published)) return;
+    const IpaStats &stats = published.stats;
 
     const nsecs_t tPeek = systemTime();
 
@@ -79,18 +78,19 @@ void StatsProcessStage::process(mocha::camera::Frame &ctx) {
      * routes its result, so this stage no longer touches AF.
      *
      * IpaProcessParams carries everything the AWB / AE partial results
-     * inside the tick need (frameNumber, timestampNs, applied-state
-     * lookup via DelayedControls, the frame's settings). */
+     * inside the tick need (frameNumber, timestampNs, what was in
+     * effect, the frame's settings). */
     IpaProcessParams params = {
-        statsSeq,
-        statsStartNs,
+        published.sequence,
+        published.exposureStartNs,
+        published.inEffect,
         ctx.frameNumber,
         ctx.tShutter ? ctx.tShutter : ctx.tAccepted,
         stats,
         meta,
         ctx.settings,
         *deps.sensorCfg,
-        deps.delayedControls,
+        ctx.inEffect,
         deps.sink,
     };
     DelayedControls::Batch batch = deps.ipa->processStats(params);

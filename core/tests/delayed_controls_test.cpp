@@ -39,11 +39,18 @@ DelayedControls::Config config() {
     c.delay[DelayedControls::GAIN]            = 2;
     c.delay[DelayedControls::FRAME_LENGTH]    = 2;
     c.delay[DelayedControls::LINE_LENGTH]     = 2;
-    c.defaultValue[DelayedControls::EXPOSURE] = 0;
-    c.defaultValue[DelayedControls::GAIN]     = 0;
-    c.defaultValue[DelayedControls::FRAME_LENGTH] = 0;
-    c.defaultValue[DelayedControls::LINE_LENGTH]  = 0;
     return c;
+}
+
+/* What configure wrote: every control set. */
+DelayedControls::Batch fallbackOf(int32_t exposure, int32_t gain,
+                                  int32_t frameLen = 0) {
+    DelayedControls::Batch b;
+    for (bool &h : b.has) h = true;
+    b.val[DelayedControls::EXPOSURE]     = exposure;
+    b.val[DelayedControls::GAIN]         = gain;
+    b.val[DelayedControls::FRAME_LENGTH] = frameLen;
+    return b;
 }
 
 DelayedControls::Batch batch(int32_t exposure, int32_t gain) {
@@ -59,7 +66,7 @@ DelayedControls::Batch batch(int32_t exposure, int32_t gain) {
  * any write the caller's fallback (the configured defaults) is. */
 void testInEffect() {
     DelayedControls dc(config());
-    const int32_t fallback[DelayedControls::COUNT] = {33000, 100};
+    const DelayedControls::Batch fallback = fallbackOf(33000, 100);
     DelayedControls::Batch b = dc.applyControls(5, fallback);
     check(b.val[DelayedControls::EXPOSURE] == 33000 && b.val[DelayedControls::GAIN] == 100);
 
@@ -78,7 +85,7 @@ void testFrameLength() {
     b.has[DelayedControls::FRAME_LENGTH] = true;
     b.val[DelayedControls::FRAME_LENGTH] = 5000;
     dc.commit(5, b);
-    const int32_t fallback[DelayedControls::COUNT] = {33000, 100, 2564};
+    const DelayedControls::Batch fallback = fallbackOf(33000, 100, 2564);
     check(dc.applyControls(7, fallback).val[DelayedControls::FRAME_LENGTH] == 5000);
     check(dc.applyControls(6, fallback).val[DelayedControls::FRAME_LENGTH] == 2564);
 }
@@ -89,7 +96,7 @@ void testRingWrap() {
     DelayedControls dc(config());
     dc.commit(3, batch(100, 10));
     dc.commit(3 + 16, batch(200, 20));
-    const int32_t fallback[DelayedControls::COUNT] = {7, 8};
+    const DelayedControls::Batch fallback = fallbackOf(7, 8);
     DelayedControls::Batch b = dc.applyControls(3 + 2, fallback);
     check(b.val[DelayedControls::EXPOSURE] == 7);
     b = dc.applyControls(3 + 16 + 2, fallback);
@@ -101,7 +108,7 @@ void testReset() {
     DelayedControls dc(config());
     dc.commit(1, batch(100, 10));
     dc.reset();
-    check(dc.applyControls(3).val[DelayedControls::EXPOSURE] == 0);
+    check(dc.applyControls(3, fallbackOf(7, 8)).val[DelayedControls::EXPOSURE] == 7);
 }
 
 /* The target is nothing until the IPA decides; then each control keeps

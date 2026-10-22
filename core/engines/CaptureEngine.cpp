@@ -178,6 +178,7 @@ void CaptureEngine::dispatchStats(Frame &f) {
     job.pixFmt          = f.bayer.frame().pixFmt;
     job.sequence        = f.frameNumber;
     job.exposureStartNs = f.bayer.frame().exposureStartNs();
+    job.inEffect        = f.inEffect;
 
     /* The AF region of the request; without AF, the
      * compile-time centre rectangle. */

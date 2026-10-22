@@ -54,13 +54,11 @@ bool StatsEngine::submit(Job job) {
     return engine && engine->submit(std::move(job), DropPolicy::LatestOnly).has_value();
 }
 
-bool StatsEngine::peek(IpaStats *out, uint32_t *sequence, int64_t *exposureStartNs) {
-    if (!out || !sequence) return false;
+bool StatsEngine::peek(Published *out) {
+    if (!out) return false;
     std::lock_guard<std::mutex> lock(outLock);
     if (!latestValid) return false;
-    *out      = latest;
-    *sequence = latestSeq;
-    if (exposureStartNs) *exposureStartNs = latestStartNs;
+    *out = latest;
     return true;
 }
 
@@ -107,10 +105,11 @@ void StatsEngine::runPhase(Job &job) {
     const nsecs_t tFin1 = systemTime();
     {
         std::lock_guard<std::mutex> lock(outLock);
-        latest        = result;
-        latestSeq     = cycle.sequence;
-        latestStartNs = cycle.exposureStartNs;
-        latestValid   = true;
+        latest.stats           = result;
+        latest.sequence        = cycle.sequence;
+        latest.exposureStartNs = cycle.exposureStartNs;
+        latest.inEffect        = cycle.inEffect;
+        latestValid            = true;
     }
     ALOGD("PERF: phase=%d/%d neon=%lldus finalize=%lldus seq=%u",
           phaseDone + 1, kPhaseCount,

@@ -22,10 +22,10 @@
 #include "AutoFocusController.h"
 #include "mochacamera/FrameSettings.h"
 #include "mochacamera/Results.h"
+#include "sensor/DelayedControls.h"
 
 namespace android {
 
-class DelayedControls;
 struct SensorConfig;
 
 /* Whether AE and AWB have reached their targets, as their controllers
@@ -37,9 +37,8 @@ struct ThreeAConvergence {
 
 /* What 3A shows the framework for one frame: the states derived from
  * the frame's own modes and locks, the controllers' convergence, AF's
- * report, and the sensor values in effect on it -- what was written a
- * control delay before, or the defaults configureStreams wrote before
- * the first write landed.
+ * report, and the sensor values in effect on it -- the frame's own
+ * record, `inEffect`.
  *
  * The one derivation of the states, for the partial results of the 3A
  * tick and for the final result alike, as Camera2's state tables have
@@ -55,8 +54,7 @@ mocha::camera::Core3AResult describe3A(
         const mocha::camera::FrameSettings &settings,
         const AutoFocusController::Report  &af,
         ThreeAConvergence                   converged,
-        uint32_t                            frameNumber,
-        const DelayedControls              *delayedControls,
+        const DelayedControls::Batch       &inEffect,
         const SensorConfig                 &sensorCfg);
 
 } /* namespace android */

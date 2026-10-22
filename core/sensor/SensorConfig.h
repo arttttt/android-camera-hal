@@ -95,6 +95,18 @@ struct SensorConfig {
         return (int64_t)frameLen * lineTimeNsAt(lineLength);
     }
 
+    /* What configure writes before STREAMON, every control set: what a
+     * frame runs on before the first write lands. */
+    DelayedControls::Batch configureDefaults() const {
+        DelayedControls::Batch b;
+        b.val[DelayedControls::EXPOSURE]     = exposureDefault;
+        b.val[DelayedControls::GAIN]         = gainDefault;
+        b.val[DelayedControls::FRAME_LENGTH] = frameLenDefault;
+        b.val[DelayedControls::LINE_LENGTH]  = lineLengthDefault;
+        for (bool &h : b.has) h = true;
+        return b;
+    }
+
     /* Max exposure (µs) at default frame_length (no FPS drop) */
     int32_t maxExposureUsDefault() const {
         return maxExposureUs(frameLenDefault);

@@ -339,10 +339,8 @@ bool Session::Impl::buildInfrastructure() {
      * lands on, for what was in effect on a frame. */
     {
         DelayedControls::Config cfg;
-        for (int i = 0; i < DelayedControls::COUNT; ++i) {
-            cfg.delay[i]        = sensorCfg.controlDelay[i];
-            cfg.defaultValue[i] = 0;
-        }
+        for (int i = 0; i < DelayedControls::COUNT; ++i)
+            cfg.delay[i] = sensorCfg.controlDelay[i];
         delayedControls.reset(new DelayedControls(cfg));
     }
 
@@ -395,13 +393,11 @@ bool Session::Impl::buildInfrastructure() {
         d.sink            = sink;
         d.af              = af.get();
         d.sensorCfg       = &sensorCfg;
-        d.delayedControls = delayedControls.get();
         resultDispatchStage.reset(new ResultDispatchStage(d));
     }
     {
         StatsProcessStage::Deps d;
         d.ipa             = ipa.get();
-        d.delayedControls = delayedControls.get();
         d.exposureTarget  = &exposureTarget;
         d.sensorCfg       = &sensorCfg;
         d.stats           = statsEngine.get();

@@ -16,9 +16,10 @@ struct SensorConfig;
 
 /* Per-frame inputs to Ipa::processStats. Carries the stats and the
  * frame's settings the controllers consume, the frame's identity
- * (frameNumber, timestamp), and the result sink the IPA tick sends the
- * per-controller partial results to before the final buffer-bearing
- * result lands. SensorConfig stays a const ref because
+ * (frameNumber, timestamp), the sensor controls in effect on the
+ * stats' frame and on the request's, and the result sink the IPA tick
+ * sends the per-controller partial results to before the final
+ * buffer-bearing result lands. SensorConfig stays a const ref because
  * gainToIso/maxExposureUs and friends drive the AE partial.
  *
  * Pass-by-struct because StubIpa and Ipa3A share the signature; an
@@ -30,6 +31,9 @@ struct IpaProcessParams {
     int64_t                  inputExposureStartNs;  /* stats frame's exposure
                                                      * start (systemTime; 0 =
                                                      * unknown)             */
+    const DelayedControls::Batch &inputInEffect;    /* what the stats' frame
+                                                     * was exposed with: AE
+                                                     * measures against it  */
     uint32_t                 frameNumber;
     int64_t                  timestampNs;
     const IpaStats          &stats;
@@ -39,15 +43,11 @@ struct IpaProcessParams {
                                                     * results' states derive
                                                     * from                 */
     const SensorConfig      &sensorCfg;
-    DelayedControls         *delayedControls;  /* applyControls(frameNumber)
-                                                * yields what's physically on
-                                                * the sensor right now (used
-                                                * to fill the AE partial's
-                                                * exposure / sensitivity
-                                                * fields with the real
-                                                * applied values rather than
+    const DelayedControls::Batch &inEffect;    /* in effect on the request's
+                                                * frame: the AE partial's
+                                                * exposure / sensitivity, not
                                                 * the IPA's just-decided
-                                                * future-frame batch).      */
+                                                * batch                     */
     mocha::camera::ResultSink *sink;      /* partial results; may be null */
 };
 

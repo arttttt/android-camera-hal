@@ -217,8 +217,7 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
         params.sink->partial(params.frameNumber, PartialResult::Awb,
                              describe3A(params.settings, afReport,
                                         {mAe->isConverged(), mAwb->isConverged()},
-                                        params.frameNumber,
-                                        params.delayedControls,
+                                        params.inEffect,
                                         params.sensorCfg));
     }
 
@@ -238,13 +237,15 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
             if (elapsed > 8) elapsed = 8;
 
             /* What the sensor was really running when the frame these
-             * stats came from was exposed. */
+             * stats came from was exposed; 0, "not known", for stats
+             * without a record. */
             float appliedTotalUs = 0.f;
-            if (params.delayedControls) {
-                const DelayedControls::Batch a =
-                    params.delayedControls->applyControls(params.inputSequence);
-                const int32_t e = a.val[DelayedControls::EXPOSURE];
-                const int32_t g = a.val[DelayedControls::GAIN];
+            {
+                const DelayedControls::Batch &a = params.inputInEffect;
+                const int32_t e = a.has[DelayedControls::EXPOSURE]
+                                ? a.val[DelayedControls::EXPOSURE] : 0;
+                const int32_t g = a.has[DelayedControls::GAIN]
+                                ? a.val[DelayedControls::GAIN] : 0;
                 if (e > 0 && g > 0 && sensorCfg.gainUnit > 0)
                     appliedTotalUs = (float)e * (float)g
                                    / (float)sensorCfg.gainUnit;
@@ -273,14 +274,13 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
     /* AE partial — sent at once. Apps watching the AE state see it as
      * soon as the IPA tick finishes, ahead of the buffer-bearing final
      * result. The exposure in it is what is physically in effect on
-     * this frame (DelayedControls), not the IPA's just-decided batch,
+     * this frame (its record), not the IPA's just-decided batch,
      * which lands one delay window later. */
     if (params.sink) {
         params.sink->partial(params.frameNumber, PartialResult::Ae,
                              describe3A(params.settings, afReport,
                                         {mAe->isConverged(), mAwb->isConverged()},
-                                        params.frameNumber,
-                                        params.delayedControls,
+                                        params.inEffect,
                                         params.sensorCfg));
     }
 

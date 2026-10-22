@@ -91,12 +91,7 @@ private:
 struct Rig {
     FakeSink                sink;
     android::SensorConfig   cfg = android::SensorConfig::imx179();
-    android::DelayedControls dc{[] {
-        android::DelayedControls::Config c{};
-        c.delay[0] = c.delay[1] = 2;
-        return c;
-    }()};
-    android::ResultDispatchStage dispatch{{&sink, nullptr, &cfg, &dc}};
+    android::ResultDispatchStage dispatch{{&sink, nullptr, &cfg}};
     FrameRegistry registry{16};
     ResultEngine  engine{{&dispatch, &registry}};
 

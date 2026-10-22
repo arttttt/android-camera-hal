@@ -61,8 +61,7 @@ void ResultDispatchStage::process(Frame &frame) {
         if (deps.af) af = deps.af->report();
         result.a3 = describe3A(frame.settings, af,
                                {frame.aeConverged, frame.awbConverged},
-                               frame.frameNumber, deps.delayedControls,
-                               *deps.sensorCfg);
+                               frame.inEffect, *deps.sensorCfg);
     }
 
     deps.sink->frame(frame.frameNumber, result, buffers);

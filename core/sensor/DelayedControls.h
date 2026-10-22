@@ -46,16 +46,13 @@ public:
     struct Config {
         /* In frames. Typical silicon: 2 for exposure, 2 for gain. */
         int     delay[COUNT];
-        /* Seed value reported by applyControls() for any (seq, id)
-         * that was never written. */
-        int32_t defaultValue[COUNT];
     };
 
     explicit DelayedControls(const Config &config);
 
     /* Drops every cached write. All applyControls() queries fall back
-     * to Config.defaultValue until the next commit(). Called on session
-     * boundary (Session::close). */
+     * until the next commit(). Called on session boundary
+     * (Session::close). */
     void reset();
 
     /* Records what was written to the sensor for request `seq`: each
@@ -64,21 +61,14 @@ public:
      * leave the corresponding cell untouched. */
     void commit(uint32_t seq, const Batch &batch);
 
-    /* Reports the value that was written for slot (seq - delay[id]).
-     * Returns Config.defaultValue[id] if no matching write exists (the
-     * cell was never touched, or the tagged sequence doesn't match
-     * because the ring has wrapped past it). Used for result metadata
-     * where the caller wants to know what was PHYSICALLY IN EFFECT on
-     * frame `seq`. */
-    Batch applyControls(uint32_t seq) const;
-
-    /* The same, with `fallback` reported for a control that has no
-     * matching write instead of Config.defaultValue. Result metadata
-     * passes the defaults configureStreams writes before STREAMON, so
-     * a cold-start frame reports what the sensor started with rather
-     * than 0. (The IPA keeps the plain form: it reads 0 as "nothing
-     * applied yet".) */
-    Batch applyControls(uint32_t seq, const int32_t fallback[COUNT]) const;
+    /* Reports the value that was written for slot (seq - delay[id]):
+     * what was PHYSICALLY IN EFFECT on frame `seq`, every control set.
+     * A control with no matching write (the cell was never touched,
+     * or the tagged sequence doesn't match because the ring has
+     * wrapped past it) reports `fallback`: the defaults configure
+     * writes before STREAMON, so a cold-start frame reports what the
+     * sensor started with. */
+    Batch applyControls(uint32_t seq, const Batch &fallback) const;
 
 private:
     static const int RING_SIZE = 16;

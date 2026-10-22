@@ -11,7 +11,6 @@ class StatsEngine;
 namespace android {
 
 class  AutoFocusController;
-class  DelayedControls;
 class  ExposureTarget;
 class  Ipa;
 struct SensorConfig;
@@ -35,7 +34,6 @@ class StatsProcessStage : public PipelineStage {
 public:
     struct Deps {
         Ipa                 *ipa;
-        DelayedControls     *delayedControls;  /* what was in effect */
         ExposureTarget      *exposureTarget;
         const SensorConfig  *sensorCfg;
         mocha::camera::StatsEngine *stats;

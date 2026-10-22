@@ -80,11 +80,6 @@ void ApplySettingsStage::write(int32_t frameLen, int32_t lineLength,
 }
 
 void ApplySettingsStage::process(mocha::camera::Frame &ctx) {
-    if (deps.sensorCfg) {
-        ctx.appliedExposureUs = deps.sensorCfg->exposureDefault;
-        ctx.appliedGain       = deps.sensorCfg->gainDefault;
-    }
-
     if (deps.dev && deps.sensorCfg) {
         bool appliedFromTarget = false;
         const std::optional<DelayedControls::Batch> target =
@@ -99,22 +94,17 @@ void ApplySettingsStage::process(mocha::camera::Frame &ctx) {
             DelayedControls::Batch batch = *target;
             /* What the IPA has never decided comes from the defaults
              * configure wrote. */
-            int32_t defaults[DelayedControls::COUNT];
-            defaults[DelayedControls::EXPOSURE]     = deps.sensorCfg->exposureDefault;
-            defaults[DelayedControls::GAIN]         = deps.sensorCfg->gainDefault;
-            defaults[DelayedControls::FRAME_LENGTH] = deps.sensorCfg->frameLenDefault;
-            defaults[DelayedControls::LINE_LENGTH]  = deps.sensorCfg->lineLengthDefault;
+            const DelayedControls::Batch defaults =
+                deps.sensorCfg->configureDefaults();
             for (int id = 0; id < DelayedControls::COUNT; ++id) {
                 if (batch.has[id]) continue;
                 batch.has[id] = true;
-                batch.val[id] = defaults[id];
+                batch.val[id] = defaults.val[id];
             }
             write(batch.val[DelayedControls::FRAME_LENGTH],
                   batch.val[DelayedControls::LINE_LENGTH],
                   batch.val[DelayedControls::EXPOSURE],
                   batch.val[DelayedControls::GAIN]);
-            ctx.appliedExposureUs = batch.val[DelayedControls::EXPOSURE];
-            ctx.appliedGain       = batch.val[DelayedControls::GAIN];
             if (deps.delayedControls)
                 deps.delayedControls->commit(ctx.frameNumber, batch);
             appliedFromTarget = true;
@@ -128,8 +118,6 @@ void ApplySettingsStage::process(mocha::camera::Frame &ctx) {
                 AutoExposureController::parseManualSettings(
                     ctx.settings, *deps.sensorCfg, deps.evStep);
             write(v.frameLen, v.lineLength, v.exposureUs, v.gain);
-            ctx.appliedExposureUs = v.exposureUs;
-            ctx.appliedGain       = v.gain;
 
             /* Record the value physically written at slot
              * frameNumber so applyControls() reports what the
@@ -153,6 +141,12 @@ void ApplySettingsStage::process(mocha::camera::Frame &ctx) {
             }
         }
     }
+
+    /* What is in effect on the frame this request takes: written a
+     * control delay before, or what configure wrote. */
+    if (deps.delayedControls && deps.sensorCfg)
+        ctx.inEffect = deps.delayedControls->applyControls(
+            ctx.frameNumber, deps.sensorCfg->configureDefaults());
 
     if (deps.af) {
         deps.af->onSettings(ctx.settings, ctx.frameNumber);

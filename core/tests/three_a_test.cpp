@@ -94,44 +94,42 @@ IpaStats uniformStats(float r, float g, float b, float focus = 0.f) {
 /* AE and AWB states as Camera2's tables have them: from the frame's own
  * mode and lock and the controllers' convergence -- Locked only when the
  * request locks it, an AF sweep showing no state of its own, Inactive
- * in any mode but Auto; the exposure in effect is what was written a
- * delay before, or the defaults. */
+ * in any mode but Auto; the exposure in effect is the frame's record,
+ * or the defaults for a control it has none of. */
 void testDescribe3A() {
     const SensorConfig cfg = imx179();
-    DelayedControls::Config dcc{};
-    dcc.delay[0] = dcc.delay[1] = dcc.delay[2] = dcc.delay[3] = 2;
-    DelayedControls dc(dcc);
+    const DelayedControls::Batch none{};
 
     AutoFocusController::Report af{AfState::Inactive, AfMode::Off, 0.f};
     FrameSettings s;
 
-    auto r = describe3A(s, af, {false, false}, 10, &dc, cfg);
+    auto r = describe3A(s, af, {false, false}, none, cfg);
     check(r.aeState == AeState::Searching);
     check(r.awbState == AwbState::Searching);
     check(r.exposureTimeNs == (int64_t)cfg.exposureDefault * 1000);
     check(r.sensitivityIso == 100);
     check(r.frameDurationNs == 2564LL * 13271);
 
-    r = describe3A(s, af, {true, true}, 10, &dc, cfg);
+    r = describe3A(s, af, {true, true}, none, cfg);
     check(r.aeState == AeState::Converged);
     check(r.awbState == AwbState::Converged);
 
     s.ae.lock = true;
     s.awb.lock = true;
-    r = describe3A(s, af, {false, false}, 10, &dc, cfg);
+    r = describe3A(s, af, {false, false}, none, cfg);
     check(r.aeState == AeState::Locked);
     check(r.awbState == AwbState::Locked);
 
     s = FrameSettings();
     af.afState = AfState::PassiveScan;
-    r = describe3A(s, af, {false, true}, 10, &dc, cfg);
+    r = describe3A(s, af, {false, true}, none, cfg);
     check(r.awbState == AwbState::Converged);
-    r = describe3A(s, af, {false, false}, 10, &dc, cfg);
+    r = describe3A(s, af, {false, false}, none, cfg);
     check(r.awbState == AwbState::Searching);
 
     s.ae.mode  = AeMode::Off;
     s.awb.mode = AwbMode::Daylight;
-    r = describe3A(s, af, {true, true}, 10, &dc, cfg);
+    r = describe3A(s, af, {true, true}, none, cfg);
     check(r.aeState == AeState::Inactive);
     check(r.awbState == AwbState::Inactive);
 
@@ -142,8 +140,7 @@ void testDescribe3A() {
     written.val[DelayedControls::GAIN]     = 512;
     written.has[DelayedControls::FRAME_LENGTH] = true;
     written.val[DelayedControls::FRAME_LENGTH] = 4000;
-    dc.commit(8, written);
-    r = describe3A(FrameSettings(), af, {false, false}, 10, &dc, cfg);
+    r = describe3A(FrameSettings(), af, {false, false}, written, cfg);
     check(r.exposureTimeNs == 20000000LL);
     check(r.sensitivityIso == 200);
     check(r.frameDurationNs == 4000LL * 13271);

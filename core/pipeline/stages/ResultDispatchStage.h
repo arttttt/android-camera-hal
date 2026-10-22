@@ -9,7 +9,6 @@ namespace android {
 
 class AutoFocusController;
 struct SensorConfig;
-class DelayedControls;
 
 /* Always-run terminal stage: the frame's final result, to the result
  * sink. A completed frame goes out with its 3A report (describe3A) and
@@ -24,7 +23,6 @@ public:
         mocha::camera::ResultSink *sink;
         AutoFocusController       *af;               /* may be null */
         const SensorConfig        *sensorCfg;
-        const DelayedControls     *delayedControls;  /* may be null */
     };
 
     explicit ResultDispatchStage(const Deps &deps);
