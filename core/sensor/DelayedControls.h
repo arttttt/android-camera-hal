@@ -108,6 +108,10 @@ public:
      * frames. */
     Batch tick(uint32_t seq, bool *changed);
 
+    /* What tick(seq) would write as things stand, every control set;
+     * nothing changes. */
+    Batch peek(uint32_t seq) const;
+
     /* What was in effect on frame `seq`, every control set: the last
      * value written for a frame at or before it, or `initial`. Frames
      * not forgotten. */

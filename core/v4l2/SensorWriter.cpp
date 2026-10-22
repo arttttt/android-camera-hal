@@ -61,11 +61,9 @@ SensorWriter::SensorWriter(V4l2Device *d, const SensorConfig *c,
     ALOGI("sensor group hold %s", groupHold ? "supported" : "not supported");
 }
 
-void SensorWriter::prepare(const DelayedControls::Batch &values) {
+void SensorWriter::prepare(int64_t periodNs) {
     if (vi)
-        vi->beforeFrame(cfg->frameDurationNs(
-                values.val[DelayedControls::FRAME_LENGTH],
-                values.val[DelayedControls::LINE_LENGTH]));
+        vi->beforeFrame(periodNs);
 }
 
 void SensorWriter::write(const DelayedControls::Batch &values) {

@@ -447,6 +447,36 @@ void testOutOfOrder() {
     check(binder.start(1).ticked);
 }
 
+/* The VI's wait is up a start before the write that makes a long frame:
+ * a sensor may stretch the very frame a frame length is written in, and
+ * the VI starts waiting on the next frame as that one starts. At the
+ * start before the long still's write the wait already covers it; it
+ * is not up before then. */
+void testViWaitAhead() {
+    SensorConfig cfg = imx179();
+    DelayedControls dc(sensorDelays());
+    dc.reset(cfg.configureDefaults());
+    FrameBinder binder(&dc, &cfg);
+    binder.reset(kLines);
+
+    const SensorConfig::FrameTiming t = cfg.timingForExposure(1200000);
+    DelayedControls::Batch longShot = settings(cfg, 1200000);
+    longShot.val[DelayedControls::FRAME_LENGTH] = t.frameLen;
+    longShot.val[DelayedControls::LINE_LENGTH]  = t.lineLength;
+    const int64_t longPeriod = cfg.frameDurationNs(t.frameLen, t.lineLength);
+
+    binder.request(settings(cfg, 8000), false);
+    binder.request(settings(cfg, 8000), false);
+    const std::shared_ptr<FrameBinder::Ticket> shot = binder.request(longShot, true);
+    const uint32_t writeTick = shot->frame - kDelay;
+
+    for (uint32_t k = 0; k < writeTick - 1; ++k)
+        check(binder.start(k).waitPeriodNs < longPeriod);
+    check(binder.start(writeTick - 1).waitPeriodNs >= longPeriod);
+    const FrameBinder::Start w = binder.start(writeTick);
+    check(w.changed && w.waitPeriodNs >= longPeriod);
+}
+
 } // namespace
 
 int main() {
@@ -462,5 +492,6 @@ int main() {
     testCancel();
     testFirstFrameNotZero();
     testOutOfOrder();
+    testViWaitAhead();
     return finish("frame_binder_test");
 }

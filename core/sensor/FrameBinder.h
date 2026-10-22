@@ -89,12 +89,20 @@ public:
      * control set) to the sensor now, inside the frame, if `changed`.
      * Nothing to write unless `ticked`: a start out of order is not
      * written on. The frame runs for `periodNs` (its controls as
-     * written). */
+     * written).
+     *
+     * A frame length written early in a frame may stretch that very
+     * frame (the IMX179 does, 2.5 ms in), and the VI starts waiting on
+     * the next frame as this one starts: its wait must be up a start
+     * before the write. `waitPeriodNs` is the longest frame this
+     * tick's write or the next one's makes -- requests are filed two
+     * frames ahead, so the next is known -- for the VI's wait now. */
     struct Start {
         bool                   ticked = false;
         DelayedControls::Batch values;
         bool                   changed = false;
         int64_t                periodNs = 0;
+        int64_t                waitPeriodNs = 0;
     };
 
     /* A frame's arrival: wake whoever holds a ticket in `settled`,

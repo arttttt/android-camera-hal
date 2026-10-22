@@ -19,6 +19,8 @@
 
 #include "FrameBinder.h"
 
+#include <algorithm>
+
 #include <utils/Log.h>
 
 #include "sensor/SensorConfig.h"
@@ -121,9 +123,13 @@ FrameBinder::Start FrameBinder::start(uint32_t sequence) {
         s.ticked  = true;
         s.values  = controls->tick(sequence, &s.changed);
     }
-    const DelayedControls::Batch e = controls->inEffect(sequence);
-    s.periodNs = cfg->frameDurationNs(e.val[DelayedControls::FRAME_LENGTH],
-                                      e.val[DelayedControls::LINE_LENGTH]);
+    const auto period = [this](const DelayedControls::Batch &b) {
+        return cfg->frameDurationNs(b.val[DelayedControls::FRAME_LENGTH],
+                                    b.val[DelayedControls::LINE_LENGTH]);
+    };
+    s.periodNs = period(controls->inEffect(sequence));
+    s.waitPeriodNs = std::max(s.ticked ? period(s.values) : s.periodNs,
+                              period(controls->peek(sequence + 1)));
     return s;
 }
 

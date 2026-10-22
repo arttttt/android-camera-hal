@@ -91,6 +91,21 @@ DelayedControls::Batch DelayedControls::tick(uint32_t seq, bool *changed) {
     return out;
 }
 
+DelayedControls::Batch DelayedControls::peek(uint32_t seq) const {
+    Batch out;
+    for (int id = 0; id < COUNT; ++id) {
+        const uint32_t target = seq + static_cast<uint32_t>(config.delay[id]);
+        out.has[id] = true;
+        auto it = filed[id].upper_bound(target);
+        if (it != filed[id].begin())
+            out.val[id] = std::prev(it)->second;
+        else
+            out.val[id] = written[id].empty() ? initial.val[id]
+                                              : written[id].rbegin()->second;
+    }
+    return out;
+}
+
 DelayedControls::Batch DelayedControls::inEffect(uint32_t seq) const {
     Batch out;
     for (int id = 0; id < COUNT; ++id) {

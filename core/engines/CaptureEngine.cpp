@@ -150,15 +150,13 @@ void CaptureEngine::onStarts(const std::vector<FrameStart> &starts) {
             ALOGW("frame %u: write %lld ms after its start, %lld ms frame",
                   start.sequence, (long long)(late / 1000000),
                   (long long)(s.periodNs / 1000000));
-        /* Inside the frame now: the VI's wait first -- it starts waiting
-         * on the frame after next as the next one starts, and a frame
-         * length written now is in effect on the next -- then the
+        /* Inside the frame now: the VI's wait first, for this write's
+         * frames and the next one's -- the VI is already waiting on the
+         * next frame, which the next write may stretch -- then the
          * sensor. */
-        if (s.ticked) {
-            deps.writer->prepare(s.values);
-            if (s.changed)
-                deps.writer->write(s.values);
-        }
+        deps.writer->prepare(s.waitPeriodNs);
+        if (s.ticked && s.changed)
+            deps.writer->write(s.values);
         /* The next frame starts within this one's period. */
         armStall(s.periodNs);
     }
