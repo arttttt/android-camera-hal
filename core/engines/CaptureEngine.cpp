@@ -189,8 +189,10 @@ Engine<CaptureEngine::Job, std::monostate>::Step CaptureEngine::advance(Job &job
     }
 
     if (!job.ticket) {
-        job.ticket = binder.request(android::requestExposure(
-                f.settings, *deps.sensorCfg, deps.exposureTarget, deps.evStep));
+        job.ticket = binder.request(
+                android::requestExposure(f.settings, *deps.sensorCfg,
+                                         deps.exposureTarget, deps.evStep),
+                f.settings.stillCapture);
         if (deps.af)
             deps.af->onSettings(f.settings, f.frameNumber);
     }

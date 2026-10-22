@@ -41,6 +41,21 @@ void DelayedControls::unfile(uint32_t seq) {
     for (int id = 0; id < COUNT; ++id) filed[id].erase(seq);
 }
 
+DelayedControls::Batch DelayedControls::planned(uint32_t seq) const {
+    Batch out;
+    for (int id = 0; id < COUNT; ++id) {
+        out.has[id] = true;
+        auto it = filed[id].upper_bound(seq);
+        if (it != filed[id].begin())
+            out.val[id] = std::prev(it)->second;
+        else if (!written[id].empty())
+            out.val[id] = written[id].rbegin()->second;
+        else
+            out.val[id] = initial.val[id];
+    }
+    return out;
+}
+
 DelayedControls::Batch DelayedControls::tick(uint32_t seq, bool *changed) {
     Batch out;
     bool differs = false;

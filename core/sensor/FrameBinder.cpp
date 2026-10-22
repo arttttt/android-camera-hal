@@ -34,10 +34,11 @@ void FrameBinder::reset(uint32_t l) {
     wanted.clear();
     anyRequest = false;
     lastFrame  = 0;
+    streamSettings.reset();
 }
 
 std::shared_ptr<FrameBinder::Ticket> FrameBinder::request(
-        const DelayedControls::Batch &settings) {
+        const DelayedControls::Batch &settings, bool stillCapture) {
     /* The first frame its settings can still be filed for, and one past
      * the frame of the request before it. */
     uint32_t frame = controls->firstFileable();
@@ -45,7 +46,15 @@ std::shared_ptr<FrameBinder::Ticket> FrameBinder::request(
         frame = lastFrame + 1;
     anyRequest = true;
     lastFrame  = frame;
-    controls->file(frame, settings);
+    if (stillCapture) {
+        const DelayedControls::Batch after =
+            streamSettings ? *streamSettings : controls->planned(frame);
+        controls->file(frame, settings);
+        controls->file(frame + 1, after);
+    } else {
+        controls->file(frame, settings);
+        streamSettings = settings;
+    }
 
     auto ticket = std::make_shared<Ticket>();
     ticket->frame    = frame;

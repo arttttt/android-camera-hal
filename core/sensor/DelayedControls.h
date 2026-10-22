@@ -76,6 +76,10 @@ public:
      * frames from it run on what was filed before. */
     void unfile(uint32_t seq);
 
+    /* What frame `seq` would run on as things stand, every control set:
+     * the latest filed for it or before, or the last written. */
+    Batch planned(uint32_t seq) const;
+
     /* Frame `seq` has arrived. What to write now, every control set:
      * for each control the value filed for frame seq + delay[id], or
      * the last written. `changed`: whether any differs from the last

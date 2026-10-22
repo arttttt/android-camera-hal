@@ -153,7 +153,7 @@ void testInFlight(size_t n) {
     int next = 0;
     const auto send = [&] {
         const DelayedControls::Batch s = settings(r.cfg, 1000 + 10 * next++);
-        inFlight.push_back({r.binder.request(s), s});
+        inFlight.push_back({r.binder.request(s, false), s});
     };
     for (size_t i = 0; i < n; ++i) send();
 
@@ -222,7 +222,7 @@ void testLongFrame() {
     std::deque<InFlight> inFlight;
     for (int i = 0; i < 4; ++i) {
         const DelayedControls::Batch s = i == 1 ? longShot : settings(r.cfg, 2000 + i);
-        inFlight.push_back({r.binder.request(s), s});
+        inFlight.push_back({r.binder.request(s, i == 1), s});
     }
 
     bool own = true;
@@ -249,6 +249,26 @@ void testLongFrame() {
     check(r.binder.missed() == 0);
 }
 
+/* A long manual still with no request right behind it -- the app sends
+ * the next one only later: the frames after it go back to the preview's
+ * settings, not on through its seconds-long exposure. */
+void testOneShotSettings() {
+    Rig r;
+    const SensorConfig::FrameTiming t = r.cfg.timingForExposure(1200000);
+    DelayedControls::Batch longShot = settings(r.cfg, 1200000);
+    longShot.val[DelayedControls::FRAME_LENGTH] = t.frameLen;
+    longShot.val[DelayedControls::LINE_LENGTH]  = t.lineLength;
+
+    const DelayedControls::Batch preview = settings(r.cfg, 8000);
+    std::shared_ptr<FrameBinder::Ticket> p = r.binder.request(preview, false);
+    std::shared_ptr<FrameBinder::Ticket> shot = r.binder.request(longShot, true);
+    for (uint32_t k = 0; k < shot->frame + 6; ++k) r.frame();
+
+    check(shot->bayer && same(shot->inEffect, longShot));
+    for (uint32_t k = shot->frame + 1; k < shot->frame + 6; ++k)
+        check(same(r.ran[k], preview));
+}
+
 /* The capture misses the frame a request asked for, and the next frame
  * ran on another request's settings: the request is lost. So is the one
  * whose write the missed frame's tick would have made (kDelay frames
@@ -259,7 +279,7 @@ void testMissedFrameLost() {
     std::deque<InFlight> inFlight;
     for (int i = 0; i < 6; ++i) {
         const DelayedControls::Batch s = settings(r.cfg, 3000 + 100 * i);
-        inFlight.push_back({r.binder.request(s), s});
+        inFlight.push_back({r.binder.request(s, false), s});
     }
     const std::shared_ptr<FrameBinder::Ticket> missing = inFlight[2].ticket;
     const std::shared_ptr<FrameBinder::Ticket> unwritten = inFlight[5].ticket;
@@ -294,8 +314,8 @@ void testMissedFrameLost() {
 void testMissedFrameShared() {
     Rig r;
     const DelayedControls::Batch s = settings(r.cfg, 4000);
-    std::shared_ptr<FrameBinder::Ticket> a1 = r.binder.request(s);
-    std::shared_ptr<FrameBinder::Ticket> a2 = r.binder.request(s);
+    std::shared_ptr<FrameBinder::Ticket> a1 = r.binder.request(s, false);
+    std::shared_ptr<FrameBinder::Ticket> a2 = r.binder.request(s, false);
 
     std::vector<std::shared_ptr<FrameBinder::Ticket>> settled;
     for (uint32_t k = 0; k <= a2->frame; ++k) {
@@ -314,9 +334,9 @@ void testMissedFrameShared() {
 void testRequestLetGo() {
     Rig r;
     std::shared_ptr<FrameBinder::Ticket> dropped =
-        r.binder.request(settings(r.cfg, 5000));
+        r.binder.request(settings(r.cfg, 5000), false);
     const DelayedControls::Batch s = settings(r.cfg, 6000);
-    std::shared_ptr<FrameBinder::Ticket> kept = r.binder.request(s);
+    std::shared_ptr<FrameBinder::Ticket> kept = r.binder.request(s, false);
     const uint32_t droppedFrame = dropped->frame;
     dropped.reset();
 
@@ -341,9 +361,9 @@ void testCancel() {
     longShot.val[DelayedControls::FRAME_LENGTH] = t.frameLen;
     longShot.val[DelayedControls::LINE_LENGTH]  = t.lineLength;
 
-    std::shared_ptr<FrameBinder::Ticket> gone = r.binder.request(longShot);
+    std::shared_ptr<FrameBinder::Ticket> gone = r.binder.request(longShot, true);
     const DelayedControls::Batch s = settings(r.cfg, 7000);
-    std::shared_ptr<FrameBinder::Ticket> kept = r.binder.request(s);
+    std::shared_ptr<FrameBinder::Ticket> kept = r.binder.request(s, false);
     const uint32_t goneFrame = gone->frame;
     r.binder.cancel(*gone);
     gone.reset();
@@ -363,6 +383,7 @@ int main() {
     testInFlight(8);
     testNextFrameStart();
     testLongFrame();
+    testOneShotSettings();
     testMissedFrameLost();
     testMissedFrameShared();
     testRequestLetGo();

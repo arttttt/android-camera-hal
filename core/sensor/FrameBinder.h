@@ -42,7 +42,12 @@ struct SensorConfig;
  *
  * A request, as it arrives, is given its frame: the first its settings
  * can still be filed for, and after the frame of the request before it
- * -- one frame each, in order -- and its settings are filed for it.
+ * -- one frame each, in order -- and its settings are filed for it. A
+ * stream's settings (preview, video) hold on through the frames nobody
+ * asks for; a still capture's hold for its own frame only, and the
+ * frame after it goes back to the stream's: a long manual shot does not
+ * run on through the frames after it, seconds each, before the preview
+ * comes back.
  * However many requests are in flight, each gets the frame its settings
  * are in effect on; with fewer in flight than the control delay, the
  * frames between them simply go back unused.
@@ -102,9 +107,11 @@ public:
     void reset(uint32_t lines);
 
     /* A request with `settings` (every control it sets) gets its frame;
-     * the ticket fills when the frame comes. A request let go drops its
+     * the ticket fills when the frame comes. `stillCapture`: its
+     * settings hold for its frame only. A request let go drops its
      * ticket, and its frame goes back unused. */
-    std::shared_ptr<Ticket> request(const DelayedControls::Batch &settings);
+    std::shared_ptr<Ticket> request(const DelayedControls::Batch &settings,
+                                    bool stillCapture);
 
     /* A request given up before its frame (flush, the AE mode switch):
      * its settings come off the frame if they are not written yet, and
@@ -135,6 +142,9 @@ private:
     std::deque<std::weak_ptr<Ticket>> wanted;
     bool     anyRequest = false;
     uint32_t lastFrame  = 0;   /* the last frame a request was given */
+    /* The last stream request's settings: what the frames after a still
+     * capture go back to. */
+    std::optional<DelayedControls::Batch> streamSettings;
 };
 
 } /* namespace android */

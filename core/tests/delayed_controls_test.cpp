@@ -172,6 +172,21 @@ void testPerControlDelay() {
     check(dc.inEffect(4).val[DelayedControls::GAIN] == 256);
 }
 
+/* What a frame would run on as things stand: the latest filed for it or
+ * before, else the last written, else the initial values. */
+void testPlanned() {
+    DelayedControls dc(config());
+    dc.reset(initial());
+    check(dc.planned(5).val[DelayedControls::EXPOSURE] == 33000);
+    dc.file(4, batch(100, 256));
+    dc.file(7, batch(200, 256));
+    check(dc.planned(3).val[DelayedControls::EXPOSURE] == 33000);
+    check(dc.planned(5).val[DelayedControls::EXPOSURE] == 100);
+    check(dc.planned(9).val[DelayedControls::EXPOSURE] == 200);
+    dc.tick(1, nullptr);   /* writes frame 4's */
+    check(dc.planned(5).val[DelayedControls::EXPOSURE] == 100);
+}
+
 /* reset() forgets what was filed and written. */
 void testReset() {
     DelayedControls dc(config());
@@ -219,6 +234,7 @@ int main() {
     testMissedTick();
     testUnfile();
     testPerControlDelay();
+    testPlanned();
     testReset();
     testExposureTarget();
     return finish("delayed_controls_test");
