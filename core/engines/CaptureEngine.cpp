@@ -136,7 +136,12 @@ bool CaptureEngine::submit(FrameToken frame) {
 }
 
 void CaptureEngine::onStarts(const std::vector<FrameStart> &starts) {
-    for (const FrameStart &start : starts) {
+    /* Only the latest start is written on: the frames of the earlier
+     * ones have gone by, and their writes would land in this one. The
+     * binder counts them as starts not written on, and the next write
+     * overtakes them. */
+    if (!starts.empty()) {
+        const FrameStart &start = starts.back();
         const android::FrameBinder::Start s = binder.start(start.sequence);
         /* The delays count from a write inside the frame: one this late
          * may land in the next, and the record not see it. */
@@ -149,9 +154,11 @@ void CaptureEngine::onStarts(const std::vector<FrameStart> &starts) {
          * on the frame after next as the next one starts, and a frame
          * length written now is in effect on the next -- then the
          * sensor. */
-        deps.writer->prepare(s.values);
-        if (s.changed)
-            deps.writer->write(s.values);
+        if (s.ticked) {
+            deps.writer->prepare(s.values);
+            if (s.changed)
+                deps.writer->write(s.values);
+        }
         /* The next frame starts within this one's period. */
         armStall(s.periodNs);
     }

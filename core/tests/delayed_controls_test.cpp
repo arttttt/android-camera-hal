@@ -201,6 +201,45 @@ void testPerControlDelay() {
     check(same(dc.inEffectFor(5), req));
 }
 
+/* The first frames of a stream, with the sensors' delays: a request's
+ * frame length lands on the frame before its own, and forgetting what
+ * came before frame 0 forgets nothing it needs (no wrap below 0). */
+void testEarlyFrames() {
+    DelayedControls::Config c;
+    c.delay[DelayedControls::EXPOSURE]     = 2;
+    c.delay[DelayedControls::GAIN]         = 2;
+    c.delay[DelayedControls::FRAME_LENGTH] = 1;
+    c.delay[DelayedControls::LINE_LENGTH]  = 1;
+    DelayedControls dc(c);
+    dc.reset(initial());
+    DelayedControls::Batch a = batch(100, 256), b = batch(200, 256);
+    a.has[DelayedControls::FRAME_LENGTH] = true;
+    a.val[DelayedControls::FRAME_LENGTH] = 2000;
+    b.has[DelayedControls::FRAME_LENGTH] = true;
+    b.val[DelayedControls::FRAME_LENGTH] = 3000;
+    check(dc.file(2, a) && dc.file(3, b));
+    dc.tick(0, nullptr);
+    dc.tick(1, nullptr);
+    dc.forgetBefore(0);
+    check(same(dc.inEffectFor(2), a));
+    check(same(dc.inEffectFor(3), b));
+    /* A frame before the stream's first runs on what configure wrote. */
+    check(dc.inEffectFor(0).val[DelayedControls::FRAME_LENGTH] == 2564);
+}
+
+/* The stream's first frame to start is 1, not 0: what was filed before
+ * any tick moves on by it, and is written at the ticks its new frames
+ * need. */
+void testRebase() {
+    DelayedControls dc(config());
+    dc.reset(initial());
+    check(dc.file(3, batch(100, 256)));
+    dc.rebase(1);
+    dc.tick(1, nullptr);
+    check(exposureOn(dc, 3) == 33000);
+    check(exposureOn(dc, 4) == 100);
+}
+
 /* What a frame would run on as things stand: the latest filed for it or
  * before, else the last written, else the initial values. */
 void testPlanned() {
@@ -264,6 +303,8 @@ int main() {
     testUnfile();
     testPerControlDelay();
     testPlanned();
+    testEarlyFrames();
+    testRebase();
     testReset();
     testExposureTarget();
     return finish("delayed_controls_test");

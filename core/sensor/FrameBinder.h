@@ -87,8 +87,11 @@ public:
 
     /* What a frame's start asks of the caller: write `values` (every
      * control set) to the sensor now, inside the frame, if `changed`.
-     * The frame runs for `periodNs` (its controls as written). */
+     * Nothing to write unless `ticked`: a start out of order is not
+     * written on. The frame runs for `periodNs` (its controls as
+     * written). */
     struct Start {
+        bool                   ticked = false;
         DelayedControls::Batch values;
         bool                   changed = false;
         int64_t                periodNs = 0;
@@ -124,7 +127,9 @@ public:
      * ticket. */
     void cancel(const Ticket &ticket);
 
-    /* Frame `sequence` has started. */
+    /* Frame `sequence` has started. The stream's first start may be any
+     * number: the frames asked for before it move on by it. A start not
+     * after the last one, or after its own frame came, is not ticked. */
     Start start(uint32_t sequence);
 
     /* A frame came: the lease of its slot, numbered by the driver. */

@@ -53,7 +53,7 @@ std::shared_ptr<FrameBinder::Ticket> FrameBinder::request(
     lastAsked  = frame;
     if (stillCapture) {
         const DelayedControls::Batch after =
-            streamSettings ? *streamSettings : controls->planned(frame);
+            streamSettings ? *streamSettings : controls->planned(frame + 1);
         controls->file(frame, settings);
         controls->file(frame + 1, after);
     } else {
@@ -92,20 +92,35 @@ void FrameBinder::give(Ticket &t, const mocha::camera::BayerLease &lease,
 }
 
 FrameBinder::Start FrameBinder::start(uint32_t sequence) {
-    if (anyStart && sequence != lastStart + 1) {
-        /* A start the driver did not report: no write was made in that
-         * frame, and DelayedControls lets the next tick overtake it. */
-        startsMissed += sequence - lastStart - 1;
-        ALOGW("frame %u started after %u: %u frame start(s) not reported",
-              sequence, lastStart, sequence - lastStart - 1);
-    }
-    if (anyFrame && sequence <= lastFrame)
-        ALOGW("frame %u started after frame %u came", sequence, lastFrame);
-    anyStart  = true;
-    lastStart = sequence;
-
     Start s;
-    s.values = controls->tick(sequence, &s.changed);
+    if (!anyStart && sequence != 0) {
+        /* The stream's first start is not 0 (a frame came before the
+         * capture's first): what was asked for moves on by it. */
+        controls->rebase(sequence);
+        for (const std::weak_ptr<Ticket> &w : wanted)
+            if (std::shared_ptr<Ticket> t = w.lock()) t->frame += sequence;
+        if (anyRequest) lastAsked += sequence;
+    }
+    if (anyStart && sequence <= lastStart) {
+        ALOGW("frame %u started after frame %u started: not written on",
+              sequence, lastStart);
+    } else if (anyFrame && sequence <= lastFrame) {
+        ALOGW("frame %u started after frame %u came: not written on",
+              sequence, lastFrame);
+    } else {
+        if (anyStart && sequence != lastStart + 1) {
+            /* Starts the driver did not report, or the capture passed
+             * over: no write was made in those frames, and
+             * DelayedControls lets this tick overtake them. */
+            startsMissed += sequence - lastStart - 1;
+            ALOGW("frame %u started after %u: %u frame start(s) not "
+                  "written on", sequence, lastStart, sequence - lastStart - 1);
+        }
+        anyStart  = true;
+        lastStart = sequence;
+        s.ticked  = true;
+        s.values  = controls->tick(sequence, &s.changed);
+    }
     const DelayedControls::Batch e = controls->inEffect(sequence);
     s.periodNs = cfg->frameDurationNs(e.val[DelayedControls::FRAME_LENGTH],
                                       e.val[DelayedControls::LINE_LENGTH]);
@@ -116,6 +131,13 @@ FrameBinder::Arrival FrameBinder::arrive(mocha::camera::BayerLease lease) {
     const uint32_t seq   = lease.frame().sequence;
     const int64_t  endNs = lease.frame().timestampNs;
 
+    Arrival a;
+    a.sensorFrame = seq;
+    if (anyFrame && seq <= lastFrame) {
+        /* A number again, or back: not a frame to give anyone. */
+        ALOGW("frame %u came after frame %u: given back", seq, lastFrame);
+        return a;
+    }
     if (anyFrame && seq != lastFrame + 1) {
         /* Frames the VI had no buffer for. */
         framesMissed += seq - lastFrame - 1;
@@ -124,9 +146,6 @@ FrameBinder::Arrival FrameBinder::arrive(mocha::camera::BayerLease lease) {
     }
     anyFrame  = true;
     lastFrame = seq;
-
-    Arrival a;
-    a.sensorFrame = seq;
 
     /* The request that asked for this frame, and any whose frame the
      * capture missed: the frame serves each that it ran on the settings

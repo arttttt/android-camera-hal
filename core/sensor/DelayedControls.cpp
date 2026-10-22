@@ -102,8 +102,20 @@ DelayedControls::Batch DelayedControls::inEffect(uint32_t seq) const {
     return out;
 }
 
+void DelayedControls::rebase(uint32_t first) {
+    if (ticked || first == 0) return;
+    for (int id = 0; id < COUNT; ++id) {
+        std::map<uint32_t, int32_t> moved;
+        for (const auto &f : filed[id]) moved[f.first + first] = f.second;
+        filed[id].swap(moved);
+    }
+}
+
 void DelayedControls::forgetBefore(uint32_t seq) {
     for (int id = 0; id < COUNT; ++id) {
+        /* Frames before the stream's first: nothing to forget. */
+        if (seq < static_cast<uint32_t>(maxDelay() - config.delay[id]))
+            continue;
         /* The value in effect on the earliest frame still asked about
          * stays. */
         auto from = written[id].upper_bound(frameOf(seq, id));
@@ -116,7 +128,10 @@ DelayedControls::Batch DelayedControls::inEffectFor(uint32_t seq) const {
     Batch out;
     for (int id = 0; id < COUNT; ++id) {
         out.has[id] = true;
-        out.val[id] = inEffect(frameOf(seq, id)).val[id];
+        /* Before the stream's first frame it ran on what configure
+         * wrote. */
+        out.val[id] = seq < static_cast<uint32_t>(maxDelay() - config.delay[id])
+                    ? initial.val[id] : inEffect(frameOf(seq, id)).val[id];
     }
     return out;
 }

@@ -93,8 +93,13 @@ public:
     Batch planned(uint32_t seq) const;
 
     /* The frame control `id` of a request on frame `seq` is in effect
-     * on: seq - (maxDelay - delay[id]). */
+     * on: seq - (maxDelay - delay[id]). For a frame so early that this
+     * is before the stream's first: nothing earlier is asked about. */
     uint32_t frameOf(uint32_t seq, int id) const;
+
+    /* Before the first tick: the stream's first frame to start is
+     * `first`, not 0 -- what was filed moves on by it. */
+    void rebase(uint32_t first);
 
     /* Frame `seq` has started. What to write now, every control set:
      * for each control the value filed for frame seq + delay[id], or

@@ -114,7 +114,8 @@ public:
     /* What each sensor frame really ran on. */
     std::vector<DelayedControls::Batch> ran;
 
-    Rig() {
+    /* `first`: the number the driver gives the stream's first frame. */
+    explicit Rig(uint32_t first = 0) : first(first) {
         dc.reset(cfg.configureDefaults());
         binder.reset(kLines);
         running = cfg.configureDefaults();
@@ -132,8 +133,8 @@ public:
         if (!captured)
             return std::nullopt;
 
-        const FrameBinder::Start s = binder.start(k);
-        if (s.changed) {
+        const FrameBinder::Start s = binder.start(k + first);
+        if (s.ticked && s.changed) {
             const DelayedControls::Config d = sensorDelays();
             for (int id = 0; id < DelayedControls::COUNT; ++id)
                 writes[id][k + d.delay[id]] = s.values.val[id];
@@ -141,7 +142,7 @@ public:
 
         BayerFrame f;
         f.slot        = static_cast<int>(k % 8);
-        f.sequence    = k;
+        f.sequence    = k + first;
         f.timestampNs = endNs;
         return binder.arrive(BayerLease(f, 0, &slots));
     }
@@ -149,6 +150,7 @@ public:
     int64_t frameEndNs() const { return endNs; }
 
 private:
+    uint32_t first;
     std::map<uint32_t, int32_t> writes[DelayedControls::COUNT];
     DelayedControls::Batch running;
     int64_t  endNs = 1000000000;
@@ -394,6 +396,57 @@ void testCancel() {
     check(same(ranFor(r, kept->frame), s));
 }
 
+/* The driver's first frame is 1 -- a frame started between the stream's
+ * counter base and the capture's first: the requests made before it
+ * move on and get their own frames, numbered as the driver numbers
+ * them. */
+void testFirstFrameNotZero() {
+    Rig r(1);
+    std::deque<InFlight> inFlight;
+    for (int i = 0; i < 4; ++i) {
+        const DelayedControls::Batch s = settings(r.cfg, 1000 + 100 * i);
+        inFlight.push_back({r.binder.request(s, false), s});
+    }
+    bool own = true;
+    for (uint32_t k = 0; k < 12 && !inFlight.empty(); ++k) {
+        const std::optional<FrameBinder::Arrival> a = r.frame();
+        if (!a || a->settled.empty()) continue;
+        for (const std::shared_ptr<FrameBinder::Ticket> &t : a->settled) {
+            own = own && t == inFlight.front().ticket && !t->lost
+                      && t->sensorFrame == t->frame
+                      && same(ranFor(r, t->sensorFrame - 1), inFlight.front().wanted);
+            inFlight.pop_front();
+        }
+    }
+    check(inFlight.empty());
+    check(own);
+}
+
+/* A frame number again, or a start after its own frame: given back, not
+ * written on, and nothing counted as missed. */
+void testOutOfOrder() {
+    SensorConfig cfg = imx179();
+    DelayedControls dc(sensorDelays());
+    dc.reset(cfg.configureDefaults());
+    FrameBinder binder(&dc, &cfg);
+    binder.reset(kLines);
+    Slots slots;
+    const auto lease = [&](uint32_t seq) {
+        BayerFrame f;
+        f.slot = 0;
+        f.sequence = seq;
+        f.timestampNs = 1000;
+        return BayerLease(f, 0, &slots);
+    };
+    check(binder.start(0).ticked);
+    binder.arrive(lease(0));
+    check(!binder.start(0).ticked);
+    check(binder.arrive(lease(0)).settled.empty());
+    check(slots.returned == 2);
+    check(binder.missedFrames() == 0 && binder.missedStarts() == 0);
+    check(binder.start(1).ticked);
+}
+
 } // namespace
 
 int main() {
@@ -407,5 +460,7 @@ int main() {
     testMissedFrameShared();
     testRequestLetGo();
     testCancel();
+    testFirstFrameNotZero();
+    testOutOfOrder();
     return finish("frame_binder_test");
 }
