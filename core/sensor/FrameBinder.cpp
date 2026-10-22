@@ -99,6 +99,8 @@ FrameBinder::Start FrameBinder::start(uint32_t sequence) {
         ALOGW("frame %u started after %u: %u frame start(s) not reported",
               sequence, lastStart, sequence - lastStart - 1);
     }
+    if (anyFrame && sequence <= lastFrame)
+        ALOGW("frame %u started after frame %u came", sequence, lastFrame);
     anyStart  = true;
     lastStart = sequence;
 

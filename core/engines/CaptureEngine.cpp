@@ -138,6 +138,13 @@ bool CaptureEngine::submit(FrameToken frame) {
 void CaptureEngine::onStarts(const std::vector<FrameStart> &starts) {
     for (const FrameStart &start : starts) {
         const android::FrameBinder::Start s = binder.start(start.sequence);
+        /* The delays count from a write inside the frame: one this late
+         * may land in the next, and the record not see it. */
+        const int64_t late = systemTime() - start.timestampNs;
+        if (late > s.periodNs * 3 / 10)
+            ALOGW("frame %u: write %lld ms after its start, %lld ms frame",
+                  start.sequence, (long long)(late / 1000000),
+                  (long long)(s.periodNs / 1000000));
         /* Inside the frame now: the VI's wait first -- it starts waiting
          * on the frame after next as the next one starts, and a frame
          * length written now is in effect on the next -- then the
