@@ -124,6 +124,8 @@ void CaptureEngine::stop() {
 void CaptureEngine::writeHeld() {
     if (!held)
         return;
+    ALOGD("frame %u: held write %lld us after its start",
+          heldFrame, (long long)((systemTime() - heldStartNs) / 1000));
     deps.writer->write(*held);
     held.reset();
 }
@@ -183,7 +185,9 @@ void CaptureEngine::onStarts(const std::vector<FrameStart> &starts) {
             if (deps.writeDelayNs <= 0) {
                 deps.writer->write(s.values);
             } else {
-                held = s.values;
+                held        = s.values;
+                heldFrame   = start.sequence;
+                heldStartNs = start.timestampNs;
                 const int64_t at = start.timestampNs + deps.writeDelayNs;
                 itimerspec it{};
                 it.it_value.tv_sec  = (time_t)(at / 1000000000LL);

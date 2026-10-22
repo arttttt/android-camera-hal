@@ -163,6 +163,10 @@ private:
     android::UniqueFd    stallTimer;
     android::UniqueFd    writeTimer;
     std::optional<android::DelayedControls::Batch> held;
+    /* The start the held write is timed from: its frame, and when the
+     * driver said it started. */
+    uint32_t heldFrame   = 0;
+    int64_t  heldStartNs = 0;
 };
 
 } /* namespace mocha::camera */
