@@ -80,9 +80,10 @@ struct Frame {
      * only gives up frames still waiting for one. */
     std::atomic<bool> hasBayer{false};
 
-    /* The sensor frame captured for the request (SensorSequence), and
-     * when its first line began its exposure (CLOCK_MONOTONIC): the
-     * shutter and SENSOR_TIMESTAMP. Set with hasBayer. */
+    /* The sensor frame captured for the request, as the capture driver
+     * numbers the stream's frames, and when its first line began its
+     * exposure (CLOCK_MONOTONIC): the shutter and SENSOR_TIMESTAMP. Set
+     * with hasBayer. */
     uint32_t sensorFrame     = 0;
     int64_t  exposureStartNs = 0;
 

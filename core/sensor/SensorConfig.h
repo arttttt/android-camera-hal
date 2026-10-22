@@ -65,10 +65,11 @@ struct SensorConfig {
     int32_t exposureDefault;
     int32_t exposureMax;
 
-    /* Silicon property, in sensor frames: a control written inside
-     * frame k + 1 -- the capture engine writes the tick of frame k just
-     * after k + 1 starts -- is in effect on frame k + controlDelay. Not
-     * tunable per integrator. Consumed by DelayedControls. */
+    /* Silicon property, in sensor frames, per control -- libcamera's
+     * SensorDelays: a control written inside frame k (the capture
+     * engine writes as the frame's start is reported) is in effect on
+     * frame k + controlDelay. Not tunable per integrator. Consumed by
+     * DelayedControls. */
     int32_t controlDelay[DelayedControls::COUNT];
 
     /* Lens — the module's focal length (mm), from the tuning's module
@@ -106,19 +107,6 @@ struct SensorConfig {
         const int64_t exposure =
             (int64_t)inEffect.val[DelayedControls::EXPOSURE] * 1000;
         return frameEndNs - readout - exposure;
-    }
-
-    /* When the frame after this one starts, ns, from when this one's
-     * last line reached memory: its vertical blanking -- the frame's
-     * lines past the `lines` read out -- at its own controls
-     * (`inEffect`, every control set). */
-    int64_t nextFrameStartNs(int64_t frameEndNs,
-                             const DelayedControls::Batch &inEffect,
-                             uint32_t lines) const {
-        const int64_t blanking =
-            (int64_t)inEffect.val[DelayedControls::FRAME_LENGTH] - (int64_t)lines;
-        return frameEndNs + (blanking > 0 ? blanking : 0)
-            * lineTimeNsAt(inEffect.val[DelayedControls::LINE_LENGTH]);
     }
 
     /* What configure writes before STREAMON, every control set: what a
@@ -223,13 +211,17 @@ struct SensorConfig {
             .exposureMin     = 0,
             .exposureDefault = 0,
             .exposureMax     = 0,
-            /* Measured on mocha (LOS 19.1, 20.10.2026): a value written
-             * on request N shows in frame N+3, 13 steps of 14 in a
-             * square-wave trace, one request a frame. Timed by the
-             * frames (22.10.2026, FRAME_START trace, a 1.2 s exposure):
-             * written 3.8 ms after frame A started, in effect on A + 2 --
-             * 3 from A - 1, whose tick writes inside A. */
-            .controlDelay    = { 3, 3, 3, 3 },
+            /* Measured on mocha (22.10.2026, FRAME_START traces, 0.5 s
+             * manual stills): frame and line length written 12.8 ms
+             * into frame W stretched W + 1, not W; the exposure reached
+             * the image of W + 2 -- the rows of W + 2 integrate while
+             * W + 1 runs. OV5693 the same, with and without a line
+             * length change. Gain is not measured apart from the
+             * exposure (both written together); it is taken with it,
+             * as the sensors hold it to the exposure's frame
+             * (onsemi AR1335: "the gain update is held off by one
+             * frame"). */
+            .controlDelay    = { 2, 2, 1, 1 },
             .focalLengthMm   = 0.f,
         };
     }
@@ -249,11 +241,11 @@ struct SensorConfig {
             .exposureMin     = 0,
             .exposureDefault = 0,
             .exposureMax     = 0,
-            /* Measured on mocha (20.10.2026) with the same square-wave
-             * trace as IMX179: request N shows in frame N+3 on all five
-             * transitions. The scene was dim, so the luma ratio was off,
-             * but the frame of the step was not. */
-            .controlDelay    = { 3, 3, 3, 3 },
+            /* Measured on mocha with IMX179 (22.10.2026): frame and
+             * line length written 14.6 ms into frame W stretched
+             * W + 1; the exposure reached the image of W + 2. Gain as
+             * for IMX179. */
+            .controlDelay    = { 2, 2, 1, 1 },
             .focalLengthMm   = 0.f,
         };
     }

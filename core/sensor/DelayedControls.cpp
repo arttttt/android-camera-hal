@@ -30,22 +30,26 @@ uint32_t DelayedControls::firstFileable() const {
     return nextTick + static_cast<uint32_t>(maxDelay());
 }
 
+uint32_t DelayedControls::frameOf(uint32_t seq, int id) const {
+    return seq - static_cast<uint32_t>(maxDelay() - config.delay[id]);
+}
+
 bool DelayedControls::file(uint32_t seq, const Batch &batch) {
     if (seq < firstFileable()) return false;
     for (int id = 0; id < COUNT; ++id)
-        if (batch.has[id]) filed[id][seq] = batch.val[id];
+        if (batch.has[id]) filed[id][frameOf(seq, id)] = batch.val[id];
     return true;
 }
 
 void DelayedControls::unfile(uint32_t seq) {
-    for (int id = 0; id < COUNT; ++id) filed[id].erase(seq);
+    for (int id = 0; id < COUNT; ++id) filed[id].erase(frameOf(seq, id));
 }
 
 DelayedControls::Batch DelayedControls::planned(uint32_t seq) const {
     Batch out;
     for (int id = 0; id < COUNT; ++id) {
         out.has[id] = true;
-        auto it = filed[id].upper_bound(seq);
+        auto it = filed[id].upper_bound(frameOf(seq, id));
         if (it != filed[id].begin())
             out.val[id] = std::prev(it)->second;
         else if (!written[id].empty())
@@ -80,11 +84,6 @@ DelayedControls::Batch DelayedControls::tick(uint32_t seq, bool *changed) {
             written[id][target] = value;
         }
 
-        /* Frames before this one are not asked about any more; the
-         * value in effect on it stays. */
-        auto from = written[id].upper_bound(seq);
-        if (from != written[id].begin())
-            written[id].erase(written[id].begin(), std::prev(from));
     }
     ticked   = true;
     lastTick = seq;
@@ -99,6 +98,25 @@ DelayedControls::Batch DelayedControls::inEffect(uint32_t seq) const {
         auto it = written[id].upper_bound(seq);
         out.val[id] = it == written[id].begin() ? initial.val[id]
                                                 : std::prev(it)->second;
+    }
+    return out;
+}
+
+void DelayedControls::forgetBefore(uint32_t seq) {
+    for (int id = 0; id < COUNT; ++id) {
+        /* The value in effect on the earliest frame still asked about
+         * stays. */
+        auto from = written[id].upper_bound(frameOf(seq, id));
+        if (from != written[id].begin())
+            written[id].erase(written[id].begin(), std::prev(from));
+    }
+}
+
+DelayedControls::Batch DelayedControls::inEffectFor(uint32_t seq) const {
+    Batch out;
+    for (int id = 0; id < COUNT; ++id) {
+        out.has[id] = true;
+        out.val[id] = inEffect(frameOf(seq, id)).val[id];
     }
     return out;
 }

@@ -48,15 +48,12 @@ class StatsEngine;
 
 /* Where a request meets the sensor frame its settings land on.
  *
- * Each frame, as it arrives, goes to the FrameBinder: the frame to the
- * request that asked for it, or back to the source, and what it says to
- * write to the sensor (SensorWriter) once the next frame has started.
- * The frame arrives as its last line reaches memory; the next starts
- * after the vertical blanking, which is tens of ms in one mode and under
- * one in another. Writing at once would land on one side of that start
- * or the other by mode, and the control delay with it. A write made
- * inside the next frame lands the same in every mode: kWriteAfterStartNs
- * past its start, by a timer. A request, as it
+ * The capture driver says when each frame starts (V4L2_EVENT_FRAME_SYNC,
+ * numbered as its buffer will be). The start goes to the FrameBinder,
+ * and what it says to write goes to the sensor (SensorWriter) at once,
+ * inside the frame: the sensor's delays count from there, whatever the
+ * mode's blanking. Each frame, as it arrives, goes to the binder too:
+ * to the request that asked for it, or back to the source. A request, as it
  * arrives, asks the binder for its frame with its settings (what AE or
  * the request wants, requestExposure), and waits for it.
  *
@@ -80,7 +77,7 @@ class StatsEngine;
  *
  * A sensor that stops is told by its frames, not by the requests: a
  * request may wait seconds for its frame behind long exposures. Each
- * frame arms a timer for the next one's period, as written, plus
+ * frame's start arms a timer for its period, as written, plus
  * kStallSlack; when it fires, the device is reported lost. */
 class CaptureEngine {
 public:
@@ -137,12 +134,11 @@ private:
     using Eng = Engine<Job, std::monostate>;
 
     Eng::Step advance(Job &job);
+    void onStarts(const std::vector<FrameStart> &starts);
     void onFrames(std::vector<BayerLease> frames);
     /* The next frame is due within `periodNs` and the slack. */
     void armStall(int64_t periodNs);
     void onStall();
-    /* Puts the pending write on the sensor, if there is one. */
-    void writePending();
     void crop(Frame &frame);
     void dispatchStats(Frame &frame);
 
@@ -150,12 +146,6 @@ private:
      * taken for stopped: the VI's own wait has its slack on top of the
      * frame, and a frame it gives up on still comes back, damaged. */
     static constexpr int64_t kStallSlackNs = 3000000000LL;
-
-    /* How far into the next frame its write goes: past the start the
-     * blanking puts it at, by more than the lines a sensor may read
-     * before its first active one. Measured 22.10.2026: a write 3.8 ms
-     * into a frame is in effect two frames on. */
-    static constexpr int64_t kWriteAfterStartNs = 2000000LL;
 
     Deps deps;
     /* Woken by a frame bound, a permit coming back, and wake(). */
@@ -166,9 +156,6 @@ private:
     /* The engine thread's own. */
     android::FrameBinder binder;
     android::UniqueFd    stallTimer;
-    android::UniqueFd    writeTimer;
-    /* The last arrival's write, until its timer fires. */
-    std::optional<android::FrameBinder::Arrival> pending;
 };
 
 } /* namespace mocha::camera */

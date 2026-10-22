@@ -46,8 +46,22 @@ using mocha::camera::test::finish;
 
 namespace {
 
-constexpr int      kDelay = 3;
-constexpr uint32_t kLines = 1080;
+/* The sensors' delays (22.10.2026, FRAME_START traces on both): written
+ * in frame k, the frame and line length are in effect on k + 1, the
+ * exposure and gain on k + 2. */
+constexpr int kExposureDelay = 2;
+constexpr int kLengthDelay   = 1;
+constexpr int kDelay         = kExposureDelay;   /* the slowest */
+constexpr uint32_t kLines    = 1080;
+
+DelayedControls::Config sensorDelays() {
+    DelayedControls::Config c;
+    c.delay[DelayedControls::EXPOSURE]     = kExposureDelay;
+    c.delay[DelayedControls::GAIN]         = kExposureDelay;
+    c.delay[DelayedControls::FRAME_LENGTH] = kLengthDelay;
+    c.delay[DelayedControls::LINE_LENGTH]  = kLengthDelay;
+    return c;
+}
 
 SensorConfig imx179() {
     SensorConfig c = SensorConfig::imx179();
@@ -85,17 +99,15 @@ bool same(const DelayedControls::Batch &a, const DelayedControls::Batch &b) {
 }
 
 /* The sensor, the capture and the binder. frame() runs one sensor
- * frame: it runs on the latest write in effect by then, lasts what its
- * frame and line length make it, and -- unless the capture misses it --
- * arrives at the binder, whose write is in effect kDelay frames on. */
+ * frame: it runs on what is in effect by then, control by control; its
+ * start is reported -- unless the capture misses the frame -- and the
+ * binder's write, made inside it, takes effect each control's delay
+ * on; it lasts what its frame and line length make it, and arrives,
+ * numbered as the driver numbers frames. */
 class Rig {
 public:
     SensorConfig    cfg = imx179();
-    DelayedControls dc{[] {
-        DelayedControls::Config c;
-        for (int &d : c.delay) d = kDelay;
-        return c;
-    }()};
+    DelayedControls dc{sensorDelays()};
     FrameBinder     binder{&dc, &cfg};
     Slots           slots;
 
@@ -110,32 +122,49 @@ public:
 
     std::optional<FrameBinder::Arrival> frame(bool captured = true) {
         const uint32_t k = static_cast<uint32_t>(ran.size());
-        auto w = writes.find(k);
-        if (w != writes.end()) running = w->second;
+        for (int id = 0; id < DelayedControls::COUNT; ++id) {
+            auto w = writes[id].find(k);
+            if (w != writes[id].end()) running.val[id] = w->second;
+        }
         ran.push_back(running);
         endNs += cfg.frameDurationNs(running.val[DelayedControls::FRAME_LENGTH],
                                      running.val[DelayedControls::LINE_LENGTH]);
         if (!captured)
             return std::nullopt;
 
+        const FrameBinder::Start s = binder.start(k);
+        if (s.changed) {
+            const DelayedControls::Config d = sensorDelays();
+            for (int id = 0; id < DelayedControls::COUNT; ++id)
+                writes[id][k + d.delay[id]] = s.values.val[id];
+        }
+
         BayerFrame f;
         f.slot        = static_cast<int>(k % 8);
-        f.sequence    = driverSeq++;
+        f.sequence    = k;
         f.timestampNs = endNs;
-        FrameBinder::Arrival a = binder.arrive(BayerLease(f, 0, &slots));
-        if (a.changed)
-            writes[k + kDelay] = a.values;
-        return a;
+        return binder.arrive(BayerLease(f, 0, &slots));
     }
 
     int64_t frameEndNs() const { return endNs; }
 
 private:
-    std::map<uint32_t, DelayedControls::Batch> writes;
+    std::map<uint32_t, int32_t> writes[DelayedControls::COUNT];
     DelayedControls::Batch running;
     int64_t  endNs = 1000000000;
-    uint32_t driverSeq = 100;
 };
+
+/* What a request on frame `seq` ran on, each control on the frame the
+ * sensor's delays put it on. */
+DelayedControls::Batch ranFor(const Rig &r, uint32_t seq) {
+    const DelayedControls::Config d = sensorDelays();
+    DelayedControls::Batch b;
+    for (int id = 0; id < DelayedControls::COUNT; ++id) {
+        b.has[id] = true;
+        b.val[id] = r.ran[seq - (kDelay - d.delay[id])].val[id];
+    }
+    return b;
+}
 
 struct InFlight {
     std::shared_ptr<FrameBinder::Ticket> ticket;
@@ -169,8 +198,8 @@ void testInFlight(size_t n) {
         const InFlight &front = inFlight.front();
         ordered = ordered && t == front.ticket
                           && (done == 0 || t->sensorFrame > lastFrame);
-        own     = own && same(t->inEffect, front.wanted)
-                      && same(r.ran[t->sensorFrame], front.wanted);
+        own     = own && same(ranFor(r, t->sensorFrame), front.wanted)
+                      && same(t->inEffect, r.ran[t->sensorFrame]);
         asked   = asked && !t->lost && t->sensorFrame == t->frame;
         lastFrame = t->sensorFrame;
         inFlight.pop_front();
@@ -180,7 +209,7 @@ void testInFlight(size_t n) {
     check(ordered);
     check(own);
     check(asked);
-    check(r.binder.missed() == 0);
+    check(r.binder.missedFrames() == 0 && r.binder.missedStarts() == 0);
 
     /* A request sent as a frame arrives can get the frame kDelay + 1
      * on; n in flight fill that many of each kDelay + 1 frames, up to
@@ -189,24 +218,6 @@ void testInFlight(size_t n) {
     const int expected = (int)(kFrames * perCycle / (kDelay + 1));
     check(done >= expected - (int)(2 * (kDelay + 1)));
     check(done <= expected + 1);
-}
-
-/* The write goes once the next frame has started: past the frame's end
- * by its own blanking -- the lines of its frame past those read out --
- * at its own line time, so a long frame's write waits its long blanking
- * and every mode's lands inside the next frame. */
-void testNextFrameStart() {
-    Rig r;
-    const std::optional<FrameBinder::Arrival> a = r.frame();
-    const int64_t blanking =
-        (int64_t)(r.cfg.frameLenDefault - (int32_t)kLines) * r.cfg.lineTimeNs;
-    check(a->nextFrameStartNs == r.frameEndNs() + blanking);
-
-    DelayedControls::Batch b = r.cfg.configureDefaults();
-    b.val[DelayedControls::FRAME_LENGTH] = 40000;
-    b.val[DelayedControls::LINE_LENGTH]  = 2 * r.cfg.lineLengthDefault;
-    check(r.cfg.nextFrameStartNs(1000, b, kLines)
-          == 1000 + (40000 - (int64_t)kLines) * 2 * r.cfg.lineTimeNs);
 }
 
 /* A long manual exposure among short ones: its request gets the long
@@ -232,13 +243,20 @@ void testLongFrame() {
         if (!a || a->settled.empty()) continue;
         const std::shared_ptr<FrameBinder::Ticket> &got = a->settled.front();
         own = own && a->settled.size() == 1 && got == inFlight.front().ticket
-                  && same(r.ran[got->sensorFrame], inFlight.front().wanted)
-                  && same(got->inEffect, inFlight.front().wanted);
+                  && same(ranFor(r, got->sensorFrame), inFlight.front().wanted)
+                  && same(got->inEffect, r.ran[got->sensorFrame]);
         if (done == 1) {
-            const int64_t period = r.cfg.frameDurationNs(t.frameLen, t.lineLength);
+            /* The frame before it is the long one -- it gives the
+             * exposure its time -- and its own reads out at its own
+             * line length. */
+            const DelayedControls::Batch &before = r.ran[got->sensorFrame - 1];
+            const int64_t period = r.cfg.frameDurationNs(
+                    before.val[DelayedControls::FRAME_LENGTH],
+                    before.val[DelayedControls::LINE_LENGTH]);
             check(period > 1190000000 && period < 1260000000);
             /* Its exposure began 1.2 s and a read-out before its end. */
-            const int64_t readout = (int64_t)kLines * r.cfg.lineTimeNsAt(t.lineLength);
+            const int64_t readout = (int64_t)kLines * r.cfg.lineTimeNsAt(
+                    r.ran[got->sensorFrame].val[DelayedControls::LINE_LENGTH]);
             check(got->exposureStartNs == r.frameEndNs() - readout - 1200000000LL);
         }
         inFlight.pop_front();
@@ -246,7 +264,7 @@ void testLongFrame() {
     }
     check(done == 4);
     check(own);
-    check(r.binder.missed() == 0);
+    check(r.binder.missedFrames() == 0 && r.binder.missedStarts() == 0);
 }
 
 /* A long manual still with no request right behind it -- the app sends
@@ -264,7 +282,8 @@ void testOneShotSettings() {
     std::shared_ptr<FrameBinder::Ticket> shot = r.binder.request(longShot, true);
     for (uint32_t k = 0; k < shot->frame + 6; ++k) r.frame();
 
-    check(shot->bayer && same(shot->inEffect, longShot));
+    check(shot->bayer && same(ranFor(r, shot->sensorFrame), longShot));
+    check(same(shot->inEffect, r.ran[shot->sensorFrame]));
     for (uint32_t k = shot->frame + 1; k < shot->frame + 6; ++k)
         check(same(r.ran[k], preview));
 }
@@ -282,7 +301,7 @@ void testMissedFrameLost() {
         inFlight.push_back({r.binder.request(s, false), s});
     }
     const std::shared_ptr<FrameBinder::Ticket> missing = inFlight[2].ticket;
-    const std::shared_ptr<FrameBinder::Ticket> unwritten = inFlight[5].ticket;
+    const std::shared_ptr<FrameBinder::Ticket> unwritten = inFlight[2 + kDelay].ticket;
     check(unwritten->frame == missing->frame + kDelay);
 
     bool own = true;
@@ -296,7 +315,7 @@ void testMissedFrameLost() {
                 check(t->lost && !t->bayer);
             } else {
                 own = own && !t->lost && t->sensorFrame == t->frame
-                          && same(r.ran[t->sensorFrame], inFlight.front().wanted);
+                          && same(ranFor(r, t->sensorFrame), inFlight.front().wanted);
                 ++got;
             }
             inFlight.pop_front();
@@ -305,7 +324,7 @@ void testMissedFrameLost() {
     check(inFlight.empty());
     check(got == 4);
     check(own);
-    check(r.binder.missed() == 1);
+    check(r.binder.missedFrames() == 1 && r.binder.missedStarts() == 1);
 }
 
 /* The missed frame's request wanted what the next frame ran on -- the
@@ -326,7 +345,8 @@ void testMissedFrameShared() {
     check(settled.size() == 2 && settled[0] == a1 && settled[1] == a2);
     check(!a1->lost && a1->bayer && a1->sensorFrame == a2->frame);
     check(!a2->lost && a2->bayer && a2->sensorFrame == a2->frame);
-    check(same(a1->inEffect, s) && same(a2->inEffect, s));
+    check(same(ranFor(r, a2->frame), s));
+    check(same(a1->inEffect, r.ran[a2->frame]) && same(a2->inEffect, r.ran[a2->frame]));
 }
 
 /* A request let go before its frame: the frame goes back with its
@@ -348,7 +368,7 @@ void testRequestLetGo() {
     }
     check(kept->bayer.has_value());
     check(kept->sensorFrame == kept->frame);
-    check(same(kept->inEffect, s));
+    check(same(ranFor(r, kept->frame), s));
 }
 
 /* A long exposure given up before its write: it comes off its frame,
@@ -371,7 +391,7 @@ void testCancel() {
     for (uint32_t k = 0; k <= kept->frame; ++k) r.frame();
     check(same(r.ran[goneFrame], r.cfg.configureDefaults()));
     check(kept->bayer && kept->sensorFrame == kept->frame);
-    check(same(kept->inEffect, s));
+    check(same(ranFor(r, kept->frame), s));
 }
 
 } // namespace
@@ -381,7 +401,6 @@ int main() {
     testInFlight(2);
     testInFlight(4);
     testInFlight(8);
-    testNextFrameStart();
     testLongFrame();
     testOneShotSettings();
     testMissedFrameLost();

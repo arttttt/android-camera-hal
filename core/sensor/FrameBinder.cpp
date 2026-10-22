@@ -30,11 +30,16 @@ FrameBinder::FrameBinder(DelayedControls *c, const SensorConfig *s)
 
 void FrameBinder::reset(uint32_t l) {
     lines = l;
-    sequence.reset();
     wanted.clear();
-    anyRequest = false;
-    lastFrame  = 0;
+    anyRequest   = false;
+    lastAsked    = 0;
     streamSettings.reset();
+    anyFrame     = false;
+    lastFrame    = 0;
+    anyStart     = false;
+    lastStart    = 0;
+    framesMissed = 0;
+    startsMissed = 0;
 }
 
 std::shared_ptr<FrameBinder::Ticket> FrameBinder::request(
@@ -42,10 +47,10 @@ std::shared_ptr<FrameBinder::Ticket> FrameBinder::request(
     /* The first frame its settings can still be filed for, and one past
      * the frame of the request before it. */
     uint32_t frame = controls->firstFileable();
-    if (anyRequest && frame <= lastFrame)
-        frame = lastFrame + 1;
+    if (anyRequest && frame <= lastAsked)
+        frame = lastAsked + 1;
     anyRequest = true;
-    lastFrame  = frame;
+    lastAsked  = frame;
     if (stillCapture) {
         const DelayedControls::Batch after =
             streamSettings ? *streamSettings : controls->planned(frame);
@@ -86,43 +91,66 @@ void FrameBinder::give(Ticket &t, const mocha::camera::BayerLease &lease,
     t.bayer           = lease.share();
 }
 
+FrameBinder::Start FrameBinder::start(uint32_t sequence) {
+    if (anyStart && sequence != lastStart + 1) {
+        /* A start the driver did not report: no write was made in that
+         * frame, and DelayedControls lets the next tick overtake it. */
+        startsMissed += sequence - lastStart - 1;
+        ALOGW("frame %u started after %u: %u frame start(s) not reported",
+              sequence, lastStart, sequence - lastStart - 1);
+    }
+    anyStart  = true;
+    lastStart = sequence;
+
+    Start s;
+    s.values = controls->tick(sequence, &s.changed);
+    const DelayedControls::Batch e = controls->inEffect(sequence);
+    s.periodNs = cfg->frameDurationNs(e.val[DelayedControls::FRAME_LENGTH],
+                                      e.val[DelayedControls::LINE_LENGTH]);
+    return s;
+}
+
 FrameBinder::Arrival FrameBinder::arrive(mocha::camera::BayerLease lease) {
-    const uint32_t driverSeq = lease.frame().sequence;
-    const int64_t  endNs     = lease.frame().timestampNs;
+    const uint32_t seq   = lease.frame().sequence;
+    const int64_t  endNs = lease.frame().timestampNs;
+
+    if (anyFrame && seq != lastFrame + 1) {
+        /* Frames the VI had no buffer for. */
+        framesMissed += seq - lastFrame - 1;
+        ALOGW("frame %u came after %u: %u frame(s) not captured",
+              seq, lastFrame, seq - lastFrame - 1);
+    }
+    anyFrame  = true;
+    lastFrame = seq;
 
     Arrival a;
-    a.sensorFrame = sequence.next(driverSeq, endNs, [this](uint32_t seq) {
-        const DelayedControls::Batch e = controls->inEffect(seq);
-        return cfg->frameDurationNs(e.val[DelayedControls::FRAME_LENGTH],
-                                    e.val[DelayedControls::LINE_LENGTH]);
-    });
-    a.values = controls->tick(a.sensorFrame, &a.changed);
-    a.nextFrameStartNs = cfg->nextFrameStartNs(
-            endNs, controls->inEffect(a.sensorFrame), lines);
+    a.sensorFrame = seq;
 
     /* The request that asked for this frame, and any whose frame the
      * capture missed: the frame serves each that it ran on the settings
-     * of. One that it did not is lost -- a missed frame, or the write a
-     * missed frame's tick did not make. A frame nobody takes goes back
-     * with its lease. */
-    const DelayedControls::Batch here = controls->inEffect(a.sensorFrame);
-    for (std::shared_ptr<Ticket> t = front();
-         t && t->frame <= a.sensorFrame; t = front()) {
+     * of, every control on the frame its delay put it on. One that it
+     * did not is lost -- a missed frame, or the write a missed start's
+     * tick did not make. A frame nobody takes goes back with its
+     * lease. */
+    const DelayedControls::Batch ran = controls->inEffectFor(seq);
+    for (std::shared_ptr<Ticket> t = front(); t && t->frame <= seq; t = front()) {
         wanted.pop_front();
         bool own = true;
         for (int id = 0; id < DelayedControls::COUNT; ++id)
-            if (t->settings.has[id] && t->settings.val[id] != here.val[id])
+            if (t->settings.has[id] && t->settings.val[id] != ran.val[id])
                 own = false;
         if (own) {
-            give(*t, lease, a.sensorFrame, endNs);
+            give(*t, lease, seq, endNs);
         } else {
             t->lost = true;
             ALOGW("sensor frame %u did not run on its request's settings "
-                  "(frame %u came); the request is lost",
-                  t->frame, a.sensorFrame);
+                  "(frame %u came); the request is lost", t->frame, seq);
         }
         a.settled.push_back(std::move(t));
     }
+
+    /* No request on an earlier frame is asked about any more. */
+    controls->forgetBefore(seq);
     return a;
 }
 

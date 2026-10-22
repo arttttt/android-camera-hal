@@ -56,13 +56,21 @@ bool CaptureEngine::start() {
         return false;
     binder.reset(deps.source->resolution().height);
 
-    stallTimer.reset(::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC));
-    writeTimer.reset(::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC));
-    if (!stallTimer.valid() || !writeTimer.valid()) {
-        ALOGE("timers: timerfd_create failed, errno=%d", errno);
+    /* Writes are timed by the frames' starts; without them there is
+     * no frame to time a write by, and no camera. */
+    if (!deps.source->watchFrameStarts()) {
+        ALOGE("the capture driver does not say when frames start "
+              "(V4L2_EVENT_FRAME_SYNC); a kernel with them is needed");
+        if (deps.deviceError)
+            deps.deviceError->report("no frame start events from the capture driver");
         return false;
     }
-    pending.reset();
+
+    stallTimer.reset(::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC));
+    if (!stallTimer.valid()) {
+        ALOGE("stall timer: timerfd_create failed, errno=%d", errno);
+        return false;
+    }
     {
         /* The first frame runs on what configure wrote. */
         const DelayedControls::Batch e = deps.controls->inEffect(0);
@@ -80,19 +88,17 @@ bool CaptureEngine::start() {
                           .stopGrace  = std::chrono::milliseconds(0)});
 
     FrameSource *source = deps.source;
+    /* Starts before frames: a frame's start comes before its buffer,
+     * and the write it times has the frame to land in. */
     engine->watch(source->fd(), [this, source](short revents) {
+        if (revents & POLLPRI)
+            onStarts(source->frameStarts());
         onFrames(source->drain(revents));
-    });
+    }, POLLIN | POLLPRI);
     engine->watch(source->returnedFd(), [source](short) {
         source->requeueReturned();
     });
     engine->watch(stallTimer.get(), [this](short) { onStall(); });
-    engine->watch(writeTimer.get(), [this](short) {
-        uint64_t expirations = 0;
-        if (::read(writeTimer.get(), &expirations, sizeof(expirations)) ==
-            (ssize_t)sizeof(expirations))
-            writePending();
-    });
     return engine->start();
 }
 
@@ -102,16 +108,6 @@ void CaptureEngine::stop() {
     engine->stop();
     engine.reset();
     stallTimer.reset();
-    writeTimer.reset();
-    pending.reset();
-}
-
-void CaptureEngine::writePending() {
-    if (!pending)
-        return;
-    if (pending->changed)
-        deps.writer->write(pending->values);
-    pending.reset();
 }
 
 void CaptureEngine::armStall(int64_t periodNs) {
@@ -139,45 +135,26 @@ bool CaptureEngine::submit(FrameToken frame) {
                                         std::nullopt, false}).has_value();
 }
 
+void CaptureEngine::onStarts(const std::vector<FrameStart> &starts) {
+    for (const FrameStart &start : starts) {
+        const android::FrameBinder::Start s = binder.start(start.sequence);
+        /* Inside the frame now: the VI's wait first -- it starts waiting
+         * on the frame after next as the next one starts, and a frame
+         * length written now is in effect on the next -- then the
+         * sensor. */
+        deps.writer->prepare(s.values);
+        if (s.changed)
+            deps.writer->write(s.values);
+        /* The next frame starts within this one's period. */
+        armStall(s.periodNs);
+    }
+}
+
 void CaptureEngine::onFrames(std::vector<BayerLease> frames) {
     for (BayerLease &lease : frames) {
-        android::FrameBinder::Arrival a = binder.arrive(std::move(lease));
-        const uint32_t seq = a.sensorFrame;
+        const android::FrameBinder::Arrival a = binder.arrive(std::move(lease));
         if (!a.settled.empty())
             wakeFd.notify();
-
-        /* The VI's wait now, in the blanking: it starts waiting on the
-         * next frame's successor as the next frame starts, and the
-         * write inside that frame may stretch it. */
-        deps.writer->prepare(a.values);
-
-        /* A write still pending is a frame late -- this thread fell a
-         * frame behind; it goes now, and its frame's record may be off
-         * by the frame. */
-        if (pending) {
-            ALOGW("sensor frame %u: write a frame late", seq - 1);
-            writePending();
-        }
-        const int64_t at = a.nextFrameStartNs + kWriteAfterStartNs;
-        a.settled.clear();
-        pending = std::move(a);
-        if (at <= systemTime()) {
-            writePending();
-        } else {
-            itimerspec it{};
-            it.it_value.tv_sec  = (time_t)(at / 1000000000LL);
-            it.it_value.tv_nsec = (long)(at % 1000000000LL);
-            if (::timerfd_settime(writeTimer.get(), TFD_TIMER_ABSTIME, &it,
-                                  nullptr) != 0) {
-                ALOGE("write timer: timerfd_settime failed, errno=%d", errno);
-                writePending();
-            }
-        }
-
-        const DelayedControls::Batch next = deps.controls->inEffect(seq + 1);
-        armStall(deps.sensorCfg->frameDurationNs(
-                next.val[DelayedControls::FRAME_LENGTH],
-                next.val[DelayedControls::LINE_LENGTH]));
     }
 }
 

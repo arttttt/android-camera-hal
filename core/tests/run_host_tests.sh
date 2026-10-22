@@ -77,11 +77,8 @@ run delayed_controls_test core/tests/delayed_controls_test.cpp \
                          core/sensor/DelayedControls.cpp
 run vi_controller_test core/tests/vi_controller_test.cpp \
                          core/vi/ViController.cpp
-run sensor_sequence_test core/tests/sensor_sequence_test.cpp \
-                         core/sensor/SensorSequence.cpp
 run frame_binder_test    core/tests/frame_binder_test.cpp \
-                         core/sensor/FrameBinder.cpp core/sensor/DelayedControls.cpp \
-                         core/sensor/SensorSequence.cpp
+                         core/sensor/FrameBinder.cpp core/sensor/DelayedControls.cpp
 run result_engine_test   core/tests/result_engine_test.cpp \
                          core/engines/ResultEngine.cpp \
                          core/pipeline/stages/ResultDispatchStage.cpp \

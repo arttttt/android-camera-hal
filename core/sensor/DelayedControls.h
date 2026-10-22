@@ -9,21 +9,31 @@ namespace android {
 
 /* The sensor's controls by the sensor frame they are in effect on, after
  * libcamera's DelayedControls: requests file what they want for a
- * frame, the frames as they arrive say when to write, and what was in
- * effect on a frame is read back by its number.
+ * frame, the frames' starts say when to write, and what was in effect
+ * on a frame is read back by its number.
  *
- * Frames are the sensor's (SensorSequence), and the write is timed by
- * them. The capture engine calls tick(k) as frame k arrives and writes
- * what tick returns once frame k + 1 has started; a control written
- * then is in effect on frame k + delay[id]. So each tick writes, for
- * each control, the value filed for frame k + delay[id], or keeps the
- * last one: values stay until a later
+ * Frames are the sensor's, numbered by the capture driver, and the
+ * write is timed by their starts: the capture engine calls tick(k) as
+ * frame k starts and writes what tick returns at once, inside frame k;
+ * a control written then is in effect on frame k + delay[id] -- the
+ * delays are libcamera's SensorDelays, counted from the frame of the
+ * write. So each tick writes, for each control, the value filed for
+ * frame k + delay[id], or keeps the last one: values stay until a later
  * frame's are filed, and a frame no request wants runs on what the
  * last did.
  *
- * A frame the capture missed has no tick, and what was filed for the
- * frame its tick would have written is overtaken by the next tick's;
- * the record says what the sensor really ran either way.
+ * A request's controls are written together, in one tick, as the
+ * sensor's group hold latches them: a request for frame `seq` -- the
+ * frame its slowest control reaches -- files each control for the
+ * frame its own delay reaches from that tick, seq - (maxDelay - delay).
+ * A frame's length is in effect a frame before its exposure is
+ * (rolling shutter: the frame before an exposure is what gives it its
+ * time), so a request's frame length lands on the frame before its
+ * own.
+ *
+ * A frame whose start the capture missed has no tick, and what was
+ * filed for the frame its tick would have written is overtaken by the
+ * next tick's; the record says what the sensor really ran either way.
  *
  * The capture engine's thread only: it files, ticks and reads. reset()
  * between streams, while it does not run. */
@@ -67,30 +77,45 @@ public:
      * of it written at the next tick or later. */
     uint32_t firstFileable() const;
 
-    /* Files the controls set in `batch` for frame `seq`, in effect from
-     * it until a later frame's. False, and nothing filed, when `seq` is
-     * before firstFileable(). */
+    /* Files the controls set in `batch` for a request on frame `seq`:
+     * each for the frame frameOf(seq, id), written with the others,
+     * and in effect from there until a later request's. False, and
+     * nothing filed, when `seq` is before firstFileable(). */
     bool file(uint32_t seq, const Batch &batch);
 
-    /* Drops what was filed for frame `seq` and is not written yet: the
-     * frames from it run on what was filed before. */
+    /* Drops what a request on frame `seq` filed and is not written yet:
+     * the frames run on what was filed before. */
     void unfile(uint32_t seq);
 
-    /* What frame `seq` would run on as things stand, every control set:
-     * the latest filed for it or before, or the last written. */
+    /* What a request on frame `seq` would find as things stand, every
+     * control set: for each control, the latest filed for its frame
+     * frameOf(seq, id) or before, or the last written. */
     Batch planned(uint32_t seq) const;
 
-    /* Frame `seq` has arrived. What to write now, every control set:
+    /* The frame control `id` of a request on frame `seq` is in effect
+     * on: seq - (maxDelay - delay[id]). */
+    uint32_t frameOf(uint32_t seq, int id) const;
+
+    /* Frame `seq` has started. What to write now, every control set:
      * for each control the value filed for frame seq + delay[id], or
      * the last written. `changed`: whether any differs from the last
      * written (or from `initial`). Recorded as in effect on those
-     * frames; the record before frame `seq` is let go. */
+     * frames. */
     Batch tick(uint32_t seq, bool *changed);
 
     /* What was in effect on frame `seq`, every control set: the last
      * value written for a frame at or before it, or `initial`. Frames
-     * from the last tick on. */
+     * not forgotten. */
     Batch inEffect(uint32_t seq) const;
+
+    /* Nobody will ask about a request on a frame before `seq` any more
+     * (its frame has come): the record behind what such a request needs
+     * is let go. */
+    void forgetBefore(uint32_t seq);
+
+    /* What a request on frame `seq` ran on: each control as in effect
+     * on frameOf(seq, id). */
+    Batch inEffectFor(uint32_t seq) const;
 
 private:
     int maxDelay() const;

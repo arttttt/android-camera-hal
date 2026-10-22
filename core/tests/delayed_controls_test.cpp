@@ -60,6 +60,12 @@ DelayedControls::Batch initial() {
     return b;
 }
 
+bool same(const DelayedControls::Batch &a, const DelayedControls::Batch &b) {
+    for (int id = 0; id < DelayedControls::COUNT; ++id)
+        if (b.has[id] && a.val[id] != b.val[id]) return false;
+    return true;
+}
+
 int32_t exposureOn(const DelayedControls &dc, uint32_t seq) {
     return dc.inEffect(seq).val[DelayedControls::EXPOSURE];
 }
@@ -152,24 +158,47 @@ void testUnfile() {
     check(exposureOn(dc, 4) == 200);
 }
 
-/* Controls with different delays: each is written at the tick its own
- * delay names, and both are in effect on the frame filed for; the first
- * frame a request can get is the longest delay's. */
+/* Controls with different delays, as the sensors have them (written in
+ * frame k: frame length in effect on k + 1, exposure and gain on
+ * k + 2). A request's controls are written together, in the tick its
+ * slowest one needs; its frame length lands on the frame before its
+ * own, the one that gives its exposure its time. inEffect() is what
+ * each frame ran on; inEffectFor() what the request's frame was given. */
 void testPerControlDelay() {
-    DelayedControls::Config c = config();
-    c.delay[DelayedControls::GAIN] = 2;
+    DelayedControls::Config c;
+    c.delay[DelayedControls::EXPOSURE]     = 2;
+    c.delay[DelayedControls::GAIN]         = 2;
+    c.delay[DelayedControls::FRAME_LENGTH] = 1;
+    c.delay[DelayedControls::LINE_LENGTH]  = 1;
     DelayedControls dc(c);
     dc.reset(initial());
-    check(dc.firstFileable() == 3);
-    dc.file(5, batch(100, 512));
-    DelayedControls::Batch w = dc.tick(2, nullptr);
-    check(w.val[DelayedControls::EXPOSURE] == 100);
-    check(w.val[DelayedControls::GAIN] == 256);
-    w = dc.tick(3, nullptr);
+    check(dc.firstFileable() == 2);
+    check(dc.frameOf(5, DelayedControls::EXPOSURE) == 5);
+    check(dc.frameOf(5, DelayedControls::FRAME_LENGTH) == 4);
+
+    DelayedControls::Batch req = batch(100000, 512);
+    req.has[DelayedControls::FRAME_LENGTH] = true;
+    req.val[DelayedControls::FRAME_LENGTH] = 9000;
+    check(dc.file(5, req));
+    check(dc.planned(5).val[DelayedControls::FRAME_LENGTH] == 9000);
+
+    bool changed = false;
+    for (uint32_t k = 0; k < 3; ++k) {
+        dc.tick(k, &changed);
+        check(!changed);
+    }
+    /* One tick writes all of it. */
+    const DelayedControls::Batch w = dc.tick(3, &changed);
+    check(changed);
+    check(w.val[DelayedControls::EXPOSURE] == 100000);
     check(w.val[DelayedControls::GAIN] == 512);
-    const DelayedControls::Batch b = dc.inEffect(5);
-    check(b.val[DelayedControls::EXPOSURE] == 100 && b.val[DelayedControls::GAIN] == 512);
-    check(dc.inEffect(4).val[DelayedControls::GAIN] == 256);
+    check(w.val[DelayedControls::FRAME_LENGTH] == 9000);
+
+    check(dc.inEffect(3).val[DelayedControls::FRAME_LENGTH] == 2564);
+    check(dc.inEffect(4).val[DelayedControls::FRAME_LENGTH] == 9000);
+    check(dc.inEffect(4).val[DelayedControls::EXPOSURE] == 33000);
+    check(dc.inEffect(5).val[DelayedControls::EXPOSURE] == 100000);
+    check(same(dc.inEffectFor(5), req));
 }
 
 /* What a frame would run on as things stand: the latest filed for it or

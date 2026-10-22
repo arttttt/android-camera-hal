@@ -26,7 +26,6 @@
 
 #include "mochacamera/ports/FrameSource.h"
 #include "sensor/DelayedControls.h"
-#include "sensor/SensorSequence.h"
 
 namespace android {
 
@@ -34,11 +33,12 @@ struct SensorConfig;
 
 /* Binds each request to the sensor frame its settings are in effect on.
  *
- * The sensor sets the pace. Each frame, as it arrives, is numbered
- * (SensorSequence) and ticks DelayedControls: what was filed for the
- * frame a control delay ahead is what to write now, so writes are timed
- * by the frames, not by requests. Then the frame goes to the request
- * that asked for it, or back to the source.
+ * The sensor sets the pace, and the capture driver numbers its frames.
+ * Each frame's start ticks DelayedControls: what was filed for the
+ * frames a control delay ahead is what to write now, inside the frame,
+ * so writes are timed by the frames, not by requests. Each frame, as
+ * it arrives, goes to the request that asked for it, or back to the
+ * source.
  *
  * A request, as it arrives, is given its frame: the first its settings
  * can still be filed for, and after the frame of the request before it
@@ -53,17 +53,18 @@ struct SensorConfig;
  * frames between them simply go back unused.
  *
  * A request is given a frame only if the frame ran on its settings, by
- * the record of what was written. A frame the capture missed is gone,
- * and so is the write its tick would have made: its request, and the
- * one whose write that was, are settled by the first frame that comes
- * after -- given it if it ran on their settings, sharing it with the
- * request it belongs to, or lost. The requests after them keep their
- * own frames: a missed frame never shifts them.
+ * the record of what was written (each control on the frame its delay
+ * put it on, DelayedControls::inEffectFor). A frame the capture missed
+ * is gone, and if its start was missed too, so is the write its tick
+ * would have made: its request, and the one whose write that was, are
+ * settled by the first frame that comes after -- given it if it ran on
+ * their settings, sharing it with the request it belongs to, or lost.
+ * The requests after them keep their own frames: a missed frame never
+ * shifts them.
  *
- * The record is only as true as the control delay: a sensor that takes
- * a write a frame sooner or later than configured runs every frame on
- * a neighbour's settings, and the record does not see it. The capture
- * engine times its writes so the delay does not depend on the mode.
+ * The record is only as true as the sensor's delays: a sensor that
+ * takes a write a frame sooner or later than configured runs every
+ * frame on a neighbour's settings, and the record does not see it.
  *
  * The capture engine's thread only. */
 class FrameBinder {
@@ -84,26 +85,29 @@ public:
         DelayedControls::Batch inEffect;
     };
 
-    /* What a frame's arrival asks of the caller: write `values` (every
-     * control set; to the sensor only when `changed`) once the next
-     * frame has started, at `nextFrameStartNs` (CLOCK_MONOTONIC) -- the
-     * control delay counts from a write inside that frame -- and wake
-     * whoever holds a ticket in `settled`, given the frame or lost.
-     * None: nobody asked for the frame, and it went back with its
-     * lease. */
-    struct Arrival {
-        uint32_t               sensorFrame = 0;
+    /* What a frame's start asks of the caller: write `values` (every
+     * control set) to the sensor now, inside the frame, if `changed`.
+     * The frame runs for `periodNs` (its controls as written). */
+    struct Start {
         DelayedControls::Batch values;
         bool                   changed = false;
-        int64_t                nextFrameStartNs = 0;
+        int64_t                periodNs = 0;
+    };
+
+    /* A frame's arrival: wake whoever holds a ticket in `settled`,
+     * given the frame or lost. None: nobody asked for the frame, and it
+     * went back with its lease. */
+    struct Arrival {
+        uint32_t sensorFrame = 0;
         std::vector<std::shared_ptr<Ticket>> settled;
     };
 
     FrameBinder(DelayedControls *controls, const SensorConfig *cfg);
 
-    /* A new stream: frames are numbered from 0, nothing is asked for.
-     * DelayedControls must have been reset to what configure wrote.
-     * `lines`: the lines a frame reads out, for its exposure start. */
+    /* A new stream: nothing is asked for, no frame has come. The
+     * driver numbers the stream's frames from 0. DelayedControls must
+     * have been reset to what configure wrote. `lines`: the lines a
+     * frame reads out, for its exposure start. */
     void reset(uint32_t lines);
 
     /* A request with `settings` (every control it sets) gets its frame;
@@ -120,11 +124,16 @@ public:
      * ticket. */
     void cancel(const Ticket &ticket);
 
-    /* A frame came: the lease of its slot. */
+    /* Frame `sequence` has started. */
+    Start start(uint32_t sequence);
+
+    /* A frame came: the lease of its slot, numbered by the driver. */
     Arrival arrive(mocha::camera::BayerLease lease);
 
-    /* Frames the capture missed since reset(). */
-    uint32_t missed() const { return sequence.uncounted(); }
+    /* Frames the capture had no buffer for, and frame starts it did not
+     * report, since reset(): gaps in the driver's numbers. */
+    uint32_t missedFrames() const { return framesMissed; }
+    uint32_t missedStarts() const { return startsMissed; }
 
 private:
     /* The first ticket still waiting; expired ones dropped. */
@@ -136,12 +145,17 @@ private:
     const SensorConfig *cfg;
     uint32_t            lines = 0;
 
-    SensorSequence sequence;
+    bool     anyFrame = false;
+    uint32_t lastFrame = 0;       /* the last frame that came */
+    bool     anyStart = false;
+    uint32_t lastStart = 0;       /* the last frame that started */
+    uint32_t framesMissed = 0;
+    uint32_t startsMissed = 0;
     /* Tickets waiting for their frame, in the order of their frames; a
      * request let go leaves an expired entry. */
     std::deque<std::weak_ptr<Ticket>> wanted;
     bool     anyRequest = false;
-    uint32_t lastFrame  = 0;   /* the last frame a request was given */
+    uint32_t lastAsked  = 0;   /* the last frame a request was given */
     /* The last stream request's settings: what the frames after a still
      * capture go back to. */
     std::optional<DelayedControls::Batch> streamSettings;
