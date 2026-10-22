@@ -65,6 +65,11 @@ mocha::camera::Session::Config sessionConfig(const char *devNode, int facing) {
                                         c.writeDelayUs);
     if (c.writeDelayUs)
         ALOGI("sensor writes %d us after a frame's start", c.writeDelayUs);
+
+    property_get("ro.product.manufacturer", propVal, "");
+    c.make = propVal;
+    property_get("ro.product.model", propVal, "");
+    c.model = propVal;
     return c;
 }
 

@@ -36,22 +36,6 @@ void jpegErrorExit(j_common_ptr cinfo) {
     longjmp(err->jump, 1);
 }
 
-/* Map the JPEG orientation (CW degrees) to EXIF Orientation tag:
- *   0°  → 1 (normal)
- *   90° → 6 (rotate 90 CW on display)
- *   180°→ 3
- *   270°→ 8 (rotate 270 CW / 90 CCW)
- * Any other value falls through to 1. */
-uint16_t exifOrientationFromAndroid(int32_t androidOrientation) {
-    switch (androidOrientation) {
-        case 90:  return 6;
-        case 180: return 3;
-        case 270: return 8;
-        case 0:
-        default:  return 1;
-    }
-}
-
 /* Encode RGBA (tightly packed, row stride = width*4) into a JPEG byte
  * stream at `dst`. `app1` (optional) is written as the APP1 marker —
  * the EXIF block, so viewers rotate on display instead of us rotating
@@ -169,70 +153,9 @@ void downscaleRgba(const uint8_t *src, unsigned sw, unsigned sh,
     }
 }
 
-void put16(std::vector<uint8_t> &v, uint16_t x) {
-    v.push_back((uint8_t)(x & 0xff));
-    v.push_back((uint8_t)(x >> 8));
-}
-
-void put32(std::vector<uint8_t> &v, uint32_t x) {
-    for (int i = 0; i < 4; ++i) v.push_back((uint8_t)(x >> (8 * i)));
-}
-
-/* One little-endian IFD entry whose value fits the 4-byte field. */
-void putEntry(std::vector<uint8_t> &v, uint16_t tag, uint16_t type,
-              uint32_t value) {
-    put16(v, tag);
-    put16(v, type);
-    put32(v, 1);                       /* count */
-    if (type == 3) {                   /* SHORT: left-justified */
-        put16(v, (uint16_t)value);
-        put16(v, 0);
-    } else {                           /* LONG */
-        put32(v, value);
-    }
-}
-
-/* The EXIF APP1 payload: IFD0 with Orientation, and when a thumbnail
- * is given, IFD1 with the JPEG thumbnail after it (Compression = 6,
- * JPEGInterchangeFormat / Length). Offsets are from the TIFF header. */
-void buildExifApp1(uint16_t orientation,
-                   const uint8_t *thumb, size_t thumbLen,
-                   std::vector<uint8_t> *out) {
-    std::vector<uint8_t> &v = *out;
-    v.clear();
-    const uint8_t hdr[] = { 'E','x','i','f', 0x00, 0x00 };
-    v.insert(v.end(), hdr, hdr + sizeof(hdr));
-
-    /* TIFF header, little-endian, IFD0 right after it. */
-    v.push_back('I'); v.push_back('I');
-    put16(v, 0x002A);
-    put32(v, 8);
-
-    const uint32_t ifd0Size = 2 + 12 * 1 + 4;
-    const uint32_t ifd1Off  = 8 + ifd0Size;
-    const uint32_t ifd1Size = 2 + 12 * 3 + 4;
-    const uint32_t thumbOff = ifd1Off + ifd1Size;
-
-    /* IFD0: Orientation. */
-    put16(v, 1);
-    putEntry(v, 0x0112, 3, orientation);
-    put32(v, thumb ? ifd1Off : 0);
-
-    if (!thumb) return;
-
-    /* IFD1: the thumbnail. */
-    put16(v, 3);
-    putEntry(v, 0x0103, 3, 6);                      /* Compression: JPEG */
-    putEntry(v, 0x0201, 4, thumbOff);               /* JPEGInterchangeFormat */
-    putEntry(v, 0x0202, 4, (uint32_t)thumbLen);     /* ...Length */
-    put32(v, 0);
-    v.insert(v.end(), thumb, thumb + thumbLen);
-}
-
 /* APP1 holds at most 65533 bytes of payload; the thumbnail has to fit
- * in what the EXIF around it leaves. */
+ * in what the EXIF around it leaves (exifOverhead). */
 constexpr size_t kMaxApp1Payload = 65533;
-constexpr size_t kExifOverhead   = 6 + 8 + (2 + 12 + 4) + (2 + 12 * 3 + 4);
 
 } /* namespace */
 
@@ -240,6 +163,7 @@ bool JpegEncoder::process(const JpegSnapshot &src,
                            unsigned width, unsigned height,
                            uint8_t *dst, size_t dstCapacity,
                            const mocha::camera::FrameSettings::Jpeg &settings,
+                           const ExifInfo &exifIn,
                            size_t *bytesWritten) {
     if (bytesWritten) *bytesWritten = 0;
     if (!src.rgba || !dst || !bytesWritten || width == 0 || height == 0) return false;
@@ -261,18 +185,23 @@ bool JpegEncoder::process(const JpegSnapshot &src,
     }
 
     const uint8_t jpegQuality  = settings.quality.value_or(kDefaultJpegQuality);
-    const int32_t jpegOri      = settings.orientationDegrees;
     /* Thumbnail, when the request asks for one (0x0 means none). */
     const int32_t thumbW       = (int32_t)settings.thumbnailWidth;
     const int32_t thumbH       = (int32_t)settings.thumbnailHeight;
     const uint8_t thumbQuality = settings.thumbnailQuality.value_or(90);
 
+    ExifInfo exif = exifIn;
+    exif.orientationDegrees = settings.orientationDegrees;
+    exif.width  = width;
+    exif.height = height;
+    const size_t exifSize = exifOverhead(exif);
+
     std::vector<uint8_t> thumb;
-    if (thumbW > 0 && thumbH > 0) {
+    if (thumbW > 0 && thumbH > 0 && exifSize < kMaxApp1Payload) {
         std::vector<uint8_t> small((size_t)thumbW * thumbH * 4);
         downscaleRgba(image, width, height,
                       small.data(), (unsigned)thumbW, (unsigned)thumbH);
-        thumb.resize(kMaxApp1Payload - kExifOverhead);
+        thumb.resize(kMaxApp1Payload - exifSize);
         const size_t n = encodeRgbaToJpeg(small.data(), (unsigned)thumbW, (unsigned)thumbH,
                                            thumbQuality, nullptr, 0,
                                            thumb.data(), thumb.size());
@@ -288,8 +217,7 @@ bool JpegEncoder::process(const JpegSnapshot &src,
     }
 
     std::vector<uint8_t> app1;
-    buildExifApp1(exifOrientationFromAndroid(jpegOri),
-                  thumb.empty() ? nullptr : thumb.data(), thumb.size(), &app1);
+    buildExifApp1(exif, thumb.empty() ? nullptr : thumb.data(), thumb.size(), &app1);
 
     size_t written = encodeRgbaToJpeg(image, width, height,
                                         jpegQuality, app1.data(), app1.size(),

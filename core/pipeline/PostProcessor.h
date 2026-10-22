@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "JpegSnapshot.h"
+#include "jpeg/Exif.h"
 #include "mochacamera/FrameSettings.h"
 
 namespace android {
@@ -31,12 +32,15 @@ public:
      * On failure returns false; *bytesWritten is undefined.
      *
      * `settings` carries the request's JPEG knobs (quality, orientation,
-     * thumbnail). The consumer guarantees src.rgba is valid
+     * thumbnail), `exif` what the picture's EXIF says of it (its size
+     * and orientation are set from the call's). The consumer guarantees
+     * src.rgba is valid
      * (post-fence-reap + invalidate) for the duration of this call. */
     virtual bool process(const JpegSnapshot &src,
                           unsigned width, unsigned height,
                           uint8_t *dst, size_t dstCapacity,
                           const mocha::camera::FrameSettings::Jpeg &settings,
+                          const ExifInfo &exif,
                           size_t *bytesWritten) = 0;
 };
 

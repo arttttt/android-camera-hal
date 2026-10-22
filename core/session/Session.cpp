@@ -321,6 +321,11 @@ bool Session::Impl::buildInfrastructure() {
         d.jpeg           = jpeg.get();
         d.gralloc        = gralloc;
         d.jpegBufferSize = &jpegBufferSize;
+        d.sensorCfg      = &sensorCfg;
+        d.make           = config.make;
+        d.model          = config.model;
+        d.fNumber        = probe().lens.aperture;
+        d.focalLengthMm  = sensorCfg.focalLengthMm;
         bufferProcessor.reset(new BufferProcessor(d));
     }
 

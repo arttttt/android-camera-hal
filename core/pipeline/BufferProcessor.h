@@ -4,10 +4,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <string>
+
 #include <utils/Errors.h>
 
 #include "Frame.h"
 #include "JpegSnapshot.h"
+#include "jpeg/Exif.h"
 #include "mochacamera/FrameSettings.h"
 
 namespace mocha::camera { class GrallocPort; }
@@ -18,6 +21,7 @@ class IspFrameRecorder;
 class IspJpegRing;
 class IspYuvReadback;
 class PostProcessor;
+struct SensorConfig;
 
 /* Per-output-buffer processing. Records each output's GPU work on the
  * frame's open ISP recording -- a zero-copy blit for RGBA, an NV12
@@ -40,6 +44,13 @@ public:
         PostProcessor              *jpeg;
         mocha::camera::GrallocPort *gralloc;
         const size_t  *jpegBufferSize;  /* single value per session, set at configureStreams */
+        /* For the EXIF: the sensor's gain as ISO, and what the
+         * picture's frame does not say -- the device, the lens. */
+        const android::SensorConfig *sensorCfg;
+        std::string make;
+        std::string model;
+        float       fNumber       = 0.f;
+        float       focalLengthMm = 0.f;
     };
 
     struct FrameContext {
@@ -78,15 +89,16 @@ public:
     /* The same for one output, whose encode will not run. */
     void releaseJpegSnapshot(Frame &frame, size_t outputIndex);
 
-    /* Lock the BLOB, encode its snapshot into it with the request's
-     * JPEG settings, write the camera3_jpeg_blob trailer, unlock, and
-     * give the snapshot back. False when the BLOB holds no image; the
-     * snapshot is given back either way. */
-    bool finalizeBlobOutput(Output &out,
-                            const mocha::camera::FrameSettings::Jpeg &jpeg,
-                            uint32_t frameNumber);
+    /* Lock the frame's BLOB output `outputIndex`, encode its snapshot
+     * into it with the request's JPEG settings and an EXIF of what the
+     * frame ran on, dated now; write the camera3_jpeg_blob trailer,
+     * unlock, and give the snapshot back. False when the BLOB holds no
+     * image; the snapshot is given back either way. */
+    bool finalizeBlobOutput(Frame &frame, size_t outputIndex);
 
 private:
+    ExifInfo exifFor(const Frame &frame) const;
+
     /* Block until the consumer releases the buffer for writing; uses
      * the fence up. */
     status_t waitAcquireFence(Output &out, uint32_t frameNumber);

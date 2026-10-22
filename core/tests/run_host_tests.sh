@@ -92,5 +92,6 @@ run three_a_test         core/tests/three_a_test.cpp \
                          core/3a/GrayWorldAwbController.cpp \
                          core/3a/ThreeAReport.cpp core/sensor/DelayedControls.cpp \
                          "${TUNING[@]}" -- -ljsoncpp
+run exif_test            core/tests/exif_test.cpp core/jpeg/Exif.cpp
 
 exit $failed

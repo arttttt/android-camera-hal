@@ -77,6 +77,9 @@ public:
          * the write goes this long after the frame's start is reported,
          * not at once. */
         int         writeDelayUs = 0;
+        /* The device, as its pictures' EXIF names it. */
+        std::string make;
+        std::string model;
     };
 
     Session(const Config &config, ResultSink *sink, GrallocPort *gralloc);

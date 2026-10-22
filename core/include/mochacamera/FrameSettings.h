@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 #include "mochacamera/Controls.h"
 
@@ -76,6 +77,17 @@ struct FrameSettings {
         uint32_t thumbnailWidth   = 0;
         uint32_t thumbnailHeight  = 0;
         std::optional<uint8_t> thumbnailQuality;
+        /* JPEG_GPS_COORDINATES, _TIMESTAMP and _PROCESSING_METHOD:
+         * where the picture was taken, for its EXIF; absent when the
+         * request gives no coordinates. */
+        struct Gps {
+            double      latitude  = 0;
+            double      longitude = 0;
+            double      altitude  = 0;
+            int64_t     timestampSec = 0;
+            std::string processingMethod;
+        };
+        std::optional<Gps> gps;
     } jpeg;
 
     /* A snapshot -- a still capture, a video snapshot or a ZSL request,

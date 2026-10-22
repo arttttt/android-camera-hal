@@ -16,6 +16,8 @@
 
 #include "Camera3Request.h"
 
+#include <string.h>
+
 #include <system/camera_metadata.h>
 #include <system/graphics.h>
 
@@ -179,6 +181,25 @@ FrameSettings parseFrameSettings(const CameraMetadata &cm) {
     }
     if (cm.exists(ANDROID_JPEG_THUMBNAIL_QUALITY))
         s.jpeg.thumbnailQuality = *cm.find(ANDROID_JPEG_THUMBNAIL_QUALITY).data.u8;
+    if (cm.exists(ANDROID_JPEG_GPS_COORDINATES)) {
+        const camera_metadata_ro_entry_t e = cm.find(ANDROID_JPEG_GPS_COORDINATES);
+        if (e.count >= 3) {
+            FrameSettings::Jpeg::Gps g;
+            g.latitude  = e.data.d[0];
+            g.longitude = e.data.d[1];
+            g.altitude  = e.data.d[2];
+            if (cm.exists(ANDROID_JPEG_GPS_TIMESTAMP))
+                g.timestampSec = *cm.find(ANDROID_JPEG_GPS_TIMESTAMP).data.i64;
+            if (cm.exists(ANDROID_JPEG_GPS_PROCESSING_METHOD)) {
+                const camera_metadata_ro_entry_t m =
+                        cm.find(ANDROID_JPEG_GPS_PROCESSING_METHOD);
+                /* A byte string, NUL-terminated or not. */
+                const char *c = reinterpret_cast<const char *>(m.data.u8);
+                g.processingMethod.assign(c, strnlen(c, m.count));
+            }
+            s.jpeg.gps = std::move(g);
+        }
+    }
 
     s.stillCapture = s.intent == CaptureIntent::StillCapture ||
                      s.intent == CaptureIntent::VideoSnapshot ||

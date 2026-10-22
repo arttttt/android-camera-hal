@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <poll.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <utils/Log.h>
@@ -13,6 +14,7 @@
 
 #include "IspPipeline.h"
 #include "PostProcessor.h"
+#include "sensor/SensorConfig.h"
 #include "DbgUtils.h"
 #include "mochacamera/ports/GrallocPort.h"
 
@@ -209,9 +211,49 @@ status_t BufferProcessor::recordBlobOutput(Output &out, const FrameContext &ctx,
     return NO_ERROR;
 }
 
-bool BufferProcessor::finalizeBlobOutput(Output &out,
-                                          const FrameSettings::Jpeg &jpeg,
-                                          uint32_t frameNumber) {
+/* What the picture's EXIF says: what its frame ran on, the request's
+ * location, the device and the lens; dated now, by the wall clock in
+ * the local zone. */
+ExifInfo BufferProcessor::exifFor(const Frame &frame) const {
+    ExifInfo e;
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    const time_t sec = now.tv_sec;
+    struct tm local;
+    localtime_r(&sec, &local);
+    e.timeSec      = now.tv_sec;
+    e.subSecMs     = (int32_t)(now.tv_nsec / 1000000);
+    e.utcOffsetMin = (int32_t)(local.tm_gmtoff / 60);
+
+    e.make  = mDeps.make;
+    e.model = mDeps.model;
+    if (mDeps.fNumber > 0)       e.fNumber       = mDeps.fNumber;
+    if (mDeps.focalLengthMm > 0) e.focalLengthMm = mDeps.focalLengthMm;
+
+    const android::DelayedControls::Batch &ran = frame.inEffect;
+    if (ran.has[android::DelayedControls::EXPOSURE])
+        e.exposureNs = (int64_t)ran.val[android::DelayedControls::EXPOSURE] * 1000;
+    if (ran.has[android::DelayedControls::GAIN] && mDeps.sensorCfg)
+        e.iso = mDeps.sensorCfg->gainToIso(ran.val[android::DelayedControls::GAIN]);
+    e.manualExposure     = frame.settings.ae.mode == mocha::camera::AeMode::Off;
+    e.manualWhiteBalance = frame.settings.awb.mode == mocha::camera::AwbMode::Off;
+
+    if (const auto &g = frame.settings.jpeg.gps) {
+        ExifInfo::Gps gps;
+        gps.latitude         = g->latitude;
+        gps.longitude        = g->longitude;
+        gps.altitude         = g->altitude;
+        gps.timestampSec     = g->timestampSec;
+        gps.processingMethod = g->processingMethod;
+        e.gps = std::move(gps);
+    }
+    return e;
+}
+
+bool BufferProcessor::finalizeBlobOutput(Frame &frame, size_t outputIndex) {
+    Output &out = frame.outputs[outputIndex];
+    const FrameSettings::Jpeg &jpeg = frame.settings.jpeg;
+    const uint32_t frameNumber = frame.frameNumber;
     const JpegSnapshot snap = out.jpeg;
     if (snap.ringSlot < 0) return false;
     /* The snapshot is used up here whatever happens below. */
@@ -237,7 +279,7 @@ bool BufferProcessor::finalizeBlobOutput(Output &out,
     size_t written = 0;
     int64_t t0 = systemTime();
     bool ok = mDeps.jpeg->process(snap, out.stream.width, out.stream.height,
-                                  dst, maxImageSize, jpeg, &written);
+                                  dst, maxImageSize, jpeg, exifFor(frame), &written);
     int64_t encMs = (systemTime() - t0) / 1000000;
     if (ok) {
         JpegBlobTrailer trailer;

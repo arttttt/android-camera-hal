@@ -51,8 +51,7 @@ void JpegEngine::Job::encode() {
     /* finalizeBlobOutput uses the snapshot up either way. A BLOB with
      * no image in it goes back as a failed buffer. The result engine
      * reads the status only once this job's token is gone. */
-    const bool encoded = processor->finalizeBlobOutput(
-            f.outputs[output], f.settings.jpeg, f.frameNumber);
+    const bool encoded = processor->finalizeBlobOutput(f, output);
     if (!encoded)
         f.outputs[output].status = BufferStatus::Error;
     finished = true;
