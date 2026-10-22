@@ -22,6 +22,7 @@
 #include <deque>
 #include <memory>
 #include <optional>
+#include <set>
 #include <vector>
 
 #include "mochacamera/ports/FrameSource.h"
@@ -62,6 +63,14 @@ struct SensorConfig;
  * The requests after them keep their own frames: a missed frame never
  * shifts them.
  *
+ * Frames are numbered as the sensor runs them, which is not always as
+ * the driver numbers them: a sensor that runs the frame after a line
+ * length write without a frame start (SensorConfig::lineLengthHidesFrame)
+ * has the driver count one frame fewer from there. The binder knows the
+ * writes it asks for, and numbers the driver's frames past such a write
+ * one on; nothing is written in a hidden frame, and its tick's writes
+ * go out at the next start, as for a start not reported.
+ *
  * The record is only as true as the sensor's delays: a sensor that
  * takes a write a frame sooner or later than configured runs every
  * frame on a neighbour's settings, and the record does not see it.
@@ -94,8 +103,9 @@ public:
      * A frame length written early in a frame may stretch that very
      * frame (the IMX179 does, 2.5 ms in), and the VI starts waiting on
      * the next frame as this one starts: its wait must be up a start
-     * before the write. `waitPeriodNs` is the longest frame this
-     * tick's write or the next one's makes -- requests are filed two
+     * before the write. `waitPeriodNs` is the longest from one start
+     * to the next this tick's write or the next one's makes -- with
+     * the frame a line length write hides -- requests are filed two
      * frames ahead, so the next is known -- for the VI's wait now. */
     struct Start {
         bool                   ticked = false;
@@ -135,9 +145,10 @@ public:
      * ticket. */
     void cancel(const Ticket &ticket);
 
-    /* Frame `sequence` has started. The stream's first start may be any
-     * number: the frames asked for before it move on by it. A start not
-     * after the last one, or after its own frame came, is not ticked. */
+    /* The driver's frame `sequence` has started. The stream's first
+     * start may be any number: the frames asked for before it move on
+     * by it. A start not after the last one, or after its own frame
+     * came, is not ticked. */
     Start start(uint32_t sequence);
 
     /* A frame came: the lease of its slot, numbered by the driver. */
@@ -149,6 +160,10 @@ public:
     uint32_t missedStarts() const { return startsMissed; }
 
 private:
+    /* The sensor frame the driver numbers `sequence`. */
+    uint32_t frameOf(uint32_t sequence) const;
+    /* Frame `frame` runs without a start. */
+    bool hidden(uint32_t frame) const;
     /* The first ticket still waiting; expired ones dropped. */
     std::shared_ptr<Ticket> front();
     void give(Ticket &t, const mocha::camera::BayerLease &lease,
@@ -164,6 +179,21 @@ private:
     uint32_t lastStart = 0;       /* the last frame that started */
     uint32_t framesMissed = 0;
     uint32_t startsMissed = 0;
+    /* Frames a line length write hid that a start or a frame may still
+     * be numbered before: the frame, and the driver's number of the
+     * frame it was written in -- the driver's numbers past it are one
+     * frame on. Those both have passed are counted in `hiddenPassed`. */
+    struct Hidden {
+        uint32_t frame;
+        uint32_t afterSequence;
+    };
+    std::deque<Hidden> hiddenAhead;
+    uint32_t hiddenPassed = 0;
+    /* Frames no request is given: a still's line length write hides
+     * them, or would make their writes in a hidden frame. */
+    std::set<uint32_t> unserved;
+    /* The line length the last tick wrote, if it ticked. */
+    std::optional<int32_t> lineLength;
     /* Tickets waiting for their frame, in the order of their frames; a
      * request let go leaves an expired entry. */
     std::deque<std::weak_ptr<Ticket>> wanted;

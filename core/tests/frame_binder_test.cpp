@@ -102,8 +102,11 @@ bool same(const DelayedControls::Batch &a, const DelayedControls::Batch &b) {
  * frame: it runs on what is in effect by then, control by control; its
  * start is reported -- unless the capture misses the frame -- and the
  * binder's write, made inside it, takes effect each control's delay
- * on; it lasts what its frame and line length make it, and arrives,
- * numbered as the driver numbers frames. */
+ * on; it lasts what its frame and line length make it, or its exposure
+ * where that is longer, and arrives, numbered as the driver numbers
+ * frames. A frame whose line length is new to it runs without a start
+ * (SensorConfig::lineLengthHidesFrame, as the IMX179): no write is made
+ * in it, nothing arrives, and the driver does not count it. */
 class Rig {
 public:
     SensorConfig    cfg = imx179();
@@ -127,13 +130,20 @@ public:
             auto w = writes[id].find(k);
             if (w != writes[id].end()) running.val[id] = w->second;
         }
+        const bool hidden = cfg.lineLengthHidesFrame && k > 0 &&
+            running.val[DelayedControls::LINE_LENGTH] !=
+                ran.back().val[DelayedControls::LINE_LENGTH];
         ran.push_back(running);
-        endNs += cfg.frameDurationNs(running.val[DelayedControls::FRAME_LENGTH],
-                                     running.val[DelayedControls::LINE_LENGTH]);
+        endNs += cfg.frameSpanNs(running);
+        if (hidden) {
+            ++hiddenFrames;
+            return std::nullopt;
+        }
+        const uint32_t seq = k - hiddenFrames + first;
         if (!captured)
             return std::nullopt;
 
-        const FrameBinder::Start s = binder.start(k + first);
+        const FrameBinder::Start s = binder.start(seq);
         if (s.ticked && s.changed) {
             const DelayedControls::Config d = sensorDelays();
             for (int id = 0; id < DelayedControls::COUNT; ++id)
@@ -142,7 +152,7 @@ public:
 
         BayerFrame f;
         f.slot        = static_cast<int>(k % 8);
-        f.sequence    = k + first;
+        f.sequence    = seq;
         f.timestampNs = endNs;
         return binder.arrive(BayerLease(f, 0, &slots));
     }
@@ -153,6 +163,7 @@ private:
     uint32_t first;
     std::map<uint32_t, int32_t> writes[DelayedControls::COUNT];
     DelayedControls::Batch running;
+    uint32_t hiddenFrames = 0;
     int64_t  endNs = 1000000000;
 };
 
@@ -286,8 +297,84 @@ void testOneShotSettings() {
 
     check(shot->bayer && same(ranFor(r, shot->sensorFrame), longShot));
     check(same(shot->inEffect, r.ran[shot->sensorFrame]));
-    for (uint32_t k = shot->frame + 1; k < shot->frame + 6; ++k)
+    /* The frame right after it is the preview's frame and line length,
+     * and runs hidden on the still's exposure, the slower control; from
+     * the next one on, all of it is the preview's. */
+    const DelayedControls::Batch &after = r.ran[shot->frame + 1];
+    check(after.val[DelayedControls::FRAME_LENGTH] ==
+              preview.val[DelayedControls::FRAME_LENGTH] &&
+          after.val[DelayedControls::LINE_LENGTH] ==
+              preview.val[DelayedControls::LINE_LENGTH]);
+    for (uint32_t k = shot->frame + 2; k < shot->frame + 6; ++k)
         check(same(r.ran[k], preview));
+}
+
+/* A long still whose line length is not the preview's, among preview
+ * requests sent at the framework's pace: the sensor hides the frame
+ * before it and the frame after it. The still gets its own frame,
+ * every preview request gets one that ran on its settings -- none is
+ * given a hidden frame, or one whose write a hidden frame would have
+ * made -- and the driver's numbers, one short past each hidden frame,
+ * are no frame or start missed. From the start the still's write goes
+ * out on, the VI's wait covers the frame and the hidden one after it. */
+void testHiddenFrames() {
+    Rig r;
+    const SensorConfig::FrameTiming t = r.cfg.timingForExposure(1200000);
+    check(t.lineLength != r.cfg.lineLengthDefault);
+    DelayedControls::Batch longShot = settings(r.cfg, 1200000);
+    longShot.val[DelayedControls::FRAME_LENGTH] = t.frameLen;
+    longShot.val[DelayedControls::LINE_LENGTH]  = t.lineLength;
+    const int64_t longPeriod = r.cfg.frameDurationNs(t.frameLen, t.lineLength);
+
+    std::deque<InFlight> inFlight;
+    int next = 0;
+    std::shared_ptr<FrameBinder::Ticket> shot;
+    const auto send = [&] {
+        const bool still = next == 6;
+        const DelayedControls::Batch s = still ? longShot
+                                               : settings(r.cfg, 1000 + 10 * next);
+        ++next;
+        inFlight.push_back({r.binder.request(s, still), s});
+        if (still) shot = inFlight.back().ticket;
+    };
+    for (int i = 0; i < 4; ++i) send();
+
+    bool own = true, waitCovers = true;
+    int done = 0;
+    for (uint32_t k = 0; k < 60; ++k) {
+        const std::optional<FrameBinder::Arrival> a = r.frame();
+        if (!a || a->settled.empty()) continue;
+        for (const std::shared_ptr<FrameBinder::Ticket> &got : a->settled) {
+            own = own && !got->lost && got == inFlight.front().ticket
+                      && got->sensorFrame == got->frame
+                      && same(ranFor(r, got->sensorFrame), inFlight.front().wanted)
+                      && same(got->inEffect, r.ran[got->sensorFrame]);
+            inFlight.pop_front();
+            ++done;
+            send();
+        }
+    }
+    check(own);
+    check(done > 30);
+    check(shot && shot->bayer && shot->inEffect.val[DelayedControls::EXPOSURE] == 1200000);
+    /* The hidden frames ran, and nothing came for them. */
+    check(r.ran[shot->frame - 1].val[DelayedControls::LINE_LENGTH] == t.lineLength);
+    check(r.ran[shot->frame + 1].val[DelayedControls::LINE_LENGTH] ==
+          r.cfg.lineLengthDefault);
+    check(r.binder.missedFrames() == 0 && r.binder.missedStarts() == 0);
+
+    /* The VI: a binder of its own, the same requests, started by hand. */
+    DelayedControls dc(sensorDelays());
+    dc.reset(r.cfg.configureDefaults());
+    FrameBinder binder(&dc, &r.cfg);
+    binder.reset(kLines);
+    binder.request(settings(r.cfg, 8000), false);
+    const std::shared_ptr<FrameBinder::Ticket> s = binder.request(longShot, true);
+    const uint32_t writeTick = s->frame - kDelay;
+    for (uint32_t k = 0; k < writeTick; ++k) binder.start(k);
+    const FrameBinder::Start w = binder.start(writeTick);
+    waitCovers = w.changed && w.waitPeriodNs >= w.periodNs + longPeriod;
+    check(waitCovers);
 }
 
 /* The capture misses the frame a request asked for, and the next frame
@@ -493,5 +580,6 @@ int main() {
     testFirstFrameNotZero();
     testOutOfOrder();
     testViWaitAhead();
+    testHiddenFrames();
     return finish("frame_binder_test");
 }

@@ -72,12 +72,29 @@ struct SensorConfig {
      * DelayedControls. */
     int32_t controlDelay[DelayedControls::COUNT];
 
+    /* Silicon property: the frame after one in which the line length
+     * is written new runs without a frame start -- the receiver sees
+     * none, and the frame written in runs on through it. The delays
+     * still count it. */
+    bool lineLengthHidesFrame = false;
+
     /* Lens — the module's focal length (mm), from the tuning's module
      * block. Static metadata advertises it and every result reports
      * it; it is a fixed property of the lens, focusing or not. */
     float focalLengthMm;
 
     /* --- Helpers --- */
+
+    /* How long a frame on `b` (every control set) runs: its frame
+     * length, or its exposure and the coarse margin where that is
+     * longer -- the sensor stretches a frame to the exposure it holds. */
+    int64_t frameSpanNs(const DelayedControls::Batch &b) const {
+        const int64_t lineNs = lineTimeNsAt(b.val[DelayedControls::LINE_LENGTH]);
+        const int64_t frame  = (int64_t)b.val[DelayedControls::FRAME_LENGTH] * lineNs;
+        const int64_t exposure = (int64_t)b.val[DelayedControls::EXPOSURE] * 1000
+                               + (int64_t)maxCoarseDiff * lineNs;
+        return frame > exposure ? frame : exposure;
+    }
 
     /* Max exposure (µs) at the given frame_length */
     int32_t maxExposureUs(int32_t frameLen) const {
@@ -222,6 +239,15 @@ struct SensorConfig {
              * (onsemi AR1335: "the gain update is held off by one
              * frame"). */
             .controlDelay    = { 2, 2, 1, 1 },
+            /* Measured on mocha (23.10.2026, FRAME_START traces): the
+             * line length alone written 3440 -> 5000 and back, 19 to
+             * 205 ms into a frame, made that frame's start-to-start
+             * its own period and the new one's (200 + 291 ms, 291 +
+             * 200 ms), at any phase. A 2 s still, written with the
+             * frame length, ran 200 + 2000 ms, then 2000 + 870 ms:
+             * the delays counted over the hidden frames, the second
+             * stretched to the exposure still held. */
+            .lineLengthHidesFrame = true,
             .focalLengthMm   = 0.f,
         };
     }

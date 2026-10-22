@@ -42,26 +42,66 @@ void FrameBinder::reset(uint32_t l) {
     lastStart    = 0;
     framesMissed = 0;
     startsMissed = 0;
+    hiddenAhead.clear();
+    hiddenPassed = 0;
+    lineLength.reset();
+    unserved.clear();
+}
+
+uint32_t FrameBinder::frameOf(uint32_t sequence) const {
+    uint32_t frame = sequence + hiddenPassed;
+    for (const Hidden &h : hiddenAhead)
+        if (sequence > h.afterSequence) ++frame;
+    return frame;
+}
+
+bool FrameBinder::hidden(uint32_t frame) const {
+    for (const Hidden &h : hiddenAhead)
+        if (h.frame == frame) return true;
+    return false;
 }
 
 std::shared_ptr<FrameBinder::Ticket> FrameBinder::request(
         const DelayedControls::Batch &settings, bool stillCapture) {
     /* The first frame its settings can still be filed for, and one past
      * the frame of the request before it. */
-    uint32_t frame = controls->firstFileable();
+    const uint32_t first = controls->firstFileable();
+    while (!unserved.empty() && *unserved.begin() < first)
+        unserved.erase(unserved.begin());
+    const auto free = [this](uint32_t f) {
+        while (unserved.count(f)) ++f;
+        return f;
+    };
+    uint32_t frame = first;
     if (anyRequest && frame <= lastAsked)
         frame = lastAsked + 1;
-    anyRequest = true;
-    lastAsked  = frame;
+    frame = free(frame);
     if (stillCapture) {
-        const DelayedControls::Batch after =
+        DelayedControls::Batch after =
             streamSettings ? *streamSettings : controls->planned(frame + 1);
+        /* A line length its own, written with the rest two frames
+         * before it, hides the frame before it, and going back hides
+         * the frame after it. No frame comes for those, and none for
+         * the frames two on from them: their writes would go out in
+         * the hidden frames, which have no start. None of them is
+         * given to a request. */
+        const bool hides = cfg->lineLengthHidesFrame &&
+            settings.val[DelayedControls::LINE_LENGTH] !=
+                after.val[DelayedControls::LINE_LENGTH];
+        if (hides && anyRequest && frame - 1 == lastAsked) {
+            frame = free(frame + 1);
+            if (!streamSettings) after = controls->planned(frame + 1);
+        }
         controls->file(frame, settings);
         controls->file(frame + 1, after);
+        if (hides)
+            unserved.insert({frame - 1, frame + 1, frame + 3});
     } else {
         controls->file(frame, settings);
         streamSettings = settings;
     }
+    anyRequest = true;
+    lastAsked  = frame;
 
     auto ticket = std::make_shared<Ticket>();
     ticket->frame    = frame;
@@ -103,38 +143,70 @@ FrameBinder::Start FrameBinder::start(uint32_t sequence) {
             if (std::shared_ptr<Ticket> t = w.lock()) t->frame += sequence;
         if (anyRequest) lastAsked += sequence;
     }
-    if (anyStart && sequence <= lastStart) {
+    const uint32_t frame = frameOf(sequence);
+    bool hides = false;
+    if (anyStart && frame <= lastStart) {
         ALOGW("frame %u started after frame %u started: not written on",
-              sequence, lastStart);
-    } else if (anyFrame && sequence <= lastFrame) {
+              frame, lastStart);
+    } else if (anyFrame && frame <= lastFrame) {
         ALOGW("frame %u started after frame %u came: not written on",
-              sequence, lastFrame);
+              frame, lastFrame);
     } else {
-        if (anyStart && sequence != lastStart + 1) {
+        uint32_t next = lastStart + 1;
+        while (anyStart && hidden(next)) ++next;
+        if (anyStart && frame != next) {
             /* Starts the driver did not report, or the capture passed
              * over: no write was made in those frames, and
              * DelayedControls lets this tick overtake them. */
-            startsMissed += sequence - lastStart - 1;
+            startsMissed += frame - next;
             ALOGW("frame %u started after %u: %u frame start(s) not "
-                  "written on", sequence, lastStart, sequence - lastStart - 1);
+                  "written on", frame, lastStart, frame - next);
         }
         anyStart  = true;
-        lastStart = sequence;
+        lastStart = frame;
         s.ticked  = true;
-        s.values  = controls->tick(sequence, &s.changed);
+        s.values  = controls->tick(frame, &s.changed);
+        const int32_t ll = s.values.val[DelayedControls::LINE_LENGTH];
+        hides = cfg->lineLengthHidesFrame && lineLength && *lineLength != ll;
+        if (hides)
+            hiddenAhead.push_back({frame + 1, sequence});
+        lineLength = ll;
     }
+
+    /* From this start to the next: this frame, and the one its write
+     * hides; and the same from the next start, on what the next tick
+     * would write (a line length new to it hides one more). */
     const auto period = [this](const DelayedControls::Batch &b) {
         return cfg->frameDurationNs(b.val[DelayedControls::FRAME_LENGTH],
                                     b.val[DelayedControls::LINE_LENGTH]);
     };
-    s.periodNs = period(controls->inEffect(sequence));
-    s.waitPeriodNs = std::max(s.ticked ? period(s.values) : s.periodNs,
-                              period(controls->peek(sequence + 1)));
+    s.periodNs = period(controls->inEffect(frame));
+    int64_t untilNext = s.periodNs;
+    if (hides)
+        untilNext += cfg->frameSpanNs(controls->inEffect(frame + 1));
+    const uint32_t nextTick = frame + (hides ? 2 : 1);
+    const DelayedControls::Batch now = s.ticked ? s.values : controls->peek(frame);
+    const DelayedControls::Batch next = controls->peek(nextTick);
+    int64_t fromNext = period(next);
+    if (cfg->lineLengthHidesFrame &&
+        next.val[DelayedControls::LINE_LENGTH] != now.val[DelayedControls::LINE_LENGTH]) {
+        DelayedControls::Batch held = controls->inEffect(nextTick + 1);
+        held.val[DelayedControls::FRAME_LENGTH] =
+            std::max(held.val[DelayedControls::FRAME_LENGTH],
+                     next.val[DelayedControls::FRAME_LENGTH]);
+        held.val[DelayedControls::LINE_LENGTH] = next.val[DelayedControls::LINE_LENGTH];
+        held.val[DelayedControls::EXPOSURE] =
+            std::max(held.val[DelayedControls::EXPOSURE],
+                     next.val[DelayedControls::EXPOSURE]);
+        fromNext += cfg->frameSpanNs(held);
+    }
+    s.waitPeriodNs = std::max({untilNext, s.ticked ? period(s.values) : 0,
+                               fromNext});
     return s;
 }
 
 FrameBinder::Arrival FrameBinder::arrive(mocha::camera::BayerLease lease) {
-    const uint32_t seq   = lease.frame().sequence;
+    const uint32_t seq   = frameOf(lease.frame().sequence);
     const int64_t  endNs = lease.frame().timestampNs;
 
     Arrival a;
@@ -144,14 +216,22 @@ FrameBinder::Arrival FrameBinder::arrive(mocha::camera::BayerLease lease) {
         ALOGW("frame %u came after frame %u: given back", seq, lastFrame);
         return a;
     }
-    if (anyFrame && seq != lastFrame + 1) {
+    uint32_t next = lastFrame + 1;
+    while (anyFrame && hidden(next)) ++next;
+    if (anyFrame && seq != next) {
         /* Frames the VI had no buffer for. */
-        framesMissed += seq - lastFrame - 1;
+        framesMissed += seq - next;
         ALOGW("frame %u came after %u: %u frame(s) not captured",
-              seq, lastFrame, seq - lastFrame - 1);
+              seq, lastFrame, seq - next);
     }
     anyFrame  = true;
     lastFrame = seq;
+    /* Hidden frames both the starts and the frames are past. */
+    while (!hiddenAhead.empty() && hiddenAhead.front().frame < lastFrame &&
+           hiddenAhead.front().frame < lastStart) {
+        hiddenAhead.pop_front();
+        ++hiddenPassed;
+    }
 
     /* The request that asked for this frame, and any whose frame the
      * capture missed: the frame serves each that it ran on the settings
