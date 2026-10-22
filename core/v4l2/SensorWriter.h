@@ -29,17 +29,25 @@ class  ViController;
  * then the frame and line length, exposure and gain in one group hold,
  * so the sensor latches them on the same frame.
  *
- * Called on every frame's tick: the VI's wait follows the frames
- * written, changed or not, and the sensor is written only when
- * something changed. The capture engine's thread only. */
+ * In two steps, every frame's tick: prepare() as the frame arrives, in
+ * the blanking before the next one starts -- the VI's wait follows the
+ * frames written, changed or not, and must be up before the VI starts
+ * waiting on a frame a write may stretch; a sensor may take the frame
+ * length into the frame it is written in. write() inside the next
+ * frame puts the values on the sensor, when something changed. The
+ * capture engine's thread only. */
 class SensorWriter {
 public:
     /* `vi` may be null: the VI then waits its default. */
     SensorWriter(V4l2Device *dev, const SensorConfig *cfg, ViController *vi);
 
-    /* `values`: every control set, in effect a control delay from now.
-     * Written to the sensor when `changed`. */
-    void frame(const DelayedControls::Batch &values, bool changed);
+    /* `values`: every control set, about to be written. Raises the VI's
+     * frame wait for their frame -- lowers it once the longer frames are
+     * through. */
+    void prepare(const DelayedControls::Batch &values);
+
+    /* Writes `values` (every control set) to the sensor. */
+    void write(const DelayedControls::Batch &values);
 
 private:
     V4l2Device         *dev;

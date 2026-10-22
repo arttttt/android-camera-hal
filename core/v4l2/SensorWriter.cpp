@@ -61,16 +61,16 @@ SensorWriter::SensorWriter(V4l2Device *d, const SensorConfig *c,
     ALOGI("sensor group hold %s", groupHold ? "supported" : "not supported");
 }
 
-void SensorWriter::frame(const DelayedControls::Batch &values, bool changed) {
+void SensorWriter::prepare(const DelayedControls::Batch &values) {
+    if (vi)
+        vi->beforeFrame(cfg->frameDurationNs(
+                values.val[DelayedControls::FRAME_LENGTH],
+                values.val[DelayedControls::LINE_LENGTH]));
+}
+
+void SensorWriter::write(const DelayedControls::Batch &values) {
     const int32_t frameLen   = values.val[DelayedControls::FRAME_LENGTH];
     const int32_t lineLength = values.val[DelayedControls::LINE_LENGTH];
-
-    /* Before the write reaches the sensor, so a longer frame never
-     * meets the old wait. */
-    if (vi)
-        vi->beforeFrame(cfg->frameDurationNs(frameLen, lineLength));
-    if (!changed)
-        return;
 
     GroupHold hold(dev, groupHold);
     /* Single VIDIOC_S_EXT_CTRLS — frame_length must reach the sensor

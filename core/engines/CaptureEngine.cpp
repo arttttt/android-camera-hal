@@ -109,7 +109,8 @@ void CaptureEngine::stop() {
 void CaptureEngine::writePending() {
     if (!pending)
         return;
-    deps.writer->frame(pending->values, pending->changed);
+    if (pending->changed)
+        deps.writer->write(pending->values);
     pending.reset();
 }
 
@@ -144,6 +145,11 @@ void CaptureEngine::onFrames(std::vector<BayerLease> frames) {
         const uint32_t seq = a.sensorFrame;
         if (!a.settled.empty())
             wakeFd.notify();
+
+        /* The VI's wait now, in the blanking: it starts waiting on the
+         * next frame's successor as the next frame starts, and the
+         * write inside that frame may stretch it. */
+        deps.writer->prepare(a.values);
 
         /* A write still pending is a frame late -- this thread fell a
          * frame behind; it goes now, and its frame's record may be off
