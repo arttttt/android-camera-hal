@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-/* Host test for DelayedControls and ExposureTarget: what ApplySettings
- * commits, what result metadata reads back as in effect, and the IPA's
- * decision requests in auto AE take. Run by
+/* Host test for DelayedControls and ExposureTarget: what requests file
+ * for a sensor frame, what each frame's tick writes, what was in effect
+ * on a frame, and the IPA's decision requests in auto AE take. Run by
  * core/tests/run_host_tests.sh. */
 
 #include <cstdio>
@@ -33,24 +33,12 @@ using mocha::camera::test::finish;
 
 namespace {
 
-DelayedControls::Config config() {
-    DelayedControls::Config c;
-    c.delay[DelayedControls::EXPOSURE]        = 2;
-    c.delay[DelayedControls::GAIN]            = 2;
-    c.delay[DelayedControls::FRAME_LENGTH]    = 2;
-    c.delay[DelayedControls::LINE_LENGTH]     = 2;
-    return c;
-}
+using Id = DelayedControls::ControlId;
 
-/* What configure wrote: every control set. */
-DelayedControls::Batch fallbackOf(int32_t exposure, int32_t gain,
-                                  int32_t frameLen = 0) {
-    DelayedControls::Batch b;
-    for (bool &h : b.has) h = true;
-    b.val[DelayedControls::EXPOSURE]     = exposure;
-    b.val[DelayedControls::GAIN]         = gain;
-    b.val[DelayedControls::FRAME_LENGTH] = frameLen;
-    return b;
+DelayedControls::Config config(int delay = 3) {
+    DelayedControls::Config c;
+    for (int &d : c.delay) d = delay;
+    return c;
 }
 
 DelayedControls::Batch batch(int32_t exposure, int32_t gain) {
@@ -62,53 +50,140 @@ DelayedControls::Batch batch(int32_t exposure, int32_t gain) {
     return b;
 }
 
-/* What was written for frame N is in effect on frame N + delay; before
- * any write the caller's fallback (the configured defaults) is. */
-void testInEffect() {
-    DelayedControls dc(config());
-    const DelayedControls::Batch fallback = fallbackOf(33000, 100);
-    DelayedControls::Batch b = dc.applyControls(5, fallback);
-    check(b.val[DelayedControls::EXPOSURE] == 33000 && b.val[DelayedControls::GAIN] == 100);
-
-    dc.commit(5, batch(2000, 300));
-    b = dc.applyControls(7, fallback);
-    check(b.val[DelayedControls::EXPOSURE] == 2000 && b.val[DelayedControls::GAIN] == 300);
-    b = dc.applyControls(6, fallback);
-    check(b.val[DelayedControls::EXPOSURE] == 33000);
-}
-
-/* The frame length rides with exposure and gain: written for frame N,
- * in effect on N + delay, the frame before still on the fallback. */
-void testFrameLength() {
-    DelayedControls dc(config());
-    DelayedControls::Batch b = batch(2000, 300);
+/* What configure wrote: every control set. */
+DelayedControls::Batch initial() {
+    DelayedControls::Batch b = batch(33000, 256);
     b.has[DelayedControls::FRAME_LENGTH] = true;
-    b.val[DelayedControls::FRAME_LENGTH] = 5000;
-    dc.commit(5, b);
-    const DelayedControls::Batch fallback = fallbackOf(33000, 100, 2564);
-    check(dc.applyControls(7, fallback).val[DelayedControls::FRAME_LENGTH] == 5000);
-    check(dc.applyControls(6, fallback).val[DelayedControls::FRAME_LENGTH] == 2564);
+    b.val[DelayedControls::FRAME_LENGTH] = 2564;
+    b.has[DelayedControls::LINE_LENGTH]  = true;
+    b.val[DelayedControls::LINE_LENGTH]  = 3440;
+    return b;
 }
 
-/* A commit for a later frame in the same ring slot replaces a stale
- * cell; the stale frame then reads as never written. */
-void testRingWrap() {
+int32_t exposureOn(const DelayedControls &dc, uint32_t seq) {
+    return dc.inEffect(seq).val[DelayedControls::EXPOSURE];
+}
+
+/* Before any frame every frame runs on what configure wrote, and the
+ * first frame a request can get is the delay's. */
+void testStart() {
     DelayedControls dc(config());
-    dc.commit(3, batch(100, 10));
-    dc.commit(3 + 16, batch(200, 20));
-    const DelayedControls::Batch fallback = fallbackOf(7, 8);
-    DelayedControls::Batch b = dc.applyControls(3 + 2, fallback);
-    check(b.val[DelayedControls::EXPOSURE] == 7);
-    b = dc.applyControls(3 + 16 + 2, fallback);
-    check(b.val[DelayedControls::EXPOSURE] == 200);
+    dc.reset(initial());
+    check(dc.firstFileable() == 3);
+    const DelayedControls::Batch b = dc.inEffect(0);
+    for (int id = 0; id < DelayedControls::COUNT; ++id)
+        check(b.has[id] && b.val[id] == initial().val[id]);
 }
 
-/* reset() forgets everything. */
+/* Filed for frame 3, written as frame 0 arrives, in effect on 3 and on;
+ * frames 0..2 ran on the initial values. A tick with nothing new keeps
+ * the values and says nothing changed. */
+void testFiledFrameWrittenAtItsTick() {
+    DelayedControls dc(config());
+    dc.reset(initial());
+    check(dc.file(3, batch(1000, 512)));
+
+    bool changed = false;
+    const DelayedControls::Batch w = dc.tick(0, &changed);
+    check(changed);
+    check(w.val[DelayedControls::EXPOSURE] == 1000 && w.val[DelayedControls::GAIN] == 512);
+    check(w.has[DelayedControls::FRAME_LENGTH] && w.val[DelayedControls::FRAME_LENGTH] == 2564);
+    check(exposureOn(dc, 2) == 33000);
+    check(exposureOn(dc, 3) == 1000);
+
+    dc.tick(1, &changed);
+    check(!changed);
+    check(exposureOn(dc, 4) == 1000);
+}
+
+/* A frame already being written cannot be filed for any more. */
+void testTooLate() {
+    DelayedControls dc(config());
+    dc.reset(initial());
+    dc.tick(0, nullptr);
+    check(dc.firstFileable() == 4);
+    check(!dc.file(3, batch(1, 1)));
+    check(dc.file(4, batch(2, 2)));
+}
+
+/* Requests filed for consecutive frames -- several arriving during one
+ * long frame -- are written one per tick, each on its own frame. */
+void testOnePerFrame() {
+    DelayedControls dc(config());
+    dc.reset(initial());
+    for (uint32_t k = 0; k < 7; ++k) dc.tick(k, nullptr);
+    check(dc.file(10, batch(100, 256)));
+    check(dc.file(11, batch(200, 256)));
+    check(dc.file(12, batch(300, 256)));
+    dc.tick(7, nullptr);
+    dc.tick(8, nullptr);
+    dc.tick(9, nullptr);
+    check(exposureOn(dc, 9) == 33000);
+    check(exposureOn(dc, 10) == 100);
+    check(exposureOn(dc, 11) == 200);
+    check(exposureOn(dc, 12) == 300);
+}
+
+/* The capture missed frame 7: its tick never came, and what was filed
+ * for frame 10 is overtaken by frame 11's at tick 8. The record says
+ * frame 10 ran on the old values. */
+void testMissedTick() {
+    DelayedControls dc(config());
+    dc.reset(initial());
+    for (uint32_t k = 0; k <= 6; ++k) dc.tick(k, nullptr);
+    dc.file(10, batch(100, 256));
+    dc.file(11, batch(200, 256));
+    dc.tick(8, nullptr);
+    check(exposureOn(dc, 10) == 33000);
+    check(exposureOn(dc, 11) == 200);
+}
+
+/* A request let go before its frame was written: the frame runs on what
+ * was filed before it. */
+void testUnfile() {
+    DelayedControls dc(config());
+    dc.reset(initial());
+    dc.file(3, batch(100, 256));
+    dc.file(4, batch(200, 256));
+    dc.unfile(3);
+    dc.tick(0, nullptr);
+    dc.tick(1, nullptr);
+    check(exposureOn(dc, 3) == 33000);
+    check(exposureOn(dc, 4) == 200);
+}
+
+/* Controls with different delays: each is written at the tick its own
+ * delay names, and both are in effect on the frame filed for; the first
+ * frame a request can get is the longest delay's. */
+void testPerControlDelay() {
+    DelayedControls::Config c = config();
+    c.delay[DelayedControls::GAIN] = 2;
+    DelayedControls dc(c);
+    dc.reset(initial());
+    check(dc.firstFileable() == 3);
+    dc.file(5, batch(100, 512));
+    DelayedControls::Batch w = dc.tick(2, nullptr);
+    check(w.val[DelayedControls::EXPOSURE] == 100);
+    check(w.val[DelayedControls::GAIN] == 256);
+    w = dc.tick(3, nullptr);
+    check(w.val[DelayedControls::GAIN] == 512);
+    const DelayedControls::Batch b = dc.inEffect(5);
+    check(b.val[DelayedControls::EXPOSURE] == 100 && b.val[DelayedControls::GAIN] == 512);
+    check(dc.inEffect(4).val[DelayedControls::GAIN] == 256);
+}
+
+/* reset() forgets what was filed and written. */
 void testReset() {
     DelayedControls dc(config());
-    dc.commit(1, batch(100, 10));
-    dc.reset();
-    check(dc.applyControls(3, fallbackOf(7, 8)).val[DelayedControls::EXPOSURE] == 7);
+    dc.reset(initial());
+    dc.file(3, batch(100, 10));
+    dc.tick(0, nullptr);
+    dc.reset(initial());
+    check(dc.firstFileable() == 3);
+    check(exposureOn(dc, 3) == 33000);
+    bool changed = true;
+    dc.tick(0, &changed);
+    check(!changed);
 }
 
 /* The target is nothing until the IPA decides; then each control keeps
@@ -137,9 +212,13 @@ void testExposureTarget() {
 } // namespace
 
 int main() {
-    testInEffect();
-    testFrameLength();
-    testRingWrap();
+    testStart();
+    testFiledFrameWrittenAtItsTick();
+    testTooLate();
+    testOnePerFrame();
+    testMissedTick();
+    testUnfile();
+    testPerControlDelay();
     testReset();
     testExposureTarget();
     return finish("delayed_controls_test");

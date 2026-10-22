@@ -7,9 +7,9 @@ namespace android {
 
 /* No-op IPA. Returns an empty batch (has[*] = false) for every
  * processStats() call — the exposure target never gets a decision, so
- * every request takes ApplySettingsStage's manual path. Used while the stats shader and the real 3A math are still
- * being wired, and as the default when buildInfrastructure runs
- * without stats support. */
+ * every request takes requestExposure's manual path. Used while the
+ * stats shader and the real 3A math are still being wired, and as the
+ * default when buildInfrastructure runs without stats support. */
 class StubIpa : public Ipa {
 public:
     DelayedControls::Batch processStats(const IpaProcessParams &params) override;

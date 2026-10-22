@@ -195,7 +195,7 @@ Capability probeCapability(android::V4l2Device &dev, bool facingFront,
     probeAwbModes(cap, tuning);
 
     /* AE On is the IPA's; AE Off the request's own exposure and
-     * sensitivity (ApplySettingsStage's manual path). */
+     * sensitivity (requestExposure's manual path). */
     cap.ae.modes = {AeMode::Off, AeMode::On};
 
     /* AF modes where the device has a lens to move. */

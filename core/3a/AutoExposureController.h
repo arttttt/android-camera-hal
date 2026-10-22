@@ -23,7 +23,7 @@ struct SensorConfig;
  * fallback path): the frame sized for the requested exposure (a long
  * shutter grows the frame past the default period, and past the line
  * counter it grows the line too -- SensorConfig::timingForExposure),
- * the exposure and the gain. ApplySettingsStage writes it. */
+ * the exposure and the gain. requestExposure files it. */
 struct ExposureWriteValues {
     int32_t frameLen;
     int32_t lineLength;
@@ -47,11 +47,11 @@ struct ExposureWriteValues {
  *
  * Coordinator-side gating:
  *  - Caller invokes `process` only when `meta.aeMode != AE_MODE_OFF`.
- *    Manual AE keeps the framework as the authority — ApplySettingsStage
+ *    Manual AE keeps the framework as the authority — requestExposure
  *    parses the request via the static `parseManualSettings` helper
- *    on this class and writes V4L2 directly; invoking `process` for
- *    AE_MODE_OFF would push state without any of it landing on the
- *    sensor.
+ *    on this class and files it for the request's frame; invoking
+ *    `process` for AE_MODE_OFF would push state without any of it
+ *    landing on the sensor.
  *  - Caller is also free to skip the call entirely on AF-sweep
  *    frames; the controller's state is preserved across the gap and
  *    AE resumes from the converged operating point on the next call.
@@ -114,9 +114,9 @@ public:
      * SensorConfig::splitExposureGain to keep FPS).
      *
      * Static because there is no inter-frame state to preserve — the
-     * call is pure. ApplySettingsStage uses it on the capture engine
+     * call is pure. requestExposure uses it on the capture engine
      * for both the AE_MODE_OFF path and the auto-mode cold-start
-     * fallback when the IPA hasn't pushed yet. */
+     * fallback before the IPA's first decision. */
     static ExposureWriteValues parseManualSettings(
             const mocha::camera::FrameSettings &settings,
             const SensorConfig                 &cfg,

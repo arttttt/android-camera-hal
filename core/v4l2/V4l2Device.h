@@ -28,27 +28,8 @@ public:
         uint32_t pixFmt;
         int      index;   /* V4L2 queue index, valid in both modes */
 
-        /* When the capture thread dequeued the frame now in this slot
-         * (systemTime, ~ the frame's end), and the interval to the
-         * previous good frame (~ its length, more if frames were
-         * dropped). Its exposure began about exposureStartNs(); 0 when
-         * there is no previous frame to tell. Set by the capture thread
-         * before the slot is handed out. */
-        int64_t  dequeuedNs;
-        int64_t  intervalNs;
-        int64_t  exposureStartNs() const {
-            return intervalNs > 0 ? dequeuedNs - intervalNs : 0;
-        }
-
-        /* What the driver said of the frame now in this slot; see
-         * Dequeued. Set by the capture thread with dequeuedNs. */
-        uint32_t sequence;
-        int64_t  timestampNs;
-
     private:
-        VBuffer(): buf(NULL), len(0), pixFmt(0), index(-1),
-                   dequeuedNs(0), intervalNs(0),
-                   sequence(0), timestampNs(0) {}
+        VBuffer(): buf(NULL), len(0), pixFmt(0), index(-1) {}
         ~VBuffer();
 
         bool map(int fd, unsigned offset, unsigned len, uint32_t pixelFormat);

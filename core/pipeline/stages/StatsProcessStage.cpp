@@ -85,7 +85,7 @@ void StatsProcessStage::process(mocha::camera::Frame &ctx) {
         published.exposureStartNs,
         published.inEffect,
         ctx.frameNumber,
-        ctx.tShutter ? ctx.tShutter : ctx.tAccepted,
+        ctx.exposureStartNs ? ctx.exposureStartNs : ctx.tAccepted,
         stats,
         meta,
         ctx.settings,

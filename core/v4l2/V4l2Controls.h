@@ -13,8 +13,8 @@
 namespace android {
 
 /* Small batch of V4L2 controls drained by V4l2Device::setControls.
- * Plain data — owner is the call-site (ApplySettingsStage / 3A build
- * it per frame).
+ * Plain data — owner is the call-site (SensorWriter builds it per
+ * frame).
  *
  * Mixed-class batches are fine: setControls groups by
  * V4L2_CTRL_ID2CLASS and issues one VIDIOC_S_EXT_CTRLS per class

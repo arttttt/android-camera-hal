@@ -52,7 +52,10 @@ void ResultDispatchStage::process(Frame &frame) {
 
     CoreFrameResult result;
     result.outcome     = completed ? FrameOutcome::Completed : FrameOutcome::Failed;
-    result.timestampNs = frame.tShutter ? frame.tShutter : frame.tAccepted;
+    /* The shutter's: the captured frame's exposure start. A request that
+     * got no frame fails, and its time is only a placeholder. */
+    result.timestampNs = frame.exposureStartNs ? frame.exposureStartNs
+                                               : frame.tAccepted;
     if (completed) {
         AutoFocusController::Report af;
         af.afState      = mocha::camera::AfState::Inactive;
@@ -68,12 +71,14 @@ void ResultDispatchStage::process(Frame &frame) {
 
     if (completed) {
         frame.tResultSent = systemTime();
-        int64_t wait  = (frame.tBayerDq    - frame.tShutter) / 1000000;
-        int64_t post  = (frame.tResultSent - frame.tBayerDq) / 1000000;
-        int64_t total = (frame.tResultSent - frame.tShutter) / 1000000;
-        ALOGD("PERF: wait=%lldms post=%lldms total=%lldms f=%u",
-              (long long)wait, (long long)post, (long long)total,
-              frame.frameNumber);
+        int64_t sensor = (frame.tShutter    - frame.tAccepted) / 1000000;
+        int64_t permit = (frame.tBayerDq    - frame.tShutter) / 1000000;
+        int64_t post   = (frame.tResultSent - frame.tBayerDq) / 1000000;
+        int64_t total  = (frame.tResultSent - frame.tAccepted) / 1000000;
+        ALOGD("PERF: sensor=%lldms permit=%lldms post=%lldms total=%lldms "
+              "f=%u sensorFrame=%u",
+              (long long)sensor, (long long)permit, (long long)post,
+              (long long)total, frame.frameNumber, frame.sensorFrame);
     }
 }
 

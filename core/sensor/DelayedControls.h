@@ -3,23 +3,30 @@
 
 #include <stdint.h>
 
-#include <mutex>
+#include <map>
 
 namespace android {
 
-/* Port of libcamera's DelayedControls. Each control id carries a
- * fixed, per-silicon latency in frames: the value written at request
- * sequence N lands in the kernel-captured frame at sequence N + delay.
+/* The sensor's controls by the sensor frame they are in effect on, after
+ * libcamera's DelayedControls: requests file what they want for a
+ * frame, the frames as they arrive say when to write, and what was in
+ * effect on a frame is read back by its number.
  *
- * commit() records what ApplySettingsStage wrote for a request, and
- * applyControls(seq) reports what is physically in effect on frame
- * `seq`: for each control, the value committed at slot (seq - delay).
- * That value is written into result metadata so
- * ANDROID_SENSOR_EXPOSURE_TIME / SENSITIVITY reflect the sensor's
- * actual state rather than the request's target.
+ * Frames are the sensor's (SensorSequence), and the write is timed by
+ * them. The capture engine calls tick(k) as frame k arrives and writes
+ * what tick returns once frame k + 1 has started; a control written
+ * then is in effect on frame k + delay[id]. So each tick writes, for
+ * each control, the value filed for frame k + delay[id], or keeps the
+ * last one: values stay until a later
+ * frame's are filed, and a frame no request wants runs on what the
+ * last did.
  *
- * The tagged per-cell sequence number rejects stale reads after a wrap
- * of the ring. */
+ * A frame the capture missed has no tick, and what was filed for the
+ * frame its tick would have written is overtaken by the next tick's;
+ * the record says what the sensor really ran either way.
+ *
+ * The capture engine's thread only: it files, ticks and reads. reset()
+ * between streams, while it does not run. */
 class DelayedControls {
 public:
     enum ControlId {
@@ -44,48 +51,55 @@ public:
     };
 
     struct Config {
-        /* In frames. Typical silicon: 2 for exposure, 2 for gain. */
-        int     delay[COUNT];
+        /* In sensor frames: written at tick(k), a control is in effect
+         * on frame k + delay. */
+        int delay[COUNT];
     };
 
     explicit DelayedControls(const Config &config);
 
-    /* Drops every cached write. All applyControls() queries fall back
-     * until the next commit(). Called on session boundary
-     * (Session::close). */
-    void reset();
+    /* A new stream: every frame runs on `initial`, every control set
+     * -- what configure wrote before STREAMON -- until a write lands;
+     * nothing filed, no frame ticked. */
+    void reset(const Batch &initial);
 
-    /* Records what was written to the sensor for request `seq`: each
-     * set control (batch.has[id] == true) into slot (seq % RING_SIZE),
-     * tagged with the full `seq`. Controls not flagged in the batch
-     * leave the corresponding cell untouched. */
-    void commit(uint32_t seq, const Batch &batch);
+    /* The first frame a request can still be filed for: every control
+     * of it written at the next tick or later. */
+    uint32_t firstFileable() const;
 
-    /* Reports the value that was written for slot (seq - delay[id]):
-     * what was PHYSICALLY IN EFFECT on frame `seq`, every control set.
-     * A control with no matching write (the cell was never touched,
-     * or the tagged sequence doesn't match because the ring has
-     * wrapped past it) reports `fallback`: the defaults configure
-     * writes before STREAMON, so a cold-start frame reports what the
-     * sensor started with. */
-    Batch applyControls(uint32_t seq, const Batch &fallback) const;
+    /* Files the controls set in `batch` for frame `seq`, in effect from
+     * it until a later frame's. False, and nothing filed, when `seq` is
+     * before firstFileable(). */
+    bool file(uint32_t seq, const Batch &batch);
+
+    /* Drops what was filed for frame `seq` and is not written yet: the
+     * frames from it run on what was filed before. */
+    void unfile(uint32_t seq);
+
+    /* Frame `seq` has arrived. What to write now, every control set:
+     * for each control the value filed for frame seq + delay[id], or
+     * the last written. `changed`: whether any differs from the last
+     * written (or from `initial`). Recorded as in effect on those
+     * frames; the record before frame `seq` is let go. */
+    Batch tick(uint32_t seq, bool *changed);
+
+    /* What was in effect on frame `seq`, every control set: the last
+     * value written for a frame at or before it, or `initial`. Frames
+     * from the last tick on. */
+    Batch inEffect(uint32_t seq) const;
 
 private:
-    static const int RING_SIZE = 16;
-
-    struct Cell {
-        bool     has;
-        uint32_t seq;
-        int32_t  val;
-    };
+    int maxDelay() const;
 
     Config config;
-    Cell   ring[RING_SIZE][COUNT];
-
-    /* The producer (ApplySettingsStage on the capture engine) and the
-     * consumers (the IPA, result metadata) run on different threads;
-     * the ring is small enough that a single lock is fine. */
-    mutable std::mutex mutex;
+    Batch  initial;
+    /* Filed and not written: frame -> value, per control. */
+    std::map<uint32_t, int32_t> filed[COUNT];
+    /* Written: the frame a value is in effect from -> value, per
+     * control. */
+    std::map<uint32_t, int32_t> written[COUNT];
+    bool     ticked = false;
+    uint32_t lastTick = 0;
 };
 
 } /* namespace android */

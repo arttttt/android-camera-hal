@@ -75,10 +75,16 @@ struct Frame {
     FrameSettings settings;
     std::vector<Output> outputs;
 
-    /* Set by the capture engine once the frame has its Bayer. Read
-     * without a lock by the AE mode switch, which only gives up frames
-     * still waiting for one. */
+    /* Set by the capture engine once the sensor frame the request asked
+     * for has come. Read without a lock by the AE mode switch, which
+     * only gives up frames still waiting for one. */
     std::atomic<bool> hasBayer{false};
+
+    /* The sensor frame captured for the request (SensorSequence), and
+     * when its first line began its exposure (CLOCK_MONOTONIC): the
+     * shutter and SENSOR_TIMESTAMP. Set with hasBayer. */
+    uint32_t sensorFrame     = 0;
+    int64_t  exposureStartNs = 0;
 
     /* The capture slot the frame was taken from. Let go by the demosaic
      * engine once the GPU has read it, or with the frame. */
@@ -92,13 +98,14 @@ struct Frame {
     android::IspJpegRing *jpegRing = nullptr;
 
     /* The sensor controls in effect on the frame captured for this
-     * request, every control set, recorded as it is captured; empty
-     * until then. What result metadata reports. */
+     * request, every control set; empty until it is captured. What
+     * result metadata reports. */
     android::DelayedControls::Batch inEffect;
     bool    aeConverged       = false;
     bool    awbConverged      = false;
 
-    /* Timestamps for PERF diagnostics. */
+    /* Timestamps for PERF diagnostics: accepted, its sensor frame come
+     * (the shutter sent), handed to the demosaic, result sent. */
     int64_t tAccepted   = 0;
     int64_t tShutter    = 0;
     int64_t tBayerDq    = 0;

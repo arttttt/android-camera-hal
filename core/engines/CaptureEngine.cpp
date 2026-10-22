@@ -16,35 +16,36 @@
 
 #include "CaptureEngine.h"
 
+#include <sys/timerfd.h>
+#include <unistd.h>
+
+#include <cerrno>
 #include <chrono>
+#include <limits>
 
 #include <utils/Errors.h>
 #include <utils/Log.h>
 #include <utils/Timers.h>
 
 #include "3a/AutoFocusController.h"
+#include "3a/RequestExposure.h"
 #include "DeviceErrorReporter.h"
 #include "IspEngine.h"
 #include "IspPipeline.h"
-#include "Pipeline.h"
+#include "SensorWriter.h"
 #include "StatsEngine.h"
+#include "mochacamera/ports/ResultSink.h"
+#include "sensor/SensorConfig.h"
 
 #undef  LOG_TAG
 #define LOG_TAG "Cam-CaptureEngine"
 
 namespace mocha::camera {
 
-namespace {
-/* No frame for this long while one is wanted: the sensor or the
- * capture hardware has stopped (a manual exposure is at most 1 s, and
- * the driver stretches a frame to ~0.85 s at most). Waiting for a
- * permit counts too -- a GPU stuck that long has been reported by the
- * demosaic engine already, and the report goes out once. */
-constexpr std::chrono::milliseconds kStall{3000};
-} /* namespace */
+using android::DelayedControls;
 
 CaptureEngine::CaptureEngine(const Deps &d)
-    : deps(d), permits(kPermits, &wakeFd) {}
+    : deps(d), permits(kPermits, &wakeFd), binder(d.controls, d.sensorCfg) {}
 
 CaptureEngine::~CaptureEngine() {
     stop();
@@ -53,26 +54,44 @@ CaptureEngine::~CaptureEngine() {
 bool CaptureEngine::start() {
     if (engine)
         return false;
-    /* No stop grace: the only thing a job waits for is the sensor. */
+    binder.reset(deps.source->resolution().height);
+
+    stallTimer.reset(::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC));
+    writeTimer.reset(::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC));
+    if (!stallTimer.valid() || !writeTimer.valid()) {
+        ALOGE("timers: timerfd_create failed, errno=%d", errno);
+        return false;
+    }
+    pending.reset();
+    {
+        /* The first frame runs on what configure wrote. */
+        const DelayedControls::Batch e = deps.controls->inEffect(0);
+        armStall(deps.sensorCfg->frameDurationNs(
+                e.val[DelayedControls::FRAME_LENGTH],
+                e.val[DelayedControls::LINE_LENGTH]));
+    }
+
+    /* Every request is taken as it comes: its frame is chosen then. No
+     * stop grace: the only thing a job waits for is the sensor. */
     engine = std::make_unique<Eng>(
             "CamCapture",
             [this](Eng::Id, Job &job) { return advance(job); },
-            EngineOptions{.maxRunning = 1, .stopGrace = std::chrono::milliseconds(0)});
+            EngineOptions{.maxRunning = std::numeric_limits<size_t>::max(),
+                          .stopGrace  = std::chrono::milliseconds(0)});
 
     FrameSource *source = deps.source;
-    android::EventFd *wake = &wakeFd;
-    engine->watch(source->fd(), [source, wake](short revents) {
-        if (source->drainToLatest(revents))
-            wake->notify();
+    engine->watch(source->fd(), [this, source](short revents) {
+        onFrames(source->drain(revents));
     });
     engine->watch(source->returnedFd(), [source](short) {
         source->requeueReturned();
     });
-    android::DeviceErrorReporter *deviceError = deps.deviceError;
-    engine->setStallWatch(kStall, [deviceError] {
-        ALOGE("no frame to capture for %lld ms", (long long)kStall.count());
-        if (deviceError)
-            deviceError->report("sensor stopped sending frames");
+    engine->watch(stallTimer.get(), [this](short) { onStall(); });
+    engine->watch(writeTimer.get(), [this](short) {
+        uint64_t expirations = 0;
+        if (::read(writeTimer.get(), &expirations, sizeof(expirations)) ==
+            (ssize_t)sizeof(expirations))
+            writePending();
     });
     return engine->start();
 }
@@ -82,10 +101,78 @@ void CaptureEngine::stop() {
         return;
     engine->stop();
     engine.reset();
+    stallTimer.reset();
+    writeTimer.reset();
+    pending.reset();
+}
+
+void CaptureEngine::writePending() {
+    if (!pending)
+        return;
+    deps.writer->frame(pending->values, pending->changed);
+    pending.reset();
+}
+
+void CaptureEngine::armStall(int64_t periodNs) {
+    const int64_t ns = periodNs + kStallSlackNs;
+    itimerspec it{};
+    it.it_value.tv_sec  = (time_t)(ns / 1000000000LL);
+    it.it_value.tv_nsec = (long)(ns % 1000000000LL);
+    if (::timerfd_settime(stallTimer.get(), 0, &it, nullptr) != 0)
+        ALOGE("stall timer: timerfd_settime failed, errno=%d", errno);
+}
+
+void CaptureEngine::onStall() {
+    uint64_t expirations = 0;
+    if (::read(stallTimer.get(), &expirations, sizeof(expirations)) !=
+        (ssize_t)sizeof(expirations))
+        return;
+    ALOGE("no frame from the sensor for its period and %lld ms",
+          (long long)(kStallSlackNs / 1000000));
+    if (deps.deviceError)
+        deps.deviceError->report("sensor stopped sending frames");
 }
 
 bool CaptureEngine::submit(FrameToken frame) {
-    return engine && engine->submit(Job{std::move(frame), std::nullopt}).has_value();
+    return engine && engine->submit(Job{std::move(frame), nullptr,
+                                        std::nullopt, false}).has_value();
+}
+
+void CaptureEngine::onFrames(std::vector<BayerLease> frames) {
+    for (BayerLease &lease : frames) {
+        android::FrameBinder::Arrival a = binder.arrive(std::move(lease));
+        const uint32_t seq = a.sensorFrame;
+        if (!a.settled.empty())
+            wakeFd.notify();
+
+        /* A write still pending is a frame late -- this thread fell a
+         * frame behind; it goes now, and its frame's record may be off
+         * by the frame. */
+        if (pending) {
+            ALOGW("sensor frame %u: write a frame late", seq - 1);
+            writePending();
+        }
+        const int64_t at = a.nextFrameStartNs + kWriteAfterStartNs;
+        a.settled.clear();
+        pending = std::move(a);
+        if (at <= systemTime()) {
+            writePending();
+        } else {
+            itimerspec it{};
+            it.it_value.tv_sec  = (time_t)(at / 1000000000LL);
+            it.it_value.tv_nsec = (long)(at % 1000000000LL);
+            if (::timerfd_settime(writeTimer.get(), TFD_TIMER_ABSTIME, &it,
+                                  nullptr) != 0) {
+                ALOGE("write timer: timerfd_settime failed, errno=%d", errno);
+                writePending();
+            }
+        }
+
+        const DelayedControls::Batch next = deps.controls->inEffect(seq + 1);
+        armStall(deps.sensorCfg->frameDurationNs(
+                next.val[DelayedControls::FRAME_LENGTH],
+                next.val[DelayedControls::LINE_LENGTH]));
+    }
 }
 
 Engine<CaptureEngine::Job, std::monostate>::Step CaptureEngine::advance(Job &job) {
@@ -98,26 +185,40 @@ Engine<CaptureEngine::Job, std::monostate>::Step CaptureEngine::advance(Job &job
     if (!f.status.ok())
         return Eng::Step::done();
 
+    if (!job.ticket) {
+        job.ticket = binder.request(android::requestExposure(
+                f.settings, *deps.sensorCfg, deps.exposureTarget, deps.evStep));
+        if (deps.af)
+            deps.af->onSettings(f.settings, f.frameNumber);
+    }
+    android::FrameBinder::Ticket &t = *job.ticket;
+    if (t.lost) {
+        /* Its frame was missed, and no frame ran on its settings. */
+        f.status.fail(android::NOT_ENOUGH_DATA);
+        return Eng::Step::done();
+    }
+    if (!t.bayer)
+        return Eng::Step::wait(wakeFd.fd(), again);
+
+    if (!job.shutterSent) {
+        job.shutterSent   = true;
+        f.sensorFrame     = t.sensorFrame;
+        f.exposureStartNs = t.exposureStartNs;
+        f.inEffect        = t.inEffect;
+        f.tShutter        = systemTime();
+        f.hasBayer.store(true, std::memory_order_release);
+        deps.sink->shutter(f.frameNumber, f.exposureStartNs);
+    }
+
     if (!job.permit) {
         job.permit = permits.tryAcquire();
         if (!job.permit)
             return Eng::Step::wait(wakeFd.fd(), again);
     }
 
-    if (!job.settingsApplied) {
-        job.settingsApplied = true;
-        deps.settings->run(f);
-        if (!f.status.ok())
-            return Eng::Step::done();
-    }
-
-    std::optional<BayerLease> lease = deps.source->takeLatest();
-    if (!lease)
-        return Eng::Step::wait(wakeFd.fd(), again);
-
     f.tBayerDq = systemTime();
-    f.bayer    = std::move(*lease);
-    f.hasBayer.store(true, std::memory_order_release);
+    f.bayer    = std::move(*t.bayer);
+    t.bayer.reset();
     crop(f);
     dispatchStats(f);
 
@@ -176,8 +277,8 @@ void CaptureEngine::dispatchStats(Frame &f) {
     job.width           = res.width;
     job.height          = res.height;
     job.pixFmt          = f.bayer.frame().pixFmt;
-    job.sequence        = f.frameNumber;
-    job.exposureStartNs = f.bayer.frame().exposureStartNs();
+    job.sequence        = f.sensorFrame;
+    job.exposureStartNs = f.exposureStartNs;
     job.inEffect        = f.inEffect;
 
     /* The AF region of the request; without AF, the

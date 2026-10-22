@@ -34,8 +34,7 @@ public:
     int fd() const override;
     int returnedFd() const override { return returnedWake.fd(); }
 
-    bool drainToLatest(short revents) override;
-    std::optional<mocha::camera::BayerLease> takeLatest() override;
+    std::vector<mocha::camera::BayerLease> drain(short revents) override;
     void requeueReturned() override;
 
     void returnSlot(int slot, uint32_t generation) override;
@@ -58,12 +57,6 @@ private:
     uint32_t           generation;
     bool               running;
     std::vector<int>   returned;
-
-    /* The capture thread's own (and start/stop's, which run while it
-     * does not): the newest frame not yet taken, and the dequeue time
-     * of the previous good frame. */
-    const V4l2Device::VBuffer *latest;
-    int64_t                    prevGoodNs;
 };
 
 } /* namespace android */

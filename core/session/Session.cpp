@@ -46,6 +46,7 @@
 #include "StatsEngine.h"
 #include "V4l2Controls.h"
 #include "V4l2Device.h"
+#include "SensorWriter.h"
 #include "V4l2Source.h"
 #include "ViController.h"
 #include "3a/AutoFocusController.h"
@@ -54,11 +55,8 @@
 #include "mochacamera/ports/GrallocPort.h"
 #include "mochacamera/ports/ResultSink.h"
 #include "pipeline/BufferProcessor.h"
-#include "pipeline/Pipeline.h"
-#include "pipeline/stages/ApplySettingsStage.h"
 #include "pipeline/stages/DemosaicBlitStage.h"
 #include "pipeline/stages/ResultDispatchStage.h"
-#include "pipeline/stages/ShutterNotifyStage.h"
 #include "pipeline/stages/StatsProcessStage.h"
 #include "sensor/DelayedControls.h"
 #include "sensor/ExposureTarget.h"
@@ -67,7 +65,6 @@
 
 namespace mocha::camera {
 
-using android::ApplySettingsStage;
 using android::AutoFocusController;
 using android::BufferProcessor;
 using android::DelayedControls;
@@ -79,15 +76,13 @@ using android::Ipa;
 using android::Ipa3A;
 using android::IspPipeline;
 using android::JpegEncoder;
-using android::Pipeline;
-using android::PipelineStage;
 using android::Resolution;
 using android::ResultDispatchStage;
 using android::SensorConfig;
 using android::SensorTuning;
-using android::ShutterNotifyStage;
 using android::StatsProcessStage;
 using android::V4l2Device;
+using android::SensorWriter;
 using android::ViController;
 using android::V4l2Source;
 
@@ -138,7 +133,7 @@ struct Session::Impl {
     std::unique_ptr<FrameSource>         frameSource;
     std::unique_ptr<FrameRegistry>       registry;
     std::unique_ptr<DeviceErrorReporter> deviceError;
-    std::unique_ptr<Pipeline>            settingsPipeline;
+    std::unique_ptr<SensorWriter>        sensorWriter;
     std::unique_ptr<DemosaicBlitStage>   demosaicBlitStage;
     std::unique_ptr<StatsProcessStage>   statsProcessStage;
     std::unique_ptr<ResultDispatchStage> resultDispatchStage;
@@ -335,8 +330,9 @@ bool Session::Impl::buildInfrastructure() {
     if (tuning.isLoaded())
         statsEngine->setBlackLevel((uint32_t)tuning.opticalBlack().r);
 
-    /* DelayedControls: what ApplySettings wrote, filed by the frame it
-     * lands on, for what was in effect on a frame. */
+    /* DelayedControls: what requests want of the sensor, by the sensor
+     * frame it is in effect on; the capture engine files, writes and
+     * reads it. */
     {
         DelayedControls::Config cfg;
         for (int i = 0; i < DelayedControls::COUNT; ++i)
@@ -344,8 +340,7 @@ bool Session::Impl::buildInfrastructure() {
         delayedControls.reset(new DelayedControls(cfg));
     }
 
-    /* The VI's frame wait, kept to the frame lengths ApplySettings
-     * writes. */
+    /* The VI's frame wait, kept to the frame lengths written. */
     {
         int32_t mn, mx, df;
         if (dev->queryControl(V4L2_CID_VI_CAPTURE_TIMEOUT, &mn, &mx, &df)) {
@@ -361,23 +356,9 @@ bool Session::Impl::buildInfrastructure() {
         }
     }
 
-    /* The request's settings and its shutter, run by the capture
-     * engine as each frame is captured. */
-    settingsPipeline.reset(new Pipeline());
-    {
-        ApplySettingsStage::Deps d;
-        d.dev             = dev.get();
-        d.af              = af.get();
-        d.sensorCfg       = &sensorCfg;
-        d.delayedControls = delayedControls.get();
-        d.exposureTarget  = &exposureTarget;
-        d.viController    = viController.get();
-        d.evStep          = probe().ae.evStep;
-        settingsPipeline->appendStage(
-            std::unique_ptr<PipelineStage>(new ApplySettingsStage(d)));
-    }
-    settingsPipeline->appendStage(
-        std::unique_ptr<PipelineStage>(new ShutterNotifyStage(sink)));
+    /* What each frame's tick writes reaches the sensor through it. */
+    sensorWriter.reset(new SensorWriter(dev.get(), &sensorCfg,
+                                        viController.get()));
 
     {
         DemosaicBlitStage::Deps d;
@@ -433,7 +414,12 @@ bool Session::Impl::buildInfrastructure() {
         d.source      = frameSource.get();
         d.inputRing   = isp.get();
         d.af          = af.get();
-        d.settings    = settingsPipeline.get();
+        d.sink        = sink;
+        d.controls    = delayedControls.get();
+        d.writer      = sensorWriter.get();
+        d.sensorCfg   = &sensorCfg;
+        d.exposureTarget = &exposureTarget;
+        d.evStep      = probe().ae.evStep;
         d.demosaic    = ispEngine.get();
         d.stats       = statsEngine.get();
         d.deviceError = deviceError.get();
@@ -453,7 +439,7 @@ void Session::Impl::destroyInfrastructure() {
     statsProcessStage.reset();
     resultDispatchStage.reset();
     demosaicBlitStage.reset();
-    settingsPipeline.reset();
+    sensorWriter.reset();
     statsEngine.reset();
     delayedControls.reset();
     viController.reset();
@@ -576,7 +562,8 @@ void Session::close() {
     if (s.deviceError)        s.deviceError->rearm();
     if (s.isp)                s.isp->onSessionClose();
     if (s.ipa)                s.ipa->reset();
-    if (s.delayedControls)    s.delayedControls->reset();
+    if (s.delayedControls)
+        s.delayedControls->reset(s.sensorCfg.configureDefaults());
     s.exposureTarget.reset();
     if (s.statsEngine)        s.statsEngine->reset();
 
@@ -668,6 +655,8 @@ Session::ConfigureResult Session::configure(std::span<const StreamSpec> outputs)
         s.dev->setControl(V4L2_CID_LINE_LENGTH, s.sensorCfg.lineLengthDefault);
     s.dev->setControl(V4L2_CID_EXPOSURE,     s.sensorCfg.exposureDefault);
     s.dev->setControl(V4L2_CID_GAIN,         s.sensorCfg.gainDefault);
+    /* The stream's frames run on these until the first write lands. */
+    s.delayedControls->reset(s.sensorCfg.configureDefaults());
 
     if (!s.dev->setStreaming(true)) {
         ALOGE("Could not start streaming");

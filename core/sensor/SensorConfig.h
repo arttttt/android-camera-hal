@@ -65,11 +65,10 @@ struct SensorConfig {
     int32_t exposureDefault;
     int32_t exposureMax;
 
-    /* Silicon property — number of frames between writing a sensor
-     * control and the resulting frame being exposed. Not tunable per
-     * integrator. Default 2/2 matches the libcamera convention for
-     * rolling-shutter CMOS; verify empirically once a real 3A loop
-     * drives it. Consumed by DelayedControls. */
+    /* Silicon property, in sensor frames: a control written inside
+     * frame k + 1 -- the capture engine writes the tick of frame k just
+     * after k + 1 starts -- is in effect on frame k + controlDelay. Not
+     * tunable per integrator. Consumed by DelayedControls. */
     int32_t controlDelay[DelayedControls::COUNT];
 
     /* Lens — the module's focal length (mm), from the tuning's module
@@ -93,6 +92,33 @@ struct SensorConfig {
     /* The period of a frame of `frameLen` lines of `lineLength` (ns). */
     int64_t frameDurationNs(int32_t frameLen, int32_t lineLength) const {
         return (int64_t)frameLen * lineTimeNsAt(lineLength);
+    }
+
+    /* When a frame's first line began its exposure, ns, from when its
+     * last line reached memory: before that, the read-out of `lines`
+     * lines and the exposure, at the frame's own controls (`inEffect`,
+     * every control set). */
+    int64_t exposureStartNs(int64_t frameEndNs,
+                            const DelayedControls::Batch &inEffect,
+                            uint32_t lines) const {
+        const int64_t readout = (int64_t)lines
+            * lineTimeNsAt(inEffect.val[DelayedControls::LINE_LENGTH]);
+        const int64_t exposure =
+            (int64_t)inEffect.val[DelayedControls::EXPOSURE] * 1000;
+        return frameEndNs - readout - exposure;
+    }
+
+    /* When the frame after this one starts, ns, from when this one's
+     * last line reached memory: its vertical blanking -- the frame's
+     * lines past the `lines` read out -- at its own controls
+     * (`inEffect`, every control set). */
+    int64_t nextFrameStartNs(int64_t frameEndNs,
+                             const DelayedControls::Batch &inEffect,
+                             uint32_t lines) const {
+        const int64_t blanking =
+            (int64_t)inEffect.val[DelayedControls::FRAME_LENGTH] - (int64_t)lines;
+        return frameEndNs + (blanking > 0 ? blanking : 0)
+            * lineTimeNsAt(inEffect.val[DelayedControls::LINE_LENGTH]);
     }
 
     /* What configure writes before STREAMON, every control set: what a
@@ -199,10 +225,10 @@ struct SensorConfig {
             .exposureMax     = 0,
             /* Measured on mocha (LOS 19.1, 20.10.2026): a value written
              * on request N shows in frame N+3, 13 steps of 14 in a
-             * square-wave trace. The libcamera-style 2 this replaced
-             * was never measured here, and our writes are not tied to
-             * start-of-frame the way libcamera's are, so its number
-             * does not transfer. */
+             * square-wave trace, one request a frame. Timed by the
+             * frames (22.10.2026, FRAME_START trace, a 1.2 s exposure):
+             * written 3.8 ms after frame A started, in effect on A + 2 --
+             * 3 from A - 1, whose tick writes inside A. */
             .controlDelay    = { 3, 3, 3, 3 },
             .focalLengthMm   = 0.f,
         };

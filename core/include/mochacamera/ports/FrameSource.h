@@ -21,6 +21,7 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include "mochacamera/Controls.h"
 
@@ -36,16 +37,6 @@ struct BayerFrame {
     const uint8_t *cpu    = nullptr;
     /* The sensor's pixel format (a V4L2 fourcc). */
     uint32_t       pixFmt = 0;
-    /* When the frame was dequeued (systemTime, ~ the frame's end), and
-     * the interval to the previous good frame (~ its length, more when
-     * frames were dropped). Its exposure began about
-     * exposureStartNs(); 0 when there is no previous frame to tell. */
-    int64_t        dequeuedNs = 0;
-    int64_t        intervalNs = 0;
-
-    int64_t exposureStartNs() const {
-        return intervalNs > 0 ? dequeuedNs - intervalNs : 0;
-    }
 
     /* The capture driver's count of the buffers it completed (damaged
      * ones included; a sensor frame it had no buffer for is not
@@ -129,10 +120,9 @@ public:
     /* A new run. Called while the capture engine is not running. */
     virtual bool start() = 0;
 
-    /* End of the run: the frame held as latest and the slots returned
-     * since the last requeue go back; leases still out return nothing
-     * (their run is over). Called while the capture engine is not
-     * running. */
+    /* End of the run: the slots returned since the last requeue go
+     * back; leases still out return nothing (their run is over). Called
+     * while the capture engine is not running. */
     virtual void stop() = 0;
 
     virtual bool isRunning() const = 0;
@@ -143,14 +133,10 @@ public:
     /* Readable when leases have returned slots since requeueReturned(). */
     virtual int returnedFd() const = 0;
 
-    /* On the capture thread, with the revents of fd(): take what is
-     * ready and keep only the newest good frame, giving the rest back.
-     * True when a new frame is waiting for takeLatest(). */
-    virtual bool drainToLatest(short revents) = 0;
-
-    /* On the capture thread: the newest frame not yet taken, as a
-     * lease; nothing if none came since the last take. */
-    virtual std::optional<BayerLease> takeLatest() = 0;
+    /* On the capture thread, with the revents of fd(): every good frame
+     * that is ready, oldest first, as leases; a damaged one goes back at
+     * once. A lease let go returns its slot. */
+    virtual std::vector<BayerLease> drain(short revents) = 0;
 
     /* On the capture thread: give the device the slots leases returned. */
     virtual void requeueReturned() = 0;

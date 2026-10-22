@@ -5,7 +5,6 @@
 #include <unistd.h>
 
 #include <utils/Log.h>
-#include <utils/Timers.h>
 
 #include "V4l2Device.h"
 
@@ -19,9 +18,7 @@ using mocha::camera::BayerLease;
 V4l2Source::V4l2Source(V4l2Device *d)
     : dev(d),
       generation(0),
-      running(false),
-      latest(nullptr),
-      prevGoodNs(0) {}
+      running(false) {}
 
 V4l2Source::~V4l2Source() {
     stop();
@@ -33,8 +30,6 @@ bool V4l2Source::start() {
     running = true;
     ++generation;
     returned.clear();
-    latest     = nullptr;
-    prevGoodNs = 0;
     returnedWake.drain();
     return true;
 }
@@ -49,10 +44,6 @@ void V4l2Source::stop() {
          * return later is ignored. */
         ++generation;
         residue.swap(returned);
-    }
-    if (latest) {
-        residue.push_back(latest->index);
-        latest = nullptr;
     }
     /* Back to V4L2 directly, so the next STREAMOFF sees a clean ring. */
     for (int index : residue) {
@@ -70,90 +61,50 @@ int V4l2Source::fd() const {
     return dev->fd();
 }
 
-bool V4l2Source::drainToLatest(short revents) {
+std::vector<BayerLease> V4l2Source::drain(short revents) {
+    std::vector<BayerLease> frames;
     if (revents & (POLLERR | POLLHUP | POLLNVAL)) {
         ::usleep(kErrorBackoffMs * 1000);
-        return false;
+        return frames;
     }
-    if (!(revents & POLLIN)) return false;
+    if (!(revents & POLLIN)) return frames;
 
-    /* DQBUF everything ready -- non-blocking: the fd said ready.
-     * Drain-to-latest keeps only the newest good frame and requeues
-     * older slots that piled up behind while the consumer was slow. A
-     * slot the driver flagged V4L2_BUF_FLAG_ERROR holds a damaged frame:
-     * it goes straight back and is never handed on. */
-    int id = -1;
-    V4l2Device::Dequeued kept;
-    int dropped = 0;
-    int damaged = 0;
-    for (;;) {
-        V4l2Device::Dequeued info;
-        const int next = dev->dequeueBufferNonBlocking(&info);
-        if (next < 0) break;
-        if (info.corrupt) {
-            if (!dev->queueBuffer(next))
-                ALOGE("requeue of damaged slot %d failed: errno=%d", next, errno);
-            ++damaged;
-            continue;
-        }
-        if (id >= 0) {
-            if (!dev->queueBuffer(id))
-                ALOGE("drain-to-latest: QBUF slot %d failed: errno=%d", id, errno);
-            ++dropped;
-        }
-        id   = next;
-        kept = info;
-    }
-    if (damaged) ALOGW("%d damaged frame(s) requeued", damaged);
-    if (dropped) ALOGD("dropped %d stale frame(s)", dropped);
-    if (id < 0) return false;
-
-    const V4l2Device::VBuffer *frame = dev->slotAt(id);
-    if (!frame) {
-        ALOGE("slotAt(%d) returned null", id);
-        return false;
-    }
-    {
-        /* The slot is this thread's until it is handed out. Frames
-         * dropped above stretch the interval, which only makes the
-         * exposure start earlier than it was: the safe direction for
-         * the AF freshness gate reading it. */
-        const nsecs_t now = systemTime();
-        V4l2Device::VBuffer *slot = const_cast<V4l2Device::VBuffer *>(frame);
-        slot->dequeuedNs  = now;
-        slot->intervalNs  = prevGoodNs ? now - prevGoodNs : 0;
-        slot->sequence    = kept.sequence;
-        slot->timestampNs = kept.timestampNs;
-        prevGoodNs = now;
-    }
-
-    /* A previous latest nobody took is dropped now: drain-to-latest at
-     * the source boundary rather than in the V4L2 done queue. It never
-     * reached the GPU, so it goes straight back. */
-    if (latest && !dev->queueBuffer(latest->index))
-        ALOGE("drain-to-latest: QBUF slot %d failed: errno=%d",
-              latest->index, errno);
-    latest = frame;
-    return true;
-}
-
-std::optional<BayerLease> V4l2Source::takeLatest() {
-    if (!latest) return std::nullopt;
     uint32_t gen;
     {
         std::lock_guard<std::mutex> lock(mutex);
         gen = generation;
     }
-    mocha::camera::BayerFrame frame;
-    frame.slot       = latest->index;
-    frame.cpu        = latest->buf;
-    frame.pixFmt     = latest->pixFmt;
-    frame.dequeuedNs = latest->dequeuedNs;
-    frame.intervalNs = latest->intervalNs;
-    frame.sequence    = latest->sequence;
-    frame.timestampNs = latest->timestampNs;
-    latest = nullptr;
-    return BayerLease(frame, gen, this);
+
+    /* DQBUF everything ready -- non-blocking: the fd said ready. A slot
+     * the driver flagged V4L2_BUF_FLAG_ERROR holds a damaged frame: it
+     * goes straight back and is never handed on (the driver's count has
+     * it, so the frame numbers stay whole). */
+    int damaged = 0;
+    for (;;) {
+        V4l2Device::Dequeued info;
+        const int id = dev->dequeueBufferNonBlocking(&info);
+        if (id < 0) break;
+        if (info.corrupt) {
+            if (!dev->queueBuffer(id))
+                ALOGE("requeue of damaged slot %d failed: errno=%d", id, errno);
+            ++damaged;
+            continue;
+        }
+        const V4l2Device::VBuffer *slot = dev->slotAt(id);
+        if (!slot) {
+            ALOGE("slotAt(%d) returned null", id);
+            continue;
+        }
+        mocha::camera::BayerFrame frame;
+        frame.slot        = slot->index;
+        frame.cpu         = slot->buf;
+        frame.pixFmt      = slot->pixFmt;
+        frame.sequence    = info.sequence;
+        frame.timestampNs = info.timestampNs;
+        frames.emplace_back(frame, gen, this);
+    }
+    if (damaged) ALOGW("%d damaged frame(s) requeued", damaged);
+    return frames;
 }
 
 void V4l2Source::requeueReturned() {
