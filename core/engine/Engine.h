@@ -157,13 +157,15 @@ public:
     Engine &operator=(const Engine &) = delete;
 
     /* Before start() only: an fd of the component's own (the V4L2 node)
-     * polled with the engine's work; `onReady` runs on the engine's
-     * thread with the poll's revents when it polls readable or reports
-     * an error. */
-    bool watch(int fd, std::function<void(short revents)> onReady) {
+     * polled with the engine's work for `events` (readable unless said
+     * otherwise -- a V4L2 node's events poll POLLPRI); `onReady` runs on
+     * the engine's thread with the poll's revents when one of them comes
+     * or the fd reports an error. */
+    bool watch(int fd, std::function<void(short revents)> onReady,
+               short events = POLLIN) {
         if (started)
             return false;
-        watched.push_back(Watched{fd, std::move(onReady)});
+        watched.push_back(Watched{fd, events, std::move(onReady)});
         return true;
     }
 
@@ -263,6 +265,7 @@ private:
 
     struct Watched {
         int fd;
+        short events;
         std::function<void(short)> onReady;
     };
 
@@ -325,7 +328,7 @@ private:
         fds.push_back(pollfd{wake.fd(), POLLIN, 0});
         if (withWatched)
             for (const Watched &w : watched)
-                fds.push_back(pollfd{w.fd, POLLIN, 0});
+                fds.push_back(pollfd{w.fd, w.events, 0});
         for (const auto &[id, rec] : waiting) {
             fds.push_back(pollfd{rec->fd, POLLIN, 0});
             waitIds.push_back(id);

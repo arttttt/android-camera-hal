@@ -351,6 +351,23 @@ void testWatch() {
     e.stop();
 }
 
+/* A watch polls for the events it names, not only readable: an
+ * eventfd with nothing to read is writable at once. (A V4L2 node's
+ * events poll POLLPRI.) */
+void testWatchEvents() {
+    EventFd node;
+    std::atomic<int> calls{0};
+    Eng e("watch-events", [](Eng::Id, Job &) { return Step::done(0); },
+          keep());
+    check(e.watch(node.fd(), [&](short revents) {
+        if (revents & POLLOUT && calls.fetch_add(1) == 0)
+            check(!(revents & POLLIN));
+    }, POLLOUT));
+    check(e.start());
+    check(waitFor([&] { return calls.load() >= 1; }));
+    e.stop();
+}
+
 /* An owner on outcomeFd: ack, then look; every outcome is seen. */
 void testOutcomeFd() {
     constexpr int kJobs = 200;
@@ -454,6 +471,7 @@ int main() {
     testStop();
     testStall();
     testWatch();
+    testWatchEvents();
     testOutcomeFd();
     testNoLostWake();
     testNoGrace();
