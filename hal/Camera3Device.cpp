@@ -153,7 +153,8 @@ int Camera3Device::configureStreams(camera3_stream_configuration_t *streamList) 
     }
 
     {
-        status_t e = StreamConfig::normalize(streamList);
+        status_t e = StreamConfig::normalize(
+                streamList, (uint32_t)mSession->capability().maxBuffersPerStream);
         if (e != NO_ERROR)
             return e;
     }

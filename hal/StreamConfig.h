@@ -17,14 +17,16 @@ public:
      *   - Map HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED → RGBA_8888.
      *   - Rewrite `usage` per stream_type (SW_WRITE_OFTEN /
      *     SW_READ_OFTEN).
-     *   - Set `max_buffers`.
+     *   - Set `max_buffers` to `maxBuffers`: the core's requests in
+     *     flight (Capability::maxBuffersPerStream).
      *
      * The capture size is the core's choice (Session::configure), from
      * the streams as this leaves them.
      *
      * Returns NO_ERROR on success; BAD_VALUE on validation failures
      * (two input streams, ZSL usage). */
-    static status_t normalize(camera3_stream_configuration_t *streamList);
+    static status_t normalize(camera3_stream_configuration_t *streamList,
+                              uint32_t maxBuffers);
 };
 
 }; /* namespace android */

@@ -21,9 +21,12 @@
 #include <string.h>
 #include <sys/user.h>
 
+#include <algorithm>
+
 #include <linux/videodev2.h>
 #include <utils/Log.h>
 
+#include "CaptureEngine.h"
 #include "OutputResolutionCap.h"
 #include "V4l2Controls.h"
 #include "V4l2Device.h"
@@ -217,6 +220,21 @@ Capability probeCapability(android::V4l2Device &dev, bool facingFront,
      * the output sizes. The encoder crops the snapshot's centre to the
      * requested aspect. */
     cap.jpeg.thumbnailSizes = {Size{0, 0}, Size{320, 180}, Size{320, 240}};
+
+    /* A request waits the longest control delay for its frame, which
+     * takes a frame to come; then the GPU's frames in flight, and the
+     * finish and the result. */
+    int32_t delay = 0;
+    for (int32_t d : cfg.controlDelay) delay = std::max(delay, d);
+    cap.pipelineMaxDepth = delay + 1 + CaptureEngine::kPermits + 1;
+
+    /* Each request in flight can hold a capture slot from its frame on;
+     * fewer slots than requests would starve the VI and lose frames.
+     * Fewer requests than the depth only leave frames unused. */
+    const int32_t slots =
+        V4L2DEVICE_BUF_COUNT - CaptureEngine::kSlotsBesidesRequests;
+    cap.maxBuffersPerStream = std::max<int32_t>(
+        1, std::min<int32_t>(cap.pipelineMaxDepth, slots));
 
     return cap;
 }

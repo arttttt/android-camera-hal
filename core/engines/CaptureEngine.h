@@ -117,6 +117,16 @@ public:
     /* Have the waiting frames look at their status again. */
     void wake() { wakeFd.notify(); }
 
+    /* Frames for the demosaic engine at once: those on the GPU, and one
+     * handed over and waiting. */
+    static constexpr int kPermits = 2;
+
+    /* Capture slots held besides the requests' own: the one the VI has
+     * armed, and the stats cycle's, which can outlive its frame's
+     * demosaic. Every other slot is a request's, from its frame's
+     * arrival to the GPU's read. */
+    static constexpr int kSlotsBesidesRequests = 2;
+
 private:
     struct Job {
         FrameToken                                   frame;
@@ -135,10 +145,6 @@ private:
     void writePending();
     void crop(Frame &frame);
     void dispatchStats(Frame &frame);
-
-    /* Frames for the demosaic engine at once: those on the GPU, and one
-     * handed over and waiting. */
-    static constexpr size_t kPermits = 2;
 
     /* How late past its period a frame may come before the sensor is
      * taken for stopped: the VI's own wait has its slack on top of the

@@ -346,8 +346,8 @@ void writeLensCalibration(CameraMetadata &cm, const Capability &cap) {
     cm.update(ANDROID_SENSOR_INFO_COLOR_FILTER_ARRANGEMENT, &cfa, 1);
 }
 
-/* HAL capability level + request-pipeline shape. Both constants go up
- * once the request-queue refactor (Tier 3) lands. */
+/* HAL capability level + request-pipeline shape; the depth is the
+ * core's (Capability::pipelineMaxDepth). */
 void writeHalInfo(CameraMetadata &cm, const Capability &cap) {
     const uint8_t infoSupportedHardwareLevel = ANDROID_INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED;
     cm.update(ANDROID_INFO_SUPPORTED_HARDWARE_LEVEL, &infoSupportedHardwareLevel, 1);

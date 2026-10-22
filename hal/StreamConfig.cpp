@@ -10,16 +10,8 @@
 
 namespace android {
 
-namespace {
-
-/* Number of gralloc buffers the framework may hold per stream. Four
- * covers current preview / still-capture cadences; raise once the
- * request-queue refactor (Tier 3) introduces real pipelining. */
-constexpr uint32_t kMaxBuffersPerStream = 4;
-
-} /* namespace */
-
-status_t StreamConfig::normalize(camera3_stream_configuration_t *streamList) {
+status_t StreamConfig::normalize(camera3_stream_configuration_t *streamList,
+                                 uint32_t maxBuffers) {
     /* HAL3.3 introduced the operation_mode field. We only do the
      * standard pipeline; CONSTRAINED_HIGH_SPEED requires a high-fps
      * sensor mode and a relaxed-metadata path we haven't built. */
@@ -137,7 +129,7 @@ status_t StreamConfig::normalize(camera3_stream_configuration_t *streamList) {
         if (needsCpuWrite) newStream->usage = origUsage | GRALLOC_USAGE_SW_WRITE_OFTEN;
         else               newStream->usage = origUsage;
 
-        newStream->max_buffers = kMaxBuffersPerStream;
+        newStream->max_buffers = maxBuffers;
     }
 
     return NO_ERROR;
