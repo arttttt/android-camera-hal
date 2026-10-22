@@ -54,6 +54,12 @@ std::shared_ptr<FrameBinder::Ticket> FrameBinder::request(
     return ticket;
 }
 
+void FrameBinder::cancel(const Ticket &t) {
+    if (t.bayer || t.lost)
+        return;
+    controls->unfile(t.frame);
+}
+
 std::shared_ptr<FrameBinder::Ticket> FrameBinder::front() {
     while (!wanted.empty()) {
         if (std::shared_ptr<Ticket> t = wanted.front().lock())

@@ -182,8 +182,11 @@ Engine<CaptureEngine::Job, std::monostate>::Step CaptureEngine::advance(Job &job
     Frame &f = *job.frame;
     const auto again = [this, &job] { return advance(job); };
 
-    if (!f.status.ok())
+    if (!f.status.ok()) {
+        if (job.ticket)
+            binder.cancel(*job.ticket);
         return Eng::Step::done();
+    }
 
     if (!job.ticket) {
         job.ticket = binder.request(android::requestExposure(

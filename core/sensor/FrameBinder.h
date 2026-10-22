@@ -106,6 +106,13 @@ public:
      * ticket, and its frame goes back unused. */
     std::shared_ptr<Ticket> request(const DelayedControls::Batch &settings);
 
+    /* A request given up before its frame (flush, the AE mode switch):
+     * its settings come off the frame if they are not written yet, and
+     * the frame runs on what was filed before -- a long exposure nobody
+     * waits for any more is not taken. The caller then drops the
+     * ticket. */
+    void cancel(const Ticket &ticket);
+
     /* A frame came: the lease of its slot. */
     Arrival arrive(mocha::camera::BayerLease lease);
 

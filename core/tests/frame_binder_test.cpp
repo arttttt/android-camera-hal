@@ -331,6 +331,29 @@ void testRequestLetGo() {
     check(same(kept->inEffect, s));
 }
 
+/* A long exposure given up before its write: it comes off its frame,
+ * which runs on what was filed before, and the request after it still
+ * gets its own frame. */
+void testCancel() {
+    Rig r;
+    const SensorConfig::FrameTiming t = r.cfg.timingForExposure(1200000);
+    DelayedControls::Batch longShot = settings(r.cfg, 1200000);
+    longShot.val[DelayedControls::FRAME_LENGTH] = t.frameLen;
+    longShot.val[DelayedControls::LINE_LENGTH]  = t.lineLength;
+
+    std::shared_ptr<FrameBinder::Ticket> gone = r.binder.request(longShot);
+    const DelayedControls::Batch s = settings(r.cfg, 7000);
+    std::shared_ptr<FrameBinder::Ticket> kept = r.binder.request(s);
+    const uint32_t goneFrame = gone->frame;
+    r.binder.cancel(*gone);
+    gone.reset();
+
+    for (uint32_t k = 0; k <= kept->frame; ++k) r.frame();
+    check(same(r.ran[goneFrame], r.cfg.configureDefaults()));
+    check(kept->bayer && kept->sensorFrame == kept->frame);
+    check(same(kept->inEffect, s));
+}
+
 } // namespace
 
 int main() {
@@ -343,5 +366,6 @@ int main() {
     testMissedFrameLost();
     testMissedFrameShared();
     testRequestLetGo();
+    testCancel();
     return finish("frame_binder_test");
 }
