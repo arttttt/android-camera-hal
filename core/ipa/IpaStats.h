@@ -44,6 +44,21 @@ struct IpaStats {
     float focusMetric[PATCH_Y][PATCH_X];
 };
 
+/* A rectangle of the patch grid: pyLo / pxLo inclusive, pyHi / pxHi
+ * exclusive, all in [0, IpaStats::PATCH_*]. */
+struct PatchRoi {
+    int pyLo;
+    int pyHi;
+    int pxLo;
+    int pxHi;
+
+    /* The centre 8×8, the FOCUS_ROI_* default. */
+    static PatchRoi centre() {
+        return PatchRoi{IpaStats::FOCUS_ROI_PY_LO, IpaStats::FOCUS_ROI_PY_HI,
+                        IpaStats::FOCUS_ROI_PX_LO, IpaStats::FOCUS_ROI_PX_HI};
+    }
+};
+
 } /* namespace android */
 
 #endif /* HAL_IPA_STATS_H */

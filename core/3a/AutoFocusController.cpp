@@ -7,7 +7,7 @@
 #include <utils/Log.h>
 #include <utils/Timers.h>
 
-#include "sensor/SensorGeometry.h"
+#include "RegionPatches.h"
 #include "sensor/SensorTuning.h"
 
 namespace android {
@@ -70,32 +70,6 @@ bool outsideRatio(float a, float b, float ratio) {
      * `b / a < ratio` register as "different enough"; either side
      * darkening or brightening counts. */
     return (a + 1.f) < ratio * b || (b + 1.f) < ratio * a;
-}
-
-/* Expand a parsed FocusRoi so each axis spans at least `minSpan`
- * patches, growing around the rectangle's current centre. Clamped
- * to [0, gridLimit]; if the requested expansion would push past
- * an edge, slide the rectangle inward so the full minSpan still
- * fits when there's room (only narrows below minSpan when the grid
- * itself is smaller, which can't happen for the IpaStats 16×16
- * grid + minSpan ≤ 16). */
-void growToMin(int *lo, int *hi, int gridLimit, int minSpan) {
-    int span = *hi - *lo;
-    if (span >= minSpan) return;
-    const int centre = (*lo + *hi) / 2;
-    int newLo = centre - minSpan / 2;
-    int newHi = newLo + minSpan;
-    if (newLo < 0) {
-        newHi -= newLo;
-        newLo = 0;
-    }
-    if (newHi > gridLimit) {
-        newLo -= newHi - gridLimit;
-        newHi  = gridLimit;
-        if (newLo < 0) newLo = 0;
-    }
-    *lo = newLo;
-    *hi = newHi;
 }
 
 } /* namespace */
@@ -529,76 +503,17 @@ void AutoFocusController::onSettings(const FrameSettings &settings,
             mCommands.push_back(cmd);
     }
 
-    /* Tap-to-focus / zonal AF. The region is in active-array
-     * coordinates (== sensor capture resolution for our HAL). The default request
-     * template fills the whole sensor rect; treat that as "no region,
-     * use centre defaults". A real region from a tap shrinks the
-     * stats integration window so AF locks onto whatever the user
-     * pointed at instead of the centre. Single region only —
-     * MAX_REGIONS advertises 1 in static metadata. A region of weight 0
-     * takes no part (MeteringRegion): the centre default, as with no
-     * region. */
+    /* Tap-to-focus / zonal AF: a region from a tap shrinks the stats
+     * integration window so AF locks onto whatever the user pointed at
+     * instead of the centre (roiFor). Single region only -- MAX_REGIONS
+     * advertises 1 in static metadata. */
     {
-        FocusRoi roi{IpaStats::FOCUS_ROI_PY_LO, IpaStats::FOCUS_ROI_PY_HI,
-                     IpaStats::FOCUS_ROI_PX_LO, IpaStats::FOCUS_ROI_PX_HI};
-        if (settings.af.region && settings.af.region->weight > 0 &&
-            mFrameMap && mFrameMap->known()) {
-            const mocha::camera::SensorRect &r = settings.af.region->rect;
-            const mocha::camera::Rect visible = mFrameMap->visible();
-            /* Apps routinely send "no specific subject" as a near-
-             * full-frame rectangle (Camera2's `Camera.Region` weight
-             * doesn't map cleanly onto our patch grid, so the
-             * convention is to either set zero regions or hand back
-             * almost the whole frame). The exact-full check misses
-             * the off-by-one variants apps use -- (width - 1) is
-             * common -- and would parse them as a real region
-             * spanning the full 16×16 grid, neutralising both the
-             * AF spatial restrict and the AE / AWB region weighting.
-             * Treat anything within one pixel of the edges of what
-             * the frame shows as full-frame. */
-            const bool isFullFrame =
-                (r.xMin <= visible.left + 1 && r.yMin <= visible.top + 1
-                 && r.xMax >= visible.left + visible.width - 1
-                 && r.yMax >= visible.top + visible.height - 1);
-            /* Active-array coordinates → the frame's pixels, through
-             * the mode's window. */
-            const mocha::camera::Rect f = mFrameMap->toFrame(mFrameMap->clip(
-                mocha::camera::Rect{r.xMin, r.yMin, r.xMax - r.xMin, r.yMax - r.yMin}));
-            const mocha::camera::Size out = mFrameMap->output();
-            if (!isFullFrame && !f.empty()) {
-                /* Frame pixels → patch grid (16×16). Floor on Lo,
-                 * ceil on Hi so a tiny tap still spans at least one
-                 * patch column / row. */
-                const float wPerPatch = (float)out.width  / IpaStats::PATCH_X;
-                const float hPerPatch = (float)out.height / IpaStats::PATCH_Y;
-                int pxLo = (int)((float)f.left / wPerPatch);
-                int pyLo = (int)((float)f.top / hPerPatch);
-                int pxHi = (int)((float)(f.left + f.width) / wPerPatch + 0.999f);
-                int pyHi = (int)((float)(f.top + f.height) / hPerPatch + 0.999f);
-                if (pxLo < 0) pxLo = 0;
-                if (pyLo < 0) pyLo = 0;
-                if (pxHi > IpaStats::PATCH_X) pxHi = IpaStats::PATCH_X;
-                if (pyHi > IpaStats::PATCH_Y) pyHi = IpaStats::PATCH_Y;
-                if (pxHi > pxLo && pyHi > pyLo) {
-                    /* Enforce the minimum footprint around the
-                     * tap centre. Apps routinely send narrow
-                     * regions that collapse to one patch on the
-                     * 16×16 grid; the AF metric needs a wider
-                     * Sobel sum to find a stable peak. */
-                    growToMin(&pxLo, &pxHi, IpaStats::PATCH_X,
-                               mMinFocusRoiPatches);
-                    growToMin(&pyLo, &pyHi, IpaStats::PATCH_Y,
-                               mMinFocusRoiPatches);
-                    roi.pxLo = pxLo; roi.pxHi = pxHi;
-                    roi.pyLo = pyLo; roi.pyHi = pyHi;
-                    ALOGD("AF_REGIONS active=(%d,%d-%d,%d) -> frame=(%d,%d %dx%d) -> "
-                          "patches py[%d,%d) px[%d,%d)",
-                          r.xMin, r.yMin, r.xMax, r.yMax,
-                          f.left, f.top, f.width, f.height,
-                          roi.pyLo, roi.pyHi, roi.pxLo, roi.pxHi);
-                }
-            }
-        }
+        const FocusRoi roi = roiFor(settings);
+        if (settings.af.region)
+            ALOGD("AF_REGIONS (%d,%d-%d,%d) w=%d -> patches py[%d,%d) px[%d,%d)",
+                  settings.af.region->rect.xMin, settings.af.region->rect.yMin,
+                  settings.af.region->rect.xMax, settings.af.region->rect.yMax,
+                  settings.af.region->weight, roi.pyLo, roi.pyHi, roi.pxLo, roi.pxHi);
         std::lock_guard<std::mutex> lock(mFocusRoiMutex);
         mFocusRoi = roi;
     }
@@ -896,6 +811,14 @@ AutoFocusController::Report AutoFocusController::buildReport() const {
         diopter = 0;
     r.focusDiopter = diopter;
     return r;
+}
+
+AutoFocusController::FocusRoi AutoFocusController::roiFor(
+        const mocha::camera::FrameSettings &settings) const {
+    if (!settings.af.region || !mFrameMap)
+        return PatchRoi::centre();
+    return regionPatches(*mFrameMap, *settings.af.region, mMinFocusRoiPatches)
+        .value_or(PatchRoi::centre());
 }
 
 AutoFocusController::FocusRoi AutoFocusController::currentFocusRoi() const {

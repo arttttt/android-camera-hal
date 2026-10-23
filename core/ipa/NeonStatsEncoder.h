@@ -42,12 +42,7 @@ public:
      * `greenSqSum` slots in the Partial stay at zero, which finalize
      * surfaces as `focusMetric == 0`. rgbMean still runs full-frame
      * because AE / AWB consume it across all patches. */
-    struct FocusRoi {
-        int pyLo;
-        int pyHi;
-        int pxLo;
-        int pxHi;
-    };
+    using FocusRoi = PatchRoi;
 
     /* Progressive-compute accumulator. Owned and zeroed by the caller
      * before the first computeRange() call of a cycle; mutated in-place

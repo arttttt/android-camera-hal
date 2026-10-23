@@ -57,16 +57,8 @@ public:
         float   focusDiopter;  /* 0 .. ~10, the lens focus distance */
     };
 
-    /* AF region of interest in IpaStats patch grid coordinates.
-     * Matches the half-open shape of the FOCUS_ROI_* compile-time
-     * constants and NeonStatsEncoder::FocusRoi: pyLo/pxLo inclusive,
-     * pyHi/pxHi exclusive, both in [0, IpaStats::PATCH_*]. */
-    struct FocusRoi {
-        int pyLo;
-        int pyHi;
-        int pxLo;
-        int pxHi;
-    };
+    /* AF region of interest in IpaStats patch grid coordinates. */
+    using FocusRoi = PatchRoi;
 
     /* `tuning` is optional — pass nullptr or a !isLoaded() instance and
      * the controller falls back to compile-time VCM defaults. When the
@@ -129,6 +121,11 @@ public:
      * this getter when it hands a frame to the stats engine; the
      * finish engine reads it for AE / AWB metering. */
     FocusRoi currentFocusRoi() const;
+
+    /* The patches a frame's AF region covers on the running mode's
+     * frame, grown to the tuning's minimum; the centre default without
+     * a region that takes part (regionPatches). */
+    FocusRoi roiFor(const mocha::camera::FrameSettings &settings) const;
 
     /* Reset the state-machine to the initial post-construction
      * state. Used at camera close, with the threads stopped, so a
