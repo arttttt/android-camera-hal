@@ -13,8 +13,8 @@ namespace android {
  * space, matching the libcamera IPU3 / rkisp1 convention. Consumers
  * must account for the raw domain when interpreting rgbMean. */
 struct IpaStats {
-    static const int PATCH_X = 16;
-    static const int PATCH_Y = 16;
+    static constexpr int PATCH_X = 16;
+    static constexpr int PATCH_Y = 16;
 
     /* Focus-metric region of interest, expressed as a half-open
      * patch-grid rectangle [LO, HI) on each axis. Default covers the
@@ -24,10 +24,10 @@ struct IpaStats {
      * a different rectangle per request once that path is wired up.
      * Acts as a single source of truth: AF uses the same values for
      * its centre-only ROI sums. */
-    static const int FOCUS_ROI_PX_LO = 4;
-    static const int FOCUS_ROI_PX_HI = 12;
-    static const int FOCUS_ROI_PY_LO = 4;
-    static const int FOCUS_ROI_PY_HI = 12;
+    static constexpr int FOCUS_ROI_PX_LO = 4;
+    static constexpr int FOCUS_ROI_PX_HI = 12;
+    static constexpr int FOCUS_ROI_PY_LO = 4;
+    static constexpr int FOCUS_ROI_PY_HI = 12;
 
     /* Per-patch mean RGB in [0,1]. Divided by patch pixel count in
      * the shader's tree reduction (not here). */
