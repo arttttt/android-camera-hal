@@ -103,14 +103,18 @@ struct SensorRect {
     int32_t yMax = 0;
 };
 
-/* The crop region, as Camera2 gives it: a corner and a size, in
- * active-array pixels. */
-struct CropRegion {
+/* A corner and a size, in pixels. */
+struct Rect {
     int32_t left   = 0;
     int32_t top    = 0;
     int32_t width  = 0;
     int32_t height = 0;
+
+    bool empty() const { return width <= 0 || height <= 0; }
 };
+
+/* The crop region, as Camera2 gives it, in active-array pixels. */
+using CropRegion = Rect;
 
 /* A metering region: a rectangle and its weight, 0..1000. A weight of
  * 0 takes no part in metering (Camera2's METERING_WEIGHT_DONT_CARE):

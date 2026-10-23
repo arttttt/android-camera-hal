@@ -84,14 +84,18 @@ run result_engine_test   core/tests/result_engine_test.cpp \
                          core/pipeline/stages/ResultDispatchStage.cpp \
                          core/pipeline/Frame.cpp core/pipeline/FrameRegistry.cpp \
                          core/3a/ThreeAReport.cpp core/3a/AutoFocusController.cpp \
+                         core/sensor/SensorGeometry.cpp \
                          core/sensor/DelayedControls.cpp core/base/EventFd.cpp \
                          "${TUNING[@]}" -- -ljsoncpp
 run three_a_test         core/tests/three_a_test.cpp \
                          core/3a/AutoExposureController.cpp \
                          core/3a/AutoFocusController.cpp \
                          core/3a/GrayWorldAwbController.cpp \
+                         core/sensor/SensorGeometry.cpp \
                          core/3a/ThreeAReport.cpp core/sensor/DelayedControls.cpp \
                          "${TUNING[@]}" -- -ljsoncpp
 run exif_test            core/tests/exif_test.cpp core/jpeg/Exif.cpp
+run sensor_geometry_test core/tests/sensor_geometry_test.cpp \
+                         core/sensor/SensorGeometry.cpp
 
 exit $failed
