@@ -202,7 +202,7 @@ void writeControlInfo(CameraMetadata &cm, const Capability &cap) {
     cm.update(ANDROID_CONTROL_AVAILABLE_EFFECTS, controlAvailableEffects, NELEM(controlAvailableEffects));
 
     const int32_t controlMaxRegions[] = {
-        0,                  /* AE  */
+        cap.ae.maxRegions,  /* AE  */
         0,                  /* AWB */
         cap.af.maxRegions   /* AF -- tap-to-focus */
     };
@@ -441,7 +441,6 @@ void writeAvailableKeys(CameraMetadata &cm) {
         ANDROID_CONTROL_AF_TRIGGER,
         ANDROID_CONTROL_AWB_LOCK,
         ANDROID_CONTROL_AWB_MODE,
-        ANDROID_CONTROL_AWB_REGIONS,
         ANDROID_CONTROL_CAPTURE_INTENT,
         ANDROID_CONTROL_EFFECT_MODE,
         ANDROID_CONTROL_MODE,
@@ -491,7 +490,6 @@ void writeAvailableKeys(CameraMetadata &cm) {
         ANDROID_CONTROL_AF_TRIGGER,
         ANDROID_CONTROL_AWB_LOCK,
         ANDROID_CONTROL_AWB_MODE,
-        ANDROID_CONTROL_AWB_REGIONS,
         ANDROID_CONTROL_CAPTURE_INTENT,
         ANDROID_CONTROL_EFFECT_MODE,
         ANDROID_CONTROL_MODE,

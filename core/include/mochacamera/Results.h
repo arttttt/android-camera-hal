@@ -41,10 +41,11 @@ struct Core3AResult {
     int32_t  sensitivityIso   = 0;
     int64_t  frameDurationNs  = 0;
 
-    /* The crop and AF region the frame used, reported in place of the
-     * request's (Camera2: the crop within what the frame shows, the
-     * region within the crop); no AF region when none was used. */
+    /* The crop and metering regions the frame used, reported in place
+     * of the request's (Camera2: the crop within what the frame shows,
+     * each region within the crop); no region where none was used. */
     std::optional<CropRegion>     cropRegion;
+    std::optional<MeteringRegion> aeRegion;
     std::optional<MeteringRegion> afRegion;
 };
 

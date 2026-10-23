@@ -72,22 +72,34 @@ void ResultMetadataBuilder::buildAwb(CameraMetadata &cm, const Core3AResult &r) 
     cm.update(ANDROID_CONTROL_AWB_STATE, &awbState, 1);
 }
 
+namespace {
+
+/* A region the frame did not use (outside the crop) is not reported. */
+void reportRegion(CameraMetadata &cm, uint32_t tag,
+                  const std::optional<mocha::camera::MeteringRegion> &r) {
+    if (r) {
+        const int32_t region[] = {r->rect.xMin, r->rect.yMin,
+                                  r->rect.xMax, r->rect.yMax, r->weight};
+        cm.update(tag, region, 5);
+    } else if (cm.exists(tag)) {
+        cm.erase(tag);
+    }
+}
+
+} /* namespace */
+
 void ResultMetadataBuilder::buildRegions(CameraMetadata &cm, const Core3AResult &r) {
     if (r.cropRegion) {
         const int32_t crop[] = {r.cropRegion->left, r.cropRegion->top,
                                 r.cropRegion->width, r.cropRegion->height};
         cm.update(ANDROID_SCALER_CROP_REGION, crop, 4);
     }
-    /* A region the frame did not use (outside the crop) is not
-     * reported. */
-    if (r.afRegion) {
-        const int32_t region[] = {r.afRegion->rect.xMin, r.afRegion->rect.yMin,
-                                  r.afRegion->rect.xMax, r.afRegion->rect.yMax,
-                                  r.afRegion->weight};
-        cm.update(ANDROID_CONTROL_AF_REGIONS, region, 5);
-    } else if (cm.exists(ANDROID_CONTROL_AF_REGIONS)) {
-        cm.erase(ANDROID_CONTROL_AF_REGIONS);
-    }
+    reportRegion(cm, ANDROID_CONTROL_AE_REGIONS, r.aeRegion);
+    reportRegion(cm, ANDROID_CONTROL_AF_REGIONS, r.afRegion);
+    /* AWB takes no region (MAX_REGIONS): one a request sends anyway is
+     * not reported. */
+    if (cm.exists(ANDROID_CONTROL_AWB_REGIONS))
+        cm.erase(ANDROID_CONTROL_AWB_REGIONS);
 }
 
 void ResultMetadataBuilder::buildFinal(CameraMetadata &cm, const Core3AResult &r,

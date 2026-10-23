@@ -196,8 +196,11 @@ Capability probeCapability(android::V4l2Device &dev, bool facingFront,
     probeAwbModes(cap, tuning);
 
     /* AE On is the IPA's; AE Off the request's own exposure and
-     * sensitivity (requestExposure's manual path). */
-    cap.ae.modes = {AeMode::Off, AeMode::On};
+     * sensitivity (requestExposure's manual path). One AE region, as
+     * one AF region: it replaces the metered area (Camera2: with a
+     * single region its weight changes nothing). */
+    cap.ae.modes      = {AeMode::Off, AeMode::On};
+    cap.ae.maxRegions = 1;
 
     /* AF modes where the device has a lens to move. */
     if (!dev.hasLens()) {

@@ -29,9 +29,10 @@ namespace android {
  *     ANDROID_FLASH_STATE
  *
  *   Every one of them, as each starts from the request's settings:
- *     ANDROID_SCALER_CROP_REGION, ANDROID_CONTROL_AF_REGIONS -- what
- *     the frame used, in place of the request's, so the partials and
- *     the final agree */
+ *     ANDROID_SCALER_CROP_REGION, ANDROID_CONTROL_AE_REGIONS,
+ *     ANDROID_CONTROL_AF_REGIONS -- what the frame used, in place of
+ *     the request's, so the partials and the final agree; and no
+ *     ANDROID_CONTROL_AWB_REGIONS, which AWB does not take */
 class ResultMetadataBuilder {
 public:
     static void buildAwb(CameraMetadata &cm, const mocha::camera::Core3AResult &r);

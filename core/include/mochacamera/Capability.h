@@ -77,6 +77,8 @@ struct Capability {
         int32_t  evMinSteps = -9;
         int32_t  evMaxSteps = 9;
         std::vector<FpsRange> targetFpsRanges;
+        /* AE regions honoured at once. */
+        int32_t maxRegions = 0;
     } ae;
 
     struct Awb {
@@ -85,7 +87,7 @@ struct Capability {
 
     struct Af {
         std::vector<AfMode> modes;
-        /* AF regions honoured at once; AE and AWB take none. */
+        /* AF regions honoured at once; AWB takes none. */
         int32_t maxRegions = 0;
     } af;
 

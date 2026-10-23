@@ -73,6 +73,7 @@ Core3AResult describe3A(const FrameSettings &settings,
     r.focusDistanceDiopters = af.focusDiopter;
 
     r.cropRegion = settings.crop;
+    r.aeRegion   = settings.ae.region;
     r.afRegion   = settings.af.region;
     return r;
 }

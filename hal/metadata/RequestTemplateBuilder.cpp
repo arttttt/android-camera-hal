@@ -96,15 +96,16 @@ void writeControlDefaults(CameraMetadata &cm, int type,
     static const uint8_t controlAeLock = ANDROID_CONTROL_AE_LOCK_OFF;
     cm.update(ANDROID_CONTROL_AE_LOCK, &controlAeLock, 1);
 
+    /* The whole active array: no particular region. AWB takes none
+     * (MAX_REGIONS), so it has no key. */
     const mocha::camera::Rect active = cap.sensor.activeArray;
-    const int32_t controlAeRegions[] = {
+    const int32_t wholeRegion[] = {
         0,                          0,
         active.width,               active.height,
         1000
     };
-    cm.update(ANDROID_CONTROL_AE_REGIONS,  controlAeRegions, NELEM(controlAeRegions));
-    cm.update(ANDROID_CONTROL_AWB_REGIONS, controlAeRegions, NELEM(controlAeRegions));
-    cm.update(ANDROID_CONTROL_AF_REGIONS,  controlAeRegions, NELEM(controlAeRegions));
+    cm.update(ANDROID_CONTROL_AE_REGIONS, wholeRegion, NELEM(wholeRegion));
+    cm.update(ANDROID_CONTROL_AF_REGIONS, wholeRegion, NELEM(wholeRegion));
 
     static const int32_t controlAeExposureCompensation = 0;
     cm.update(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION, &controlAeExposureCompensation, 1);

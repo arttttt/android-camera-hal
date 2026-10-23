@@ -145,10 +145,14 @@ HAL3.4 / Camera2 compliance pass (commit `f34d870` and around):
 - **AE_LOCK + EV-comp** — EV compensation honoured on both auto
   and locked paths, EMA-smoothed across the lock so big EV steps
   don't mid-rolling-shutter-tear.
-- **AF_REGIONS** — parsed into a patch-grid `FocusRoi` (5×5
-  minimum around tap centre); the same ROI feeds AF metric
-  computation, AE spot-meter region, and the NEON encoder's Sobel
-  / greenSq window.
+- **AF_REGIONS / AE_REGIONS** — one each (`MAX_REGIONS = {1, 0, 1}`),
+  fitted to the crop and mapped through the mode's window into
+  patch-grid ROIs (5×5 minimum around the tap centre, from the
+  tuning). The AF ROI feeds the AF metric and the NEON encoder's
+  Sobel / greenSq window; the AE ROI (the AF one without an AE
+  region) the AE spot meter. Results report the regions used, within
+  the crop, in every partial; AWB_REGIONS is neither taken nor
+  reported.
 - **Sensor calibration** — focal length, min focus distance, sensor
   orientation, bayer pattern from per-module tuning JSON; the pixel
   array and the modes' windows from the sensor driver's selection
