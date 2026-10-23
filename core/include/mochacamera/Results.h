@@ -18,6 +18,7 @@
 #define MOCHACAMERA_RESULTS_H
 
 #include <cstdint>
+#include <optional>
 
 #include "mochacamera/Controls.h"
 
@@ -39,6 +40,12 @@ struct Core3AResult {
     int64_t  exposureTimeNs   = 0;
     int32_t  sensitivityIso   = 0;
     int64_t  frameDurationNs  = 0;
+
+    /* The crop and AF region the frame used, reported in place of the
+     * request's (Camera2: the crop within what the frame shows, the
+     * region within the crop); no AF region when none was used. */
+    std::optional<CropRegion>     cropRegion;
+    std::optional<MeteringRegion> afRegion;
 };
 
 /* Partial results, in the order a frame gets them: AWB from the 3A

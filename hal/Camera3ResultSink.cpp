@@ -115,6 +115,7 @@ void Camera3ResultSink::partial(uint32_t frameNumber, PartialResult which,
         case PartialResult::Awb: ResultMetadataBuilder::buildAwb(md, result); break;
         case PartialResult::Ae:  ResultMetadataBuilder::buildAe(md, result);  break;
     }
+    ResultMetadataBuilder::buildRegions(md, result);
     const camera_metadata_t *blob = md.getAndLock();
     emit(frameNumber, (uint32_t)which, blob, {});
     md.unlock(blob);

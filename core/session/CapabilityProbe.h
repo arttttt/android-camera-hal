@@ -23,17 +23,20 @@ namespace android {
 class SensorTuning;
 class V4l2Device;
 struct SensorConfig;
+struct SensorGeometry;
 }
 
 namespace mocha::camera {
 
 /* What the camera can do, from the driver (sizes, frame intervals,
- * exposure and gain ranges), the sensor's tuning (optics, colour
- * filter, AWB presets) and the pipeline's own limits (the output
- * sizes the SW ISP sustains, one YUV size per capture). */
+ * exposure and gain ranges, the pixel array and the modes' fields), the
+ * sensor's tuning (optics, colour filter, AWB presets) and the
+ * pipeline's own limits (the output sizes the SW ISP sustains, one YUV
+ * size per capture). */
 Capability probeCapability(android::V4l2Device &dev, bool facingFront,
                            const android::SensorTuning *tuning,
                            const android::SensorConfig &sensorCfg,
+                           const android::SensorGeometry &geometry,
                            int requestsInFlight);
 
 } /* namespace mocha::camera */

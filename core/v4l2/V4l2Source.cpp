@@ -152,9 +152,4 @@ mocha::camera::Size V4l2Source::resolution() const {
     return mocha::camera::Size{r.width, r.height};
 }
 
-mocha::camera::Size V4l2Source::sensorResolution() const {
-    const Resolution r = dev->sensorResolution();
-    return mocha::camera::Size{r.width, r.height};
-}
-
 } /* namespace android */

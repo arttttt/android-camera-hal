@@ -149,9 +149,10 @@ HAL3.4 / Camera2 compliance pass (commit `f34d870` and around):
   minimum around tap centre); the same ROI feeds AF metric
   computation, AE spot-meter region, and the NEON encoder's Sobel
   / greenSq window.
-- **Sensor calibration** — physical size, focal length, min focus
-  distance, sensor orientation, bayer pattern from per-module
-  tuning JSON. VCM range from the focuser subdev's
+- **Sensor calibration** — focal length, min focus distance, sensor
+  orientation, bayer pattern from per-module tuning JSON; the pixel
+  array and the modes' windows from the sensor driver's selection
+  API, the physical size from the sensor model's pixel pitch. VCM range from the focuser subdev's
   `VIDIOC_QUERYCTRL`.
 - **`SENSOR_INFO_EXPOSURE_TIME_RANGE` / `SENSITIVITY_RANGE`** —
   queried from V4L2 driver, no compile-time hardcodes.

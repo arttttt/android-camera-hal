@@ -27,7 +27,6 @@ namespace android {
 class SensorTuning {
 public:
     struct ModuleInfo {
-        float physicalSizeMm[2];         /* {width, height} */
         float focalLengthMm;
         float minFocusDistanceDiopters;  /* 0 for fixed-focus cameras */
 

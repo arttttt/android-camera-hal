@@ -80,11 +80,6 @@ bool SensorTuning::loadFile(const std::string &path) {
         ALOGE("tuning: missing `module` block");
         return false;
     }
-    const Json::Value &size = mod["sensor_physical_size_mm"];
-    if (size.isArray() && size.size() == 2) {
-        mModule.physicalSizeMm[0] = size[0].asFloat();
-        mModule.physicalSizeMm[1] = size[1].asFloat();
-    }
     mModule.focalLengthMm          = mod["focal_length_mm"].asFloat();
     mModule.minFocusDistanceDiopters = mod["min_focus_distance_diopters"].asFloat();
     mModule.sensorOrientationDegrees = mod["sensor_orientation_degrees"].asInt();

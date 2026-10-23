@@ -145,8 +145,8 @@ preview are all working.
 - Source: stock NVIDIA `.isp` files (Mi Pad 1 vendor blob) converted
   by `tools/isp_to_json.py`, split into an `active` section (paths
   the HAL consumes) and a `reserved` section (preserved verbatim for
-  future stages). Hardware facts (physical size, focal length, min
-  focus distance, bayer pattern, sensor orientation) live in
+  future stages). Module facts (focal length, min focus distance,
+  bayer pattern, sensor orientation) live in
   `tuning/_module_<sensor>_<integrator>.json` and are merged at
   conversion time.
 - HAL-specific knobs that don't exist in NVIDIA `.isp` (currently the

@@ -56,9 +56,10 @@ void writeSensorInfo(CameraMetadata &cm, const Capability &cap) {
     cm.update(ANDROID_SENSOR_INFO_PIXEL_ARRAY_SIZE, pixelArraySize, NELEM(pixelArraySize));
 
     const int32_t activeArraySize[] = {
-        0, 0,
-        (int32_t)cap.sensor.pixelArray.width,
-        (int32_t)cap.sensor.pixelArray.height
+        cap.sensor.activeArray.left,
+        cap.sensor.activeArray.top,
+        cap.sensor.activeArray.width,
+        cap.sensor.activeArray.height
     };
     cm.update(ANDROID_SENSOR_INFO_ACTIVE_ARRAY_SIZE, activeArraySize, NELEM(activeArraySize));
 

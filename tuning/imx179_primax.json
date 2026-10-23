@@ -8,11 +8,7 @@
     "nvidia_version": "v2.27"
   },
   "module": {
-    "_source": "IMX179 Sony datasheet (1.4 um pitch, 3264x2448 active) + Mi Pad 1 Primax module estimate",
-    "sensor_physical_size_mm": [
-      4.57,
-      3.428
-    ],
+    "_source": "Mi Pad 1 Primax module estimate",
     "focal_length_mm": 3.36,
     "min_focus_distance_diopters": 10.0,
     "bayer_pattern": "RGGB",

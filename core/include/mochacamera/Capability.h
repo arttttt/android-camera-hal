@@ -34,8 +34,12 @@ struct Capability {
     bool facingFront = false;
 
     struct Sensor {
-        /* The pixel array, which is also the active array. */
+        /* The pixel array, and within it the active array: the field
+         * the sensor's modes show between them, the coordinate space of
+         * requests' regions and crops. The physical size is the pixel
+         * array's. */
         Size    pixelArray;
+        Rect    activeArray;
         float   physicalSizeMm[2] = {0.f, 0.f};
         int32_t orientationDegrees = 0;
         /* Camera2's colour filter arrangement values. */

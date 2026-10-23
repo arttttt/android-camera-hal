@@ -15,6 +15,7 @@
 
 namespace android {
 
+class FrameMap;
 class SensorTuning;
 
 /* Contrast-detect autofocus for a single-VCM sensor.
@@ -77,10 +78,10 @@ public:
      * sweep is published to the coordinator via `AfResult::sweeping`
      * — the coordinator decides which back-ends (Ipa::setAeLock,
      * the AWB hold in Ipa3A) to nudge. */
-    /* `sensorWidth` / `sensorHeight` are the active array AF_REGIONS
-     * come in. */
-    AutoFocusController(const SensorTuning *tuning,
-                        int sensorWidth, int sensorHeight);
+    /* `frameMap` maps the active array AF_REGIONS come in onto the
+     * running mode's frame; it is changed only while no settings come
+     * (between configurations). */
+    AutoFocusController(const SensorTuning *tuning, const FrameMap *frameMap);
 
     /* Queue what the request asks of AF: AF_MODE, LENS_FOCUS_DISTANCE,
      * AF_TRIGGER. Applied in request order at the start of the next
@@ -213,8 +214,7 @@ private:
     void publishReport();
     Report buildReport() const;
 
-    int          mSensorWidth;
-    int          mSensorHeight;
+    const FrameMap *mFrameMap;
 
     /* onSettings → process(): requests not yet applied, in order.
      * Consecutive requests without a trigger collapse into the last

@@ -31,6 +31,7 @@
 #include "V4l2Controls.h"
 #include "V4l2Device.h"
 #include "sensor/SensorConfig.h"
+#include "sensor/SensorGeometry.h"
 #include "sensor/SensorTuning.h"
 
 namespace mocha::camera {
@@ -52,22 +53,17 @@ constexpr size_t  kJpegTrailerSize = 8;
 
 void probeSensor(Capability &cap, android::V4l2Device &dev,
                  const android::SensorTuning *tuning,
-                 const android::SensorConfig &cfg) {
-    const android::Resolution res = dev.sensorResolution();
-    cap.sensor.pixelArray = Size{res.width, res.height};
+                 const android::SensorConfig &cfg,
+                 const android::SensorGeometry &geometry) {
+    cap.sensor.pixelArray  = geometry.pixelArray;
+    cap.sensor.activeArray = geometry.activeArray;
+    cap.sensor.physicalSizeMm[0] = geometry.pixelArray.width  * cfg.pixelSizeUm / 1000.f;
+    cap.sensor.physicalSizeMm[1] = geometry.pixelArray.height * cfg.pixelSizeUm / 1000.f;
 
-    /* Per-module datasheet values from the tuning; aspect-correct
-     * stand-ins when it did not load, so the area stays coherent. */
-    if (tuning && tuning->isLoaded()) {
-        const auto &m = tuning->module();
-        cap.sensor.physicalSizeMm[0]      = m.physicalSizeMm[0];
-        cap.sensor.physicalSizeMm[1]      = m.physicalSizeMm[1];
-        cap.lens.minFocusDistanceDiopters = m.minFocusDistanceDiopters;
-    } else {
-        cap.sensor.physicalSizeMm[0]      = 5.0f;
-        cap.sensor.physicalSizeMm[1]      = 5.0f * (float)res.height / (float)res.width;
+    if (tuning && tuning->isLoaded())
+        cap.lens.minFocusDistanceDiopters = tuning->module().minFocusDistanceDiopters;
+    else
         cap.lens.minFocusDistanceDiopters = dev.hasLens() ? 10.0f : 0.0f;
-    }
     cap.lens.focalLengthMm = cfg.focalLengthMm;
     cap.sensor.orientationDegrees = tuning ? tuning->module().sensorOrientationDegrees : 0;
 
@@ -189,11 +185,12 @@ void probeAwbModes(Capability &cap, const android::SensorTuning *tuning) {
 Capability probeCapability(android::V4l2Device &dev, bool facingFront,
                            const android::SensorTuning *tuning,
                            const android::SensorConfig &cfg,
+                           const android::SensorGeometry &geometry,
                            int requestsInFlight) {
     Capability cap;
     cap.facingFront = facingFront;
 
-    probeSensor(cap, dev, tuning, cfg);
+    probeSensor(cap, dev, tuning, cfg, geometry);
     probeStreams(cap, dev);
     probeFpsRanges(cap, dev);
     probeAwbModes(cap, tuning);
@@ -212,10 +209,13 @@ Capability probeCapability(android::V4l2Device &dev, bool facingFront,
         cap.af.maxRegions = 1;
     }
 
-    /* ~1.1 byte/px is a typical JPEG; 2 bytes/px of the full sensor for
-     * margin, the trailer, page-aligned. */
-    size_t jpegMax = (size_t)cap.sensor.pixelArray.width * cap.sensor.pixelArray.height * 2
-                   + kJpegTrailerSize;
+    /* ~1.1 byte/px is a typical JPEG; 2 bytes/px of the largest JPEG
+     * output for margin, the trailer, page-aligned. */
+    size_t jpegPixels = 0;
+    for (const Capability::StreamConfig &s : cap.streams)
+        if (s.format == PixelFormat::Blob)
+            jpegPixels = std::max(jpegPixels, (size_t)s.size.width * s.size.height);
+    size_t jpegMax = jpegPixels * 2 + kJpegTrailerSize;
     cap.jpeg.maxSize = (jpegMax + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
     /* (0,0) for no thumbnail, then 16:9 and 4:3 -- the aspect ratios of
      * the output sizes. The encoder crops the snapshot's centre to the

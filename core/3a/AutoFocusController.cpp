@@ -7,6 +7,7 @@
 #include <utils/Log.h>
 #include <utils/Timers.h>
 
+#include "sensor/SensorGeometry.h"
 #include "sensor/SensorTuning.h"
 
 namespace android {
@@ -100,9 +101,8 @@ void growToMin(int *lo, int *hi, int gridLimit, int minSpan) {
 } /* namespace */
 
 AutoFocusController::AutoFocusController(const SensorTuning *tuning,
-                                         int sensorWidth, int sensorHeight)
-    : mSensorWidth(sensorWidth)
-    , mSensorHeight(sensorHeight)
+                                         const FrameMap *frameMap)
+    : mFrameMap(frameMap)
     , mAfState(AfState::Inactive)
     , mSweepKind(SweepKind::Passive)
     , mCafLocked(false)
@@ -541,38 +541,40 @@ void AutoFocusController::onSettings(const FrameSettings &settings,
     {
         FocusRoi roi{IpaStats::FOCUS_ROI_PY_LO, IpaStats::FOCUS_ROI_PY_HI,
                      IpaStats::FOCUS_ROI_PX_LO, IpaStats::FOCUS_ROI_PX_HI};
-        if (settings.af.region && settings.af.region->weight > 0) {
-            const int32_t xMin = settings.af.region->rect.xMin;
-            const int32_t yMin = settings.af.region->rect.yMin;
-            const int32_t xMax = settings.af.region->rect.xMax;
-            const int32_t yMax = settings.af.region->rect.yMax;
-            const int sw = mSensorWidth;
-            const int sh = mSensorHeight;
+        if (settings.af.region && settings.af.region->weight > 0 &&
+            mFrameMap && mFrameMap->known()) {
+            const mocha::camera::SensorRect &r = settings.af.region->rect;
+            const mocha::camera::Rect visible = mFrameMap->visible();
             /* Apps routinely send "no specific subject" as a near-
              * full-frame rectangle (Camera2's `Camera.Region` weight
              * doesn't map cleanly onto our patch grid, so the
              * convention is to either set zero regions or hand back
-             * almost the whole frame). The exact-full check (xMax >=
-             * sw) misses the off-by-one variants apps use — (sw-1)
-             * is common — and would parse them as a real region
+             * almost the whole frame). The exact-full check misses
+             * the off-by-one variants apps use -- (width - 1) is
+             * common -- and would parse them as a real region
              * spanning the full 16×16 grid, neutralising both the
              * AF spatial restrict and the AE / AWB region weighting.
-             * Treat anything within one pixel of the sensor edges as
-             * full-frame. */
+             * Treat anything within one pixel of the edges of what
+             * the frame shows as full-frame. */
             const bool isFullFrame =
-                (xMin <= 1 && yMin <= 1
-                 && xMax >= sw - 1 && yMax >= sh - 1);
-            if (sw > 0 && sh > 0 && !isFullFrame
-                && xMax > xMin && yMax > yMin) {
-                /* Sensor coords → patch grid (16×16). Floor on Lo,
+                (r.xMin <= visible.left + 1 && r.yMin <= visible.top + 1
+                 && r.xMax >= visible.left + visible.width - 1
+                 && r.yMax >= visible.top + visible.height - 1);
+            /* Active-array coordinates → the frame's pixels, through
+             * the mode's window. */
+            const mocha::camera::Rect f = mFrameMap->toFrame(mFrameMap->clip(
+                mocha::camera::Rect{r.xMin, r.yMin, r.xMax - r.xMin, r.yMax - r.yMin}));
+            const mocha::camera::Size out = mFrameMap->output();
+            if (!isFullFrame && !f.empty()) {
+                /* Frame pixels → patch grid (16×16). Floor on Lo,
                  * ceil on Hi so a tiny tap still spans at least one
                  * patch column / row. */
-                const float wPerPatch = (float)sw / IpaStats::PATCH_X;
-                const float hPerPatch = (float)sh / IpaStats::PATCH_Y;
-                int pxLo = (int)((float)xMin / wPerPatch);
-                int pyLo = (int)((float)yMin / hPerPatch);
-                int pxHi = (int)((float)xMax / wPerPatch + 0.999f);
-                int pyHi = (int)((float)yMax / hPerPatch + 0.999f);
+                const float wPerPatch = (float)out.width  / IpaStats::PATCH_X;
+                const float hPerPatch = (float)out.height / IpaStats::PATCH_Y;
+                int pxLo = (int)((float)f.left / wPerPatch);
+                int pyLo = (int)((float)f.top / hPerPatch);
+                int pxHi = (int)((float)(f.left + f.width) / wPerPatch + 0.999f);
+                int pyHi = (int)((float)(f.top + f.height) / hPerPatch + 0.999f);
                 if (pxLo < 0) pxLo = 0;
                 if (pyLo < 0) pyLo = 0;
                 if (pxHi > IpaStats::PATCH_X) pxHi = IpaStats::PATCH_X;
@@ -589,9 +591,10 @@ void AutoFocusController::onSettings(const FrameSettings &settings,
                                mMinFocusRoiPatches);
                     roi.pxLo = pxLo; roi.pxHi = pxHi;
                     roi.pyLo = pyLo; roi.pyHi = pyHi;
-                    ALOGD("AF_REGIONS sensor=(%d,%d-%d,%d) -> patches "
-                          "py[%d,%d) px[%d,%d)",
-                          xMin, yMin, xMax, yMax,
+                    ALOGD("AF_REGIONS active=(%d,%d-%d,%d) -> frame=(%d,%d %dx%d) -> "
+                          "patches py[%d,%d) px[%d,%d)",
+                          r.xMin, r.yMin, r.xMax, r.yMax,
+                          f.left, f.top, f.width, f.height,
                           roi.pyLo, roi.pyHi, roi.pxLo, roi.pxHi);
                 }
             }

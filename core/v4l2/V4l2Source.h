@@ -42,7 +42,6 @@ public:
     void returnSlot(int slot, uint32_t generation) override;
 
     mocha::camera::Size resolution()       const override;
-    mocha::camera::Size sensorResolution() const override;
 
 private:
     /* vb2 reports POLLERR while the queue is not streaming or holds no

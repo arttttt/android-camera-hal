@@ -37,6 +37,7 @@
 #include "StatsEngine.h"
 #include "mochacamera/ports/ResultSink.h"
 #include "sensor/SensorConfig.h"
+#include "sensor/SensorGeometry.h"
 
 #undef  LOG_TAG
 #define LOG_TAG "Cam-CaptureEngine"
@@ -226,6 +227,10 @@ Engine<CaptureEngine::Job, std::monostate>::Step CaptureEngine::advance(Job &job
     }
 
     if (!job.ticket) {
+        /* The crop and AF region the frame uses, for the frame and its
+         * result alike. */
+        if (deps.frameMap)
+            android::fitToFrame(f.settings, *deps.frameMap);
         job.ticket = binder.request(
                 android::requestExposure(f.settings, *deps.sensorCfg,
                                          deps.exposureTarget, deps.evStep),
@@ -271,32 +276,25 @@ Engine<CaptureEngine::Job, std::monostate>::Step CaptureEngine::advance(Job &job
 }
 
 void CaptureEngine::crop(Frame &f) {
-    const Size res    = deps.source->resolution();
-    const Size sensor = deps.source->sensorResolution();
+    const Size res = deps.source->resolution();
 
-    int cropX = 0;
-    int cropY = 0;
-    int cropW = res.width;
-    int cropH = res.height;
-
-    if (f.settings.crop) {
-        const CropRegion &c = *f.settings.crop;
-        cropX = c.left   * (int)res.width  / (int)sensor.width;
-        cropY = c.top    * (int)res.height / (int)sensor.height;
-        cropW = c.width  * (int)res.width  / (int)sensor.width;
-        cropH = c.height * (int)res.height / (int)sensor.height;
-        if (cropX < 0) cropX = 0;
-        if (cropY < 0) cropY = 0;
-        if (cropW < 16) cropW = 16;
-        if (cropH < 16) cropH = 16;
-        if (cropX + cropW > (int)res.width)  cropW = (int)res.width  - cropX;
-        if (cropY + cropH > (int)res.height) cropH = (int)res.height - cropY;
+    /* The request's crop, as fitToFrame left it, in the frame's pixels
+     * through the mode's window; the whole frame without one. */
+    const int32_t w = (int32_t)res.width;
+    const int32_t h = (int32_t)res.height;
+    Rect c{0, 0, w, h};
+    if (f.settings.crop && deps.frameMap && deps.frameMap->known()) {
+        c = deps.frameMap->toFrame(*f.settings.crop);
+        c.width  = std::clamp(c.width, 16, w);
+        c.height = std::clamp(c.height, 16, h);
+        c.left   = std::clamp(c.left, 0, w - c.width);
+        c.top    = std::clamp(c.top, 0, h - c.height);
     }
 
-    f.cropX = cropX;
-    f.cropY = cropY;
-    f.cropW = cropW;
-    f.cropH = cropH;
+    f.cropX = c.left;
+    f.cropY = c.top;
+    f.cropW = c.width;
+    f.cropH = c.height;
 }
 
 void CaptureEngine::dispatchStats(Frame &f) {

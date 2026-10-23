@@ -23,10 +23,11 @@ void writeFrameState(CameraMetadata &cm, const mocha::camera::Capability &cap) {
     static const float lensFocusDistance = 0.0f;
     cm.update(ANDROID_LENS_FOCUS_DISTANCE, &lensFocusDistance, 1);
 
-    const mocha::camera::Size sensorSize = cap.sensor.pixelArray;
+    /* The whole active array, in its own coordinates. */
+    const mocha::camera::Rect active = cap.sensor.activeArray;
     const int32_t scalerCropRegion[] = {
         0,                          0,
-        (int32_t)sensorSize.width,  (int32_t)sensorSize.height
+        active.width,               active.height
     };
     cm.update(ANDROID_SCALER_CROP_REGION, scalerCropRegion, NELEM(scalerCropRegion));
 }
@@ -95,10 +96,10 @@ void writeControlDefaults(CameraMetadata &cm, int type,
     static const uint8_t controlAeLock = ANDROID_CONTROL_AE_LOCK_OFF;
     cm.update(ANDROID_CONTROL_AE_LOCK, &controlAeLock, 1);
 
-    const mocha::camera::Size sensorSize = cap.sensor.pixelArray;
+    const mocha::camera::Rect active = cap.sensor.activeArray;
     const int32_t controlAeRegions[] = {
         0,                          0,
-        (int32_t)sensorSize.width,  (int32_t)sensorSize.height,
+        active.width,               active.height,
         1000
     };
     cm.update(ANDROID_CONTROL_AE_REGIONS,  controlAeRegions, NELEM(controlAeRegions));

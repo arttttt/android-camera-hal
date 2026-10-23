@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <functional>
 #include <optional>
@@ -46,6 +47,7 @@
 #include "StatsEngine.h"
 #include "V4l2Controls.h"
 #include "V4l2Device.h"
+#include "SensorSubdev.h"
 #include "SensorWriter.h"
 #include "V4l2Source.h"
 #include "ViController.h"
@@ -69,6 +71,7 @@ using android::AutoFocusController;
 using android::BufferProcessor;
 using android::DelayedControls;
 using android::ExposureTarget;
+using android::FrameMap;
 using android::DemosaicBlitStage;
 using android::DeviceErrorReporter;
 using android::Focuser;
@@ -79,12 +82,15 @@ using android::JpegEncoder;
 using android::Resolution;
 using android::ResultDispatchStage;
 using android::SensorConfig;
+using android::SensorGeometry;
+using android::SensorMode;
 using android::SensorTuning;
 using android::StatsProcessStage;
 using android::V4l2Device;
 using android::SensorWriter;
 using android::ViController;
 using android::V4l2Source;
+using android::readSensorGeometry;
 
 namespace {
 
@@ -155,6 +161,12 @@ struct Session::Impl {
      * first one of a session. */
     Size captureSize;
 
+    /* The pixel array and the modes' windows, read with the capability;
+     * and the running mode's frame against the active array, set by
+     * configure while the engines are stopped. */
+    SensorGeometry geometry;
+    FrameMap       frameMap;
+
     /* AE mode of the previous request, for the manual→auto switch;
      * empty until the first request of the session. */
     std::optional<AeMode> lastAeMode;
@@ -191,10 +203,41 @@ Session::Impl::~Impl() {
     dev->disconnect();
 }
 
+namespace {
+
+/* The geometry the sensor's driver reports. A driver that reports none
+ * leaves each output showing the whole of an array the size of the
+ * largest, as before the drivers told. */
+SensorGeometry readGeometry(V4l2Device &dev) {
+    std::vector<Size> outputs;
+    for (const Resolution &r : dev.availableResolutions()) {
+        const Size out{r.width, r.height};
+        const bool listed = std::any_of(outputs.begin(), outputs.end(),
+            [&](const Size &o) { return o.width == out.width && o.height == out.height; });
+        if (!listed) outputs.push_back(out);
+    }
+    if (std::optional<SensorGeometry> g = readSensorGeometry(dev.sensorNode(), outputs))
+        return *g;
+
+    const Resolution largest = dev.sensorResolution();
+    ALOGW("the sensor's driver reports no geometry: every output taken as "
+          "the whole %ux%u", largest.width, largest.height);
+    std::vector<SensorMode> modes;
+    for (const Size &out : outputs)
+        modes.push_back(SensorMode{out, Rect{0, 0, (int32_t)largest.width,
+                                             (int32_t)largest.height}});
+    return SensorGeometry::fromModes(Size{largest.width, largest.height},
+                                     std::move(modes));
+}
+
+} /* namespace */
+
 const Capability &Session::Impl::probe() {
     if (!capabilityProbed) {
+        geometry         = readGeometry(*dev);
         capability       = probeCapability(*dev, config.facingFront, &tuning,
-                                           sensorCfg, config.requestsInFlight);
+                                           sensorCfg, geometry,
+                                           config.requestsInFlight);
         jpegBufferSize   = capability.jpeg.maxSize;
         capabilityProbed = true;
     }
@@ -294,9 +337,7 @@ bool Session::Impl::buildInfrastructure() {
      * module whose lens open() found: without one AF has nothing to
      * move, and the frame ROI stays the centre default. */
     if (config.softIsp && focuser.isOpen()) {
-        const Resolution sensorRes = dev->sensorResolution();
-        af.reset(new AutoFocusController(&tuning, (int)sensorRes.width,
-                                         (int)sensorRes.height));
+        af.reset(new AutoFocusController(&tuning, &frameMap));
     }
 
     {
@@ -420,6 +461,7 @@ bool Session::Impl::buildInfrastructure() {
         d.source      = frameSource.get();
         d.inputRing   = isp.get();
         d.af          = af.get();
+        d.frameMap    = &frameMap;
         d.sink        = sink;
         d.controls    = delayedControls.get();
         d.writer      = sensorWriter.get();
@@ -648,6 +690,18 @@ Session::ConfigureResult Session::configure(std::span<const StreamSpec> outputs)
 
     /* The mode's timing, as the driver set it for this format. */
     s.populateSensorConfigFromDriver();
+
+    /* What of the active array the mode's frame shows. */
+    if (const std::optional<SensorMode> mode = s.geometry.modeFor(capture)) {
+        s.frameMap = FrameMap(s.geometry.activeArray, *mode);
+        const Rect v = s.frameMap.visible();
+        ALOGD("capture %ux%u shows (%d,%d) %dx%d of the active array",
+              capture.width, capture.height, v.left, v.top, v.width, v.height);
+    } else {
+        ALOGW("capture %ux%u: the sensor reports no window for it",
+              capture.width, capture.height);
+        s.frameMap = FrameMap();
+    }
 
     /* The mode's own frame and the exposure / gain defaults, so the
      * sensor has a sane baseline before STREAMON; the IPA takes over

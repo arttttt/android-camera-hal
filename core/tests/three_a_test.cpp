@@ -35,6 +35,7 @@
 #include "ipa/IpaStats.h"
 #include "sensor/DelayedControls.h"
 #include "sensor/SensorConfig.h"
+#include "sensor/SensorGeometry.h"
 #include "sensor/SensorTuning.h"
 #include "Check.h"
 
@@ -384,10 +385,21 @@ void testAwbConvergence() {
 
 /* AF_REGIONS: a tap moves the focus ROI to it; the same rectangle at
  * weight 0 -- how apps drop a tap -- is no region, the centre default. */
+/* IMX179's 1080p frame, as mocha's driver reports its window: the
+ * whole active array. */
+FrameMap imx179Frame1080() {
+    const SensorGeometry g = SensorGeometry::fromModes(
+        mocha::camera::Size{3280, 2464},
+        {SensorMode{mocha::camera::Size{1920, 1080},
+                    mocha::camera::Rect{20, 320, 3240, 1823}}});
+    return FrameMap(g.activeArray, g.modes[0]);
+}
+
 void testAfRegionWeight() {
     SensorTuning tuning;
     check(tuning.loadFile("tuning/imx179_primax.json"));
-    AutoFocusController af(&tuning, 3280, 2464);
+    const FrameMap frame = imx179Frame1080();
+    AutoFocusController af(&tuning, &frame);
 
     auto isCentre = [](const AutoFocusController::FocusRoi &r) {
         return r.pyLo == IpaStats::FOCUS_ROI_PY_LO && r.pyHi == IpaStats::FOCUS_ROI_PY_HI &&
@@ -430,7 +442,8 @@ void testAfRegionWeight() {
 void testAfSweep() {
     SensorTuning tuning;
     check(tuning.loadFile("tuning/imx179_primax.json"));
-    AutoFocusController af(&tuning, 3280, 2464);
+    const FrameMap frame = imx179Frame1080();
+    AutoFocusController af(&tuning, &frame);
 
     const int peak = 400;
     int lens = -1;

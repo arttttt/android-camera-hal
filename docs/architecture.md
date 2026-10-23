@@ -137,8 +137,10 @@ on Tegra K1.
 ## Capability, static characteristics, templates
 
 `probeCapability` (core) gathers what the camera can do, once per
-camera: the sensor and lens (driver sizes; tuning physical size, focal
-length, minimum focus distance, orientation, colour filter), exposure
+camera: the sensor and lens (the pixel array and each mode's window
+from the sensor's driver, the active array the modes show between
+them, the physical size from the sensor model's pixel pitch; tuning
+focal length, minimum focus distance, orientation, colour filter), exposure
 and sensitivity ranges from the driver, the output sizes the SW ISP
 sustains (16:9 up to 1080p, `OutputResolutionCap`) in each format with
 their frame durations, AE / AWB / AF modes (AWB presets only with the
@@ -239,8 +241,8 @@ converted from the stock NVIDIA `.isp` overrides by
   `min_focus_roi_patches`; all required -- a missing one disables AF).
 - `reserved` -- the rest of the stock tuning, kept 1:1 until a stage
   consumes it.
-- `module` -- datasheet values not in the `.isp` (physical size, focal
-  length, min focus distance, orientation, bayer pattern), merged from
+- `module` -- datasheet values not in the `.isp` (focal length, min
+  focus distance, orientation, bayer pattern), merged from
   `tuning/_module_<sensor>_<integrator>.json`.
 
 `SensorTuning` loads in the `Session` constructor; without it the core

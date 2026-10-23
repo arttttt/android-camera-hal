@@ -26,12 +26,18 @@ namespace android {
  *     ANDROID_LENS_FOCUS_DISTANCE, ANDROID_SENSOR_TIMESTAMP,
  *     ANDROID_SYNC_FRAME_NUMBER, ANDROID_CONTROL_CAPTURE_INTENT,
  *     ANDROID_LENS_APERTURE, ANDROID_LENS_FOCAL_LENGTH,
- *     ANDROID_FLASH_STATE */
+ *     ANDROID_FLASH_STATE
+ *
+ *   Every one of them, as each starts from the request's settings:
+ *     ANDROID_SCALER_CROP_REGION, ANDROID_CONTROL_AF_REGIONS -- what
+ *     the frame used, in place of the request's, so the partials and
+ *     the final agree */
 class ResultMetadataBuilder {
 public:
     static void buildAwb(CameraMetadata &cm, const mocha::camera::Core3AResult &r);
     static void buildAe (CameraMetadata &cm, const mocha::camera::Core3AResult &r);
     static void buildAf (CameraMetadata &cm, const mocha::camera::Core3AResult &r);
+    static void buildRegions(CameraMetadata &cm, const mocha::camera::Core3AResult &r);
     static void buildBase(CameraMetadata &cm, int64_t timestampNs,
                           uint32_t frameNumber, float focalLengthMm);
 

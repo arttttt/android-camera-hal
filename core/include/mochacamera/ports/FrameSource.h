@@ -159,10 +159,6 @@ public:
 
     /* What the source captures at. */
     virtual Size resolution() const = 0;
-
-    /* The sensor's native size, to map regions given in active-array
-     * coordinates to capture coordinates. */
-    virtual Size sensorResolution() const = 0;
 };
 
 } /* namespace mocha::camera */

@@ -313,7 +313,7 @@ def main():
     ap.add_argument(
         "--module",
         help="path to JSON with the `module` hardware block to merge in "
-        "(physical_size_mm, focal_length_mm, etc. — data that's not in the .isp)",
+        "(focal_length_mm, etc. — data that's not in the .isp)",
     )
     args = ap.parse_args()
 

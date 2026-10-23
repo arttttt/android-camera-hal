@@ -35,6 +35,7 @@ namespace android {
 class AutoFocusController;
 class DeviceErrorReporter;
 class ExposureTarget;
+class FrameMap;
 class IspInputRing;
 class SensorWriter;
 struct SensorConfig;
@@ -85,6 +86,9 @@ public:
         FrameSource                  *source;
         android::IspInputRing        *inputRing;   /* CPU view of a slot, for stats */
         android::AutoFocusController *af;          /* may be null: AF settings, ROI */
+        /* The running mode's frame against the active array; changed
+         * only while the engine is stopped. */
+        const android::FrameMap      *frameMap;
         ResultSink                   *sink;        /* the shutter */
         android::DelayedControls     *controls;
         android::SensorWriter        *writer;

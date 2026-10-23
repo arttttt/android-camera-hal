@@ -72,6 +72,24 @@ void ResultMetadataBuilder::buildAwb(CameraMetadata &cm, const Core3AResult &r) 
     cm.update(ANDROID_CONTROL_AWB_STATE, &awbState, 1);
 }
 
+void ResultMetadataBuilder::buildRegions(CameraMetadata &cm, const Core3AResult &r) {
+    if (r.cropRegion) {
+        const int32_t crop[] = {r.cropRegion->left, r.cropRegion->top,
+                                r.cropRegion->width, r.cropRegion->height};
+        cm.update(ANDROID_SCALER_CROP_REGION, crop, 4);
+    }
+    /* A region the frame did not use (outside the crop) is not
+     * reported. */
+    if (r.afRegion) {
+        const int32_t region[] = {r.afRegion->rect.xMin, r.afRegion->rect.yMin,
+                                  r.afRegion->rect.xMax, r.afRegion->rect.yMax,
+                                  r.afRegion->weight};
+        cm.update(ANDROID_CONTROL_AF_REGIONS, region, 5);
+    } else if (cm.exists(ANDROID_CONTROL_AF_REGIONS)) {
+        cm.erase(ANDROID_CONTROL_AF_REGIONS);
+    }
+}
+
 void ResultMetadataBuilder::buildFinal(CameraMetadata &cm, const Core3AResult &r,
                                         int64_t timestampNs, uint32_t frameNumber,
                                         float focalLengthMm) {
@@ -79,6 +97,7 @@ void ResultMetadataBuilder::buildFinal(CameraMetadata &cm, const Core3AResult &r
     buildAf  (cm, r);
     buildAe  (cm, r);
     buildAwb (cm, r);
+    buildRegions(cm, r);
 }
 
 }; /* namespace android */

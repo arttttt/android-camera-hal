@@ -89,6 +89,10 @@ struct SensorConfig {
      * it; it is a fixed property of the lens, focusing or not. */
     float focalLengthMm;
 
+    /* The pixel pitch (um), a property of the sensor model: the pixel
+     * array times it is the array's physical size. */
+    float pixelSizeUm;
+
     /* --- Helpers --- */
 
     /* How long a frame on `b` (every control set) runs: its frame
@@ -274,6 +278,8 @@ struct SensorConfig {
              * stretched to the exposure still held. */
             .lineLengthHidesFrame = true,
             .focalLengthMm   = 0.f,
+            /* Sony's IMX179 figures: 1.4 um pixels. */
+            .pixelSizeUm     = 1.4f,
         };
     }
 
@@ -298,6 +304,8 @@ struct SensorConfig {
              * for IMX179. */
             .controlDelay    = { 2, 2, 1, 1, 2 },
             .focalLengthMm   = 0.f,
+            /* OmniVision's OV5693 figures: 1.4 um pixels. */
+            .pixelSizeUm     = 1.4f,
         };
     }
 };

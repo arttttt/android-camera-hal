@@ -71,6 +71,9 @@ Core3AResult describe3A(const FrameSettings &settings,
     r.afState               = af.afState;
     r.afMode                = af.afMode;
     r.focusDistanceDiopters = af.focusDiopter;
+
+    r.cropRegion = settings.crop;
+    r.afRegion   = settings.af.region;
     return r;
 }
 
