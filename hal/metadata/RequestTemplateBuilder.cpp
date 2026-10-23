@@ -4,6 +4,8 @@
 
 #include <stdint.h>
 
+#include <optional>
+
 #include <hardware/camera3.h>
 #include <hardware/camera_common.h>
 #include "CameraMetadataCompat.h"
@@ -55,6 +57,36 @@ void writeJpegDefaults(CameraMetadata &cm) {
 void writeStatisticsDefaults(CameraMetadata &cm) {
     static const uint8_t statisticsFaceDetectMode = ANDROID_STATISTICS_FACE_DETECT_MODE_OFF;
     cm.update(ANDROID_STATISTICS_FACE_DETECT_MODE, &statisticsFaceDetectMode, 1);
+}
+
+/* The AE target fps range a template starts with, from those the
+ * camera advertises, at the rate its largest output runs: video a
+ * fixed one, so a recording keeps its rate in the dark; the rest the
+ * widest under it, so auto exposure may lengthen the frame before it
+ * adds gain (the emulated camera's [15, 30] and [30, 30]). */
+mocha::camera::FpsRange templateFpsRange(const mocha::camera::Capability &cap, bool video) {
+    int64_t fastestNs = 0;
+    uint64_t largest = 0;
+    for (const mocha::camera::Capability::StreamConfig &st : cap.streams) {
+        const uint64_t area = (uint64_t)st.size.width * st.size.height;
+        if (area > largest && st.minFrameDurationNs > 0) {
+            largest   = area;
+            fastestNs = st.minFrameDurationNs;
+        }
+    }
+    const int32_t rate = fastestNs > 0 ? (int32_t)((1000000000LL + fastestNs / 2) / fastestNs) : 0;
+
+    std::optional<mocha::camera::FpsRange> pick;
+    for (const mocha::camera::FpsRange &r : cap.ae.targetFpsRanges) {
+        if (r.max != rate) continue;
+        if (video ? r.min == r.max : (!pick || r.min < pick->min))
+            pick = r;
+        if (video && pick) break;
+    }
+    if (pick) return *pick;
+    /* The probe always advertises some range. */
+    return cap.ae.targetFpsRanges.empty() ? mocha::camera::FpsRange{}
+                                          : cap.ae.targetFpsRanges.front();
 }
 
 /* 3A + capture-intent defaults. capture_intent varies by template
@@ -110,9 +142,10 @@ void writeControlDefaults(CameraMetadata &cm, int type,
     static const int32_t controlAeExposureCompensation = 0;
     cm.update(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION, &controlAeExposureCompensation, 1);
 
-    static const int32_t controlAeTargetFpsRange[] = {
-        15, 30
-    };
+    const bool video = type == CAMERA3_TEMPLATE_VIDEO_RECORD
+                    || type == CAMERA3_TEMPLATE_VIDEO_SNAPSHOT;
+    const mocha::camera::FpsRange fps = templateFpsRange(cap, video);
+    const int32_t controlAeTargetFpsRange[] = { fps.min, fps.max };
     cm.update(ANDROID_CONTROL_AE_TARGET_FPS_RANGE, controlAeTargetFpsRange, NELEM(controlAeTargetFpsRange));
 
     static const uint8_t controlAeAntibandingMode = ANDROID_CONTROL_AE_ANTIBANDING_MODE_OFF;
