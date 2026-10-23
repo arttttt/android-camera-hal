@@ -65,10 +65,7 @@ struct Capability {
         float minFocusDistanceDiopters = 0.f;
     } lens;
 
-    struct FpsRange {
-        int32_t min = 0;
-        int32_t max = 0;
-    };
+    using FpsRange = mocha::camera::FpsRange;
 
     struct Ae {
         std::vector<AeMode> modes;

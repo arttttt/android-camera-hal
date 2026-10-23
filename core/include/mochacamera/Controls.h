@@ -131,6 +131,13 @@ struct Size {
     uint32_t height = 0;
 };
 
+/* A frame rate range, frames per second, as Camera2's AE target range
+ * gives it. */
+struct FpsRange {
+    int32_t min = 0;
+    int32_t max = 0;
+};
+
 /* An exact fraction, for steps Camera2 states as rationals. */
 struct Rational {
     int32_t numerator   = 0;

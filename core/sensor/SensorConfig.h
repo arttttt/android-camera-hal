@@ -4,7 +4,10 @@
 #include <math.h>
 #include <stdint.h>
 
+#include <optional>
+
 #include "DelayedControls.h"
+#include "mochacamera/Controls.h"
 
 namespace android {
 
@@ -209,22 +212,70 @@ struct SensorConfig {
         return (int32_t)((int64_t)gainToIso(gain) * digitalGain / kDigitalGainUnit);
     }
 
-    /* One exposure as the sensor and the ISP make it. */
+    /* The frame lengths (lines, at the mode's line) auto exposure may
+     * run between. */
+    struct FrameLimits {
+        int32_t minLen;
+        int32_t maxLen;
+    };
+
+    /* The mode's own frame, and nothing else: the fps kept. */
+    FrameLimits modeFrame() const {
+        return FrameLimits{frameLenDefault, frameLenDefault};
+    }
+
+    /* For Camera2's AE target fps range: no shorter than 1 / max nor
+     * the mode's frame, no longer than 1 / min nor the longest the
+     * sensor runs. Without a range, the mode's frame. A max the mode's
+     * own rate rounds to (30 for its 30.02) is the mode's frame. */
+    FrameLimits frameLimits(const std::optional<mocha::camera::FpsRange> &range) const {
+        if (!range || range->min <= 0 || range->max <= 0 || lineTimeNs <= 0)
+            return modeFrame();
+        const int64_t lineNs = lineTimeNsAt(lineLengthDefault);
+        int64_t minLen = 1000000000LL / range->max / lineNs;
+        int64_t maxLen = 1000000000LL / range->min / lineNs;
+        if (minLen * 100 <= (int64_t)frameLenDefault * 101) minLen = frameLenDefault;
+        if (frameLenMax > 0 && minLen > frameLenMax) minLen = frameLenMax;
+        if (frameLenMax > 0 && maxLen > frameLenMax) maxLen = frameLenMax;
+        if (maxLen < minLen) maxLen = minLen;
+        return FrameLimits{(int32_t)minLen, (int32_t)maxLen};
+    }
+
+    /* The longest exposure (µs) within `limits`. */
+    int32_t maxExposureUs(const FrameLimits &limits) const {
+        const int32_t us = maxExposureUs(limits.maxLen);
+        return exposureMax > 0 && us > exposureMax ? exposureMax : us;
+    }
+
+    /* The most exposure (µs at unity gain) auto exposure reaches within
+     * `limits`: the longest exposure at every gain. */
+    float maxTotalUs(const FrameLimits &limits) const {
+        return (float)maxExposureUs(limits)
+             * (float)gainMax / (float)gainUnit
+             * (float)digitalGainMax / (float)kDigitalGainUnit;
+    }
+
+    /* One exposure as the sensor and the ISP make it, and the frame it
+     * runs in. */
     struct ExposureSplit {
         int32_t exposureUs;
         int32_t gain;
         int32_t digitalGain;
+        int32_t frameLen;
     };
 
     /* An exposure total (µs at unity gain) divided as libcamera's AGC
-     * divides it: the exposure up to the mode's own frame (fps kept),
-     * then the analog gain up to its maximum, then the ISP's digital
-     * gain for the rest, up to digitalGainMax. */
-    ExposureSplit splitExposure(float totalUs) const {
+     * divides it: the exposure first, its frame lengthened for it up to
+     * `limits` (the fps given up only as far as the range allows), then
+     * the analog gain up to its maximum, then the ISP's digital gain for
+     * the rest, up to digitalGainMax. The frame is the exposure's,
+     * never shorter than `limits` allow. */
+    ExposureSplit splitExposure(float totalUs, const FrameLimits &limits) const {
         ExposureSplit s;
-        const int32_t maxUs = maxExposureUsDefault();
+        const int32_t maxUs = maxExposureUs(limits);
         s.exposureUs = totalUs < (float)maxUs ? (int32_t)(totalUs + 0.5f) : maxUs;
         if (s.exposureUs < 1) s.exposureUs = 1;
+        s.frameLen = frameLenFor(s.exposureUs, limits);
         const float rest = totalUs / (float)s.exposureUs;
         int32_t g = (int32_t)lroundf(rest * (float)gainUnit);
         const int32_t lo = gainMin > 0 ? gainMin : 1;
@@ -237,6 +288,22 @@ struct SensorConfig {
         if (d > digitalGainMax)   d = digitalGainMax;
         s.digitalGain = d;
         return s;
+    }
+
+    /* In the mode's own frame. */
+    ExposureSplit splitExposure(float totalUs) const {
+        return splitExposure(totalUs, modeFrame());
+    }
+
+    /* The frame an exposure (µs) takes at the mode's line -- its lines,
+     * rounded up, and the margin -- kept within `limits`. */
+    int32_t frameLenFor(int32_t exposureUs, const FrameLimits &limits) const {
+        if (lineTimeNs <= 0) return limits.minLen;
+        const int64_t lineNs = lineTimeNsAt(lineLengthDefault);
+        int64_t fl = ((int64_t)exposureUs * 1000 + lineNs - 1) / lineNs + maxCoarseDiff;
+        if (fl < limits.minLen) fl = limits.minLen;
+        if (fl > limits.maxLen) fl = limits.maxLen;
+        return (int32_t)fl;
     }
 
     /* Pre-built configs for known sensors — carry only the fields
