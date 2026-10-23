@@ -100,8 +100,10 @@ struct Capability {
     std::vector<StreamConfig> streams;
 
     /* What the outputs combine to: one capture size per configuration.
-     * A YUV output is the capture itself (its encoder does not scale),
-     * so it must be the capture size; RGBA and JPEG outputs scale. */
+     * A YUV output names the capture size: the encoder scales the crop
+     * into its output, but writes one NV12 image a frame, so every YUV
+     * output shares one size, and that size is the mode's. RGBA and
+     * JPEG outputs scale. */
     bool yuvAtCaptureSizeOnly = true;
 
     struct Jpeg {

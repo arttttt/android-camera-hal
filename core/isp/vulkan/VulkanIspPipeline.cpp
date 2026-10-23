@@ -304,9 +304,9 @@ void VulkanIspPipeline::recordRgbaBlitRenderPass(int slot,
     entry->layoutReady = true;
 }
 
-void VulkanIspPipeline::recordYuvEncodeDispatch(int slot, unsigned width, unsigned height) {
-    (void)slot;
-    mYuvEncoder.recordDispatch(mCmdBuf[slot], width, height);
+void VulkanIspPipeline::recordYuvEncodeDispatch(int slot, unsigned width, unsigned height,
+                                                const CropRect &crop) {
+    mYuvEncoder.recordDispatch(mCmdBuf[slot], width, height, crop, mRec.srcW, mRec.srcH);
 }
 
 bool VulkanIspPipeline::importAcquireSemaphore(int acquireFence, VkSemaphore *out) {
@@ -457,14 +457,14 @@ bool VulkanIspPipeline::blitToYuv(mocha::camera::NativeBuffer *buffer,
                                     const CropRect &crop,
                                     int acquireFence,
                                     int *releaseFenceOut) {
-    /* buffer / crop / acquireFence are gralloc-side concerns: the
-     * GPU writes NV12 into mYuvEncoder's host-mapped buffer, and the CPU
-     * libyuv repack into the output gralloc happens after endFrame's fence
-     * has been reaped (BufferProcessor::finalizeYuvOutput). releaseFenceOut
+    /* buffer / acquireFence are gralloc-side concerns: the GPU writes
+     * NV12 into mYuvEncoder's host-mapped buffer, and the CPU libyuv
+     * repack into the output gralloc happens after endFrame's fence has
+     * been reaped (BufferProcessor::finalizeYuvOutput). releaseFenceOut
      * therefore stays -1 — the CPU finalize is synchronous on the
-     * caller's thread before it returns to the framework. */
+     * caller's thread before it returns to the framework. The crop is
+     * the encoder's: it samples it as the RGBA blit does. */
     (void)buffer;
-    (void)crop;
     *releaseFenceOut = -1;
     if (acquireFence >= 0) ::close(acquireFence);
 
@@ -473,18 +473,12 @@ bool VulkanIspPipeline::blitToYuv(mocha::camera::NativeBuffer *buffer,
         ALOGE("blitToYuv: %ux%u not a multiple of 4x2", dstW, dstH);
         return false;
     }
-    /* For now YUV size must match capture (no scaling in the encoder). */
-    if (dstW != mRec.srcW || dstH != mRec.srcH) {
-        ALOGE("blitToYuv: dst %ux%u differs from capture %ux%u — cross-resolution YUV not supported",
-              dstW, dstH, mRec.srcW, mRec.srcH);
-        return false;
-    }
 
     if (!mYuvEncoder.ensureBuffers(dstW, dstH))
         return false;
     mYuvEncoder.bindScratchInput(mScratchView, mScratchSampler);
 
-    recordYuvEncodeDispatch(mRec.slot, dstW, dstH);
+    recordYuvEncodeDispatch(mRec.slot, dstW, dstH, crop);
     return true;
 }
 

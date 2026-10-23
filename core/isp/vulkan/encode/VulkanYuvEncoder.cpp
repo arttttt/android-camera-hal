@@ -1,5 +1,6 @@
 #define LOG_TAG "Cam-VulkanYuvEnc"
 #include <utils/Log.h>
+#include <cstddef>
 #include <cstring>
 #include <cassert>
 
@@ -10,13 +11,20 @@
 
 namespace android {
 
+/* Mirrors the push_constant block in shaders/RgbaToNv12.h: eight
+ * ints, then two vec2 -- 48 bytes, no padding. */
 struct RgbaToNv12PushConstants {
     int32_t w;
     int32_t h;
     int32_t uvBase;
     int32_t stride;   /* w / 4, precomputed to save an integer divide
                        * per invocation */
+    int32_t cropX, cropY, cropW, cropH;
+    float   uvOffsetX, uvOffsetY;
+    float   uvStepX,   uvStepY;
 };
+static_assert(sizeof(RgbaToNv12PushConstants) == 48, "RgbaToNv12 push constants");
+static_assert(offsetof(RgbaToNv12PushConstants, uvOffsetX) == 32, "RgbaToNv12 uvOffset");
 
 VulkanYuvEncoder::VulkanYuvEncoder(VulkanDeviceState &dev)
     : mDev(dev)
@@ -209,7 +217,9 @@ void VulkanYuvEncoder::writeDescriptors() {
 }
 
 void VulkanYuvEncoder::recordDispatch(VkCommandBuffer cb,
-                                      unsigned width, unsigned height) {
+                                      unsigned width, unsigned height,
+                                      const CropRect &crop,
+                                      unsigned srcW, unsigned srcH) {
     assert(width == mWidth && height == mHeight);
 
     mDev.pfn()->CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
@@ -221,6 +231,14 @@ void VulkanYuvEncoder::recordDispatch(VkCommandBuffer cb,
     pc.h      = (int32_t)height;
     pc.uvBase = (int32_t)(width * height / 4);
     pc.stride = (int32_t)(width / 4);
+    pc.cropX  = crop.x;
+    pc.cropY  = crop.y;
+    pc.cropW  = crop.w;
+    pc.cropH  = crop.h;
+    pc.uvOffsetX = (float)crop.x / (float)srcW;
+    pc.uvOffsetY = (float)crop.y / (float)srcH;
+    pc.uvStepX   = (float)crop.w / ((float)width  * (float)srcW);
+    pc.uvStepY   = (float)crop.h / ((float)height * (float)srcH);
     mDev.pfn()->CmdPushConstants(cb, mPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                                  0, sizeof(pc), &pc);
 

@@ -146,7 +146,8 @@ private:
 
     /* Append a compute NV12 encode dispatch (scratch → mYuvEncoder buffer)
      * to the open cmd buffer. */
-    void recordYuvEncodeDispatch(int slot, unsigned width, unsigned height);
+    void recordYuvEncodeDispatch(int slot, unsigned width, unsigned height,
+                                 const CropRect &crop);
 
     /* Import a framework acquire_fence (sync_fd) as a binary VkSemaphore
      * with TEMPORARY semantic: subsequent submit waits on it; once the

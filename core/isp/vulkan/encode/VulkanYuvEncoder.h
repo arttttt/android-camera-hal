@@ -7,6 +7,8 @@
 #define VK_USE_PLATFORM_ANDROID_KHR
 #include <vulkan/vulkan.h>
 
+#include "CropRect.h"
+
 namespace android {
 
 class VulkanDeviceState;
@@ -39,11 +41,13 @@ public:
      * handle changes (e.g. the owner's scratch image was resized). */
     void bindScratchInput(VkImageView scratchView, VkSampler sampler);
 
-    /* Append an RGBA→NV12 dispatch to the caller's command buffer.
+    /* Append an RGBA→NV12 dispatch to the caller's command buffer: a
+     * width x height image of `crop` of the srcW x srcH scratch.
      * The caller must ensure the scratch image is in VK_IMAGE_LAYOUT_
      * GENERAL and a SHADER_WRITE→SHADER_READ barrier has been recorded.
      * Does not submit. */
-    void recordDispatch(VkCommandBuffer cb, unsigned width, unsigned height);
+    void recordDispatch(VkCommandBuffer cb, unsigned width, unsigned height,
+                        const CropRect &crop, unsigned srcW, unsigned srcH);
 
     /* CPU-mapped NV12 base pointer. Y at [0, w*h); UV interleaved at
      * [w*h, w*h*3/2). Valid after init() + ensureBuffers(). */
