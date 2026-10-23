@@ -429,7 +429,6 @@ bool Session::Impl::buildInfrastructure() {
         d.exposureTarget  = &exposureTarget;
         d.sensorCfg       = &sensorCfg;
         d.stats           = statsEngine.get();
-        d.af              = af.get();
         d.sink            = sink;
         statsProcessStage.reset(new StatsProcessStage(d));
     }
@@ -462,6 +461,7 @@ bool Session::Impl::buildInfrastructure() {
         d.inputRing   = isp.get();
         d.af          = af.get();
         d.frameMap    = &frameMap;
+        d.meteringMinPatches = tuning.aeParams().minMeteringRoiPatches;
         d.sink        = sink;
         d.controls    = delayedControls.get();
         d.writer      = sensorWriter.get();

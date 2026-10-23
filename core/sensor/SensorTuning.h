@@ -234,6 +234,12 @@ public:
          * frame-period resonance with measurement noise. */
         float closeSpeedZone;
 
+        /* The fewest stats patches a side an AE region meters over,
+         * grown around its centre: a tap's region is often a patch or
+         * less, and one patch makes a jumpy spot meter. 1 (the region
+         * as asked) when the tuning has none. */
+        int minMeteringRoiPatches;
+
         /* Lux index calibration anchor. Optional — present iff the
          * parser found a complete `active.ae.luxAnchor` block.
          * Consumers (the AE controller) check by `if (luxAnchor)`
@@ -247,7 +253,7 @@ public:
               convergeSpeed(0.f),
               toleranceIn(0.f), toleranceOut(0.f),
               maxFstopDeltaPos(0.f), maxFstopDeltaNeg(0.f),
-              closeSpeedZone(0.f) {}
+              closeSpeedZone(0.f), minMeteringRoiPatches(1) {}
     };
 
     /* AWB algorithm selector. The tuning JSON's

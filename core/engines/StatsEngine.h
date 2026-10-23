@@ -60,9 +60,11 @@ public:
         int64_t     exposureStartNs;
         /* The sensor controls in effect on the frame. */
         android::DelayedControls::Batch inEffect;
-        /* Patch-grid window the kernel restricts Sobel / greenSq to;
-         * taken from AF at submit time. */
-        android::NeonStatsEncoder::FocusRoi focusRoi;
+        /* Patch-grid window the kernel restricts Sobel / greenSq to:
+         * where the frame's AF looks. */
+        android::NeonStatsEncoder::FocusRoi focusRoi = android::PatchRoi::centre();
+        /* Where AE meters on the frame, published with its stats. */
+        android::PatchRoi meteringRoi = android::PatchRoi::centre();
     };
 
     static constexpr int kPhaseCount = 2;
@@ -90,6 +92,8 @@ public:
         uint32_t          sequence = 0;
         int64_t           exposureStartNs = 0;   /* 0 = unknown */
         android::DelayedControls::Batch inEffect;
+        /* Where AE meters on the stats' frame. */
+        android::PatchRoi meteringRoi = android::PatchRoi::centre();
     };
 
     /* The latest published stats. False before the first publication.

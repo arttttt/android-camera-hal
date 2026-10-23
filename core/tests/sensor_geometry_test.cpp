@@ -113,8 +113,11 @@ void testFitToFrame() {
     tap.rect.xMax = 500;
     tap.rect.yMax = 300;
     tap.weight    = 1000;
+    s.ae.region = tap;
     s.af.region = tap;
     fitToFrame(s, m);
+    check(s.ae.region.has_value());
+    check(s.ae.region->rect.xMin == 340 && s.ae.region->rect.xMax == 500);
     check(is(*s.crop, 340, 192, 2560, 1440));
     check(s.af.region.has_value());
     check(s.af.region->rect.xMin == 340 && s.af.region->rect.yMin == 192);
@@ -124,9 +127,11 @@ void testFitToFrame() {
     /* A region wholly outside the crop is not used, nor reported. */
     FrameSettings zoomed;
     zoomed.crop = Rect{1000, 600, 1000, 600};
+    zoomed.ae.region = tap;
     zoomed.af.region = tap;
     fitToFrame(zoomed, m);
     check(is(*zoomed.crop, 1000, 600, 1000, 600));
+    check(!zoomed.ae.region.has_value());
     check(!zoomed.af.region.has_value());
 
     /* A crop wholly outside the frame: all the frame shows. */

@@ -149,8 +149,9 @@ preview are all working.
   bayer pattern, sensor orientation) live in
   `tuning/_module_<sensor>_<integrator>.json` and are merged at
   conversion time.
-- HAL-specific knobs that don't exist in NVIDIA `.isp` (currently the
-  AE close-speed-zone width per sensor) live under an
+- HAL-specific knobs that don't exist in NVIDIA `.isp` (the AE
+  close-speed-zone width and the smallest area an AE region meters
+  over, per sensor; the contrast-AF knobs) live under an
   `active.hal_overrides` sub-section in the same per-module JSON,
   carved out so `tools/isp_to_json.py` preserves them verbatim across
   regenerations from the upstream `.isp`.

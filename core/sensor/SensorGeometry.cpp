@@ -102,6 +102,25 @@ Rect FrameMap::toFrame(const Rect &r) const {
     return Rect{x0, y0, x1 - x0, y1 - y0};
 }
 
+namespace {
+
+/* `region` within `crop`; dropped when it falls wholly outside. */
+void fitRegion(std::optional<mocha::camera::MeteringRegion> &region, const Rect &crop) {
+    if (!region) return;
+    mocha::camera::SensorRect &r = region->rect;
+    const Rect in = intersect(Rect{r.xMin, r.yMin, r.xMax - r.xMin, r.yMax - r.yMin}, crop);
+    if (in.empty()) {
+        region.reset();
+        return;
+    }
+    r.xMin = in.left;
+    r.yMin = in.top;
+    r.xMax = in.left + in.width;
+    r.yMax = in.top + in.height;
+}
+
+} /* namespace */
+
 void fitToFrame(mocha::camera::FrameSettings &settings, const FrameMap &map) {
     if (!map.known()) return;
 
@@ -112,19 +131,8 @@ void fitToFrame(mocha::camera::FrameSettings &settings, const FrameMap &map) {
         settings.crop = crop;
     }
 
-    if (settings.af.region) {
-        mocha::camera::SensorRect &r = settings.af.region->rect;
-        const Rect in = intersect(Rect{r.xMin, r.yMin, r.xMax - r.xMin, r.yMax - r.yMin},
-                                  crop);
-        if (in.empty()) {
-            settings.af.region.reset();
-        } else {
-            r.xMin = in.left;
-            r.yMin = in.top;
-            r.xMax = in.left + in.width;
-            r.yMax = in.top + in.height;
-        }
-    }
+    fitRegion(settings.ae.region, crop);
+    fitRegion(settings.af.region, crop);
 }
 
 } /* namespace android */

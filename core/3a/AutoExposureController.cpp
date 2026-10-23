@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#include <algorithm>
+
 #include "ipa/IpaFrameMeta.h"
 #include "ipa/IpaStats.h"
 #include "sensor/DelayedControls.h"
@@ -76,17 +78,17 @@ float deriveAeCloseSpeedZone(const SensorTuning *t) {
  * over the active focus ROI. Same linear pre-WB / pre-CCM domain as
  * the AE setpoint, so the controller compares like with like.
  *
- * Spot-meter shape: patches outside meta.focusRoi* contribute zero
+ * Spot-meter shape: patches outside meta.meteringRoi contribute zero
  * weight. Without a tap meta defaults to the project's centre 8×8
  * (IpaStats::FOCUS_ROI_*) so AE meters the centre as a 64-patch
  * average. On a tap the rectangle moves to the user's chosen subject
  * (5×5 minimum from AutoFocusController) and AE meters precisely
  * those patches. */
 float meanLumaInRoi(const IpaStats &stats, const IpaFrameMeta &meta) {
-    int pyLo = meta.focusRoiPyLo < 0                 ? 0                 : meta.focusRoiPyLo;
-    int pyHi = meta.focusRoiPyHi > IpaStats::PATCH_Y ? IpaStats::PATCH_Y : meta.focusRoiPyHi;
-    int pxLo = meta.focusRoiPxLo < 0                 ? 0                 : meta.focusRoiPxLo;
-    int pxHi = meta.focusRoiPxHi > IpaStats::PATCH_X ? IpaStats::PATCH_X : meta.focusRoiPxHi;
+    int pyLo = std::max(meta.meteringRoi.pyLo, 0);
+    int pyHi = std::min(meta.meteringRoi.pyHi, IpaStats::PATCH_Y);
+    int pxLo = std::max(meta.meteringRoi.pxLo, 0);
+    int pxHi = std::min(meta.meteringRoi.pxHi, IpaStats::PATCH_X);
 
     int   count = 0;
     float sum   = 0.f;
@@ -115,10 +117,10 @@ float meanLumaInRoi(const IpaStats &stats, const IpaFrameMeta &meta) {
  * ROI (256) → topK = 5, matching RPi q=0.98..1.0 spec. */
 float top2pcMaxPostWbMean(const IpaStats &stats, const IpaFrameMeta &meta,
                           float wbR, float wbB) {
-    int pyLo = meta.focusRoiPyLo < 0                 ? 0                 : meta.focusRoiPyLo;
-    int pyHi = meta.focusRoiPyHi > IpaStats::PATCH_Y ? IpaStats::PATCH_Y : meta.focusRoiPyHi;
-    int pxLo = meta.focusRoiPxLo < 0                 ? 0                 : meta.focusRoiPxLo;
-    int pxHi = meta.focusRoiPxHi > IpaStats::PATCH_X ? IpaStats::PATCH_X : meta.focusRoiPxHi;
+    int pyLo = std::max(meta.meteringRoi.pyLo, 0);
+    int pyHi = std::min(meta.meteringRoi.pyHi, IpaStats::PATCH_Y);
+    int pxLo = std::max(meta.meteringRoi.pxLo, 0);
+    int pxHi = std::min(meta.meteringRoi.pxHi, IpaStats::PATCH_X);
 
     const int count = (pyHi - pyLo) * (pxHi - pxLo);
     if (count <= 0) return 0.f;
@@ -364,7 +366,7 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
      * a fresh target rather than ramping from a stale value. */
     lockedBiasedTotalUs = 0.f;
 
-    /* Spot-meter patch mean over rgbMean.G inside meta.focusRoi.
+    /* Spot-meter patch mean over rgbMean.G inside meta.meteringRoi.
      * Saturated patches still pull the metric toward 1.0 (and AE
      * backs off) via their own clipped patch mean; black patches
      * still pull toward 0 via the same mechanism. */

@@ -6,7 +6,6 @@
 #include <utils/Timers.h>
 
 #include "Frame.h"
-#include "3a/AutoFocusController.h"
 #include "ipa/Ipa.h"
 #include "ipa/IpaFrameMeta.h"
 #include "ipa/IpaStats.h"
@@ -47,18 +46,9 @@ void StatsProcessStage::process(mocha::camera::Frame &ctx) {
     meta.awbLock                = s.awb.lock;
     meta.aeExposureCompensation = s.ae.evCompensationSteps;
 
-    /* Pull the live AF region into meta so AE / AWB metering follow
-     * the user's tap instead of always centring on the frame middle.
-     * No tap → AutoFocusController's default rectangle is the same
-     * centre 8×8 IpaFrameMeta initialises with, so the metric is
-     * unchanged from the centre-weighted default. */
-    if (deps.af) {
-        const AutoFocusController::FocusRoi roi = deps.af->currentFocusRoi();
-        meta.focusRoiPyLo = roi.pyLo;
-        meta.focusRoiPyHi = roi.pyHi;
-        meta.focusRoiPxLo = roi.pxLo;
-        meta.focusRoiPxHi = roi.pxHi;
-    }
+    /* Where AE / AWB meter: what the stats' own frame asked -- its AE
+     * region, or where its AF looked (CaptureEngine::dispatchStats). */
+    meta.meteringRoi = published.meteringRoi;
 
     /* Manual WB: the request's gains, which the frontend passes on for
      * AWB Off only (in Auto the framework round-trips the published

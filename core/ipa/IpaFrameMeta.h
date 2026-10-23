@@ -42,19 +42,11 @@ struct IpaFrameMeta {
     float manualWbG;
     float manualWbB;
 
-    /* AF region of interest in IpaStats patch-grid coordinates,
-     * half-open on each axis. Defaults to the centre 8×8 patches —
-     * same rectangle the AutoFocusController publishes when no
-     * tap-to-focus has shifted it.
-     *
-     * AE / AWB use this rectangle to weight the luma metric and the
-     * scene-light gate so metering follows the user's focus tap.
-     * Without a tap the rectangle stays centre-default and the
-     * pipeline behaves like a plain centre-weighted metric. */
-    int focusRoiPyLo;
-    int focusRoiPyHi;
-    int focusRoiPxLo;
-    int focusRoiPxHi;
+    /* Where AE meters and the AWB scene-light gate looks, in patches,
+     * for the frame the stats are of: its AE region, or without one
+     * where its AF looks. Defaults to the centre 8×8 patches -- a plain
+     * centre-weighted metric. */
+    PatchRoi meteringRoi;
 
     IpaFrameMeta()
         : aeMode(mocha::camera::AeMode::On),
@@ -64,10 +56,7 @@ struct IpaFrameMeta {
           aeExposureCompensation(0),
           manualWbValid(false),
           manualWbR(1.0f), manualWbG(1.0f), manualWbB(1.0f),
-          focusRoiPyLo(IpaStats::FOCUS_ROI_PY_LO),
-          focusRoiPyHi(IpaStats::FOCUS_ROI_PY_HI),
-          focusRoiPxLo(IpaStats::FOCUS_ROI_PX_LO),
-          focusRoiPxHi(IpaStats::FOCUS_ROI_PX_HI) {}
+          meteringRoi(PatchRoi::centre()) {}
 };
 
 } /* namespace android */

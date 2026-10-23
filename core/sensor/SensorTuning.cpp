@@ -424,6 +424,8 @@ bool SensorTuning::loadFile(const std::string &path) {
         const Json::Value &halAe = halOverrides["ae"];
         if (halAe.isObject() && halAe.isMember("close_speed_zone"))
             mAeParams.closeSpeedZone = halAe["close_speed_zone"].asFloat();
+        if (halAe.isObject() && halAe.isMember("min_metering_roi_patches"))
+            mAeParams.minMeteringRoiPatches = halAe["min_metering_roi_patches"].asInt();
     }
 
     ALOGD("tuning loaded: %s — %zu CCM sets, AF=%d, BL=(%d,%d,%d,%d)",

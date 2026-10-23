@@ -10,7 +10,6 @@ class StatsEngine;
 
 namespace android {
 
-class  AutoFocusController;
 class  ExposureTarget;
 class  Ipa;
 struct SensorConfig;
@@ -37,8 +36,6 @@ public:
         ExposureTarget      *exposureTarget;
         const SensorConfig  *sensorCfg;
         mocha::camera::StatsEngine *stats;
-        AutoFocusController *af;          /* may be null — used for
-                                           * currentFocusRoi() only       */
         mocha::camera::ResultSink *sink;  /* threaded into the IPA tick so
                                            * the AWB / AE partial results
                                            * go out on this stage         */

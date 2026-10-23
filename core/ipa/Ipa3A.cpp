@@ -3,6 +3,8 @@
 #include <math.h>
 #include <stdint.h>
 
+#include <algorithm>
+
 #include "3a/AeResult.h"
 #include "3a/AfResult.h"
 #include "3a/AutoExposureController.h"
@@ -47,10 +49,10 @@ float awbSceneLightFloorOf(const SensorTuning *t) {
  * frame budget). Folds away in step 6 when Ipa3A owns the diagnostic
  * and reads it from AeResult instead. */
 float meanLumaInRoiForLog(const IpaStats &stats, const IpaFrameMeta &meta) {
-    int pyLo = meta.focusRoiPyLo < 0                 ? 0                 : meta.focusRoiPyLo;
-    int pyHi = meta.focusRoiPyHi > IpaStats::PATCH_Y ? IpaStats::PATCH_Y : meta.focusRoiPyHi;
-    int pxLo = meta.focusRoiPxLo < 0                 ? 0                 : meta.focusRoiPxLo;
-    int pxHi = meta.focusRoiPxHi > IpaStats::PATCH_X ? IpaStats::PATCH_X : meta.focusRoiPxHi;
+    int pyLo = std::max(meta.meteringRoi.pyLo, 0);
+    int pyHi = std::min(meta.meteringRoi.pyHi, IpaStats::PATCH_Y);
+    int pxLo = std::max(meta.meteringRoi.pxLo, 0);
+    int pxHi = std::min(meta.meteringRoi.pxHi, IpaStats::PATCH_X);
 
     int   count = 0;
     float sum   = 0.f;

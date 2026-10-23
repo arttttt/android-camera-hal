@@ -162,7 +162,7 @@ the stats engine published (`Ipa3A::processStats`).
 - **AE** (`AutoExposureController`). State is `filteredTotalUs`
   (exposure × gain at unity, µs). Each frame two candidate ratios:
   `ratioMean = setpoint / lumaInRoi` (spot mean of the green channel
-  inside the focus ROI, setpoint `pow(MeanAlg.target/255, 2.2)`) and
+  inside the metering ROI, setpoint `pow(MeanAlg.target/255, 2.2)`) and
   `ratioHighlight = highlightCap / IQM_top2%` (post-WB max-of-channels
   of the brightest ~2 % of patches). Strictest wins, clamped to the
   per-sensor `MaxFstopDelta` rate limit; a single-pole LPF moves
@@ -198,10 +198,15 @@ the stats engine published (`Ipa3A::processStats`).
   change; a sweep samples only fresh statistics of a frame exposed
   after the lens settled. AE and AWB are held for the length of any
   sweep (a level, not edges). Tap-to-focus takes the request's AF
-  region (one, `CONTROL_MAX_REGIONS = {0, 0, 1}`), grown to a minimum
-  patch footprint; the same ROI restricts the NEON focus metric and
-  weights AE / AWB metering. The lens is written by the IPA through
-  `Focuser` on the same tick AF decides it.
+  region (one, `CONTROL_MAX_REGIONS = {1, 0, 1}`), grown to a minimum
+  patch footprint; that ROI restricts the NEON focus metric. AE (and
+  the AWB scene-light gate) meter over the request's AE region, grown
+  to the tuning's `min_metering_roi_patches`, or where AF looks
+  without one. Both regions are fitted to the crop (`fitToFrame`),
+  mapped through the mode's window (`regionPatches`) and travel with
+  the frame's own stats job, so a frame's stats are metered as that
+  frame asked. The lens is written by the IPA through `Focuser` on the
+  same tick AF decides it.
 - **States** (`describe3A`, as Camera2's state tables have them): AE
   Off → Inactive, locked → Locked, converged → Converged, else
   Searching. AWB Auto → Locked while the request locks it, else

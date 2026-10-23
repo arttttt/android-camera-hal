@@ -86,6 +86,21 @@ bool readU8(const CameraMetadata &cm, uint32_t tag, T *out) {
     return true;
 }
 
+/* The first metering region of `tag` (MAX_REGIONS advertises one);
+ * none when the request has no region there. */
+std::optional<MeteringRegion> readRegion(const CameraMetadata &cm, uint32_t tag) {
+    if (!cm.exists(tag)) return std::nullopt;
+    const camera_metadata_ro_entry_t e = cm.find(tag);
+    if (e.count < 4) return std::nullopt;
+    MeteringRegion region;
+    region.rect.xMin = e.data.i32[0];
+    region.rect.yMin = e.data.i32[1];
+    region.rect.xMax = e.data.i32[2];
+    region.rect.yMax = e.data.i32[3];
+    region.weight    = e.count >= 5 ? e.data.i32[4] : 0;
+    return region;
+}
+
 } /* namespace */
 
 FrameSettings parseFrameSettings(const CameraMetadata &cm) {
@@ -97,6 +112,7 @@ FrameSettings parseFrameSettings(const CameraMetadata &cm) {
     uint8_t aeLock = ANDROID_CONTROL_AE_LOCK_OFF;
     readU8(cm, ANDROID_CONTROL_AE_LOCK, &aeLock);
     s.ae.lock = aeLock == ANDROID_CONTROL_AE_LOCK_ON;
+    s.ae.region = readRegion(cm, ANDROID_CONTROL_AE_REGIONS);
     if (cm.exists(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION))
         s.ae.evCompensationSteps =
             *cm.find(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION).data.i32;
@@ -130,19 +146,7 @@ FrameSettings parseFrameSettings(const CameraMetadata &cm) {
     readU8(cm, ANDROID_CONTROL_AF_TRIGGER, &afTrigger);
     s.af.trigger = afTrigger <= ANDROID_CONTROL_AF_TRIGGER_CANCEL ? (AfTrigger)afTrigger
                                                                  : AfTrigger::Idle;
-    /* One region at most (MAX_REGIONS advertises one). */
-    if (cm.exists(ANDROID_CONTROL_AF_REGIONS)) {
-        const camera_metadata_ro_entry_t e = cm.find(ANDROID_CONTROL_AF_REGIONS);
-        if (e.count >= 4) {
-            MeteringRegion region;
-            region.rect.xMin = e.data.i32[0];
-            region.rect.yMin = e.data.i32[1];
-            region.rect.xMax = e.data.i32[2];
-            region.rect.yMax = e.data.i32[3];
-            region.weight    = e.count >= 5 ? e.data.i32[4] : 0;
-            s.af.region = region;
-        }
-    }
+    s.af.region = readRegion(cm, ANDROID_CONTROL_AF_REGIONS);
     if (s.af.mode == AfMode::Off && cm.exists(ANDROID_LENS_FOCUS_DISTANCE))
         s.af.focusDistanceDiopters = *cm.find(ANDROID_LENS_FOCUS_DISTANCE).data.f;
 

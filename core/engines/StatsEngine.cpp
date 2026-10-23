@@ -109,6 +109,7 @@ void StatsEngine::runPhase(Job &job) {
         latest.sequence        = cycle.sequence;
         latest.exposureStartNs = cycle.exposureStartNs;
         latest.inEffect        = cycle.inEffect;
+        latest.meteringRoi     = cycle.meteringRoi;
         latestValid            = true;
     }
     ALOGD("PERF: phase=%d/%d neon=%lldus finalize=%lldus seq=%u",

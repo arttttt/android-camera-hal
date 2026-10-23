@@ -29,6 +29,7 @@
 #include <utils/Timers.h>
 
 #include "3a/AutoFocusController.h"
+#include "3a/RegionPatches.h"
 #include "3a/RequestExposure.h"
 #include "DeviceErrorReporter.h"
 #include "IspEngine.h"
@@ -321,19 +322,16 @@ void CaptureEngine::dispatchStats(Frame &f) {
     job.exposureStartNs = f.exposureStartNs;
     job.inEffect        = f.inEffect;
 
-    /* The AF region of the request; without AF, the
-     * compile-time centre rectangle. */
-    if (deps.af) {
-        const android::AutoFocusController::FocusRoi roi = deps.af->currentFocusRoi();
-        job.focusRoi.pyLo = roi.pyLo;
-        job.focusRoi.pyHi = roi.pyHi;
-        job.focusRoi.pxLo = roi.pxLo;
-        job.focusRoi.pxHi = roi.pxHi;
-    } else {
-        job.focusRoi.pyLo = android::IpaStats::FOCUS_ROI_PY_LO;
-        job.focusRoi.pyHi = android::IpaStats::FOCUS_ROI_PY_HI;
-        job.focusRoi.pxLo = android::IpaStats::FOCUS_ROI_PX_LO;
-        job.focusRoi.pxHi = android::IpaStats::FOCUS_ROI_PX_HI;
+    /* Where the frame's own AF looks, and where its AE meters: its AE
+     * region, or without one where its AF looks. Both from the frame's
+     * request, so the stats of a frame are read as that frame asked. */
+    if (deps.af)
+        job.focusRoi = deps.af->roiFor(f.settings);
+    job.meteringRoi = job.focusRoi;
+    if (f.settings.ae.region && deps.frameMap) {
+        if (const std::optional<android::PatchRoi> roi = android::regionPatches(
+                *deps.frameMap, *f.settings.ae.region, deps.meteringMinPatches))
+            job.meteringRoi = *roi;
     }
 
     deps.stats->submit(std::move(job));

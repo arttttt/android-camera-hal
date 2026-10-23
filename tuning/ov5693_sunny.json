@@ -31,7 +31,9 @@
     "hal_overrides": {
       "_comment": "HAL-specific knobs not present in NVIDIA .isp; preserve verbatim across isp_to_json.py regenerations.",
       "ae": {
-        "close_speed_zone": 0.2
+        "close_speed_zone": 0.2,
+        "_comment": "An AE region (a tap) meters over at least this many stats patches a side: the 5x5 AF has metered on since AE followed the AF region.",
+        "min_metering_roi_patches": 5
       }
     },
     "mwbCCT": {

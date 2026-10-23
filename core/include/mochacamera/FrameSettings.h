@@ -39,6 +39,8 @@ struct FrameSettings {
         bool    lock = false;
         /* In steps of Capability::ae.evStep. */
         int32_t evCompensationSteps = 0;
+        /* Where to meter; without one, AE meters where AF looks. */
+        std::optional<MeteringRegion> region;
     } ae;
 
     struct Awb {

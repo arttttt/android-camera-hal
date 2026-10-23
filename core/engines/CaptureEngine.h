@@ -89,6 +89,9 @@ public:
         /* The running mode's frame against the active array; changed
          * only while the engine is stopped. */
         const android::FrameMap      *frameMap;
+        /* The fewest patches a side an AE region meters over
+         * (SensorTuning::AeParams::minMeteringRoiPatches). */
+        int                           meteringMinPatches = 1;
         ResultSink                   *sink;        /* the shutter */
         android::DelayedControls     *controls;
         android::SensorWriter        *writer;

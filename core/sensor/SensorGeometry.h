@@ -84,12 +84,12 @@ private:
     mocha::camera::Rect mWindow;
 };
 
-/* What a frame uses of its request's crop and AF region, by Camera2's
- * rules, written back into `settings` for the frame and its result: the
- * crop within what the frame shows (all of that when the crop falls
- * wholly outside); the AF region within the crop, dropped -- and so not
- * reported -- when it falls wholly outside. Nothing changes under a map
- * that knows no window. */
+/* What a frame uses of its request's crop and metering regions, by
+ * Camera2's rules, written back into `settings` for the frame and its
+ * result: the crop within what the frame shows (all of that when the
+ * crop falls wholly outside); each region within the crop, dropped --
+ * and so not reported -- when it falls wholly outside. Nothing changes
+ * under a map that knows no window. */
 void fitToFrame(mocha::camera::FrameSettings &settings, const FrameMap &map);
 
 } /* namespace android */
