@@ -49,7 +49,7 @@ bool readJson(const std::string &path, Json::Value *out) {
 SensorTuning::SensorTuning()
     : mLoaded(false)
     , mHasAf(false)
-    , mModule{{0.0f, 0.0f}, 0.0f, 0.0f, 0}
+    , mModule{0.0f, 0.0f, 0}
     , mAf{}
     , mOpticalBlack{0, 0, 0, 0}
     , mAwbRefs{0, 0, 0, 0} {}
