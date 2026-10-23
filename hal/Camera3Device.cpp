@@ -19,6 +19,7 @@
 
 #include "Camera3Device.h"
 
+#include <algorithm>
 #include <assert.h>
 #include <stdio.h>
 
@@ -271,6 +272,18 @@ int Camera3Device::processCaptureRequest(camera3_capture_request_t *request) {
             mLastRequestSettings = request->settings;
         frame.settings = parseFrameSettings(mLastRequestSettings);
         if (blob) frame.settings.stillCapture = true;
+        /* An fps range the camera does not advertise bounds nothing:
+         * the mode's own frame. */
+        if (const std::optional<mocha::camera::FpsRange> &fps = frame.settings.ae.fpsRange) {
+            const auto &ranges = mSession->capability().ae.targetFpsRanges;
+            const bool advertised = std::any_of(ranges.begin(), ranges.end(),
+                [&](const mocha::camera::FpsRange &r) { return r.min == fps->min && r.max == fps->max; });
+            if (!advertised) {
+                ALOGW("frame %u: AE target fps range [%d, %d] is not advertised",
+                      frame.frameNumber, fps->min, fps->max);
+                frame.settings.ae.fpsRange.reset();
+            }
+        }
 
         /* The echo the frame's results start from, before the core can
          * send any of them. */

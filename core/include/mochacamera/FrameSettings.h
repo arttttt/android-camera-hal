@@ -41,6 +41,9 @@ struct FrameSettings {
         int32_t evCompensationSteps = 0;
         /* Where to meter; without one, AE meters where AF looks. */
         std::optional<MeteringRegion> region;
+        /* The frame rates auto exposure may run between; without one,
+         * the mode's own. AE Off does not heed it. */
+        std::optional<FpsRange> fpsRange;
     } ae;
 
     struct Awb {

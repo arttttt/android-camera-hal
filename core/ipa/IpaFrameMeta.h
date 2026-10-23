@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 
+#include <optional>
 
 #include "IpaStats.h"
 #include "mochacamera/Controls.h"
@@ -47,6 +48,10 @@ struct IpaFrameMeta {
      * where its AF looks. Defaults to the centre 8×8 patches -- a plain
      * centre-weighted metric. */
     PatchRoi meteringRoi;
+
+    /* The frame rates auto exposure may run between (the request's AE
+     * target fps range); without one, the mode's frame. */
+    std::optional<mocha::camera::FpsRange> aeFpsRange;
 
     IpaFrameMeta()
         : aeMode(mocha::camera::AeMode::On),

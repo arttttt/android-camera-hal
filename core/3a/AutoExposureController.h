@@ -113,7 +113,8 @@ public:
      * sensitivity, clamped, EV compensation applied (2^(steps x
      * evStep)), then split by AE mode: manual grows frame_length to fit
      * a long shutter, auto cold-start splits via
-     * SensorConfig::splitExposure to keep FPS). A sensitivity past the
+     * SensorConfig::splitExposure within the request's fps range). A
+     * sensitivity past the
      * analog maximum is made up by the ISP's digital gain.
      *
      * Static because there is no inter-frame state to preserve — the

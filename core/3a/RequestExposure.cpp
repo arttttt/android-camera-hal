@@ -40,6 +40,25 @@ DelayedControls::Batch requestExposure(
             b.has[id] = true;
             b.val[id] = defaults.val[id];
         }
+        /* AE decided for the range of the frame it last saw; this
+         * request's own range bounds its frame. Too long a frame:
+         * the same exposure divided again within it. Too short: the
+         * frame lengthened, the exposure as it was. */
+        const SensorConfig::FrameLimits limits = cfg.frameLimits(settings.ae.fpsRange);
+        int32_t &frameLen = b.val[DelayedControls::FRAME_LENGTH];
+        if (frameLen > limits.maxLen) {
+            const float totalUs = (float)b.val[DelayedControls::EXPOSURE]
+                * (float)b.val[DelayedControls::GAIN] / (float)cfg.gainUnit
+                * (float)b.val[DelayedControls::DIGITAL_GAIN]
+                / (float)SensorConfig::kDigitalGainUnit;
+            const SensorConfig::ExposureSplit split = cfg.splitExposure(totalUs, limits);
+            b.val[DelayedControls::EXPOSURE]     = split.exposureUs;
+            b.val[DelayedControls::GAIN]         = split.gain;
+            b.val[DelayedControls::DIGITAL_GAIN] = split.digitalGain;
+            frameLen                             = split.frameLen;
+        } else if (frameLen < limits.minLen) {
+            frameLen = limits.minLen;
+        }
         return b;
     }
 

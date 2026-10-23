@@ -170,10 +170,14 @@ the stats engine published (`Ipa3A::processStats`).
   convergence. EV compensation multiplies the target by
   2^(steps × `Capability::ae.evStep`). AE_LOCK holds the converged
   point with an EMA-smoothed bias so EV steps under lock don't tear
-  the rolling-shutter readout. Exposure / gain split via
-  `SensorConfig::splitExposureGain` (exposure up to one default frame,
-  then gain). Decisions go to `DelayedControls` at the frame they land
-  on; the capture engine's `ApplySettingsStage` writes them.
+  the rolling-shutter readout. The split (`SensorConfig::splitExposure`,
+  libcamera's order): exposure first, its frame lengthened for it as far
+  as the request's AE target fps range allows (`frameLimits`: no
+  shorter than 1/max, no longer than 1/min; without a range, the mode's
+  frame), then the analog gain, then the ISP's digital gain. A request
+  bounds its own frame whatever range AE decided for
+  (`requestExposure`). Decisions go to `DelayedControls` at the frame
+  they land on; the capture engine's `ApplySettingsStage` writes them.
 - **Manual AE** (`AeMode::Off`): `parseManualSettings` takes the
   request's exposure and sensitivity verbatim, grows the frame for a
   long exposure, and the same EV scaling applies.

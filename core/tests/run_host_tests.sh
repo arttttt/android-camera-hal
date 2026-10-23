@@ -91,6 +91,7 @@ run three_a_test         core/tests/three_a_test.cpp \
                          core/3a/AutoExposureController.cpp \
                          core/3a/AutoFocusController.cpp \
                          core/3a/GrayWorldAwbController.cpp \
+                         core/3a/RequestExposure.cpp \
                          core/3a/RegionPatches.cpp core/sensor/SensorGeometry.cpp \
                          core/3a/ThreeAReport.cpp core/sensor/DelayedControls.cpp \
                          "${TUNING[@]}" -- -ljsoncpp

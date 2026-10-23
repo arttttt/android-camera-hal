@@ -113,6 +113,11 @@ FrameSettings parseFrameSettings(const CameraMetadata &cm) {
     readU8(cm, ANDROID_CONTROL_AE_LOCK, &aeLock);
     s.ae.lock = aeLock == ANDROID_CONTROL_AE_LOCK_ON;
     s.ae.region = readRegion(cm, ANDROID_CONTROL_AE_REGIONS);
+    if (cm.exists(ANDROID_CONTROL_AE_TARGET_FPS_RANGE)) {
+        const camera_metadata_ro_entry_t e = cm.find(ANDROID_CONTROL_AE_TARGET_FPS_RANGE);
+        if (e.count >= 2)
+            s.ae.fpsRange = FpsRange{e.data.i32[0], e.data.i32[1]};
+    }
     if (cm.exists(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION))
         s.ae.evCompensationSteps =
             *cm.find(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION).data.i32;

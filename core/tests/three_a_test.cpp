@@ -25,15 +25,18 @@
 
 #include <cstdio>
 #include <cstring>
+#include <optional>
 
 #include "3a/AutoExposureController.h"
 #include "3a/AutoFocusController.h"
 #include "3a/AwbConvergence.h"
 #include "3a/GrayWorldAwbController.h"
+#include "3a/RequestExposure.h"
 #include "3a/ThreeAReport.h"
 #include "ipa/IpaFrameMeta.h"
 #include "ipa/IpaStats.h"
 #include "sensor/DelayedControls.h"
+#include "sensor/ExposureTarget.h"
 #include "sensor/SensorConfig.h"
 #include "sensor/SensorGeometry.h"
 #include "sensor/SensorTuning.h"
@@ -49,6 +52,7 @@ using mocha::camera::AfState;
 using mocha::camera::AfTrigger;
 using mocha::camera::AwbMode;
 using mocha::camera::AwbState;
+using mocha::camera::FpsRange;
 using mocha::camera::FrameSettings;
 using mocha::camera::MeteringRegion;
 using mocha::camera::Rational;
@@ -271,9 +275,13 @@ void testLongExposureTiming() {
  * converges and holds; one stop of EV compensation doubles the
  * exposure it settles on. */
 float settleAe(AutoExposureController &ae, const SensorConfig &cfg,
-               int32_t evSteps, float sceneGain, bool *converged) {
+               int32_t evSteps, float sceneGain, bool *converged,
+               std::optional<FpsRange> fps = std::nullopt,
+               DelayedControls::Batch *last = nullptr) {
     IpaFrameMeta meta;
     meta.aeExposureCompensation = evSteps;
+    meta.aeFpsRange = fps;
+    const SensorConfig::FrameLimits limits = cfg.frameLimits(fps);
     float totalUs = (float)cfg.exposureDefault;
     float lastTotal = 0.f;
     for (int frame = 0; frame < 400; ++frame) {
@@ -282,12 +290,15 @@ float settleAe(AutoExposureController &ae, const SensorConfig &cfg,
         const IpaStats stats = uniformStats(luma, luma, luma);
         const AeResult r = ae.process(stats, meta, 1.f, 1.f, totalUs, 1);
         if (r.batch.has[DelayedControls::EXPOSURE] && r.batch.has[DelayedControls::GAIN]) {
-            /* Auto AE keeps the mode's own frame and names it. */
+            /* Auto AE names the frame, within what the fps range
+             * allows (without one, the mode's own), and the line. */
             check(r.batch.has[DelayedControls::FRAME_LENGTH] &&
-                  r.batch.val[DelayedControls::FRAME_LENGTH] == cfg.frameLenDefault);
+                  r.batch.val[DelayedControls::FRAME_LENGTH] >= limits.minLen &&
+                  r.batch.val[DelayedControls::FRAME_LENGTH] <= limits.maxLen);
             check(r.batch.has[DelayedControls::LINE_LENGTH] &&
                   r.batch.val[DelayedControls::LINE_LENGTH] == cfg.lineLengthDefault);
-            check(r.batch.val[DelayedControls::EXPOSURE] <= cfg.maxExposureUsDefault());
+            check(r.batch.val[DelayedControls::EXPOSURE] <= cfg.maxExposureUs(limits));
+            if (last) *last = r.batch;
             lastTotal = totalUs;
             totalUs = (float)r.batch.val[DelayedControls::EXPOSURE]
                     * (float)r.batch.val[DelayedControls::GAIN] / (float)cfg.gainUnit;
@@ -317,6 +328,96 @@ void testAeLoop() {
      * in gain; the frame stays the mode's (checked in settleAe). */
     AutoExposureController aeDark(cfg, &tuning, kThirdStop);
     settleAe(aeDark, cfg, 0, 1.f / 80000000.f, &converged);
+}
+
+/* The AE target fps range bounds the frame: without one, or at the
+ * mode's own rate, the mode's frame; [15, 30] up to 1/15 s; [15, 15]
+ * 1/15 s always. Divided within it, the exposure comes first, its
+ * frame lengthened for it, the gain after. */
+void testFpsRangeFrameLimits() {
+    const SensorConfig cfg = imx179();
+    const SensorConfig::FrameLimits mode = cfg.modeFrame();
+    const int32_t at15 = (int32_t)(1000000000LL / 15 / cfg.lineTimeNs);
+
+    SensorConfig::FrameLimits l = cfg.frameLimits(std::nullopt);
+    check(l.minLen == mode.minLen && l.maxLen == mode.maxLen);
+    l = cfg.frameLimits(FpsRange{30, 30});
+    check(l.minLen == mode.minLen && l.maxLen == mode.maxLen);
+    const SensorConfig::FrameLimits wide = cfg.frameLimits(FpsRange{15, 30});
+    check(wide.minLen == cfg.frameLenDefault && wide.maxLen == at15);
+    const SensorConfig::FrameLimits slow = cfg.frameLimits(FpsRange{15, 15});
+    check(slow.minLen == at15 && slow.maxLen == at15);
+
+    const float dark = (float)cfg.maxExposureUsDefault() * 8;
+    const SensorConfig::ExposureSplit fixed = cfg.splitExposure(dark);
+    const SensorConfig::ExposureSplit longer = cfg.splitExposure(dark, wide);
+    check(fixed.frameLen == cfg.frameLenDefault);
+    check(longer.exposureUs == cfg.maxExposureUs(wide) && longer.frameLen == wide.maxLen);
+    check(longer.gain < fixed.gain);
+    /* Light enough for the mode's frame: no longer than it. */
+    const SensorConfig::ExposureSplit bright =
+        cfg.splitExposure((float)cfg.maxExposureUsDefault() / 2, wide);
+    check(bright.frameLen == cfg.frameLenDefault && bright.gain == cfg.gainUnit);
+    check(cfg.splitExposure(1000.f, slow).frameLen == at15);
+}
+
+/* In the dark, [15, 30] lets AE lengthen the frame before it adds
+ * gain; [30, 30] holds the mode's frame and goes on in gain. */
+void testAeFpsRange() {
+    SensorTuning tuning;
+    check(tuning.loadFile("tuning/imx179_primax.json"));
+    const SensorConfig cfg = imx179();
+    const float dark = 1.f / 8000000.f;
+    bool converged = false;
+
+    AutoExposureController aeWide(cfg, &tuning, kThirdStop);
+    DelayedControls::Batch wide;
+    settleAe(aeWide, cfg, 0, dark, &converged, FpsRange{15, 30}, &wide);
+    AutoExposureController aeFixed(cfg, &tuning, kThirdStop);
+    DelayedControls::Batch fixed;
+    settleAe(aeFixed, cfg, 0, dark, &converged, FpsRange{30, 30}, &fixed);
+
+    check(wide.val[DelayedControls::FRAME_LENGTH] > cfg.frameLenDefault);
+    check(wide.val[DelayedControls::EXPOSURE] > cfg.maxExposureUsDefault());
+    check(fixed.val[DelayedControls::FRAME_LENGTH] == cfg.frameLenDefault);
+    check(wide.val[DelayedControls::GAIN] < fixed.val[DelayedControls::GAIN]);
+}
+
+/* A request bounds its own frame whatever range AE decided for: a
+ * frame too long for it is divided again within it, the gain making up
+ * the exposure; too short, lengthened. */
+void testRequestBoundsItsFrame() {
+    const SensorConfig cfg = imx179();
+    const SensorConfig::FrameLimits wide = cfg.frameLimits(FpsRange{15, 30});
+    const SensorConfig::ExposureSplit s =
+        cfg.splitExposure((float)cfg.maxExposureUsDefault() * 8, wide);
+
+    ExposureTarget target;
+    DelayedControls::Batch decided = cfg.configureDefaults();
+    decided.val[DelayedControls::EXPOSURE]     = s.exposureUs;
+    decided.val[DelayedControls::GAIN]         = s.gain;
+    decided.val[DelayedControls::DIGITAL_GAIN] = s.digitalGain;
+    decided.val[DelayedControls::FRAME_LENGTH] = s.frameLen;
+    target.publish(decided);
+
+    FrameSettings req;
+    req.ae.fpsRange = FpsRange{15, 30};
+    DelayedControls::Batch b = requestExposure(req, cfg, &target, kThirdStop);
+    check(b.val[DelayedControls::FRAME_LENGTH] == s.frameLen);
+    check(b.val[DelayedControls::EXPOSURE] == s.exposureUs);
+
+    req.ae.fpsRange = FpsRange{30, 30};
+    b = requestExposure(req, cfg, &target, kThirdStop);
+    check(b.val[DelayedControls::FRAME_LENGTH] == cfg.frameLenDefault);
+    check(b.val[DelayedControls::EXPOSURE] <= cfg.maxExposureUsDefault());
+    check(b.val[DelayedControls::GAIN] > s.gain);
+
+    DelayedControls::Batch light = cfg.configureDefaults();
+    target.publish(light);
+    req.ae.fpsRange = FpsRange{15, 15};
+    b = requestExposure(req, cfg, &target, kThirdStop);
+    check(b.val[DelayedControls::FRAME_LENGTH] == cfg.frameLimits(FpsRange{15, 15}).minLen);
+    check(b.val[DelayedControls::EXPOSURE] == light.val[DelayedControls::EXPOSURE]);
 }
 
 /* Gray-world finds the scene's neutral: gains move from the prior to
@@ -495,6 +596,9 @@ int main() {
     testDigitalGain();
     testLongExposureTiming();
     testAeLoop();
+    testFpsRangeFrameLimits();
+    testAeFpsRange();
+    testRequestBoundsItsFrame();
     testAwbConvergence();
     testGrayWorld();
     testAfRegionWeight();
