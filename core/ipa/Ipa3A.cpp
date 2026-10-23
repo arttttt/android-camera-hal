@@ -311,11 +311,12 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
     const bool logTick = ((frameCount++ & 0x1f) == 0u);
     if (logTick) {
         const float totalUs = mAe->currentFilteredTotalUs();
-        const SensorConfig::ExposureSplit diag = sensorCfg.splitExposure(totalUs);
+        const SensorConfig::ExposureSplit diag =
+            sensorCfg.splitExposure(totalUs, sensorCfg.frameLimits(meta.aeFpsRange));
         const WbGains gQ8 = mAwb->currentGainsQ8();
         ALOGD("3A: frame=%u luma=%.3f iqmHi=%.3f nValid=%d awbRun=%d awbConv=%d "
               "lastWb=(%.3f,%.3f) Q8=(%u,%u) estCct=%d "
-              "totalUs=%.0f exp=%d gain=%d digital=%d evComp=%d "
+              "totalUs=%.0f exp=%d gain=%d digital=%d frameLen=%d evComp=%d "
               "lux=%.0f",
               frameCount, (double)sceneLuma, (double)aeResult.iqmHighlight,
               awbResult.validPatchCount, awbRun ? 1 : 0,
@@ -323,7 +324,7 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
               (double)mAwb->currentWbR(), (double)mAwb->currentWbB(),
               gQ8.r, gQ8.b,
               mAwb->currentEstCct(), (double)totalUs, diag.exposureUs,
-              diag.gain, diag.digitalGain,
+              diag.gain, diag.digitalGain, diag.frameLen,
               meta.aeExposureCompensation,
               (double)lastLuxIndex);
     }
