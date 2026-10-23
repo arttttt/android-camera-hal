@@ -1,6 +1,7 @@
 #ifndef SENSOR_CONFIG_H
 #define SENSOR_CONFIG_H
 
+#include <math.h>
 #include <stdint.h>
 
 #include "DelayedControls.h"
@@ -78,6 +79,11 @@ struct SensorConfig {
      * still count it. */
     bool lineLengthHidesFrame = false;
 
+    /* The most digital gain the ISP adds past the analog maximum, Q8
+     * (kDigitalGainUnit): x4, ISO 6400 over the sensors' 1600 -- the
+     * RPi AGC's default max_digital_gain. */
+    int32_t digitalGainMax = 4 * 256;
+
     /* Lens — the module's focal length (mm), from the tuning's module
      * block. Static metadata advertises it and every result reports
      * it; it is a fixed property of the lens, focusing or not. */
@@ -134,6 +140,7 @@ struct SensorConfig {
         b.val[DelayedControls::GAIN]         = gainDefault;
         b.val[DelayedControls::FRAME_LENGTH] = frameLenDefault;
         b.val[DelayedControls::LINE_LENGTH]  = lineLengthDefault;
+        b.val[DelayedControls::DIGITAL_GAIN] = kDigitalGainUnit;
         for (bool &h : b.has) h = true;
         return b;
     }
@@ -189,18 +196,43 @@ struct SensorConfig {
         return (gain * kIsoAtUnityGain) / gainUnit;
     }
 
-    /* Split target exposure into actual exposure + extra gain (Q8).
-     * Keeps exposure within default frame_length, excess → gain. */
-    void splitExposureGain(int32_t targetUs, int32_t *outExposureUs,
-                           int32_t *outExtraGainQ8) const {
-        int32_t maxUs = maxExposureUsDefault();
-        if (targetUs <= maxUs) {
-            *outExposureUs = targetUs;
-            *outExtraGainQ8 = 256; /* 1.0x */
-        } else {
-            *outExposureUs = maxUs;
-            *outExtraGainQ8 = (int32_t)((int64_t)targetUs * 256 / maxUs);
-        }
+    /* The ISP's digital gain (DelayedControls::DIGITAL_GAIN), Q8. */
+    static constexpr int32_t kDigitalGainUnit = 256;
+
+    /* ISO for an analog `gain` and the ISP's `digitalGain` on top: what
+     * SENSOR_SENSITIVITY reports, the whole gain before processing. */
+    int32_t sensitivityIso(int32_t gain, int32_t digitalGain) const {
+        return (int32_t)((int64_t)gainToIso(gain) * digitalGain / kDigitalGainUnit);
+    }
+
+    /* One exposure as the sensor and the ISP make it. */
+    struct ExposureSplit {
+        int32_t exposureUs;
+        int32_t gain;
+        int32_t digitalGain;
+    };
+
+    /* An exposure total (µs at unity gain) divided as libcamera's AGC
+     * divides it: the exposure up to the mode's own frame (fps kept),
+     * then the analog gain up to its maximum, then the ISP's digital
+     * gain for the rest, up to digitalGainMax. */
+    ExposureSplit splitExposure(float totalUs) const {
+        ExposureSplit s;
+        const int32_t maxUs = maxExposureUsDefault();
+        s.exposureUs = totalUs < (float)maxUs ? (int32_t)(totalUs + 0.5f) : maxUs;
+        if (s.exposureUs < 1) s.exposureUs = 1;
+        const float rest = totalUs / (float)s.exposureUs;
+        int32_t g = (int32_t)lroundf(rest * (float)gainUnit);
+        const int32_t lo = gainMin > 0 ? gainMin : 1;
+        if (g < lo)      g = lo;
+        if (g > gainMax) g = gainMax;
+        s.gain = g;
+        int32_t d = (int32_t)lroundf(rest * (float)gainUnit / (float)g
+                                     * (float)kDigitalGainUnit);
+        if (d < kDigitalGainUnit) d = kDigitalGainUnit;
+        if (d > digitalGainMax)   d = digitalGainMax;
+        s.digitalGain = d;
+        return s;
     }
 
     /* Pre-built configs for known sensors — carry only the fields
@@ -231,7 +263,7 @@ struct SensorConfig {
              * as the sensors hold it to the exposure's frame
              * (onsemi AR1335: "the gain update is held off by one
              * frame"). */
-            .controlDelay    = { 2, 2, 1, 1 },
+            .controlDelay    = { 2, 2, 1, 1, 2 },
             /* Measured on mocha (23.10.2026, FRAME_START traces): the
              * line length alone written 3440 -> 5000 and back, 19 to
              * 205 ms into a frame, made that frame's start-to-start
@@ -264,7 +296,7 @@ struct SensorConfig {
              * line length written 14.6 ms into frame W stretched
              * W + 1; the exposure reached the image of W + 2. Gain as
              * for IMX179. */
-            .controlDelay    = { 2, 2, 1, 1 },
+            .controlDelay    = { 2, 2, 1, 1, 2 },
             .focalLengthMm   = 0.f,
         };
     }

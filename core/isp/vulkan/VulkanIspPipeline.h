@@ -34,7 +34,7 @@ public:
     void prewarm(unsigned width, unsigned height, uint32_t pixFmt) override;
 
     bool beginFrame(unsigned srcW, unsigned srcH, uint32_t pixFmt,
-                     int srcInputSlot) override;
+                     int srcInputSlot, float digitalGain) override;
     bool blitToGralloc(mocha::camera::NativeBuffer *buffer,
                         unsigned dstW, unsigned dstH,
                         const CropRect &crop,
@@ -220,7 +220,8 @@ private:
     int mSlotSyncFd[SLOT_COUNT];
     size_t mNextSlot;
 
-    void fillParams(IspParams *p, unsigned w, unsigned h, bool is16, uint32_t pixFmt);
+    void fillParams(IspParams *p, unsigned w, unsigned h, bool is16, uint32_t pixFmt,
+                    float digitalGain);
 
     /* Precomputed sRGB-encode LUT (linear [0..255] → encoded [0..255]),
      * copied into every IspParams upload. Filled once in init(). */

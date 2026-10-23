@@ -133,9 +133,10 @@ void writeJpegInfo(CameraMetadata &cm, const Capability &cap) {
 /* Declared sensor operating ranges -- exposure time + ISO sensitivity,
  * as the driver reported them. A range the driver could not give is
  * left out, and the framework will reject the HAL: surfacing the
- * breakage rather than lying about what a slider should offer. The
- * gain is pure analog on these sensors, so its maximum is the analog
- * maximum too. */
+ * breakage rather than lying about what a slider should offer. Past
+ * the sensor's analog maximum the ISP's digital gain goes on (to
+ * SensorConfig::digitalGainMax): the range reaches its top, and
+ * MAX_ANALOG_SENSITIVITY says where the analog gain ends. */
 void writeSensorRanges(CameraMetadata &cm, const Capability &cap) {
     if (cap.sensor.exposureMaxNs > 0) {
         const int64_t range[] = { cap.sensor.exposureMinNs, cap.sensor.exposureMaxNs };
@@ -147,7 +148,7 @@ void writeSensorRanges(CameraMetadata &cm, const Capability &cap) {
     if (cap.sensor.sensitivityMaxIso > 0) {
         const int32_t range[] = { cap.sensor.sensitivityMinIso, cap.sensor.sensitivityMaxIso };
         cm.update(ANDROID_SENSOR_INFO_SENSITIVITY_RANGE, range, NELEM(range));
-        const int32_t maxAnalog = cap.sensor.sensitivityMaxIso;
+        const int32_t maxAnalog = cap.sensor.maxAnalogIso;
         cm.update(ANDROID_SENSOR_MAX_ANALOG_SENSITIVITY, &maxAnalog, 1);
     }
 }

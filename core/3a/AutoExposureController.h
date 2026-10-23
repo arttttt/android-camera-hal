@@ -23,12 +23,14 @@ struct SensorConfig;
  * fallback path): the frame sized for the requested exposure (a long
  * shutter grows the frame past the default period, up to the longest
  * frame at the mode's line -- SensorConfig::timingForExposure),
- * the exposure and the gain. requestExposure files it. */
+ * the exposure, the analog gain and the ISP's digital gain past it.
+ * requestExposure files it. */
 struct ExposureWriteValues {
     int32_t frameLen;
     int32_t lineLength;
     int32_t exposureUs;
     int32_t gain;
+    int32_t digitalGain;
 };
 
 /* AE controller — open-loop EV-space target plus a single-pole LPF,
@@ -111,7 +113,8 @@ public:
      * sensitivity, clamped, EV compensation applied (2^(steps x
      * evStep)), then split by AE mode: manual grows frame_length to fit
      * a long shutter, auto cold-start splits via
-     * SensorConfig::splitExposureGain to keep FPS).
+     * SensorConfig::splitExposure to keep FPS). A sensitivity past the
+     * analog maximum is made up by the ISP's digital gain.
      *
      * Static because there is no inter-frame state to preserve — the
      * call is pure. requestExposure uses it on the capture engine

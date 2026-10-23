@@ -12,6 +12,7 @@
 #include "mochacamera/ports/FrameSource.h"
 #include "IspPipeline.h"
 #include "DeviceErrorReporter.h"
+#include "sensor/SensorConfig.h"
 
 #undef  LOG_TAG
 #define LOG_TAG "Cam-DemosaicBlitStage"
@@ -45,7 +46,15 @@ UniqueFd DemosaicBlitStage::process(mocha::camera::Frame &ctx) {
     /* Open the ISP recording for this frame — demosaic gets recorded once;
      * each blitTo* call inside the loop appends a per-output operation to
      * the same command buffer; endFrame submits the lot. */
-    if (!deps.recorder->beginFrame(res.width, res.height, fctx.pixFmt, fctx.frameSlotIdx)) {
+    /* The digital gain the frame ran on, as its analog gain: both are
+     * in its record (a frame with none ran on none). */
+    const android::DelayedControls::Batch &ran = ctx.inEffect;
+    const float digitalGain = ran.has[android::DelayedControls::DIGITAL_GAIN]
+            ? (float)ran.val[android::DelayedControls::DIGITAL_GAIN]
+              / (float)android::SensorConfig::kDigitalGainUnit
+            : 1.0f;
+    if (!deps.recorder->beginFrame(res.width, res.height, fctx.pixFmt, fctx.frameSlotIdx,
+                                   digitalGain)) {
         ALOGE("beginFrame failed for frame %u", ctx.frameNumber);
         ctx.status.fail(NO_INIT);
         reportIfDeviceLost();

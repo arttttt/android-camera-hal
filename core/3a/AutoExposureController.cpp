@@ -153,18 +153,20 @@ float top2pcMaxPostWbMean(const IpaStats &stats, const IpaFrameMeta &meta,
 
 constexpr int32_t kAeConvergedFramesRequired = 5;
 
-/* One AE decision: exposure and gain, in the mode's own frame. Auto AE
- * never stretches the frame (splitExposureGain keeps the exposure
- * inside it and puts the rest into gain), but it still names the frame
- * and line length: the driver keeps whatever was last written, so a
- * frame a manual long exposure stretched would otherwise stay
- * stretched. */
+/* One AE decision: exposure, analog and digital gain, in the mode's
+ * own frame. Auto AE never stretches the frame (splitExposure keeps the
+ * exposure inside it and puts the rest into gain), but it still names
+ * the frame and line length: the driver keeps whatever was last
+ * written, so a frame a manual long exposure stretched would otherwise
+ * stay stretched. */
 void fillAeBatch(DelayedControls::Batch *batch, const SensorConfig &cfg,
-                 int32_t exposureUs, int32_t gain) {
+                 const SensorConfig::ExposureSplit &split) {
     batch->has[DelayedControls::EXPOSURE]     = true;
-    batch->val[DelayedControls::EXPOSURE]     = exposureUs;
+    batch->val[DelayedControls::EXPOSURE]     = split.exposureUs;
     batch->has[DelayedControls::GAIN]         = true;
-    batch->val[DelayedControls::GAIN]         = gain;
+    batch->val[DelayedControls::GAIN]         = split.gain;
+    batch->has[DelayedControls::DIGITAL_GAIN] = true;
+    batch->val[DelayedControls::DIGITAL_GAIN] = split.digitalGain;
     batch->has[DelayedControls::FRAME_LENGTH] = true;
     batch->val[DelayedControls::FRAME_LENGTH] = cfg.frameLenDefault;
     batch->has[DelayedControls::LINE_LENGTH]  = true;
@@ -264,6 +266,9 @@ ExposureWriteValues AutoExposureController::parseManualSettings(
     int32_t gain = cfg.gainUnit;  /* 1.0x baseline */
     if (settings.sensor.sensitivityIso)
         gain = cfg.isoToGain(*settings.sensor.sensitivityIso);
+    /* Past the analog maximum, the ISP's digital gain makes up the
+     * rest: SENSOR_SENSITIVITY is the whole gain before processing. */
+    const int32_t analogMax = cfg.gainMax > 0 ? cfg.gainMax : gain;
 
     ExposureWriteValues out;
     if (settings.ae.mode == mocha::camera::AeMode::Off) {
@@ -271,7 +276,7 @@ ExposureWriteValues AutoExposureController::parseManualSettings(
          * requested exposure verbatim; if it doesn't fit the default
          * frame_length, grow frame_length so it does (FPS drops
          * accordingly — that's the user's choice when they set a 1 s
-         * shutter). No splitExposureGain, no fps preservation. */
+         * shutter). No splitExposure, no fps preservation. */
         const SensorConfig::FrameTiming t = cfg.timingForExposure(exposureUs);
         /* Past the longest frame, the longest it holds: what the
          * sensor runs, as the record must say. */
@@ -279,20 +284,22 @@ ExposureWriteValues AutoExposureController::parseManualSettings(
         out.exposureUs = longest > 0 && exposureUs > longest ? longest : exposureUs;
         out.frameLen   = t.frameLen;
         out.lineLength = t.lineLength;
+        out.gain       = clampInt(gain, cfg.gainMin, analogMax);
+        int32_t d = (int32_t)(((int64_t)gain * SensorConfig::kDigitalGainUnit
+                               + out.gain / 2) / out.gain);
+        out.digitalGain = clampInt(d, SensorConfig::kDigitalGainUnit, cfg.digitalGainMax);
     } else {
         /* Auto AE cold-start fallback (IPA hasn't pushed yet). Hold
          * fps at the default frame_length and trade overflow exposure
          * for extra gain so preview cadence stays smooth. */
-        int32_t actualExposureUs;
-        int32_t extraGainQ8;
-        cfg.splitExposureGain(exposureUs, &actualExposureUs, &extraGainQ8);
-        gain = (int32_t)((int64_t)gain * extraGainQ8 / cfg.gainUnit);
-        out.exposureUs = actualExposureUs;
-        out.frameLen   = cfg.frameLenDefault;
-        out.lineLength = cfg.lineLengthDefault;
+        const SensorConfig::ExposureSplit s = cfg.splitExposure(
+                (float)exposureUs * (float)gain / (float)cfg.gainUnit);
+        out.exposureUs  = s.exposureUs;
+        out.gain        = s.gain;
+        out.digitalGain = s.digitalGain;
+        out.frameLen    = cfg.frameLenDefault;
+        out.lineLength  = cfg.lineLengthDefault;
     }
-
-    out.gain = clampInt(gain, cfg.gainMin, cfg.gainMax);
     return out;
 }
 
@@ -348,14 +355,7 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
                                 + (1.0f - damping) * lockedBiasedTotalUs;
         }
 
-        int32_t heldExposureUs, heldExtraGainQ8;
-        sensorCfg.splitExposureGain((int32_t)(lockedBiasedTotalUs + 0.5f),
-                                     &heldExposureUs, &heldExtraGainQ8);
-        int32_t heldGain = (int32_t)(((int64_t)sensorCfg.gainUnit
-                                     * heldExtraGainQ8 + 128) / 256);
-        if (heldGain < 1)                 heldGain = 1;
-        if (heldGain > sensorCfg.gainMax) heldGain = sensorCfg.gainMax;
-        fillAeBatch(&batch, sensorCfg, heldExposureUs, heldGain);
+        fillAeBatch(&batch, sensorCfg, sensorCfg.splitExposure(lockedBiasedTotalUs));
         return out;
     }
 
@@ -429,9 +429,16 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
      * memory: only the LPF on filteredTotalUs carries history.
      *
      * Envelope clamp [minTotal, maxTotal] doubles as anti-windup. */
+    /* The statistics are of the raw frame, before the ISP's digital
+     * gain: `appliedTotalUs` leaves it out too, so the target is in
+     * the same terms and the digital gain makes up what the analog
+     * cannot (RPi AGC: "the statistics reflect the image without
+     * digital gain"). The envelope includes it. */
     const int32_t gainUnit = sensorCfg.gainUnit;
     const float   maxTotal = (float)sensorCfg.maxExposureUsDefault()
-                           * (float)sensorCfg.gainMax / (float)gainUnit;
+                           * (float)sensorCfg.gainMax / (float)gainUnit
+                           * (float)sensorCfg.digitalGainMax
+                           / (float)SensorConfig::kDigitalGainUnit;
     const float   minTotal = (float)sensorCfg.lineTimeNs * 2.0f / 1000.0f;
     /* The correction was measured on a frame exposed at
      * `appliedTotalUs`, so it applies to that, not to whatever the
@@ -453,18 +460,11 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
     const float deviation    = targetTotalUs / filteredTotalUs - 1.0f;
     const float absDeviation = deviation < 0.f ? -deviation : deviation;
     if (absDeviation < kAeStableRegion) {
-        int32_t heldExposureUs, heldExtraGainQ8;
-        sensorCfg.splitExposureGain((int32_t)(filteredTotalUs + 0.5f),
-                                     &heldExposureUs, &heldExtraGainQ8);
-        int32_t heldGain = (int32_t)(((int64_t)gainUnit
-                                     * heldExtraGainQ8 + 128) / 256);
-        if (heldGain < 1)                 heldGain = 1;
-        if (heldGain > sensorCfg.gainMax) heldGain = sensorCfg.gainMax;
-        fillAeBatch(&batch, sensorCfg, heldExposureUs, heldGain);
+        fillAeBatch(&batch, sensorCfg, sensorCfg.splitExposure(filteredTotalUs));
         if (aeConvergedFrames < INT32_MAX) aeConvergedFrames++;
         lastEvComp = meta.aeExposureCompensation;
         out.converged = (aeConvergedFrames >= kAeConvergedFramesRequired);
-        out.luxIndex  = computeLuxIndex(filteredTotalUs, meanLuma);
+        out.luxIndex  = computeLuxIndex(base, meanLuma);
         return out;
     }
     aeConvergedFrames = 0;
@@ -493,17 +493,10 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
     filteredTotalUs = next;
     lastEvComp = meta.aeExposureCompensation;
 
-    int32_t newExposureUs;
-    int32_t newExtraGainQ8;
-    sensorCfg.splitExposureGain((int32_t)(filteredTotalUs + 0.5f),
-                                 &newExposureUs, &newExtraGainQ8);
-
-    int32_t newGain = (int32_t)(((int64_t)gainUnit * newExtraGainQ8 + 128) / 256);
-    if (newGain < 1)                 newGain = 1;
-    if (newGain > sensorCfg.gainMax) newGain = sensorCfg.gainMax;
-
-    fillAeBatch(&batch, sensorCfg, newExposureUs, newGain);
-    out.luxIndex = computeLuxIndex(filteredTotalUs, meanLuma);
+    fillAeBatch(&batch, sensorCfg, sensorCfg.splitExposure(filteredTotalUs));
+    /* The luma is the raw frame's: the lux is of the exposure it was
+     * taken at, without the digital gain. */
+    out.luxIndex = computeLuxIndex(base, meanLuma);
     return out;
 }
 

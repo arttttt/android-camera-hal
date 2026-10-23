@@ -46,8 +46,12 @@ class IspFrameRecorder {
 public:
     virtual ~IspFrameRecorder() = default;
 
+    /* `digitalGain`: the frame's own (DelayedControls::DIGITAL_GAIN,
+     * as a multiplier), applied to the raw samples right after the
+     * black level, where it is the analog gain's continuation --
+     * clipped at white with the rest, before any colour gain. */
     virtual bool beginFrame(unsigned srcW, unsigned srcH, uint32_t pixFmt,
-                             int srcInputSlot) = 0;
+                             int srcInputSlot, float digitalGain) = 0;
 
     /* A sampler-blit of the scratch image into the output buffer (RGBA8
      * stream). Identity dst==src uses texelFetch in the shader;

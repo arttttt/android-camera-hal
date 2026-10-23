@@ -233,8 +233,13 @@ ExifInfo BufferProcessor::exifFor(const Frame &frame) const {
     const android::DelayedControls::Batch &ran = frame.inEffect;
     if (ran.has[android::DelayedControls::EXPOSURE])
         e.exposureNs = (int64_t)ran.val[android::DelayedControls::EXPOSURE] * 1000;
-    if (ran.has[android::DelayedControls::GAIN] && mDeps.sensorCfg)
-        e.iso = mDeps.sensorCfg->gainToIso(ran.val[android::DelayedControls::GAIN]);
+    if (ran.has[android::DelayedControls::GAIN] && mDeps.sensorCfg) {
+        const int32_t digital = ran.has[android::DelayedControls::DIGITAL_GAIN]
+                ? ran.val[android::DelayedControls::DIGITAL_GAIN]
+                : SensorConfig::kDigitalGainUnit;
+        e.iso = mDeps.sensorCfg->sensitivityIso(
+                ran.val[android::DelayedControls::GAIN], digital);
+    }
     e.manualExposure     = frame.settings.ae.mode == mocha::camera::AeMode::Off;
     e.manualWhiteBalance = frame.settings.awb.mode == mocha::camera::AwbMode::Off;
 

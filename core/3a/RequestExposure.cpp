@@ -51,6 +51,7 @@ DelayedControls::Batch requestExposure(
     b.val[DelayedControls::GAIN]         = v.gain;
     b.val[DelayedControls::FRAME_LENGTH] = v.frameLen;
     b.val[DelayedControls::LINE_LENGTH]  = v.lineLength;
+    b.val[DelayedControls::DIGITAL_GAIN] = v.digitalGain;
     return b;
 }
 

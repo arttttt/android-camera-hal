@@ -27,10 +27,11 @@ struct IspParams {
      * any colour processing. 0 disables the correction. */
     uint32_t blackLevel;
 
-    /* Precomputed 255 / (maxRaw - blackLevel) so the shader does one
-     * multiply per raw sample instead of the emulated integer divide
-     * Kepler pays for. Populated by the host in fillParams — keep in
-     * lock-step with blackLevel and is16bit. */
+    /* Precomputed 255 / (maxRaw - blackLevel), times the frame's
+     * digital gain, so the shader does one multiply per raw sample
+     * instead of the emulated integer divide Kepler pays for.
+     * Populated by the host in fillParams — keep in lock-step with
+     * blackLevel and is16bit. */
     float denomRecip255;
 
     /* 256-entry sRGB encode LUT: uint8 values stored one-per-uint.

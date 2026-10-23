@@ -57,6 +57,8 @@ DelayedControls::Batch initial() {
     b.val[DelayedControls::FRAME_LENGTH] = 2564;
     b.has[DelayedControls::LINE_LENGTH]  = true;
     b.val[DelayedControls::LINE_LENGTH]  = 3440;
+    b.has[DelayedControls::DIGITAL_GAIN] = true;
+    b.val[DelayedControls::DIGITAL_GAIN] = 256;
     return b;
 }
 
@@ -170,6 +172,7 @@ void testPerControlDelay() {
     c.delay[DelayedControls::GAIN]         = 2;
     c.delay[DelayedControls::FRAME_LENGTH] = 1;
     c.delay[DelayedControls::LINE_LENGTH]  = 1;
+    c.delay[DelayedControls::DIGITAL_GAIN] = 2;
     DelayedControls dc(c);
     dc.reset(initial());
     check(dc.firstFileable() == 2);
@@ -179,6 +182,8 @@ void testPerControlDelay() {
     DelayedControls::Batch req = batch(100000, 512);
     req.has[DelayedControls::FRAME_LENGTH] = true;
     req.val[DelayedControls::FRAME_LENGTH] = 9000;
+    req.has[DelayedControls::DIGITAL_GAIN] = true;
+    req.val[DelayedControls::DIGITAL_GAIN] = 768;
     check(dc.file(5, req));
     check(dc.planned(5).val[DelayedControls::FRAME_LENGTH] == 9000);
 
@@ -198,6 +203,9 @@ void testPerControlDelay() {
     check(dc.inEffect(4).val[DelayedControls::FRAME_LENGTH] == 9000);
     check(dc.inEffect(4).val[DelayedControls::EXPOSURE] == 33000);
     check(dc.inEffect(5).val[DelayedControls::EXPOSURE] == 100000);
+    /* The ISP's digital gain on the frame the analog gain is on. */
+    check(dc.inEffect(4).val[DelayedControls::DIGITAL_GAIN] == 256);
+    check(dc.inEffect(5).val[DelayedControls::DIGITAL_GAIN] == 768);
     check(same(dc.inEffectFor(5), req));
 }
 
@@ -210,6 +218,7 @@ void testEarlyFrames() {
     c.delay[DelayedControls::GAIN]         = 2;
     c.delay[DelayedControls::FRAME_LENGTH] = 1;
     c.delay[DelayedControls::LINE_LENGTH]  = 1;
+    c.delay[DelayedControls::DIGITAL_GAIN] = 2;
     DelayedControls dc(c);
     dc.reset(initial());
     DelayedControls::Batch a = batch(100, 256), b = batch(200, 256);

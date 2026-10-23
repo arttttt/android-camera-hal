@@ -68,7 +68,7 @@ void VulkanIspPipeline::buildGammaLut() {
 }
 
 void VulkanIspPipeline::fillParams(IspParams *p, unsigned w, unsigned h,
-                                    bool is16, uint32_t pixFmt) {
+                                    bool is16, uint32_t pixFmt, float digitalGain) {
     p->reset();
     p->width      = w;
     p->height     = h;
@@ -82,7 +82,9 @@ void VulkanIspPipeline::fillParams(IspParams *p, unsigned w, unsigned h,
     p->blackLevel = blackLevel;
     const uint32_t maxRaw = is16 ? 1023u : 255u;
     const uint32_t denom  = (blackLevel < maxRaw) ? (maxRaw - blackLevel) : 1u;
-    p->denomRecip255 = 255.0f / (float)denom;
+    /* The digital gain rides on the black level's rescale: one
+     * multiply per raw sample still. */
+    p->denomRecip255 = 255.0f / (float)denom * (digitalGain > 1.0f ? digitalGain : 1.0f);
     if (const int16_t *ccm = mCcm.load()) {
         for (int i = 0; i < 9; i++)
             p->ccm[i] = ccm[i];
@@ -338,7 +340,7 @@ bool VulkanIspPipeline::importAcquireSemaphore(int acquireFence, VkSemaphore *ou
 }
 
 bool VulkanIspPipeline::beginFrame(unsigned srcW, unsigned srcH, uint32_t pixFmt,
-                                     int srcInputSlot) {
+                                     int srcInputSlot, float digitalGain) {
     if (!mReady || mDeviceLost.load()) return false;
     if (mRec.active) {
         ALOGE("beginFrame called while a frame is already recording");
@@ -360,7 +362,7 @@ bool VulkanIspPipeline::beginFrame(unsigned srcW, unsigned srcH, uint32_t pixFmt
     mGrallocCache.tick();
 
     IspParams params;
-    fillParams(&params, srcW, srcH, is16, pixFmt);
+    fillParams(&params, srcW, srcH, is16, pixFmt, digitalGain);
     uploadParams(slot, params);
     rebindInputDescriptor(slot, srcInputSlot);
 

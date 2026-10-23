@@ -309,26 +309,19 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
     const bool logTick = ((frameCount++ & 0x1f) == 0u);
     if (logTick) {
         const float totalUs = mAe->currentFilteredTotalUs();
-        int32_t diagExp = 0, diagExtraQ8 = 256;
-        sensorCfg.splitExposureGain((int32_t)(totalUs + 0.5f),
-                                     &diagExp, &diagExtraQ8);
-        const int32_t diagGain = (int32_t)(((int64_t)sensorCfg.gainUnit
-                                           * diagExtraQ8 + 128) / 256);
-        const int32_t diagGainClamped =
-            diagGain > sensorCfg.gainMax ? sensorCfg.gainMax
-                                          : (diagGain < 1 ? 1 : diagGain);
+        const SensorConfig::ExposureSplit diag = sensorCfg.splitExposure(totalUs);
         const WbGains gQ8 = mAwb->currentGainsQ8();
         ALOGD("3A: frame=%u luma=%.3f iqmHi=%.3f nValid=%d awbRun=%d awbConv=%d "
               "lastWb=(%.3f,%.3f) Q8=(%u,%u) estCct=%d "
-              "totalUs=%.0f exp=%d gain=%d gainClamp=%d evComp=%d "
+              "totalUs=%.0f exp=%d gain=%d digital=%d evComp=%d "
               "lux=%.0f",
               frameCount, (double)sceneLuma, (double)aeResult.iqmHighlight,
               awbResult.validPatchCount, awbRun ? 1 : 0,
               mAwb->isConverged() ? 1 : 0,
               (double)mAwb->currentWbR(), (double)mAwb->currentWbB(),
               gQ8.r, gQ8.b,
-              mAwb->currentEstCct(), (double)totalUs, diagExp,
-              diagGain, diagGainClamped,
+              mAwb->currentEstCct(), (double)totalUs, diag.exposureUs,
+              diag.gain, diag.digitalGain,
               meta.aeExposureCompensation,
               (double)lastLuxIndex);
     }

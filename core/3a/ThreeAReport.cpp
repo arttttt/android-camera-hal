@@ -45,8 +45,9 @@ Core3AResult describe3A(const FrameSettings &settings,
     const int32_t gain       = value(DelayedControls::GAIN);
     const int32_t frameLen   = value(DelayedControls::FRAME_LENGTH);
     const int32_t lineLength = value(DelayedControls::LINE_LENGTH);
+    const int32_t digital    = value(DelayedControls::DIGITAL_GAIN);
     r.exposureTimeNs  = (int64_t)exposureUs * 1000LL;
-    r.sensitivityIso  = cfg.gainToIso(gain);
+    r.sensitivityIso  = cfg.sensitivityIso(gain, digital);
     r.frameDurationNs = cfg.frameDurationNs(frameLen, lineLength);
 
     if (settings.ae.mode == AeMode::Off)

@@ -50,6 +50,12 @@ public:
          * exposure the line counter cannot hold at the mode's line time
          * (a long manual exposure). Times the frame with FRAME_LENGTH. */
         LINE_LENGTH  = 3,
+        /* The ISP's gain past the sensor's analog gain, Q8 (256 = x1):
+         * not written to the sensor. Its delay is the analog gain's,
+         * so it is in effect on the frame the analog gain it makes up
+         * for is, and that frame's ISP applies it (libcamera's RPi IPA
+         * takes its digital gain from the same delayed context). */
+        DIGITAL_GAIN = 4,
         COUNT
     };
 

@@ -174,6 +174,51 @@ void testManualExposure() {
     check(v.frameLen == cfg.frameLenDefault);
 }
 
+/* Past the analog maximum (x16, ISO 1600) the ISP's digital gain goes
+ * on, to x4 (ISO 6400): an exposure is divided as libcamera's AGC
+ * divides it -- the exposure up to the mode's frame, then the analog
+ * gain to its maximum, then the digital -- a manual ISO above 1600
+ * is the analog maximum and the rest digital, and what the frame ran
+ * on is reported as the whole ISO, with no step at 1600. */
+void testDigitalGain() {
+    const SensorConfig cfg = imx179();
+    const int32_t unit = SensorConfig::kDigitalGainUnit;
+    const float maxUs = (float)cfg.maxExposureUsDefault();
+
+    SensorConfig::ExposureSplit x = cfg.splitExposure(maxUs / 2);
+    check(x.gain == cfg.gainUnit && x.digitalGain == unit);
+    x = cfg.splitExposure(maxUs * 8);
+    check(x.exposureUs == (int32_t)maxUs && x.gain == 8 * cfg.gainUnit && x.digitalGain == unit);
+    x = cfg.splitExposure(maxUs * 16 * 3);
+    check(x.gain == cfg.gainMax && x.digitalGain == 3 * unit);
+    x = cfg.splitExposure(maxUs * 16 * 100);
+    check(x.gain == cfg.gainMax && x.digitalGain == cfg.digitalGainMax);
+
+    FrameSettings s;
+    s.ae.mode = AeMode::Off;
+    s.sensor.exposureTimeNs = 10000000;
+    for (int32_t iso = 100; iso <= 6400; iso += 50) {
+        s.sensor.sensitivityIso = iso;
+        const ExposureWriteValues v =
+            AutoExposureController::parseManualSettings(s, cfg, kThirdStop);
+        check(v.gain <= cfg.gainMax);
+        check(iso <= 1600 ? v.digitalGain == unit : v.gain == cfg.gainMax);
+        /* The whole gain is the one asked for, across 1600. */
+        const int32_t got = cfg.sensitivityIso(v.gain, v.digitalGain);
+        check(got >= iso - iso / 100 && got <= iso + iso / 100);
+    }
+    s.sensor.sensitivityIso = 12800;
+    ExposureWriteValues v = AutoExposureController::parseManualSettings(s, cfg, kThirdStop);
+    check(v.gain == cfg.gainMax && v.digitalGain == cfg.digitalGainMax);
+
+    /* What the frame ran on is reported as the whole ISO. */
+    AutoFocusController::Report af{AfState::Inactive, AfMode::Off, 0.f};
+    DelayedControls::Batch ran = cfg.configureDefaults();
+    ran.val[DelayedControls::GAIN]         = cfg.gainMax;
+    ran.val[DelayedControls::DIGITAL_GAIN] = 2 * unit;
+    check(describe3A(FrameSettings(), af, {false, false}, ran, cfg).sensitivityIso == 3200);
+}
+
 /* The OV5693 as the driver reports it: 15-bit line counter, 1080p. */
 SensorConfig ov5693() {
     SensorConfig c = SensorConfig::ov5693();
@@ -434,6 +479,7 @@ void testAfSweep() {
 int main() {
     testDescribe3A();
     testManualExposure();
+    testDigitalGain();
     testLongExposureTiming();
     testAeLoop();
     testAwbConvergence();

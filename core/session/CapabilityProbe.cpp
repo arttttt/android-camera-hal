@@ -107,7 +107,8 @@ void probeSensor(Capability &cap, android::V4l2Device &dev,
         int32_t isoMin = cfg.gainToIso(gMin);
         if (isoMin < 1) isoMin = 1;
         cap.sensor.sensitivityMinIso = isoMin;
-        cap.sensor.sensitivityMaxIso = cfg.gainToIso(gMax);
+        cap.sensor.maxAnalogIso      = cfg.gainToIso(gMax);
+        cap.sensor.sensitivityMaxIso = cfg.sensitivityIso(gMax, cfg.digitalGainMax);
     } else {
         ALOGE("V4L2_CID_GAIN query failed: no sensitivity range");
     }

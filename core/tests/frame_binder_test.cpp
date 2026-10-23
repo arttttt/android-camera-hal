@@ -60,6 +60,7 @@ DelayedControls::Config sensorDelays() {
     c.delay[DelayedControls::GAIN]         = kExposureDelay;
     c.delay[DelayedControls::FRAME_LENGTH] = kLengthDelay;
     c.delay[DelayedControls::LINE_LENGTH]  = kLengthDelay;
+    c.delay[DelayedControls::DIGITAL_GAIN] = kExposureDelay;
     return c;
 }
 

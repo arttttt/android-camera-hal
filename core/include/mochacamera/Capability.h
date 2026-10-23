@@ -47,8 +47,11 @@ struct Capability {
         /* The longest frame the sensor runs: its frame length range's
          * top at the mode's line time. */
         int64_t maxFrameDurationNs = 0;
+        /* The whole range, the ISP's digital gain on top of the
+         * analog; and the most the analog gain alone gives. */
         int32_t sensitivityMinIso = 0;
         int32_t sensitivityMaxIso = 0;
+        int32_t maxAnalogIso      = 0;
     } sensor;
 
     struct Lens {
