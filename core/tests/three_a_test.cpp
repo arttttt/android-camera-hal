@@ -380,7 +380,11 @@ void testAeFpsRange() {
     check(wide.val[DelayedControls::FRAME_LENGTH] > cfg.frameLenDefault);
     check(wide.val[DelayedControls::EXPOSURE] > cfg.maxExposureUsDefault());
     check(fixed.val[DelayedControls::FRAME_LENGTH] == cfg.frameLenDefault);
-    check(wide.val[DelayedControls::GAIN] < fixed.val[DelayedControls::GAIN]);
+    /* The whole gain, analog and digital: the longer frame needs less. */
+    const auto wholeGain = [](const DelayedControls::Batch &b) {
+        return (int64_t)b.val[DelayedControls::GAIN] * b.val[DelayedControls::DIGITAL_GAIN];
+    };
+    check(wholeGain(wide) < wholeGain(fixed));
 }
 
 /* A request bounds its own frame whatever range AE decided for: a
