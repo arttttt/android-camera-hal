@@ -28,6 +28,10 @@ namespace android {
  * several sensors resolve each to their own lens. */
 namespace MediaGraph {
 
+/* The /dev/v4l-subdev* node of the sensor that feeds `videoNode`;
+ * empty when there is none. */
+std::string sensorSubdevFor(const char *videoNode);
+
 /* The /dev/v4l-subdev* node of the lens that feeds the sensor that
  * feeds `videoNode`; empty when there is none. */
 std::string lensSubdevFor(const char *videoNode);

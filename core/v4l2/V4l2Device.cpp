@@ -966,4 +966,12 @@ const std::string &V4l2Device::lensNode() {
     return mLensNode;
 }
 
+const std::string &V4l2Device::sensorNode() {
+    if (!mSensorWalked) {
+        mSensorNode   = MediaGraph::sensorSubdevFor(mDevNode);
+        mSensorWalked = true;
+    }
+    return mSensorNode;
+}
+
 }; /* namespace android */

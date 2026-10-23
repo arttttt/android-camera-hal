@@ -137,6 +137,11 @@ public:
     const std::string &lensNode();
     bool hasLens() { return !lensNode().empty(); }
 
+    /* The /dev/v4l-subdev* of this node's sensor, from the media graph;
+     * empty when the graph does not show one. Walked once, on first
+     * ask. */
+    const std::string &sensorNode();
+
 private:
     bool iocStreamOff();
     bool iocStreamOn();
@@ -156,6 +161,8 @@ private:
     const char *mDevNode;
     std::string mLensNode;
     bool mLensWalked = false;
+    std::string mSensorNode;
+    bool mSensorWalked = false;
     uint32_t mPixelFormat;
     uint32_t mMemoryType;                   /* V4L2_MEMORY_MMAP or _DMABUF */
     int mDmaBufFds[V4L2DEVICE_BUF_COUNT];   /* for DMABUF mode; -1 = unused */

@@ -40,8 +40,8 @@ namespace {
 /* Find the source entity of an incoming link to `sinkId`. The kernel
  * `MEDIA_IOC_ENUM_LINKS` ioctl reports outgoing links only, so we
  * walk every entity and check which one's outgoing list contains a
- * link landing on `sinkId`. Used twice in lensSubdevFor to step the
- * graph (video ← sensor ← lens). Returns 0 if no such link exists. */
+ * link landing on `sinkId`. Steps the graph upstream (video ← sensor
+ * ← lens). Returns 0 if no such link exists. */
 uint32_t mediaSinkSource(int mediaFd, uint32_t sinkId)
 {
     struct media_entity_desc ent;
@@ -74,33 +74,17 @@ uint32_t mediaSinkSource(int mediaFd, uint32_t sinkId)
     return 0;
 }
 
-} /* namespace */
-
-std::string lensSubdevFor(const char *videoNode)
+/* The entity whose device is `videoNode`'s; 0 when there is none. */
+uint32_t videoEntity(int mediaFd, const char *who, const char *videoNode)
 {
-    if (!videoNode) {
-        ALOGW("lensSubdevFor: no video device path");
-        return std::string();
-    }
-
     struct stat st;
     if (stat(videoNode, &st) < 0) {
-        ALOGW("lensSubdevFor: stat(%s): %s", videoNode, strerror(errno));
-        return std::string();
+        ALOGW("%s: stat(%s): %s", who, videoNode, strerror(errno));
+        return 0;
     }
     const unsigned videoMajor = major(st.st_rdev);
     const unsigned videoMinor = minor(st.st_rdev);
-    ALOGI("lensSubdevFor: video dev %s -> %u:%u",
-          videoNode, videoMajor, videoMinor);
 
-    int mediaFd = open("/dev/media0", O_RDWR);
-    if (mediaFd < 0) {
-        ALOGW("lensSubdevFor: open /dev/media0: %s", strerror(errno));
-        return std::string();
-    }
-
-    /* Find the entity whose dev matches our open video device. */
-    uint32_t videoId = 0;
     struct media_entity_desc ent;
     uint32_t id = 0;
     while (1) {
@@ -110,57 +94,22 @@ std::string lensSubdevFor(const char *videoNode)
             break;
         id = ent.id;
         if (ent.v4l.major == videoMajor && ent.v4l.minor == videoMinor) {
-            videoId = ent.id;
-            break;
+            ALOGI("%s: %s is entity id=%u name='%s'", who, videoNode,
+                  ent.id, ent.name);
+            return ent.id;
         }
     }
-    if (!videoId) {
-        ALOGW("lensSubdevFor: no media entity for %u:%u",
-              videoMajor, videoMinor);
-        close(mediaFd);
-        return std::string();
-    }
-    ALOGI("lensSubdevFor: video entity id=%u name='%s'", videoId, ent.name);
+    ALOGW("%s: no media entity for %s (%u:%u)", who, videoNode,
+          videoMajor, videoMinor);
+    return 0;
+}
 
-    /* Walk video <- sensor <- lens. */
-    const uint32_t sensorId = mediaSinkSource(mediaFd, videoId);
-    const uint32_t lensId   = sensorId ? mediaSinkSource(mediaFd, sensorId) : 0;
-    ALOGI("lensSubdevFor: sensor entity id=%u, lens entity id=%u",
-          sensorId, lensId);
-    if (!lensId) {
-        /* A fixed-focus module: the kernel links a lens into its sensor
-         * only where the DT pairs one (associated-sensor). */
-        ALOGI("lensSubdevFor: no lens in front of sensor %u (fixed focus)",
-              sensorId);
-        close(mediaFd);
-        return std::string();
-    }
-
-    /* Read the lens entity to get its dev(major:minor). */
-    memset(&ent, 0, sizeof(ent));
-    ent.id = lensId;
-    if (ioctl(mediaFd, MEDIA_IOC_ENUM_ENTITIES, &ent) < 0) {
-        ALOGW("lensSubdevFor: ENUM_ENTITIES(lens=%u): %s",
-              lensId, strerror(errno));
-        close(mediaFd);
-        return std::string();
-    }
-    close(mediaFd);
-    if (ent.type != MEDIA_ENT_T_V4L2_SUBDEV_LENS) {
-        ALOGW("lensSubdevFor: entity '%s' linked into the sensor is not a lens (type 0x%x)",
-              ent.name, ent.type);
-        return std::string();
-    }
-
-    const unsigned lensMajor = ent.v4l.major;
-    const unsigned lensMinor = ent.v4l.minor;
-    ALOGI("lensSubdevFor: lens entity '%s' dev=%u:%u",
-          ent.name, lensMajor, lensMinor);
-
-    /* Find /dev/v4l-subdev* with the lens's dev. */
+/* The /dev/v4l-subdev* node of device major:minor; empty when none. */
+std::string subdevNode(const char *who, unsigned devMajor, unsigned devMinor)
+{
     DIR *dir = opendir("/dev");
     if (!dir) {
-        ALOGE("lensSubdevFor: opendir /dev: %s", strerror(errno));
+        ALOGE("%s: opendir /dev: %s", who, strerror(errno));
         return std::string();
     }
     struct dirent *de;
@@ -169,17 +118,77 @@ std::string lensSubdevFor(const char *videoNode)
             continue;
         char path[64];
         snprintf(path, sizeof(path), "/dev/%s", de->d_name);
+        struct stat st;
         if (stat(path, &st) < 0)
             continue;
-        if (major(st.st_rdev) != lensMajor || minor(st.st_rdev) != lensMinor)
+        if (major(st.st_rdev) != devMajor || minor(st.st_rdev) != devMinor)
             continue;
         closedir(dir);
         return std::string(path);
     }
     closedir(dir);
-    ALOGW("lensSubdevFor: no /dev/v4l-subdev* with dev %u:%u",
-          lensMajor, lensMinor);
+    ALOGW("%s: no /dev/v4l-subdev* with dev %u:%u", who, devMajor, devMinor);
     return std::string();
+}
+
+/* The subdev node of the entity `steps` links upstream of `videoNode`
+ * (1 the sensor, 2 the lens in front of it), when it is of `type`;
+ * empty otherwise. */
+std::string upstreamSubdev(const char *who, const char *videoNode,
+                           int steps, uint32_t type)
+{
+    if (!videoNode) {
+        ALOGW("%s: no video device path", who);
+        return std::string();
+    }
+    int mediaFd = open("/dev/media0", O_RDWR);
+    if (mediaFd < 0) {
+        ALOGW("%s: open /dev/media0: %s", who, strerror(errno));
+        return std::string();
+    }
+
+    uint32_t entityId = videoEntity(mediaFd, who, videoNode);
+    for (int i = 0; i < steps && entityId; i++)
+        entityId = mediaSinkSource(mediaFd, entityId);
+    if (!entityId) {
+        /* A fixed-focus module: the kernel links a lens into its sensor
+         * only where the DT pairs one (associated-sensor). */
+        ALOGI("%s: nothing %d link(s) upstream of %s", who, steps, videoNode);
+        close(mediaFd);
+        return std::string();
+    }
+
+    struct media_entity_desc ent;
+    memset(&ent, 0, sizeof(ent));
+    ent.id = entityId;
+    if (ioctl(mediaFd, MEDIA_IOC_ENUM_ENTITIES, &ent) < 0) {
+        ALOGW("%s: ENUM_ENTITIES(%u): %s", who, entityId, strerror(errno));
+        close(mediaFd);
+        return std::string();
+    }
+    close(mediaFd);
+    if (ent.type != type) {
+        ALOGW("%s: entity '%s' is of type 0x%x, not 0x%x",
+              who, ent.name, ent.type, type);
+        return std::string();
+    }
+    ALOGI("%s: entity '%s' dev=%u:%u", who, ent.name,
+          ent.v4l.major, ent.v4l.minor);
+    return subdevNode(who, ent.v4l.major, ent.v4l.minor);
+}
+
+} /* namespace */
+
+std::string sensorSubdevFor(const char *videoNode)
+{
+    return upstreamSubdev("sensorSubdevFor", videoNode, 1,
+                          MEDIA_ENT_T_V4L2_SUBDEV_SENSOR);
+}
+
+std::string lensSubdevFor(const char *videoNode)
+{
+    return upstreamSubdev("lensSubdevFor", videoNode, 2,
+                          MEDIA_ENT_T_V4L2_SUBDEV_LENS);
 }
 
 } /* namespace MediaGraph */
