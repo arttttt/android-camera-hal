@@ -1,7 +1,9 @@
 #define LOG_TAG "Cam-VulkanISP"
 #include <utils/Log.h>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
+#include <functional>
 #include <errno.h>
 #include <unistd.h>
 #include <linux/videodev2.h>
@@ -711,25 +713,38 @@ void VulkanIspPipeline::releaseJpegSnapshot(const JpegSnapshot &snap) {
 bool VulkanIspPipeline::init() {
     if (mReady) return true;
 
-    if (!mDeviceState.init()) {
-        destroy();
-        return false;
-    }
-    if (!createShaders() ||
-        !createDescriptorLayouts() ||
-        !createComputePipeline() ||
-        !createGraphicsPipeline() ||
-        !allocateDescriptorSet() ||
-        !createCommandObjects() ||
-        !mYuvEncoder.init()) {
-        destroy();
-        return false;
+    /* Each step timed: the first open of a camera waits on all of it. */
+    struct Step { const char *name; std::function<bool()> run; };
+    const Step steps[] = {
+        {"device",      [this] { return mDeviceState.init(); }},
+        {"shaders",     [this] { return createShaders(); }},
+        {"layouts",     [this] { return createDescriptorLayouts(); }},
+        {"compute",     [this] { return createComputePipeline(); }},
+        {"graphics",    [this] { return createGraphicsPipeline(); }},
+        {"descriptors", [this] { return allocateDescriptorSet(); }},
+        {"commands",    [this] { return createCommandObjects(); }},
+        {"yuv",         [this] { return mYuvEncoder.init(); }},
+    };
+    char timings[192] = "";
+    size_t used = 0;
+    for (const Step &step : steps) {
+        const auto start = std::chrono::steady_clock::now();
+        if (!step.run()) {
+            ALOGE("Vulkan ISP init failed at %s", step.name);
+            destroy();
+            return false;
+        }
+        const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start).count();
+        if (used < sizeof(timings))
+            used += snprintf(timings + used, sizeof(timings) - used,
+                             " %s=%lldms", step.name, ms);
     }
 
     buildGammaLut();
 
     mReady = true;
-    ALOGD("Vulkan ISP initialized");
+    ALOGD("Vulkan ISP initialized:%s", timings);
     return true;
 }
 
