@@ -179,12 +179,30 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    v4l2_format fmt = {};
-    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (xioctl(fd, VIDIOC_G_FMT, &fmt) < 0) {
-        fprintf(stderr, "G_FMT: %s\n", strerror(errno));
+    /* The node's first 10-bit Bayer format, as the HAL negotiates it
+     * (G_FMT before any S_FMT is EINVAL on the Tegra VI). */
+    uint32_t bayer10 = 0;
+    for (uint32_t i = 0; !bayer10; ++i) {
+        v4l2_fmtdesc d = {};
+        d.index = i;
+        d.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        if (xioctl(fd, VIDIOC_ENUM_FMT, &d) < 0) break;
+        switch (d.pixelformat) {
+        case V4L2_PIX_FMT_SRGGB10: case V4L2_PIX_FMT_SGRBG10:
+        case V4L2_PIX_FMT_SGBRG10: case V4L2_PIX_FMT_SBGGR10:
+            bayer10 = d.pixelformat;
+            break;
+        default:
+            break;
+        }
+    }
+    if (!bayer10) {
+        fprintf(stderr, "%s offers no 10-bit Bayer format\n", o.dev.c_str());
         return 1;
     }
+    v4l2_format fmt = {};
+    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    fmt.fmt.pix.pixelformat = bayer10;
     fmt.fmt.pix.width = o.width;
     fmt.fmt.pix.height = o.height;
     if (xioctl(fd, VIDIOC_S_FMT, &fmt) < 0) {
