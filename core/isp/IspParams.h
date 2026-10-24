@@ -41,6 +41,11 @@ struct IspParams {
      * once by the host in fillParams from a cached table. */
     uint32_t gammaLut[256];
 
+    /* The WB gains and the CCM again, as floats (1.0 = unity), so the
+     * shader's float middle converts nothing per pixel. */
+    float wbF[3];
+    float ccmF[9];
+
     void reset();
 
     /* V4L2 Bayer fourcc → 0..3 matching SRGGB / SGRBG / SGBRG / SBGGR. */
@@ -53,7 +58,8 @@ static_assert(offsetof(IspParams, ccm)           == 32,   "IspParams.ccm");
 static_assert(offsetof(IspParams, blackLevel)    == 68,   "IspParams.blackLevel");
 static_assert(offsetof(IspParams, denomRecip255) == 72,   "IspParams.denomRecip255");
 static_assert(offsetof(IspParams, gammaLut)      == 76,   "IspParams.gammaLut");
-static_assert(sizeof(IspParams)                  == 1100, "IspParams size");
+static_assert(offsetof(IspParams, wbF)           == 1100, "IspParams.wbF");
+static_assert(sizeof(IspParams)                  == 1148, "IspParams size");
 
 }; /* namespace android */
 

@@ -95,6 +95,11 @@ void VulkanIspPipeline::fillParams(IspParams *p, unsigned w, unsigned h,
             p->ccm[i] = ccm[i];
     }
     memcpy(p->gammaLut, mGammaLut, sizeof(mGammaLut));
+    p->wbF[0] = (float)p->wbR / 256.0f;
+    p->wbF[1] = (float)p->wbG / 256.0f;
+    p->wbF[2] = (float)p->wbB / 256.0f;
+    for (int i = 0; i < 9; i++)
+        p->ccmF[i] = (float)p->ccm[i] / 1024.0f;
 }
 
 /* --- frame helpers shared between the process* paths --- */
