@@ -143,6 +143,14 @@ prebuilt_etc {
     proprietary: true,
 }
 
+// Diagnostic standalone: the sensor's black level per Bayer phase and
+// analog gain, from raw frames of a capture node (camera closed).
+cc_binary {
+    name: "rawcap",
+    srcs: ["tools/rawcap/rawcap.cpp"],
+    vendor: true,
+}
+
 // Diagnostic standalone: libnvblit smoke test.
 cc_binary {
     name: "nvblit_probe",
