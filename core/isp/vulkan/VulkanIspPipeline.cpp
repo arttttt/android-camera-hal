@@ -23,6 +23,8 @@ static inline int64_t nowMs() {
 #include "runtime/loader/VulkanPfn.h"
 #include "shaders/DemosaicCompute.h"
 #include "shaders/Blit.h"
+#include "shaders/RgbaToNv12.h"
+#include "runtime/PipelineCacheFile.h"
 
 namespace android {
 
@@ -710,13 +712,27 @@ void VulkanIspPipeline::releaseJpegSnapshot(const JpegSnapshot &snap) {
 
 /* --- init / destroy --- */
 
+namespace {
+
+/* What this ISP's pipelines compile to, kept between the HAL's runs.
+ * The directory is the device's (its init makes it); the file is ours. */
+constexpr const char *kPipelineCachePath = "/data/vendor/camera/vulkan_isp_pipelines.bin";
+
+} /* namespace */
+
 bool VulkanIspPipeline::init() {
     if (mReady) return true;
+
+    const PipelineCacheSource cache = {
+        kPipelineCachePath,
+        pipelineSourcesKey({kDemosaicComputeGlsl, kBlitVertexGlsl, kBlitFragmentGlsl,
+                            kRgbaToNv12ComputeGlsl}),
+    };
 
     /* Each step timed: the first open of a camera waits on all of it. */
     struct Step { const char *name; std::function<bool()> run; };
     const Step steps[] = {
-        {"device",      [this] { return mDeviceState.init(); }},
+        {"device",      [this, &cache] { return mDeviceState.init(cache); }},
         {"shaders",     [this] { return createShaders(); }},
         {"layouts",     [this] { return createDescriptorLayouts(); }},
         {"compute",     [this] { return createComputePipeline(); }},

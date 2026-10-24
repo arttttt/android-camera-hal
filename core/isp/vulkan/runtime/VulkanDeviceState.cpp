@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "VulkanDeviceState.h"
+#include "PipelineCacheFile.h"
 #include "loader/VulkanLoader.h"
 #include "loader/VulkanPfn.h"
 
@@ -19,9 +20,10 @@ namespace android {
 namespace {
 
 /* The pipeline cache's contents, kept across the devices this process
- * creates: one per camera. */
+ * creates (one per camera); read from the file by the first. */
 struct KeptPipelineCache {
     std::mutex           lock;
+    bool                 read = false;
     std::vector<uint8_t> data;
 };
 
@@ -42,11 +44,12 @@ VulkanDeviceState::VulkanDeviceState()
     , mQueueFamily(0)
     , mNativeBufferAvail(false)
     , mPipelineCache(VK_NULL_HANDLE)
+    , mPipelineCacheSource{NULL, 0}
 {}
 
 VulkanDeviceState::~VulkanDeviceState() { destroy(); }
 
-bool VulkanDeviceState::init() {
+bool VulkanDeviceState::init(const PipelineCacheSource &cache) {
     if (mDevice != VK_NULL_HANDLE) return true;
 
     mLoader = createVulkanLoader();
@@ -242,9 +245,22 @@ bool VulkanDeviceState::init() {
 
     /* A device without a cache still works, compiling every pipeline. */
     if (mPfn->CreatePipelineCache && mPfn->DestroyPipelineCache &&
-        mPfn->GetPipelineCacheData) {
+        mPfn->GetPipelineCacheData && mPfn->GetPhysicalDeviceProperties) {
+        mPipelineCacheSource = cache;
         KeptPipelineCache &kept = keptPipelineCache();
         std::lock_guard<std::mutex> hold(kept.lock);
+        if (!kept.read) {
+            kept.read = true;
+            VkPhysicalDeviceProperties props;
+            mPfn->GetPhysicalDeviceProperties(mPhysDev, &props);
+            PipelineCacheDevice device;
+            device.vendorId = props.vendorID;
+            device.deviceId = props.deviceID;
+            memcpy(device.uuid, props.pipelineCacheUUID, sizeof(device.uuid));
+            kept.data = decodePipelineCache(readPipelineCacheFile(cache.path),
+                                            cache.key, device);
+            ALOGD("pipeline cache: %zu bytes from %s", kept.data.size(), cache.path);
+        }
         VkPipelineCacheCreateInfo pcci = {};
         pcci.sType           = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
         pcci.initialDataSize = kept.data.size();
@@ -268,10 +284,15 @@ void VulkanDeviceState::storePipelineCache() const {
     if (mPfn->GetPipelineCacheData(mDevice, mPipelineCache, &size, data.data()) != VK_SUCCESS)
         return;
     data.resize(size);
-    ALOGD("pipeline cache: keeps %zu bytes", data.size());
     KeptPipelineCache &kept = keptPipelineCache();
     std::lock_guard<std::mutex> hold(kept.lock);
+    if (data == kept.data) return;
     kept.data = std::move(data);
+    const bool written = writePipelineCacheFile(
+        mPipelineCacheSource.path,
+        encodePipelineCache(mPipelineCacheSource.key, kept.data));
+    ALOGD("pipeline cache: keeps %zu bytes%s", kept.data.size(),
+          written ? "" : " (the file was not written)");
 }
 
 void VulkanDeviceState::destroy() {

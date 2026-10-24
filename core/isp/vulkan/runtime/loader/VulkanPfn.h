@@ -163,6 +163,7 @@ struct VulkanPfn {
     PFN_vkDestroyInstance                           DestroyInstance;
     PFN_vkEnumeratePhysicalDevices                  EnumeratePhysicalDevices;
     PFN_vkGetPhysicalDeviceMemoryProperties         GetPhysicalDeviceMemoryProperties;
+    PFN_vkGetPhysicalDeviceProperties               GetPhysicalDeviceProperties;
     PFN_vkGetPhysicalDeviceQueueFamilyProperties    GetPhysicalDeviceQueueFamilyProperties;
     PFN_vkEnumerateDeviceExtensionProperties        EnumerateDeviceExtensionProperties;
     PFN_vkCreateDevice                              CreateDevice;

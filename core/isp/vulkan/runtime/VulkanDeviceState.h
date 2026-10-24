@@ -11,6 +11,13 @@ namespace android {
 class VulkanLoader;
 struct VulkanPfn;
 
+/* Where a device's pipeline cache is kept between runs, and the key of
+ * the pipelines it holds (pipelineSourcesKey): its owner's to say. */
+struct PipelineCacheSource {
+    const char *path;
+    uint64_t    key;
+};
+
 /* Owns the Vulkan runtime — loader, instance, physical/logical device,
  * compute queue, and the function-pointer dispatch table. One consumer
  * (VulkanIspPipeline) composes this and creates its own command pool,
@@ -20,7 +27,7 @@ public:
     VulkanDeviceState();
     ~VulkanDeviceState();
 
-    bool init();
+    bool init(const PipelineCacheSource &cache);
     void destroy();
 
     bool isReady() const { return mDevice != VK_NULL_HANDLE; }
@@ -34,12 +41,13 @@ public:
 
     /* The pipeline cache every pipeline on this device is created
      * through; VK_NULL_HANDLE when the driver gave none. It starts from
-     * what the process kept of the last device's: on this driver the
-     * GLSL is compiled when the pipeline is created, the bulk of a
-     * camera's first open. */
+     * what was kept of the last device's, in this process or in the
+     * file: on this driver the GLSL is compiled when the pipeline is
+     * created, the bulk of a camera's first open. */
     VkPipelineCache  pipelineCache() const { return mPipelineCache; }
 
-    /* Keeps the cache's contents for the next device in this process. */
+    /* Keeps the cache's contents for the next device, in this process
+     * and in the file when they changed. */
     void storePipelineCache() const;
 
     /* VK_ANDROID_native_buffer is filtered out of the app-side libvulkan
@@ -71,6 +79,7 @@ private:
     uint32_t         mQueueFamily;
     bool             mNativeBufferAvail;
     VkPipelineCache  mPipelineCache;
+    PipelineCacheSource mPipelineCacheSource;
 };
 
 }; /* namespace android */

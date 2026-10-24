@@ -51,6 +51,7 @@ void VulkanLoader::loadInstancePfns(VkInstance instance, VulkanPfn *pfn) const {
     INST(DestroyInstance);
     INST(EnumeratePhysicalDevices);
     INST(GetPhysicalDeviceMemoryProperties);
+    INST(GetPhysicalDeviceProperties);
     INST(GetPhysicalDeviceQueueFamilyProperties);
     INST(EnumerateDeviceExtensionProperties);
     INST(CreateDevice);
