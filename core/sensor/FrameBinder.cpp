@@ -46,6 +46,8 @@ void FrameBinder::reset(uint32_t l) {
     hiddenPassed = 0;
     lineLength.reset();
     unserved.clear();
+    catchingUp = false;
+    filedBy.clear();
 }
 
 uint32_t FrameBinder::frameOf(uint32_t sequence) const {
@@ -76,6 +78,20 @@ std::shared_ptr<FrameBinder::Ticket> FrameBinder::request(
     if (anyRequest && frame <= lastAsked)
         frame = lastAsked + 1;
     frame = free(frame);
+
+    /* A stream run dry, or a request sent right behind one given its
+     * frame early, before a frame came: the next frame nobody asked
+     * for, if it comes before the one the settings can be on. */
+    const bool dry = !anyRequest || (anyFrame && lastFrame > lastAsked);
+    uint32_t early = frame;
+    if (!stillCapture && (dry || catchingUp)) {
+        early = anyFrame ? lastFrame + 1 : 0;
+        if (anyRequest && early <= lastAsked)
+            early = lastAsked + 1;
+        while (hidden(early) || unserved.count(early)) ++early;
+    }
+    catchingUp = early < frame;
+
     if (stillCapture) {
         DelayedControls::Batch after =
             streamSettings ? *streamSettings : controls->planned(frame + 1);
@@ -101,11 +117,14 @@ std::shared_ptr<FrameBinder::Ticket> FrameBinder::request(
         streamSettings = settings;
     }
     anyRequest = true;
-    lastAsked  = frame;
+    lastAsked  = catchingUp ? early : frame;
 
     auto ticket = std::make_shared<Ticket>();
-    ticket->frame    = frame;
+    ticket->frame    = lastAsked;
     ticket->settings = settings;
+    ticket->early    = catchingUp;
+    ticket->filedFor = frame;
+    filedBy[frame]   = ticket;
     wanted.push_back(ticket);
     return ticket;
 }
@@ -113,7 +132,11 @@ std::shared_ptr<FrameBinder::Ticket> FrameBinder::request(
 void FrameBinder::cancel(const Ticket &t) {
     if (t.bayer || t.lost)
         return;
-    controls->unfile(t.frame);
+    const auto it = filedBy.find(t.filedFor);
+    if (it == filedBy.end() || it->second.lock().get() != &t)
+        return;
+    controls->unfile(t.filedFor);
+    filedBy.erase(it);
 }
 
 std::shared_ptr<FrameBinder::Ticket> FrameBinder::front() {
@@ -226,6 +249,8 @@ FrameBinder::Arrival FrameBinder::arrive(mocha::camera::BayerLease lease) {
     }
     anyFrame  = true;
     lastFrame = seq;
+    /* The requests sent from here on are not the restart's burst. */
+    catchingUp = false;
     /* Hidden frames both the starts and the frames are past. */
     while (!hiddenAhead.empty() && hiddenAhead.front().frame < lastFrame &&
            hiddenAhead.front().frame < lastStart) {
@@ -242,8 +267,9 @@ FrameBinder::Arrival FrameBinder::arrive(mocha::camera::BayerLease lease) {
     const DelayedControls::Batch ran = controls->inEffectFor(seq);
     for (std::shared_ptr<Ticket> t = front(); t && t->frame <= seq; t = front()) {
         wanted.pop_front();
+        /* One given its frame early takes it as it ran. */
         bool own = true;
-        for (int id = 0; id < DelayedControls::COUNT; ++id)
+        for (int id = 0; id < DelayedControls::COUNT && !t->early; ++id)
             if (t->settings.has[id] && t->settings.val[id] != ran.val[id])
                 own = false;
         if (own) {
@@ -258,6 +284,7 @@ FrameBinder::Arrival FrameBinder::arrive(mocha::camera::BayerLease lease) {
 
     /* No request on an earlier frame is asked about any more. */
     controls->forgetBefore(seq);
+    filedBy.erase(filedBy.begin(), filedBy.lower_bound(seq));
     return a;
 }
 

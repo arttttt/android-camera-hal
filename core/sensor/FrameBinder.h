@@ -20,6 +20,7 @@
 #include <stdint.h>
 
 #include <deque>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -53,6 +54,21 @@ struct SensorConfig;
  * are in effect on; with fewer in flight than the control delay, the
  * frames between them simply go back unused.
  *
+ * Except where the stream starts again. A stream request that comes to
+ * a stream run dry -- no request yet, or a frame has come since the
+ * last one asked for that nobody asked for (the framework drains its
+ * requests to reconfigure, and comes back) -- is given the next frame,
+ * as it runs: waiting the control delay for its own would hold the
+ * preview that long, frames running past unused. Its settings are
+ * filed as any request's, the frame they can first be in effect on,
+ * and the requests sent right behind it, before a frame comes, take the
+ * frames up to that one the same way; from there on, each request has
+ * its own frame again -- a stream with few requests in flight stays on
+ * its own frames, as above. Such a request's result says what its frame ran on (the
+ * static metadata promise no per-frame latency:
+ * android.sync.maxLatency is UNKNOWN). A still capture always waits
+ * for its own frame.
+ *
  * A request is given a frame only if the frame ran on its settings, by
  * the record of what was written (each control on the frame its delay
  * put it on, DelayedControls::inEffectFor). A frame the capture missed
@@ -85,6 +101,12 @@ public:
         /* No frame ran on its settings: its frame, or its write, was
          * missed. */
         bool lost = false;
+        /* Given a frame before its settings could be in effect on it
+         * (the stream had run dry): it takes the frame as the frame
+         * ran, and inEffect says what that was. Its settings are filed
+         * for `filedFor`. */
+        bool early = false;
+        uint32_t filedFor = 0;
         /* Set when a frame comes for it: the frame, its number, what
          * was in effect on it, when its first line began its exposure
          * (CLOCK_MONOTONIC). */
@@ -141,8 +163,8 @@ public:
     /* A request given up before its frame (flush, the AE mode switch):
      * its settings come off the frame if they are not written yet, and
      * the frame runs on what was filed before -- a long exposure nobody
-     * waits for any more is not taken. The caller then drops the
-     * ticket. */
+     * waits for any more is not taken. Settings a later request filed
+     * over its own stay. The caller then drops the ticket. */
     void cancel(const Ticket &ticket);
 
     /* The driver's frame `sequence` has started. The stream's first
@@ -202,6 +224,12 @@ private:
     /* The last stream request's settings: what the frames after a still
      * capture go back to. */
     std::optional<DelayedControls::Batch> streamSettings;
+    /* The last request was given its frame early, and no frame has
+     * come since: the request after it may be given one early too. */
+    bool catchingUp = false;
+    /* Whose settings are filed for each frame: the last request to file
+     * them. */
+    std::map<uint32_t, std::weak_ptr<Ticket>> filedBy;
 };
 
 } /* namespace android */
