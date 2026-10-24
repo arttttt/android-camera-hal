@@ -96,11 +96,17 @@ using android::readSensorGeometry;
 namespace {
 
 /* Frames the HAL holds at once before a new request is failed on
- * arrival. The framework keeps at most max_buffers (StreamConfig: 4)
- * of each stream outstanding, and StreamConfig takes three streams at
- * most, so 12 is what a framework keeping its contract can reach; the
- * rest is headroom. */
-constexpr size_t kFrameCeiling = 16;
+ * arrival: what a framework keeping its contract can reach -- each
+ * stream it may configure (Capability: the processed and the stalling
+ * outputs) with max_buffers (Capability::maxBuffersPerStream) of its
+ * buffers outstanding -- and some headroom. A fixed ceiling went stale
+ * when the requests in flight went from 4 to 6. */
+constexpr size_t kFrameHeadroom = 4;
+
+size_t frameCeiling(const Capability &cap) {
+    const size_t streams = (size_t)std::max(cap.maxProcessedOutputs + cap.maxStallingOutputs, 1);
+    return streams * (size_t)std::max(cap.maxBuffersPerStream, 1) + kFrameHeadroom;
+}
 
 /* How long stopping waits for the frames past the GPU (JPEG encodes,
  * results) to go out normally before the rest go out in error. */
@@ -373,7 +379,7 @@ bool Session::Impl::buildInfrastructure() {
     }
 
     frameSource.reset(new V4l2Source(dev.get()));
-    registry.reset(new FrameRegistry(kFrameCeiling));
+    registry.reset(new FrameRegistry(frameCeiling(probe())));
     deviceError.reset(new DeviceErrorReporter(sink));
     statsEngine.reset(new StatsEngine());
     if (tuning.isLoaded())
