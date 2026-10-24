@@ -58,7 +58,19 @@ without addressing cause.
 - Disable AWB (force priors) on rear cam, re-test boost — isolates
   AWB cascade as a candidate.
 
-## HW JPEG encoder on Tegra K1 / Android 7
+## HW JPEG encoder on Tegra K1 / Android 7 — closed
+
+**Closed (24.10.2026): the T124 has no JPEG encoder block.** The
+TRM's block list (`DP-06905-001` v03p) has VI, ISP3, VIC, VDE and
+MSENC 2.0: VDE is a decoder, MSENC encodes H.264, and the only
+"JPEG" mentions in the TRM are CSI embedded-data notes. `libjpeg` on
+the CPU is therefore the final answer, not a fallback against a
+missing hardware path. The cost is the ~100-150 ms per 1080p shot
+(the BLOB output is capped at 1080p, `OutputResolutionCap`); it does
+not hold up the next frames' capture (their results wait for the
+encode, as results go out in order).
+
+The text below is the record of the question as it stood.
 
 **Question:** is any Tegra K1 hardware JPEG encoder block reachable
 from our Android 7 HAL?

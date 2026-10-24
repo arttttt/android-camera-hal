@@ -122,9 +122,10 @@ ISP engine waits on nothing but fences.
   dropped or let go by a stopping engine destroys its token, and the
   frame goes on to its result either way.
 - **`FrameRegistry`** -- every frame held, by number; `cancelIf`,
-  `waitEmpty`, `takeAll`. A ceiling of 16 frames: more than a framework
-  keeping its stream contract (`max_buffers` 4) can send; a request
-  over it goes out at once as a failed one, in order.
+  `waitEmpty`, `takeAll`. Its ceiling is what a framework keeping its
+  stream contract can send -- every configurable stream (processed and
+  stalling outputs) with `max_buffers` (6) outstanding -- plus 4; a
+  request over it goes out at once as a failed one, in order.
 - **`FrameStatus`** -- Ok, cancelled or failed; set once. Every engine
   looks at it before its work and skips a frame that is not Ok. The
   finish engine *commits* a frame: from then on it completes normally,

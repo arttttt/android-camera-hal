@@ -109,7 +109,10 @@ complete normally.
 `StreamConfig::normalize` validates the stream list (no rotation, no
 depth, no ZSL usage, one input at most), maps
 `IMPLEMENTATION_DEFINED` to RGBA (or YCbCr for a video encoder
-consumer), and sets usage bits and `max_buffers` (4).
+consumer), and sets usage bits and `max_buffers` (6:
+`Session::Config::requestsInFlight`, as far as the capture slots
+hold -- 8 V4L2 buffers less the 2 the capture engine keeps beside
+the requests).
 
 `Camera3Device::configureStreams` then builds the stream table
 (`StreamId` = index in this configuration) and hands the outputs to

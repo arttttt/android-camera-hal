@@ -8,10 +8,10 @@ HW-ISP backends, no packed-YUV path.
 ## Interface
 
 The interface is shaped around a **produce-once / sample-many**
-multi-stream submit. One Bayer slot demosaics into a per-slot RGBA
-scratch image; every output buffer in that frame
-(`blitToGralloc` / `blitToYuv` / `blitToJpegCpu`) reads from the
-same scratch in a single Vulkan submit.
+multi-stream submit. One Bayer slot demosaics into the RGBA scratch
+image (one for all slots); every output buffer in that frame
+(`blitToGralloc` / `blitToYuv` / `blitToJpegCpu`) reads from it in
+a single Vulkan submit.
 
 ```cpp
 class IspPipeline {
@@ -22,7 +22,7 @@ public:
 
     // === Produce-once frame recording ===
     //
-    // beginFrame acquires a free CB / scratch / fence slot, waits
+    // beginFrame acquires a free CB / fence slot, waits
     // (poll-fenced) on the slot's previous submit, and starts
     // recording. The compute demosaic of the Bayer slot is the
     // first thing recorded. After this returns, blitTo* may be
@@ -84,26 +84,27 @@ buffer the demosaic shader reads.
 
 ## Slot ring
 
-Vulkan resources live in a depth-2 round-robin ring
-(`SLOT_COUNT = 2` in `VulkanIspPipeline.h`):
+Vulkan resources live in a depth-4 round-robin ring
+(`SLOT_COUNT = 4` in `VulkanIspPipeline.h`):
 
-- `mScratchImg[k]` — per-slot RGBA scratch, `STORAGE | SAMPLED |
-  TRANSFER_SRC`. Pitchlinear, device-local.
 - `mDescSet[k]` — descriptor set. Binding 0 = input ring slot
-  (rebound per-frame), 1 = `mScratchImg[k]` (storage), 2 =
-  `mParamBuf[k]`, 3 = `mScratchView[k]` + sampler.
+  (rebound per-frame), 1 = the scratch image (storage), 2 =
+  `mParamBuf[k]`, 3 = the scratch view + sampler for the blit.
 - `mCmdBuf[k]`, `mFence[k]`, `mSlotSyncFd[k]`, `mParamBuf[k]`,
   `mJpegRing[k]` (host-mapped staging for libjpeg).
 
-Why depth 2 specifically: depth 4 was the original choice and
-covered comfortable CPU↔GPU overlap, but the four 1920×1080 RGBA
-scratch images plus four 1080p JPEG-ring buffers blew the shared
-nvmap pool — `cameraserver` ate ~85 MB and the framework's gralloc
-allocator couldn't get a 1920×1080 video buffer when MediaRecorder
-asked for one. Tegra K1 serialises submits on its single graphics
-queue anyway, so depth 2 carries enough CPU↔GPU overlap on the
-hot path while keeping the nvmap budget tight enough that gralloc
-keeps allocating.
+The scratch image is ONE for all slots — a gralloc RGBA8 buffer
+imported into Vulkan through `VK_ANDROID_native_buffer`
+(`createScratchImage`; its `HW_2D` usage flag is a remnant of the
+removed VIC path, as the code comment there says), `STORAGE |
+SAMPLED | TRANSFER_SRC`, optimal tiling (the memory layout is the
+gralloc allocator's). The single-queue Tegra K1
+serialises execution between submits anyway, so one scratch shared
+across slots is safe — the ring buys CPU↔GPU overlap (the CPU side
+of frame N+1, cmd-buffer record + submit, overlaps the GPU side of
+frame N), not parallel GPU execution. Depth 4 is a deliberate
+margin on that overlap; the slots hold command buffers, fences and
+params, not per-slot scratch images.
 
 `acquireSlot()` round-robins through `mNextSlot`. If the chosen
 slot's previous submit hasn't signalled, `poll(2)` on the slot's
@@ -119,12 +120,14 @@ one frame_period) the wait is a no-op.
 
 2. **Compute demosaic** — bind `mDescSet[k]` (binding 0 = input
    ring slot N as a storage buffer), record `vkCmdDispatch` of the
-   Malvar-He-Cutler demosaic shader. Output: `mScratchImg[k]` in
+   Malvar-He-Cutler demosaic shader. Output: the scratch image in
    `VK_IMAGE_LAYOUT_GENERAL`, packed RGBA8 with WB + CCM + sRGB
-   gamma applied.
+   gamma applied — the demosaic's floats stay float through the WB
+   and the CCM (`IspParams.wbF` / `ccmF`) and are quantised once,
+   as the gamma LUT's index.
 
 3. **Pipeline barrier** — `SHADER_WRITE → SHADER_READ |
-   TRANSFER_READ` on `mScratchImg[k]` so the per-output blits /
+   TRANSFER_READ` on the scratch image so the per-output blits /
    encodes / copies see the scratch image stable.
 
 `blitToGralloc(nativeBuffer, …)`:
@@ -137,7 +140,7 @@ one frame_period) the wait is a no-op.
    `poll(acquireFence)`.
 
 5. **Render pass** — full-screen triangle, fragment shader samples
-   `mScratchImg[k]` via `sampler2D` and writes to a colour
+   the scratch image via `sampler2D` and writes to a colour
    attachment bound to a gralloc-backed `VkImage`. Push-constants
    carry the crop rect (in source coords) and source / destination
    extents, so the same shader handles identity preview, zoom,
@@ -148,26 +151,31 @@ one frame_period) the wait is a no-op.
    targeting `VK_ANDROID_native_buffer` both produce swizzled
    garbage on this driver.
 
-6. **Per-output release** — `vkQueueSignalReleaseImageANDROID`
-   emits a sync_fence fd; the caller plugs it into
+6. **Per-output release** — the submit signals one binary semaphore
+   per gralloc output, and that output's
+   `vkQueueSignalReleaseImageANDROID` waits on its own — a queue
+   operation is not ordered after earlier submits without a
+   semaphore, so the release fence it emits cannot signal before
+   the blit into that buffer has run. The caller plugs the fd into
    `camera3_stream_buffer.release_fence` and returns without any
-   SW lock on the gralloc buffer.
+   SW lock on the gralloc buffer. An output whose semaphore could
+   not be made is released unordered, and the failure is logged.
 
 `blitToYuv(nativeBuffer, …)`:
 
 Same shape but the inner work is a `VulkanYuvEncoder::recordDispatch`
 — a compute shader (`RgbaToNv12.h`) that samples the scratch and
-writes NV12 into a host-mapped output buffer. Per-slot descriptor
-sets in `VulkanYuvEncoder` so the dispatch sees the right scratch
-view per slot. After fence signal, `BufferProcessor::processYuvOutput`
+writes NV12 into a host-mapped output buffer. One descriptor set in
+`VulkanYuvEncoder` — the single scratch image needs no per-slot
+view. After fence signal, `BufferProcessor::finalizeYuvOutput`
 locks the gralloc YCbCr buffer with `lockYCbCr`, copies / repacks
-NV12 → NV12 / I420 / YV12 via libyuv (NV21 returns `NO_INIT`).
-BT.601 limited-range is hardcoded in the shader.
+NV12 → NV12 / I420 / YV12 via libyuv; a layout it cannot repack is
+logged and skipped. BT.601 limited-range is hardcoded in the shader.
 
 `blitToJpegCpu(out)`:
 
 Picks a free `mJpegRing[s]` host-mapped buffer, records
-`vkCmdCopyImageToBuffer` from `mScratchImg[k]` into it, returns a
+`vkCmdCopyImageToBuffer` from the scratch image into it, returns a
 `JpegSnapshot { rgba, width, height, ringSlot }`. The PipelineThread
 forwards the snapshot to `JpegWorker`. `JpegWorker` libjpeg-encodes
 into the BLOB gralloc with an EXIF Orientation marker derived from
@@ -182,14 +190,26 @@ release would exhaust the ring after `SLOT_COUNT` BLOBs.
      all blits in this frame.
    - `pCommandBuffers` = `mCmdBuf[k]` (compute demosaic + barrier
      + per-output blits / encodes / copies).
-   - `pSignalSemaphores` = the per-output
-     `vkQueueSignalReleaseImageANDROID` ones (recorded earlier).
-   - signal fence = `mFence[k]`; export its fd via
-     `vkGetFenceFdKHR(SYNC_FD)` → `submitFenceOut`. The export
-     implicitly resets the fence so the slot is ready for reuse.
+   - `pSignalSemaphores` = one binary semaphore per gralloc
+     output; that output's release then waits on its own (step 6).
+   - signal fence = `mFence[k]`; its fd is exported via
+     `vkGetFenceFdKHR(SYNC_FD)` into the slot's poll fd, dup'd into
+     `submitFenceOut`. The export implicitly resets the fence so
+     the slot is ready for reuse.
 
 PipelineThread `poll(2)`s `submitFenceOut`; once it signals,
 `StatsProcessStage` and `ResultDispatchStage` run.
+
+## GPU timing
+
+With `persist.camera.perf` on, the ISP creates a timestamp query
+pool and each frame's command buffer writes three timestamps — at
+its start, after the demosaic, and after the outputs (blits, NV12,
+JPEG copy). They are read when the slot comes round again, its
+fence long signalled, so nothing waits; one `PERF-GPU` line
+averages demosaic, outputs and total over 32 frames, with the
+longest total. Off (the default), no pool exists and nothing is
+recorded.
 
 ## Vulkan resource cache
 
@@ -227,12 +247,15 @@ symbols would re-introduce the libvulkan filter.
 
 - `DemosaicCompute.h` — Malvar-He-Cutler 5×5 demosaic with a 20×20
   cooperative shared-memory Bayer tile, 16×16 workgroup. Optical
-  black subtracted per-channel (`active.opticalBlack.manualBias{R,
-  GR,GB,B}` from tuning), dynamic-range rescaled by `255/(maxRaw -
-  blackLevel)`. WB gains applied, CCM applied, sRGB gamma
-  approximated via a host-shipped 256-entry LUT.
+  black subtracted as one scalar level — the measured
+  `active.hal_overrides.optical_black` where the stock calibration
+  is wrong (the OV5693), the stock `opticalBlack` otherwise — and
+  the samples stay signed until the gamma, cut at white only.
+  Dynamic range rescaled by `255/(maxRaw - blackLevel)`. WB gains
+  and CCM run in float (`IspParams.wbF` / `ccmF`, quantised once
+  as the gamma LUT's index); the LUT approximates sRGB.
 - `Blit.h` — vertex shader emits a full-screen triangle, fragment
-  shader samples `mScratchImg` with hardware bilinear and applies
+  shader samples the scratch image with hardware bilinear and applies
   the push-constant crop / scale. Identity path
   (`cropW == outW && cropH == outH`) uses `texelFetch` for zero
   overhead; scaling path uses the sampler's texture cache.
@@ -241,12 +264,15 @@ symbols would re-introduce the libvulkan filter.
 
 ## Tegra K1 quirks the code is built around
 
-- **Compute-store to a `VK_ANDROID_native_buffer` image is
-  swizzled.** Pitchlinear writes from a compute shader produce
-  garbage when the destination is gralloc; only fragment ROP gets
-  through the tiler. The whole `blitToGralloc` shape (compute into
-  device-local pitchlinear scratch + fragment blit) exists because
-  of this.
+- **Compute or transfer writes into the framework's gralloc output
+  are garbage.** A compute store or `vkCmdCopyImage` into a preview /
+  video buffer the framework hands us comes out vertically duplicated
+  whatever the barriers and usage flags (29d6db0); only the fragment
+  ROP writes it correctly. Our own gralloc-backed scratch, by contrast,
+  takes the demosaic's compute stores fine (066b67c, vk_storage_probe)
+  -- what tells the two apart (kind, compression, usage) is not known.
+  The whole `blitToGralloc` shape (compute into the scratch + a
+  fragment blit into the output) exists because of this.
 - **`vkGetMemoryFdPropertiesKHR` on external gralloc fds returns
   `VK_ERROR_INITIALIZATION_FAILED` with `typeBits=0`.** Direct
   gralloc-import as a Vulkan `VkImage` is impossible; the

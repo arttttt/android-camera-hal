@@ -62,50 +62,78 @@ sensor output.
 The per-frame `PERF:` line comes from `ResultDispatchStage`:
 
 ```
-PERF: wait=<tBayerDq - tShutter>ms
+PERF: sensor=<tShutter - tAccepted>ms
+      permit=<tBayerDq - tShutter>ms
       post=<tResultSent - tBayerDq>ms
-      total=<tResultSent - tShutter>ms
-      f=<frameNumber>
+      total=<tResultSent - tAccepted>ms
+      f=<frameNumber> sensorFrame=<sensor frame>
 ```
 
-`tShutter` is set in `ShutterNotifyStage` (around the same time we
-call `notify(SHUTTER, t)`). `tBayerDq` is when `BayerSource::
-acquireNextFrame()` returns a fresh slot. `tResultSent` is right
-before `process_capture_result`.
+`tAccepted` is when `Session::submit` takes the request. `tShutter`
+is the frame's start (the capture engine's shutter notify).
+`tBayerDq` is when the capture engine hands the frame's Bayer slot
+over. `tResultSent` is right before `process_capture_result`.
 
-- **`wait` (tShutter → tBayerDq)** — request-side stages plus the
-  wait on the sensor. With drain-to-latest + async capture this is
-  bounded by one frame_period, modulo CaptureThread scheduling
-  jitter. Typical 1080p / 30 fps: 30-35 ms.
-- **`post` (tBayerDq → tResultSent)** — `DemosaicBlitStage`
-  (compute demosaic + per-output blits / encodes / copies + cmd
-  buffer record + `vkQueueSubmit`) on RequestThread, then the
-  fence-fd wait + `StatsProcessStage` + `ResultDispatchStage` on
-  PipelineThread / ResultThread. The fence-fd wait dominates
-  because it covers the GPU work the submit kicked off. Typical:
-  10-18 ms steady, spikes to ~25 ms.
-- **`total`** — sum.
+- **`sensor` (tAccepted → tShutter)** — how long the request waited
+  for its sensor frame. `requestsInFlight` (6, `Session::Config`)
+  bounds this: a request waits as many frame periods as the depth.
+  This is the depth's price, and it is paid before anything is
+  captured.
+- **`permit` (tShutter → tBayerDq)** — the frame's start to its
+  Bayer slot: the sensor's exposure, readout and VI DMA, plus the
+  capture engine's turn. About one frame period.
+- **`post` (tBayerDq → tResultSent)** — the frame's processing:
+  `DemosaicBlitStage` (compute demosaic + per-output blits /
+  encodes / copies + cmd buffer record + `vkQueueSubmit`), the
+  fence-fd wait that covers the GPU work, the YUV finish and 3A on
+  the finish engine, the JPEG hand-off, and the result.
+- **`total`** — acceptance to result: what the framework sees.
 
-These segments **do not** include sensor exposure / readout / VI
-DMA (those happen before `tShutter`), nor the framework's
-`processCaptureRequest` push (set before `tShutter`).
+The `permit`/`post` split is where the processing budget lives; the
+`sensor` segment is depth, not work.
 
-## Steady-state numbers (1080p single-stream preview, IMX179)
+These segments **do not** include the framework's
+`processCaptureRequest` push (set before `tAccepted`), nor the
+sensor's exposure and readout other than as the `permit` wait.
+
+## Steady-state numbers (1080p, 24.10.2026)
+
+Measured on 24.10.2026, 1080p, bright scene, auto exposure, both
+cameras, with `persist.camera.perf` on (the PERF line above,
+`PERF-GPU`, and the stats engine's PERF lines). "Recording" is one
+YUV stream: rear 30 fps, front 24 fps; **no sensor frame was lost**
+on either.
+
+Recording, median / p95:
 
 ```
-demosaic + blit  ≈ 4 ms   GPU avg
-NEON stats       ≈ 4 ms   CPU avg (parallel to GPU, hidden)
-PERF post        7-18 ms  steady, 20-25 ms spikes
-PERF wait        30-35 ms (one frame_period)
-PERF total       ~45 ms (~22 fps frame-to-result)
-FPS              30 (sensor cadence; result FIFO holds at sensor rate)
+                      rear 30 fps     front 24 fps
+result interval       33 / 43 ms      41 / 62 ms
+post                  25 / 53 ms      28 / 62 ms
+NEON phase            6.5 / 12 ms     7 / 15.6 ms
+IPA                   1.1 / 3.0 ms    1.2 / 3.9 ms
 ```
 
-GPU and NEON CPU run in parallel, so the overlap between them is
-hidden inside the fence-fd wait segment of `post`. The remaining
-"stuck at ~22 fps frame-to-result on a 30 fps sensor" budget is
-the per-stage queue handoff + ResultThread serialisation, not
-intrinsic processing time.
+`PERF-GPU`, rear recording at 30 fps: demosaic 13-14 ms, outputs
+5-6 ms, total 18-20 ms on average; the worst frame 31-37 ms. With
+CPU/GPU/EMC pinned at 1836/612/924 MHz the demosaic is ~10.4 ms —
+the governor's clock, not the kernel's work, is most of the
+difference.
+
+Preview runs at ~16.6 fps in a bright scene too, and that is a
+policy, not a power limit: auto exposure spends the light on
+exposure first — it stretches the frame to 15 fps, the bottom of the
+request's [15, 30] fps range, before it raises gain — so the preview
+cadence is exposure-bound. In preview the NEON phase and the GPU
+are slower than in recording; the CPU/GPU governors are the
+difference, not the kernels (same code, lower clocks while the
+frame is long).
+
+GPU and NEON run in parallel — the NEON kernel reads the frame's
+Bayer slot while the GPU works the same frame — so their costs
+overlap inside `post`. In recording the pipeline holds the sensor's
+cadence (30 / 24 fps, no frames lost); the preview's 16.6 fps is
+the exposure policy above, not the processing budget.
 
 ## V4L2 buffer ring sizing
 
@@ -127,13 +155,15 @@ Vulkan input ring are the same memory.
 - **Camera3 `process_capture_request` push** — happens on the
   binder thread before the request enters our queue; runs in <1 ms
   but isn't measured.
-- **JPEG encode** — `JpegWorker` runs concurrent with the next
-  frames; its 100-150 ms cost shows up as a sustained gap between
-  shutter and final still-image callback, but the preview FIFO
-  isn't blocked by it (only the ctx that owns the BLOB stalls in
-  ResultThread until JpegWorker clears `jpegPending`).
-- **Sensor exposure + readout + VI DMA** — pre-shutter, not
-  observable from the HAL.
+- **JPEG encode** — the JPEG engine (`core/engines/JpegEngine`) runs
+  concurrent with the next frames' capture and processing; what it
+  delays is their results. The result engine dispatches strictly in
+  submission order and waits for each frame to settle (its
+  `inPipeline` tokens), and the BLOB's frame settles only after its
+  encode — so the results behind a photo wait ~100-150 ms, while
+  their capture and GPU work go on.
+- **Sensor exposure + readout + VI DMA** — inside `permit`, not
+  separately observable from the HAL.
 
 The pre-Tier-3 plan in this doc included a `DelayedControls`
 section as a future fix; that's now landed (item 4 above) and

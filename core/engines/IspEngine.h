@@ -39,8 +39,10 @@ class FinishEngine;
  * else on the thread, and pass the frame to the finish engine.
  *
  * One frame at a time (maxRunning 1, as PIPELINE_MAX_IN_FLIGHT was):
- * the GPU takes ~60 ms a frame on this hardware and is the bottleneck;
- * a deeper ring only adds latency and lets completions clump.
+ * the GPU is the bottleneck — ~18-20 ms a frame in 1080p30 recording
+ * on average (demosaic 13-14 ms, outputs 5-6 ms), 12-14 ms with the
+ * clocks pinned — and a deeper ring only adds latency and lets
+ * completions clump.
  *
  * A job carries the capture engine's permit; it goes back when the job
  * ends -- fence signalled, frame given up, or engine stopped -- and the

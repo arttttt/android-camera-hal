@@ -1,5 +1,22 @@
 # NEON stats review
 
+> **Historical document (note added 24.10.2026).** Written before the
+> core rewrite (October 2026): it reviews the `hal/` layout of the time
+> (`NeonStatsEncoder`, `StatsWorker`, `StatsDispatchStage`,
+> `hal/Camera.cpp`) and still mentions the 128-bin green `lumaHist`,
+> which was dropped when AE moved to the patch grid — `IpaStats` is now
+> `rgbMean` + `focusMetric` only, and the pipeline is the
+> `libmochacamera` core with `StatsEngine` (latest-wins) in place of
+> `StatsWorker` / `StatsDispatchStage`.
+>
+> What still holds: §1's review of the kernel (CFA table, `vld2q`
+> lanes, Sobel taps and bounds, patch partitioning, overflow headroom,
+> progressive contract) and §3's performance model (memory-bound,
+> ~4 ms per phase, the persistent-register lesson) — the kernel moved
+> unchanged to `core/ipa/NeonStatsEncoder.cpp`. §2's two fixes and §4's
+> thread model describe the old worker: read them for the history, not
+> as the current design.
+
 Review of the CPU NEON stats path (commits `3de7668` … `c600f4a`) and the
 surrounding changes that deleted the GPU stats backend (`a774f4e`, `78f13d8`).
 
