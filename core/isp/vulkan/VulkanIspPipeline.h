@@ -232,13 +232,15 @@ private:
     VulkanGrallocCache mGrallocCache;
     VulkanYuvEncoder   mYuvEncoder;   /* lazy — buffers allocated on first YUV request */
 
-    /* In-flight per-slot acquire-fence semaphores. Imported with TEMPORARY
-     * payload during blitTo*; held until the slot is reused, then destroyed.
-     * One vector per slot — slot reuse implies the prior submit's fence has
-     * signalled (acquireSlot waits on it), at which point the prior frame's
-     * semaphores have already been consumed by the submit and are safe to
-     * release. */
-    std::vector<VkSemaphore> mSlotAcquireSemaphores[SLOT_COUNT];
+    /* In-flight per-slot semaphores: the acquire fences imported with a
+     * TEMPORARY payload during blitTo*, and the release semaphores the
+     * submit signals for each gralloc output (endFrame). Held until the
+     * slot is reused, then destroyed. One vector per slot -- slot reuse
+     * implies the prior submit's fence has signalled (acquireSlot waits
+     * on it), and with it the releases queued right behind it, so the
+     * prior frame's semaphores have all been waited and are safe to
+     * destroy. */
+    std::vector<VkSemaphore> mSlotSemaphores[SLOT_COUNT];
 
     /* Ring of host-mapped RGBA8 buffers for blitToJpegCpu. Sized to the
      * current scratch dimensions; reallocated when ensureBuffers resizes

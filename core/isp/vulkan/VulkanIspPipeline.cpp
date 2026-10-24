@@ -139,15 +139,17 @@ int VulkanIspPipeline::acquireSlot() {
     if (!waitSlotFence(slot))
         return -1;
     mNextSlot = (mNextSlot + 1) % SLOT_COUNT;
-    /* Acquire-fence semaphores from the slot's prior submit are consumed
-     * at submit-start; once the slot's fence has signalled (poll above or
-     * the synchronous WaitForFences in legacy paths) they are safe to
-     * destroy. */
-    for (VkSemaphore sem : mSlotAcquireSemaphores[slot]) {
+    /* The slot's prior frame's semaphores: the acquire fences its submit
+     * waited at its start, and the release semaphores its outputs'
+     * releases waited right behind it. The slot's fence has signalled
+     * (poll above or the synchronous WaitForFences in legacy paths), and
+     * SLOT_COUNT - 1 frames have been submitted since, so they are safe
+     * to destroy. */
+    for (VkSemaphore sem : mSlotSemaphores[slot]) {
         if (sem != VK_NULL_HANDLE)
             mDeviceState.pfn()->DestroySemaphore(mDeviceState.device(), sem, NULL);
     }
-    mSlotAcquireSemaphores[slot].clear();
+    mSlotSemaphores[slot].clear();
     return slot;
 }
 
@@ -511,6 +513,33 @@ bool VulkanIspPipeline::endFrame(int *submitFenceOut) {
     std::vector<VkPipelineStageFlags> waitStages(mRec.waitSemaphores.size(),
         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
 
+    /* One semaphore per gralloc output, signalled by this submit and
+     * waited by that output's release. A queue operation is not ordered
+     * after the work submitted before it -- vkQueuePresentKHR orders
+     * itself by the semaphores it is given, and the platform's
+     * swapchain hands vkQueueSignalReleaseImageANDROID exactly those --
+     * so a release given none may signal before the blit into the
+     * buffer has run. Binary: each is waited once, hence one apiece. */
+    std::vector<VkSemaphore> releaseSemaphores(mRec.blits.size(), VK_NULL_HANDLE);
+    for (VkSemaphore &sem : releaseSemaphores) {
+        VkSemaphoreCreateInfo sci = {};
+        sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        if (!vkOk(mDeviceState.pfn()->CreateSemaphore(mDeviceState.device(), &sci, NULL, &sem),
+                  "vkCreateSemaphore (release)"))
+            sem = VK_NULL_HANDLE;
+    }
+    std::vector<VkSemaphore> signalled;
+    for (VkSemaphore sem : releaseSemaphores)
+        if (sem != VK_NULL_HANDLE) signalled.push_back(sem);
+    const auto dropSemaphores = [this, &releaseSemaphores] {
+        for (VkSemaphore sem : mRec.waitSemaphores)
+            if (sem != VK_NULL_HANDLE)
+                mDeviceState.pfn()->DestroySemaphore(mDeviceState.device(), sem, NULL);
+        for (VkSemaphore sem : releaseSemaphores)
+            if (sem != VK_NULL_HANDLE)
+                mDeviceState.pfn()->DestroySemaphore(mDeviceState.device(), sem, NULL);
+    };
+
     VkSubmitInfo si = {};
     si.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount   = 1;
@@ -518,26 +547,28 @@ bool VulkanIspPipeline::endFrame(int *submitFenceOut) {
     si.waitSemaphoreCount   = (uint32_t)mRec.waitSemaphores.size();
     si.pWaitSemaphores      = mRec.waitSemaphores.empty() ? NULL : mRec.waitSemaphores.data();
     si.pWaitDstStageMask    = waitStages.empty() ? NULL : waitStages.data();
+    si.signalSemaphoreCount = (uint32_t)signalled.size();
+    si.pSignalSemaphores    = signalled.empty() ? NULL : signalled.data();
     if (!vkOk(mDeviceState.pfn()->QueueSubmit(mDeviceState.queue(), 1, &si, mFence[slot]),
               "endFrame: vkQueueSubmit")) {
-        for (VkSemaphore sem : mRec.waitSemaphores) {
-            if (sem != VK_NULL_HANDLE)
-                mDeviceState.pfn()->DestroySemaphore(mDeviceState.device(), sem, NULL);
-        }
+        dropSemaphores();
         mRec.reset();
         return false;
     }
 
-    /* Per-output release fence: queue serializes after the submit, so each
-     * QueueSignalReleaseImageANDROID hands back a sync_fd that signals
-     * once all prior commands (including the blit into this image) have
-     * drained. Any consumer waiting on the fd before reading the gralloc
-     * is correct. */
-    for (const PendingBlit &b : mRec.blits) {
+    /* Per-output release fence: a sync_fd that signals once this
+     * output's release semaphore has, i.e. once the submit that blits
+     * into it has run. An output whose semaphore could not be made is
+     * released unordered, as before, and said so. */
+    for (size_t i = 0; i < mRec.blits.size(); ++i) {
+        const PendingBlit &b = mRec.blits[i];
         int fd = -1;
         if (mDeviceState.pfn()->QueueSignalReleaseImageANDROID) {
+            VkSemaphore *sem = releaseSemaphores[i] != VK_NULL_HANDLE ? &releaseSemaphores[i] : NULL;
+            if (!sem)
+                ALOGE("output %zu: released without a semaphore", i);
             VkResult qr = mDeviceState.pfn()->QueueSignalReleaseImageANDROID(
-                mDeviceState.queue(), 0, NULL, b.entry->image, &fd);
+                mDeviceState.queue(), sem ? 1 : 0, sem, b.entry->image, &fd);
             if (qr != VK_SUCCESS) {
                 ALOGW("vkQueueSignalReleaseImageANDROID failed: %d", (int)qr);
                 fd = -1;
@@ -577,10 +608,12 @@ bool VulkanIspPipeline::endFrame(int *submitFenceOut) {
         waitFenceInline(slot, kGpuFenceTimeoutMs);
     }
 
-    /* Hand acquire-fence semaphores over to the slot for delayed
+    /* Hand the frame's semaphores over to the slot for delayed
      * destruction at the next acquireSlot of this same slot. */
     for (VkSemaphore sem : mRec.waitSemaphores)
-        mSlotAcquireSemaphores[slot].push_back(sem);
+        mSlotSemaphores[slot].push_back(sem);
+    for (VkSemaphore sem : releaseSemaphores)
+        if (sem != VK_NULL_HANDLE) mSlotSemaphores[slot].push_back(sem);
 
     mRec.reset();
     return true;
@@ -1366,11 +1399,11 @@ void VulkanIspPipeline::destroy() {
 
         for (size_t s = 0; s < SLOT_COUNT; s++) {
             mFence[s].reset();
-            for (VkSemaphore sem : mSlotAcquireSemaphores[s]) {
+            for (VkSemaphore sem : mSlotSemaphores[s]) {
                 if (sem != VK_NULL_HANDLE)
                     mDeviceState.pfn()->DestroySemaphore(mDeviceState.device(), sem, NULL);
             }
-            mSlotAcquireSemaphores[s].clear();
+            mSlotSemaphores[s].clear();
             if (mSlotSyncFd[s] >= 0) {
                 ::close(mSlotSyncFd[s]);
                 mSlotSyncFd[s] = -1;
