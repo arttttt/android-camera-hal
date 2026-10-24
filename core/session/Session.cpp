@@ -33,6 +33,7 @@
 #include <utils/Timers.h>
 
 #include "CapabilityProbe.h"
+#include "util/PerfLog.h"
 #include "CaptureSize.h"
 #include "CaptureEngine.h"
 #include "DeviceErrorReporter.h"
@@ -185,6 +186,7 @@ struct Session::Impl {
 
 Session::Impl::Impl(const Config &c, ResultSink *s, GrallocPort *g)
     : config(c), sink(s), gralloc(g) {
+    mocha::camera::setPerfLog(config.perfLog);
     tuning.load(config.sensorName.c_str(), config.integrator.c_str());
 
     /* Sensor-config (frame-length / gain ranges etc.) is a function of

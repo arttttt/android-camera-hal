@@ -15,6 +15,7 @@
  */
 
 #include "StatsEngine.h"
+#include "util/PerfLog.h"
 
 #include <utils/Log.h>
 #include <utils/Timers.h>
@@ -93,9 +94,10 @@ void StatsEngine::runPhase(Job &job) {
     const int phaseDone = phase;
     ++phase;
     if (phase < kPhaseCount) {
-        ALOGD("PERF: phase=%d/%d neon=%lldus seq=%u",
-              phaseDone + 1, kPhaseCount,
-              (long long)((tNeon1 - tNeon0) / 1000), cycle.sequence);
+        if (mocha::camera::perfLog())
+            ALOGD("PERF: phase=%d/%d neon=%lldus seq=%u",
+                  phaseDone + 1, kPhaseCount,
+                  (long long)((tNeon1 - tNeon0) / 1000), cycle.sequence);
         return;
     }
 
@@ -112,10 +114,11 @@ void StatsEngine::runPhase(Job &job) {
         latest.meteringRoi     = cycle.meteringRoi;
         latestValid            = true;
     }
-    ALOGD("PERF: phase=%d/%d neon=%lldus finalize=%lldus seq=%u",
-          phaseDone + 1, kPhaseCount,
-          (long long)((tNeon1 - tNeon0) / 1000),
-          (long long)((tFin1  - tFin0)  / 1000), cycle.sequence);
+    if (mocha::camera::perfLog())
+        ALOGD("PERF: phase=%d/%d neon=%lldus finalize=%lldus seq=%u",
+              phaseDone + 1, kPhaseCount,
+              (long long)((tNeon1 - tNeon0) / 1000),
+              (long long)((tFin1  - tFin0)  / 1000), cycle.sequence);
     /* The cycle is done reading its frame. */
     cycle = Job{};
     phase = 0;

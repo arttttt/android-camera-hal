@@ -70,6 +70,11 @@ mocha::camera::Session::Config sessionConfig(const char *devNode, int facing) {
     else                              c.mains = mocha::camera::Antibanding::Hz50;
     ALOGI("mains: %s", propVal);
 
+    /* PERF lines and GPU timing: for measuring only, off by default. */
+    c.perfLog = property_get_bool("persist.camera.perf", false);
+    if (c.perfLog)
+        ALOGI("PERF logging and GPU timing on");
+
     c.writeDelayUs = property_get_int32("persist.camera.write_delay_us",
                                         c.writeDelayUs);
     if (c.writeDelayUs)

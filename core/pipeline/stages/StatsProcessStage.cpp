@@ -13,6 +13,7 @@
 #include "sensor/DelayedControls.h"
 #include "sensor/ExposureTarget.h"
 #include "sensor/SensorConfig.h"
+#include "util/PerfLog.h"
 
 #undef  LOG_TAG
 #define LOG_TAG "Cam-StatsProcessStage"
@@ -96,12 +97,13 @@ void StatsProcessStage::process(mocha::camera::Frame &ctx) {
     deps.exposureTarget->publish(batch);
 
     const nsecs_t tEnd = systemTime();
-    ALOGD("PERF: peek=%lldus ipa=%lldus publish=%lldus total=%lldus f=%u",
-          (long long)((tPeek - t0)    / 1000),
-          (long long)((tIpa  - tPeek) / 1000),
-          (long long)((tEnd  - tIpa)  / 1000),
-          (long long)((tEnd  - t0)    / 1000),
-          ctx.frameNumber);
+    if (mocha::camera::perfLog())
+        ALOGD("PERF: peek=%lldus ipa=%lldus publish=%lldus total=%lldus f=%u",
+              (long long)((tPeek - t0)    / 1000),
+              (long long)((tIpa  - tPeek) / 1000),
+              (long long)((tEnd  - tIpa)  / 1000),
+              (long long)((tEnd  - t0)    / 1000),
+              ctx.frameNumber);
 }
 
 } /* namespace android */

@@ -14,6 +14,7 @@
 #include "3a/ThreeAReport.h"
 #include "mochacamera/ports/ResultSink.h"
 #include "sensor/SensorConfig.h"
+#include "util/PerfLog.h"
 
 #undef  LOG_TAG
 #define LOG_TAG "Cam-ResultDispatchStage"
@@ -69,7 +70,7 @@ void ResultDispatchStage::process(Frame &frame) {
 
     deps.sink->frame(frame.frameNumber, result, buffers);
 
-    if (completed) {
+    if (completed && mocha::camera::perfLog()) {
         frame.tResultSent = systemTime();
         int64_t sensor = (frame.tShutter    - frame.tAccepted) / 1000000;
         int64_t permit = (frame.tBayerDq    - frame.tShutter) / 1000000;

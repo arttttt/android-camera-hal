@@ -82,6 +82,9 @@ public:
          * 4 ran the preview at 28 fps, 5 at 29.7, 6 at 30, a request
          * taking 142, 167 and 198 ms to its result. */
         int         requestsInFlight = 6;
+        /* The per-frame PERF lines and the GPU timing, for measuring;
+         * off by default (they cost CPU and log bandwidth per frame). */
+        bool        perfLog = false;
         /* For measuring where in a frame the sensor latches a write:
          * the write goes this long after the frame's start is reported,
          * not at once. */
