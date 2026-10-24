@@ -253,8 +253,11 @@ converted from the stock NVIDIA `.isp` overrides by
   time), `colorCorrection.Set[]` (multi-CCT CCM + neutral priors),
   `opticalBlack.*`, `ae.MeanAlg`, `awb.v4.*`, `awb.bayes.*`.
 - `active.hal_overrides` -- HAL knobs with no `.isp` counterpart,
-  preserved verbatim across regenerations: `ae.close_speed_zone`, and
-  the contrast-AF knobs under `af` (`step_coarse`, `step_fine`,
+  preserved verbatim across regenerations: `ae.close_speed_zone`,
+  `optical_black.level` (the black level measured on this kernel's
+  sensor with `tools/rawcap`, every channel; it replaces
+  `opticalBlack.*` where the stock calibration is off -- the OV5693
+  measures 19-21, the stock says 15), and the contrast-AF knobs under `af` (`step_coarse`, `step_fine`,
   `contrast_ratio`, `retrigger_ratio`, `retrigger_delay_frames`,
   `pdaf_enabled`, `min_frames_between_sweeps`,
   `min_focus_roi_patches`; all required -- a missing one disables AF).

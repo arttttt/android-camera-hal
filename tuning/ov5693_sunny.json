@@ -34,6 +34,10 @@
         "close_speed_zone": 0.2,
         "_comment": "An AE region (a tap) meters over at least this many stats patches a side: the 5x5 AF has metered on since AE followed the AF region.",
         "min_metering_roi_patches": 5
+      },
+      "optical_black": {
+        "_comment": "Measured 24.10.2026 with tools/rawcap, lens covered, 1920x1080 BGGR10 on the SmokeR24.1 kernel: the pedestal is 18.6-19.2 at 1x and 19.4-20.9 at 16x analog gain, the four Bayer phases within 1 LSB. The stock .isp's 15 (opticalBlack, kept verbatim) under-subtracted 4-5 LSB: a magenta fog in the shadows once the digital gain and the WB lift it. 20 is the high-gain pedestal, where the shadows show it.",
+        "level": 20
       }
     },
     "mwbCCT": {

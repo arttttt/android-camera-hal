@@ -166,6 +166,15 @@ bool SensorTuning::loadFile(const std::string &path) {
         mOpticalBlack.gb = ob["manualBiasGB"].asInt();
         mOpticalBlack.b  = ob["manualBiasB"].asInt();
     }
+    /* The black level as measured on this kernel's sensor, where it is
+     * not the stock calibration's (active.hal_overrides.optical_black):
+     * one level for every channel. Read here, before anything derives
+     * from the black level (the AWB prior below). */
+    const Json::Value &measuredOb = active["hal_overrides"]["optical_black"];
+    if (measuredOb.isObject() && measuredOb.isMember("level")) {
+        const int level = measuredOb["level"].asInt();
+        mOpticalBlack = {level, level, level, level};
+    }
 
     const Json::Value &mwb = active["mwbCCT"];
     if (mwb.isObject()) {
