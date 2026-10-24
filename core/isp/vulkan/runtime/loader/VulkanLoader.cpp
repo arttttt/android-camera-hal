@@ -110,6 +110,11 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
     DEV(CreatePipelineCache);
     DEV(DestroyPipelineCache);
     DEV(GetPipelineCacheData);
+    DEV(CreateQueryPool);
+    DEV(DestroyQueryPool);
+    DEV(GetQueryPoolResults);
+    DEV(CmdResetQueryPool);
+    DEV(CmdWriteTimestamp);
 
     DEV(CreateDescriptorPool);
     DEV(DestroyDescriptorPool);

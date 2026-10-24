@@ -214,6 +214,11 @@ struct VulkanPfn {
     PFN_vkCreatePipelineCache                       CreatePipelineCache;
     PFN_vkDestroyPipelineCache                      DestroyPipelineCache;
     PFN_vkGetPipelineCacheData                      GetPipelineCacheData;
+    PFN_vkCreateQueryPool                           CreateQueryPool;
+    PFN_vkDestroyQueryPool                          DestroyQueryPool;
+    PFN_vkGetQueryPoolResults                       GetQueryPoolResults;
+    PFN_vkCmdResetQueryPool                         CmdResetQueryPool;
+    PFN_vkCmdWriteTimestamp                         CmdWriteTimestamp;
 
     PFN_vkCreateDescriptorPool                      CreateDescriptorPool;
     PFN_vkDestroyDescriptorPool                     DestroyDescriptorPool;

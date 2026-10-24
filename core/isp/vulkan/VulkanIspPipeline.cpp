@@ -25,6 +25,7 @@ static inline int64_t nowMs() {
 #include "shaders/Blit.h"
 #include "shaders/RgbaToNv12.h"
 #include "runtime/PipelineCacheFile.h"
+#include "util/PerfLog.h"
 
 namespace android {
 
@@ -138,6 +139,10 @@ int VulkanIspPipeline::acquireSlot() {
     int slot = (int)mNextSlot;
     if (!waitSlotFence(slot))
         return -1;
+    if (mSlotTimed[slot]) {
+        readGpuTiming(slot);
+        mSlotTimed[slot] = false;
+    }
     mNextSlot = (mNextSlot + 1) % SLOT_COUNT;
     /* The slot's prior frame's semaphores: the acquire fences its submit
      * waited at its start, and the release semaphores its outputs'
@@ -217,6 +222,12 @@ bool VulkanIspPipeline::recordDemosaicOpen(int slot, unsigned srcW, unsigned src
     if (!vkOk(mDeviceState.pfn()->ResetCommandBuffer(cb, 0), "vkResetCommandBuffer") ||
         !vkOk(mDeviceState.pfn()->BeginCommandBuffer(cb, &bi), "vkBeginCommandBuffer"))
         return false;
+    if (mTimingPool != VK_NULL_HANDLE) {
+        const uint32_t q = (uint32_t)slot * kTimestampsPerSlot;
+        mDeviceState.pfn()->CmdResetQueryPool(cb, mTimingPool, q, kTimestampsPerSlot);
+        mDeviceState.pfn()->CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                              mTimingPool, q);
+    }
 
     /* Compute: Bayer → mScratchImg. */
     mDeviceState.pfn()->CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, mPipeline);
@@ -244,6 +255,10 @@ bool VulkanIspPipeline::recordDemosaicOpen(int slot, unsigned srcW, unsigned src
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
             | VK_PIPELINE_STAGE_TRANSFER_BIT,
         0, 0, NULL, 0, NULL, 1, &scratchB);
+    if (mTimingPool != VK_NULL_HANDLE)
+        mDeviceState.pfn()->CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                              mTimingPool,
+                                              (uint32_t)slot * kTimestampsPerSlot + 1);
     return true;
 }
 
@@ -496,6 +511,10 @@ bool VulkanIspPipeline::endFrame(int *submitFenceOut) {
     }
     int slot = mRec.slot;
     VkCommandBuffer cb = mCmdBuf[slot];
+    if (mTimingPool != VK_NULL_HANDLE)
+        mDeviceState.pfn()->CmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                              mTimingPool,
+                                              (uint32_t)slot * kTimestampsPerSlot + 2);
     if (!vkOk(mDeviceState.pfn()->EndCommandBuffer(cb), "vkEndCommandBuffer")) {
         for (VkSemaphore sem : mRec.waitSemaphores) {
             if (sem != VK_NULL_HANDLE)
@@ -555,6 +574,8 @@ bool VulkanIspPipeline::endFrame(int *submitFenceOut) {
         mRec.reset();
         return false;
     }
+
+    mSlotTimed[slot] = mTimingPool != VK_NULL_HANDLE;
 
     /* Per-output release fence: a sync_fd that signals once this
      * output's release semaphore has, i.e. once the submit that blits
@@ -743,6 +764,58 @@ void VulkanIspPipeline::releaseJpegSnapshot(const JpegSnapshot &snap) {
     mJpegRing[snap.ringSlot].inUse.store(false, std::memory_order_release);
 }
 
+/* --- GPU timing (perfLog only) --- */
+
+void VulkanIspPipeline::createTimingPool() {
+    const VulkanPfn *pfn = mDeviceState.pfn();
+    if (mDeviceState.timestampValidBits() == 0 || !pfn->CreateQueryPool ||
+        !pfn->DestroyQueryPool || !pfn->GetQueryPoolResults ||
+        !pfn->CmdResetQueryPool || !pfn->CmdWriteTimestamp) {
+        ALOGW("GPU timing: the queue writes no timestamps");
+        return;
+    }
+    VkQueryPoolCreateInfo qpci = {};
+    qpci.sType      = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+    qpci.queryType  = VK_QUERY_TYPE_TIMESTAMP;
+    qpci.queryCount = SLOT_COUNT * kTimestampsPerSlot;
+    if (!vkOk(pfn->CreateQueryPool(mDeviceState.device(), &qpci, NULL, &mTimingPool),
+              "vkCreateQueryPool")) {
+        mTimingPool = VK_NULL_HANDLE;
+        return;
+    }
+    ALOGD("GPU timing on: %.2f ns a tick, %u valid bits",
+          mDeviceState.timestampPeriodNs(), mDeviceState.timestampValidBits());
+}
+
+void VulkanIspPipeline::readGpuTiming(int slot) {
+    uint64_t ts[kTimestampsPerSlot];
+    if (mDeviceState.pfn()->GetQueryPoolResults(
+            mDeviceState.device(), mTimingPool, (uint32_t)slot * kTimestampsPerSlot,
+            kTimestampsPerSlot, sizeof(ts), ts, sizeof(ts[0]),
+            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) != VK_SUCCESS)
+        return;
+    const uint32_t bits = mDeviceState.timestampValidBits();
+    const uint64_t mask = bits >= 64 ? ~0ull : ((1ull << bits) - 1);
+    const double period = mDeviceState.timestampPeriodNs();
+    const auto ns = [&](uint64_t a, uint64_t b) {
+        return (uint64_t)((double)((b - a) & mask) * period);
+    };
+    GpuTiming &g = mGpuTiming;
+    const uint64_t total = ns(ts[0], ts[2]);
+    g.demosaicNs += ns(ts[0], ts[1]);
+    g.outputsNs  += ns(ts[1], ts[2]);
+    g.totalNs    += total;
+    if (total > g.maxTotalNs) g.maxTotalNs = total;
+    if (++g.frames < kGpuTimingFrames) return;
+    ALOGD("PERF-GPU: %d frames: demosaic %lluus, outputs %lluus, total %lluus (max %lluus)",
+          g.frames,
+          (unsigned long long)(g.demosaicNs / g.frames / 1000),
+          (unsigned long long)(g.outputsNs  / g.frames / 1000),
+          (unsigned long long)(g.totalNs    / g.frames / 1000),
+          (unsigned long long)(g.maxTotalNs / 1000));
+    g = GpuTiming();
+}
+
 /* --- init / destroy --- */
 
 namespace {
@@ -793,6 +866,9 @@ bool VulkanIspPipeline::init() {
     /* Every pipeline is built: what they compiled to is kept for the
      * other camera's device. */
     mDeviceState.storePipelineCache();
+
+    if (mocha::camera::perfLog())
+        createTimingPool();
 
     buildGammaLut();
 
@@ -1415,6 +1491,12 @@ void VulkanIspPipeline::destroy() {
                 mDeviceState.pfn()->DestroySemaphore(mDeviceState.device(), sem, NULL);
         }
         mRec.reset();
+        if (mTimingPool != VK_NULL_HANDLE) {
+            mDeviceState.pfn()->DestroyQueryPool(mDeviceState.device(), mTimingPool, NULL);
+            mTimingPool = VK_NULL_HANDLE;
+        }
+        for (size_t s = 0; s < SLOT_COUNT; s++) mSlotTimed[s] = false;
+        mGpuTiming = GpuTiming();
         /* Children before their parents: pools and pipelines, then the
          * layouts, sampler and shaders they were built from. */
         mCmdPool.reset();
@@ -1468,6 +1550,9 @@ void VulkanIspPipeline::onSessionClose() {
         }
     }
     mNextSlot = 0;
+    /* The ring starts over: a slot timed last session is not read. */
+    for (size_t s = 0; s < SLOT_COUNT; s++) mSlotTimed[s] = false;
+    mGpuTiming = GpuTiming();
 }
 
 void VulkanIspPipeline::waitForPreviousFrame() {

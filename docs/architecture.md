@@ -233,6 +233,11 @@ the stats engine published (`Ipa3A::processStats`).
 - `persist.camera.soft_isp` (runtime, read by `Camera3Device` once per
   camera) -- `1` (default): full ISP (WB, CCM, gamma) and 3A; `0`:
   demosaic only, kept for cold bring-up.
+- `persist.camera.perf` (runtime, read once per camera) -- `true`
+  turns on the per-frame `PERF:` lines (stats, IPA, result) and the GPU
+  timing (`PERF-GPU:`, demosaic / outputs / total, averaged over 32
+  frames, from timestamps read when the slot comes round). Off by
+  default: off, nothing is formatted, logged or recorded on the GPU.
 - `persist.camera.antibanding` (runtime, read once per camera) -- the
   local mains: `50` (default), `60` or `off`. The templates carry it,
   and it heads `aeAvailableAntibandingModes` (50, 60 and off are all

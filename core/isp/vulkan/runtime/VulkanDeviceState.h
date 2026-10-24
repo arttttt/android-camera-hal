@@ -50,6 +50,11 @@ public:
      * and in the file when they changed. */
     void storePipelineCache() const;
 
+    /* The queue's timestamps: nanoseconds a tick, and the bits that
+     * count (0: the queue writes none). */
+    float    timestampPeriodNs() const { return mTimestampPeriodNs; }
+    uint32_t timestampValidBits() const { return mTimestampValidBits; }
+
     /* VK_ANDROID_native_buffer is filtered out of the app-side libvulkan
      * on Android 7, but the HAL-variant loader exposes it. Gralloc
      * zero-copy output depends on it. */
@@ -80,6 +85,8 @@ private:
     bool             mNativeBufferAvail;
     VkPipelineCache  mPipelineCache;
     PipelineCacheSource mPipelineCacheSource;
+    float            mTimestampPeriodNs;
+    uint32_t         mTimestampValidBits;
 };
 
 }; /* namespace android */

@@ -242,6 +242,21 @@ private:
      * destroy. */
     std::vector<VkSemaphore> mSlotSemaphores[SLOT_COUNT];
 
+    /* GPU timing, only with perfLog() on (otherwise no pool exists and
+     * nothing is recorded): per slot, the frame's start, the demosaic's
+     * end and the outputs' end; read when the slot comes round again,
+     * its fence long signalled, and logged summed over a few frames. */
+    static constexpr uint32_t kTimestampsPerSlot = 3;
+    static constexpr int      kGpuTimingFrames   = 32;
+    VkQueryPool mTimingPool = VK_NULL_HANDLE;
+    bool        mSlotTimed[SLOT_COUNT] = {};
+    struct GpuTiming {
+        int      frames = 0;
+        uint64_t demosaicNs = 0, outputsNs = 0, totalNs = 0, maxTotalNs = 0;
+    } mGpuTiming;
+    void createTimingPool();
+    void readGpuTiming(int slot);
+
     /* Ring of host-mapped RGBA8 buffers for blitToJpegCpu. Sized to the
      * current scratch dimensions; reallocated when ensureBuffers resizes
      * the scratch. A JPEG job holds a snapshot for the duration of one

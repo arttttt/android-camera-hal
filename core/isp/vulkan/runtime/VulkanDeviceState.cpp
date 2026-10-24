@@ -45,6 +45,8 @@ VulkanDeviceState::VulkanDeviceState()
     , mNativeBufferAvail(false)
     , mPipelineCache(VK_NULL_HANDLE)
     , mPipelineCacheSource{NULL, 0}
+    , mTimestampPeriodNs(0.f)
+    , mTimestampValidBits(0)
 {}
 
 VulkanDeviceState::~VulkanDeviceState() { destroy(); }
@@ -199,6 +201,12 @@ bool VulkanDeviceState::init(const PipelineCacheSource &cache) {
         destroy();
         return false;
     }
+    mTimestampValidBits = qfProps[mQueueFamily].timestampValidBits;
+    if (mPfn->GetPhysicalDeviceProperties) {
+        VkPhysicalDeviceProperties props;
+        mPfn->GetPhysicalDeviceProperties(mPhysDev, &props);
+        mTimestampPeriodNs = props.limits.timestampPeriod;
+    }
 
 
     float qPriority = 1.0f;
@@ -316,6 +324,8 @@ void VulkanDeviceState::destroy() {
     mQueue = VK_NULL_HANDLE;
     mQueueFamily = 0;
     mNativeBufferAvail = false;
+    mTimestampPeriodNs = 0.f;
+    mTimestampValidBits = 0;
 }
 
 uint32_t VulkanDeviceState::findMemoryType(uint32_t filter, VkMemoryPropertyFlags props) const {
