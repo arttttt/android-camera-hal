@@ -118,6 +118,14 @@ FrameSettings parseFrameSettings(const CameraMetadata &cm) {
         if (e.count >= 2)
             s.ae.fpsRange = FpsRange{e.data.i32[0], e.data.i32[1]};
     }
+    uint8_t antibanding = ANDROID_CONTROL_AE_ANTIBANDING_MODE_OFF;
+    readU8(cm, ANDROID_CONTROL_AE_ANTIBANDING_MODE, &antibanding);
+    switch (antibanding) {
+    case ANDROID_CONTROL_AE_ANTIBANDING_MODE_50HZ: s.ae.antibanding = Antibanding::Hz50; break;
+    case ANDROID_CONTROL_AE_ANTIBANDING_MODE_60HZ: s.ae.antibanding = Antibanding::Hz60; break;
+    /* AUTO is not advertised: no flicker detection backs it. */
+    default:                                       s.ae.antibanding = Antibanding::Off;  break;
+    }
     if (cm.exists(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION))
         s.ae.evCompensationSteps =
             *cm.find(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION).data.i32;

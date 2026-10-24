@@ -37,7 +37,7 @@ Capability probeCapability(android::V4l2Device &dev, bool facingFront,
                            const android::SensorTuning *tuning,
                            const android::SensorConfig &sensorCfg,
                            const android::SensorGeometry &geometry,
-                           int requestsInFlight);
+                           int requestsInFlight, Antibanding mains);
 
 } /* namespace mocha::camera */
 

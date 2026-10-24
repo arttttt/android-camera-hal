@@ -22,6 +22,7 @@
  * core/tests/run_host_tests.sh from the repository root. */
 
 #include <math.h>
+#include <stdlib.h>
 
 #include <cstdio>
 #include <cstring>
@@ -46,6 +47,7 @@
 
 using namespace android;
 using mocha::camera::AeMode;
+using mocha::camera::Antibanding;
 using mocha::camera::AeState;
 using mocha::camera::AfMode;
 using mocha::camera::AfState;
@@ -277,10 +279,12 @@ void testLongExposureTiming() {
 float settleAe(AutoExposureController &ae, const SensorConfig &cfg,
                int32_t evSteps, float sceneGain, bool *converged,
                std::optional<FpsRange> fps = std::nullopt,
-               DelayedControls::Batch *last = nullptr) {
+               DelayedControls::Batch *last = nullptr,
+               Antibanding mains = Antibanding::Off) {
     IpaFrameMeta meta;
     meta.aeExposureCompensation = evSteps;
     meta.aeFpsRange = fps;
+    meta.aeAntibanding = mains;
     const SensorConfig::FrameLimits limits = cfg.frameLimits(fps);
     float totalUs = (float)cfg.exposureDefault;
     float lastTotal = 0.f;
@@ -328,6 +332,99 @@ void testAeLoop() {
      * in gain; the frame stays the mode's (checked in settleAe). */
     AutoExposureController aeDark(cfg, &tuning, kThirdStop);
     settleAe(aeDark, cfg, 0, 1.f / 80000000.f, &converged);
+}
+
+/* The lines an exposure under mains light steps by: half the mains
+ * period to the nearest line, none for Off. */
+void testFlickerLines() {
+    for (const SensorConfig &cfg : {imx179(), ov5693()}) {
+        check(cfg.flickerLines(Antibanding::Off) == 0);
+        const int64_t n50 = cfg.flickerLines(Antibanding::Hz50);
+        const int64_t n60 = cfg.flickerLines(Antibanding::Hz60);
+        check(llabs(n50 * cfg.lineTimeNs - 10000000) <= cfg.lineTimeNs / 2);
+        check(llabs(n60 * cfg.lineTimeNs - 8333333) <= cfg.lineTimeNs / 2);
+    }
+}
+
+/* Under flickering light the exposure is cut down to whole half
+ * periods -- whole lines the driver's rounding down gives back exactly
+ * -- and the gains make up the rest: the total stays. Shorter than a
+ * half period, it is left alone; at the longest, the most half periods
+ * the frame holds. */
+void testFlickerSnap() {
+    for (const SensorConfig &cfg : {imx179(), ov5693()}) {
+        const SensorConfig::FrameLimits mode = cfg.modeFrame();
+        const auto driverLines = [&](int32_t us) {
+            return (int64_t)us * 1000 / cfg.lineTimeNs;
+        };
+        const auto total = [&](const SensorConfig::ExposureSplit &x) {
+            return (float)x.exposureUs * (float)x.gain / (float)cfg.gainUnit
+                 * (float)x.digitalGain / (float)SensorConfig::kDigitalGainUnit;
+        };
+        for (Antibanding mains : {Antibanding::Hz50, Antibanding::Hz60}) {
+            const int32_t n = cfg.flickerLines(mains);
+            const SensorConfig::ExposureSplit mid = cfg.splitExposure(25000.f, mode, n);
+            check(driverLines(mid.exposureUs) == 2 * n);
+            check(fabsf(total(mid) / 25000.f - 1.f) < 0.01f);
+            check(mid.frameLen == cfg.frameLenDefault);
+
+            const SensorConfig::ExposureSplit bright = cfg.splitExposure(5000.f, mode, n);
+            check(bright.exposureUs == 5000 && bright.gain == cfg.gainUnit);
+
+            const SensorConfig::ExposureSplit dark =
+                cfg.splitExposure((float)cfg.maxExposureUsDefault() * 8, mode, n);
+            const int64_t lines = driverLines(dark.exposureUs);
+            const int64_t maxLines = driverLines(cfg.maxExposureUs(mode));
+            check(lines % n == 0 && lines <= maxLines && lines + n > maxLines);
+            check(dark.frameLen == cfg.frameLenDefault);
+        }
+        /* Off: as without. */
+        check(cfg.splitExposure(25000.f, mode, 0).exposureUs == 25000);
+    }
+}
+
+/* Auto exposure under a 50 Hz mains settles on the same total as
+ * without, its exposure on the grid. */
+void testAeAntibanding() {
+    SensorTuning tuning;
+    check(tuning.loadFile("tuning/imx179_primax.json"));
+    const SensorConfig cfg = imx179();
+    const float dim = 1.f / 3000000.f;
+    bool converged = false;
+
+    AutoExposureController aeOff(cfg, &tuning, kThirdStop);
+    const float off = settleAe(aeOff, cfg, 0, dim, &converged);
+    AutoExposureController ae50(cfg, &tuning, kThirdStop);
+    DelayedControls::Batch last;
+    const float at50 = settleAe(ae50, cfg, 0, dim, &converged, std::nullopt, &last,
+                                Antibanding::Hz50);
+    check(converged);
+    check(fabsf(at50 / off - 1.f) < 0.03f);
+    const int64_t lines = (int64_t)last.val[DelayedControls::EXPOSURE] * 1000 / cfg.lineTimeNs;
+    const int32_t n = cfg.flickerLines(Antibanding::Hz50);
+    check(lines >= n && lines % n == 0);
+}
+
+/* A request dividing AE's exposure again within its own frame keeps
+ * to its mains. */
+void testRequestKeepsItsMains() {
+    const SensorConfig cfg = imx179();
+    const SensorConfig::ExposureSplit s = cfg.splitExposure(
+        (float)cfg.maxExposureUsDefault() * 8, cfg.frameLimits(FpsRange{15, 30}));
+    ExposureTarget target;
+    DelayedControls::Batch decided = cfg.configureDefaults();
+    decided.val[DelayedControls::EXPOSURE]     = s.exposureUs;
+    decided.val[DelayedControls::GAIN]         = s.gain;
+    decided.val[DelayedControls::DIGITAL_GAIN] = s.digitalGain;
+    decided.val[DelayedControls::FRAME_LENGTH] = s.frameLen;
+    target.publish(decided);
+
+    FrameSettings req;
+    req.ae.fpsRange    = FpsRange{30, 30};
+    req.ae.antibanding = Antibanding::Hz60;
+    const DelayedControls::Batch b = requestExposure(req, cfg, &target, kThirdStop);
+    const int64_t lines = (int64_t)b.val[DelayedControls::EXPOSURE] * 1000 / cfg.lineTimeNs;
+    check(lines % cfg.flickerLines(Antibanding::Hz60) == 0);
 }
 
 /* The AE target fps range bounds the frame: without one, or at the
@@ -603,6 +700,10 @@ int main() {
     testFpsRangeFrameLimits();
     testAeFpsRange();
     testRequestBoundsItsFrame();
+    testFlickerLines();
+    testFlickerSnap();
+    testAeAntibanding();
+    testRequestKeepsItsMains();
     testAwbConvergence();
     testGrayWorld();
     testAfRegionWeight();

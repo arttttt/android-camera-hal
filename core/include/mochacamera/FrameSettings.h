@@ -44,6 +44,9 @@ struct FrameSettings {
         /* The frame rates auto exposure may run between; without one,
          * the mode's own. AE Off does not heed it. */
         std::optional<FpsRange> fpsRange;
+        /* The mains auto exposure keeps clear of. AE Off does not heed
+         * it: a manual exposure is taken as asked. */
+        Antibanding antibanding = Antibanding::Off;
     } ae;
 
     struct Awb {

@@ -131,6 +131,17 @@ struct Size {
     uint32_t height = 0;
 };
 
+/* The mains frequency auto exposure keeps the exposure clear of
+ * (Camera2's AE antibanding mode, its values): lamps on it flicker at
+ * twice it, and an exposure a whole number of half periods long takes
+ * in the same light whatever the phase, so the frame shows no bands.
+ * Off: no such bound. */
+enum class Antibanding : uint8_t {
+    Off  = 0,
+    Hz50 = 1,
+    Hz60 = 2,
+};
+
 /* A frame rate range, frames per second, as Camera2's AE target range
  * gives it. */
 struct FpsRange {

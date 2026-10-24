@@ -148,7 +148,10 @@ void writeControlDefaults(CameraMetadata &cm, int type,
     const int32_t controlAeTargetFpsRange[] = { fps.min, fps.max };
     cm.update(ANDROID_CONTROL_AE_TARGET_FPS_RANGE, controlAeTargetFpsRange, NELEM(controlAeTargetFpsRange));
 
-    static const uint8_t controlAeAntibandingMode = ANDROID_CONTROL_AE_ANTIBANDING_MODE_OFF;
+    /* The camera's mains; the manual template's exposure is the app's. */
+    const uint8_t controlAeAntibandingMode = manual
+        ? ANDROID_CONTROL_AE_ANTIBANDING_MODE_OFF
+        : (uint8_t)cap.ae.antibandingDefault;
     cm.update(ANDROID_CONTROL_AE_ANTIBANDING_MODE, &controlAeAntibandingMode, 1);
 
     const uint8_t controlAwbMode = manual ? ANDROID_CONTROL_AWB_MODE_OFF

@@ -51,7 +51,8 @@ DelayedControls::Batch requestExposure(
                 * (float)b.val[DelayedControls::GAIN] / (float)cfg.gainUnit
                 * (float)b.val[DelayedControls::DIGITAL_GAIN]
                 / (float)SensorConfig::kDigitalGainUnit;
-            const SensorConfig::ExposureSplit split = cfg.splitExposure(totalUs, limits);
+            const SensorConfig::ExposureSplit split = cfg.splitExposure(
+                totalUs, limits, cfg.flickerLines(settings.ae.antibanding));
             b.val[DelayedControls::EXPOSURE]     = split.exposureUs;
             b.val[DelayedControls::GAIN]         = split.gain;
             b.val[DelayedControls::DIGITAL_GAIN] = split.digitalGain;

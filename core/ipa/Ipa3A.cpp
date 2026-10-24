@@ -312,7 +312,8 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
     if (logTick) {
         const float totalUs = mAe->currentFilteredTotalUs();
         const SensorConfig::ExposureSplit diag =
-            sensorCfg.splitExposure(totalUs, sensorCfg.frameLimits(meta.aeFpsRange));
+            sensorCfg.splitExposure(totalUs, sensorCfg.frameLimits(meta.aeFpsRange),
+                                    sensorCfg.flickerLines(meta.aeAntibanding));
         const WbGains gQ8 = mAwb->currentGainsQ8();
         ALOGD("3A: frame=%u luma=%.3f iqmHi=%.3f nValid=%d awbRun=%d awbConv=%d "
               "lastWb=(%.3f,%.3f) Q8=(%u,%u) estCct=%d "

@@ -46,6 +46,7 @@ void StatsProcessStage::process(mocha::camera::Frame &ctx) {
     meta.awbLock                = s.awb.lock;
     meta.aeExposureCompensation = s.ae.evCompensationSteps;
     meta.aeFpsRange             = s.ae.fpsRange;
+    meta.aeAntibanding          = s.ae.antibanding;
 
     /* Where AE / AWB meter: what the stats' own frame asked -- its AE
      * region, or where its AF looked (CaptureEngine::dispatchStats). */

@@ -241,6 +241,21 @@ struct SensorConfig {
         return FrameLimits{(int32_t)minLen, (int32_t)maxLen};
     }
 
+    /* The lines auto exposure steps by under `mains` light: half its
+     * period, to the nearest of the mode's lines (off the half period
+     * by 0.1 % at most on mocha's modes, a band's worth of light too
+     * little to see). 0 for Off. */
+    int32_t flickerLines(mocha::camera::Antibanding mains) const {
+        int64_t halfPeriodNs = 0;
+        switch (mains) {
+        case mocha::camera::Antibanding::Hz50: halfPeriodNs = 10000000; break;
+        case mocha::camera::Antibanding::Hz60: halfPeriodNs = 8333333; break;
+        case mocha::camera::Antibanding::Off:  return 0;
+        }
+        const int64_t lineNs = lineTimeNsAt(lineLengthDefault);
+        return lineNs > 0 ? (int32_t)((halfPeriodNs + lineNs / 2) / lineNs) : 0;
+    }
+
     /* The longest exposure (µs) within `limits`. */
     int32_t maxExposureUs(const FrameLimits &limits) const {
         const int32_t us = maxExposureUs(limits.maxLen);
@@ -269,12 +284,29 @@ struct SensorConfig {
      * `limits` (the fps given up only as far as the range allows), then
      * the analog gain up to its maximum, then the ISP's digital gain for
      * the rest, up to digitalGainMax. The frame is the exposure's,
-     * never shorter than `limits` allow. */
-    ExposureSplit splitExposure(float totalUs, const FrameLimits &limits) const {
+     * never shorter than `limits` allow.
+     *
+     * Under flickering light (`flickerLines`, flickerLines() of the
+     * request's mains) the exposure is cut down to a whole number of
+     * half periods, as RPi's AGC does, and the gains make up the rest:
+     * the total, which auto exposure filters and is fed back, stays
+     * what it was. One shorter than a half period is left as it is --
+     * so short an exposure shows no bands. The exposure, in µs, is the
+     * whole lines' own, rounded up: the driver's rounding down gives
+     * back exactly those lines. */
+    ExposureSplit splitExposure(float totalUs, const FrameLimits &limits,
+                                int32_t flickerLines) const {
         ExposureSplit s;
         const int32_t maxUs = maxExposureUs(limits);
         s.exposureUs = totalUs < (float)maxUs ? (int32_t)(totalUs + 0.5f) : maxUs;
         if (s.exposureUs < 1) s.exposureUs = 1;
+        const int64_t lineNs = lineTimeNsAt(lineLengthDefault);
+        if (flickerLines > 0 && lineNs > 0) {
+            const int64_t lines = (int64_t)s.exposureUs * 1000 / lineNs;
+            const int64_t periods = lines / flickerLines;
+            if (periods > 0)
+                s.exposureUs = (int32_t)((periods * flickerLines * lineNs + 999) / 1000);
+        }
         s.frameLen = frameLenFor(s.exposureUs, limits);
         const float rest = totalUs / (float)s.exposureUs;
         int32_t g = (int32_t)lroundf(rest * (float)gainUnit);
@@ -288,6 +320,11 @@ struct SensorConfig {
         if (d > digitalGainMax)   d = digitalGainMax;
         s.digitalGain = d;
         return s;
+    }
+
+    /* Without a bound from the mains. */
+    ExposureSplit splitExposure(float totalUs, const FrameLimits &limits) const {
+        return splitExposure(totalUs, limits, 0);
     }
 
     /* In the mode's own frame. */

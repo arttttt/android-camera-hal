@@ -68,6 +68,12 @@ public:
         std::string integrator;
         /* The full ISP (WB, CCM, gamma), or demosaic only. */
         bool        softIsp = true;
+        /* The mains the templates have auto exposure keep clear of.
+         * Nothing on the device says what the local mains is (no modem,
+         * no country), so it is set, not found out; 50 Hz is the most of
+         * the world's. Off is allowed, but CTS wants 50 or 60 in the
+         * templates. */
+        Antibanding mains = Antibanding::Hz50;
         /* Requests the framework may have in flight: each stream's
          * max_buffers. More keeps frames coming through a hiccup;
          * fewer shortens the preview's and the shutter's lag -- a

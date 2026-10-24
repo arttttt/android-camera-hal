@@ -237,7 +237,7 @@ const Capability &Session::Impl::probe() {
         geometry         = readGeometry(*dev);
         capability       = probeCapability(*dev, config.facingFront, &tuning,
                                            sensorCfg, geometry,
-                                           config.requestsInFlight);
+                                           config.requestsInFlight, config.mains);
         jpegBufferSize   = capability.jpeg.maxSize;
         capabilityProbed = true;
     }

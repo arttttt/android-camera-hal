@@ -76,6 +76,10 @@ struct Capability {
         std::vector<FpsRange> targetFpsRanges;
         /* AE regions honoured at once. */
         int32_t maxRegions = 0;
+        /* The mains auto exposure can keep clear of, the default first,
+         * and the default: the requests' templates carry it. */
+        std::vector<Antibanding> antibandingModes;
+        Antibanding antibandingDefault = Antibanding::Off;
     } ae;
 
     struct Awb {

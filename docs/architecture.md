@@ -174,9 +174,14 @@ the stats engine published (`Ipa3A::processStats`).
   libcamera's order): exposure first, its frame lengthened for it as far
   as the request's AE target fps range allows (`frameLimits`: no
   shorter than 1/max, no longer than 1/min; without a range, the mode's
-  frame), then the analog gain, then the ISP's digital gain. A request
+  frame), then the analog gain, then the ISP's digital gain. Under the
+  request's AE antibanding mode (50 or 60 Hz) the exposure is cut down
+  to a whole number of mains half periods, in whole lines
+  (`flickerLines`), and the gains make up the rest, as RPi's AGC does:
+  the total AE filters and is fed back stays, so no hold is needed;
+  an exposure under a half period is left alone. A request
   bounds its own frame whatever range AE decided for
-  (`requestExposure`). Decisions go to `DelayedControls` at the frame
+  (`requestExposure`), and keeps to its own mains. Decisions go to `DelayedControls` at the frame
   they land on; the capture engine's `ApplySettingsStage` writes them.
 - **Manual AE** (`AeMode::Off`): `parseManualSettings` takes the
   request's exposure and sensitivity verbatim, grows the frame for a
@@ -228,6 +233,11 @@ the stats engine published (`Ipa3A::processStats`).
 - `persist.camera.soft_isp` (runtime, read by `Camera3Device` once per
   camera) -- `1` (default): full ISP (WB, CCM, gamma) and 3A; `0`:
   demosaic only, kept for cold bring-up.
+- `persist.camera.antibanding` (runtime, read once per camera) -- the
+  local mains: `50` (default), `60` or `off`. The templates carry it,
+  and it heads `aeAvailableAntibandingModes` (50, 60 and off are all
+  advertised; AUTO is not, there is no flicker detection). Nothing on
+  the device tells the mains (no modem, no country).
 - Which sensor and module each camera is (`Camera3Device`): back =
   IMX179 by Primax, front = OV5693 by Sunny; HalModule assigns facing
   by enumeration order.

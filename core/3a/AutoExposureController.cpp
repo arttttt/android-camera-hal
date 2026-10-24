@@ -294,7 +294,8 @@ ExposureWriteValues AutoExposureController::parseManualSettings(
          * as AE divides it, within the request's fps range. */
         const SensorConfig::ExposureSplit s = cfg.splitExposure(
                 (float)exposureUs * (float)gain / (float)cfg.gainUnit,
-                cfg.frameLimits(settings.ae.fpsRange));
+                cfg.frameLimits(settings.ae.fpsRange),
+                cfg.flickerLines(settings.ae.antibanding));
         out.exposureUs  = s.exposureUs;
         out.gain        = s.gain;
         out.digitalGain = s.digitalGain;
@@ -314,6 +315,8 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
     /* How long the frame may run: the mode's, or as far as the
      * request's fps range lets it, for a longer exposure before gain. */
     const SensorConfig::FrameLimits limits = sensorCfg.frameLimits(meta.aeFpsRange);
+    /* And in whole half periods of the mains, under flickering light. */
+    const int32_t flickerLines = sensorCfg.flickerLines(meta.aeAntibanding);
     AeResult out;
     DelayedControls::Batch &batch = out.batch;
     for (int i = 0; i < DelayedControls::COUNT; ++i) {
@@ -359,7 +362,7 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
                                 + (1.0f - damping) * lockedBiasedTotalUs;
         }
 
-        fillAeBatch(&batch, sensorCfg, sensorCfg.splitExposure(lockedBiasedTotalUs, limits));
+        fillAeBatch(&batch, sensorCfg, sensorCfg.splitExposure(lockedBiasedTotalUs, limits, flickerLines));
         return out;
     }
 
@@ -460,7 +463,7 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
     const float deviation    = targetTotalUs / filteredTotalUs - 1.0f;
     const float absDeviation = deviation < 0.f ? -deviation : deviation;
     if (absDeviation < kAeStableRegion) {
-        fillAeBatch(&batch, sensorCfg, sensorCfg.splitExposure(filteredTotalUs, limits));
+        fillAeBatch(&batch, sensorCfg, sensorCfg.splitExposure(filteredTotalUs, limits, flickerLines));
         if (aeConvergedFrames < INT32_MAX) aeConvergedFrames++;
         lastEvComp = meta.aeExposureCompensation;
         out.converged = (aeConvergedFrames >= kAeConvergedFramesRequired);
@@ -493,7 +496,7 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
     filteredTotalUs = next;
     lastEvComp = meta.aeExposureCompensation;
 
-    fillAeBatch(&batch, sensorCfg, sensorCfg.splitExposure(filteredTotalUs, limits));
+    fillAeBatch(&batch, sensorCfg, sensorCfg.splitExposure(filteredTotalUs, limits, flickerLines));
     /* The luma is the raw frame's: the lux is of the exposure it was
      * taken at, without the digital gain. */
     out.luxIndex = computeLuxIndex(base, meanLuma);

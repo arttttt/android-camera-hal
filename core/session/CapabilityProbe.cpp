@@ -186,7 +186,7 @@ Capability probeCapability(android::V4l2Device &dev, bool facingFront,
                            const android::SensorTuning *tuning,
                            const android::SensorConfig &cfg,
                            const android::SensorGeometry &geometry,
-                           int requestsInFlight) {
+                           int requestsInFlight, Antibanding mains) {
     Capability cap;
     cap.facingFront = facingFront;
 
@@ -201,6 +201,14 @@ Capability probeCapability(android::V4l2Device &dev, bool facingFront,
      * single region its weight changes nothing). */
     cap.ae.modes      = {AeMode::Off, AeMode::On};
     cap.ae.maxRegions = 1;
+
+    /* Either mains, or none (splitExposure's flicker lines). The
+     * default goes first: an app that finds no AUTO (there is no
+     * flicker detection to back one) may take the first. */
+    cap.ae.antibandingDefault = mains;
+    cap.ae.antibandingModes   = {mains};
+    for (Antibanding m : {Antibanding::Hz50, Antibanding::Hz60, Antibanding::Off})
+        if (m != mains) cap.ae.antibandingModes.push_back(m);
 
     /* AF modes where the device has a lens to move. */
     if (!dev.hasLens()) {

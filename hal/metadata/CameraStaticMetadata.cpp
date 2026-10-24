@@ -17,6 +17,7 @@
 namespace android {
 
 using mocha::camera::AeMode;
+using mocha::camera::Antibanding;
 using mocha::camera::AfMode;
 using mocha::camera::AwbMode;
 using mocha::camera::Capability;
@@ -219,10 +220,10 @@ void writeControlInfo(CameraMetadata &cm, const Capability &cap) {
     const int32_t evRange[] = { cap.ae.evMinSteps, cap.ae.evMaxSteps };
     cm.update(ANDROID_CONTROL_AE_COMPENSATION_RANGE, evRange, NELEM(evRange));
 
-    static const uint8_t controlAeAvailableAntibandingModes[] = {
-            ANDROID_CONTROL_AE_ANTIBANDING_MODE_OFF
-    };
-    cm.update(ANDROID_CONTROL_AE_AVAILABLE_ANTIBANDING_MODES, controlAeAvailableAntibandingModes, NELEM(controlAeAvailableAntibandingModes));
+    std::vector<uint8_t> antibandingModes;
+    for (Antibanding m : cap.ae.antibandingModes) antibandingModes.push_back((uint8_t)m);
+    cm.update(ANDROID_CONTROL_AE_AVAILABLE_ANTIBANDING_MODES,
+              antibandingModes.data(), antibandingModes.size());
 
     std::vector<uint8_t> awbModes;
     for (AwbMode m : cap.awb.modes) awbModes.push_back((uint8_t)m);

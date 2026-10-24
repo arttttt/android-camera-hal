@@ -53,6 +53,9 @@ struct IpaFrameMeta {
      * target fps range); without one, the mode's frame. */
     std::optional<mocha::camera::FpsRange> aeFpsRange;
 
+    /* The mains the request's auto exposure keeps clear of. */
+    mocha::camera::Antibanding aeAntibanding = mocha::camera::Antibanding::Off;
+
     IpaFrameMeta()
         : aeMode(mocha::camera::AeMode::On),
           aeLock(false),
