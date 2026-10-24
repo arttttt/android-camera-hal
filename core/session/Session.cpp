@@ -786,7 +786,7 @@ void Session::submit(FrameRequest request) {
          * can send. Camera3 gives no return code for that; the request
          * goes out at once as a failed one, in order. */
         ALOGE("frame %u: over the ceiling of %zu frames held — failed",
-              frame->frameNumber, kFrameCeiling);
+              frame->frameNumber, frameCeiling(s.probe()));
         frame->status.fail(android::NO_MEMORY);
     }
     /* A request arriving while flush() waits is cancelled like the ones
