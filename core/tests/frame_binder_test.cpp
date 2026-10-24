@@ -121,9 +121,8 @@ public:
 
     /* `first`: the number the driver gives the stream's first frame.
      * `runUp`: the stream is running when the test begins -- a request
-     * has had the stream's first frame (early: the stream starts dry),
-     * and no frame has come since -- so the test's own requests get
-     * the frames their settings are on. */
+     * has had its frame, and no frame has come since -- so the test's
+     * own requests get the frames their settings are on. */
     explicit Rig(uint32_t first = 0, bool runUp = true) : first(first) {
         dc.reset(cfg.configureDefaults());
         binder.reset(kLines);
@@ -131,8 +130,8 @@ public:
         if (runUp) {
             std::shared_ptr<FrameBinder::Ticket> t =
                 binder.request(cfg.configureDefaults(), false);
-            frame();
-            check(t->early && t->bayer.has_value());
+            while (!t->bayer && ran.size() < 8) frame();
+            check(!t->early && t->bayer.has_value());
         }
     }
 
@@ -212,13 +211,11 @@ struct InFlight {
 };
 
 /* N requests in flight, a new one sent as each one's frame comes -- the
- * framework's pace. The stream starts dry: the first requests, sent
- * before their settings can be on any frame, take the frames from the
- * first one on as they run, up to the frame the first one's settings
- * are on. From there every request, in order, gets a frame that ran
- * on its own settings, the frame it asked for; with fewer requests in
- * flight than the delay covers, frames between them go unused and
- * nothing else changes. */
+ * framework's pace. Every request, in order, gets a frame that ran on
+ * its own settings, the frame it asked for: the stream's first frames,
+ * before what configure wrote is on the record, are given to none;
+ * with fewer requests in flight than the delay covers, frames between
+ * them go unused and nothing else changes. */
 void testInFlight(size_t n) {
     Rig r(0, false);
     std::deque<InFlight> inFlight;
@@ -260,8 +257,7 @@ void testInFlight(size_t n) {
     check(own);
     check(asked);
     check(r.binder.missedFrames() == 0 && r.binder.missedStarts() == 0);
-    /* As many early as there are in flight, up to the delay. */
-    check(early == (int)std::min(n, (size_t)kDelay));
+    check(early == 0);
 
     /* A request sent as a frame arrives can get the frame kDelay + 1
      * on; n in flight fill that many of each kDelay + 1 frames, up to
@@ -269,7 +265,7 @@ void testInFlight(size_t n) {
     const size_t perCycle = n < (size_t)kDelay + 1 ? n : (size_t)kDelay + 1;
     const int expected = (int)(kFrames * perCycle / (kDelay + 1));
     check(done >= expected - (int)(2 * (kDelay + 1)));
-    check(done <= expected + 1 + early);
+    check(done <= expected + 1);
 }
 
 /* A long manual exposure among short ones: its request gets the long
@@ -611,6 +607,22 @@ void testRestartAfterDrain() {
     check(r.ran[restart + kDelay].val[DelayedControls::EXPOSURE] == 9000);
 }
 
+/* A fresh stream's first frames run on what the sensor had before
+ * configure's writes took, not on the record: the first request is not
+ * given one early, it waits for the first frame on the record. */
+void testFreshStreamNotEarly() {
+    Rig r(0, false);
+    std::shared_ptr<FrameBinder::Ticket> t =
+        r.binder.request(settings(r.cfg, 2000), false);
+    check(!t->early && t->frame == (uint32_t)kDelay);
+    Rig shifted(3, false);
+    std::shared_ptr<FrameBinder::Ticket> u =
+        shifted.binder.request(settings(shifted.cfg, 2000), false);
+    check(!u->early);
+    while (!u->bayer && shifted.next() < 8) shifted.frame();
+    check(u->bayer && u->sensorFrame == u->frame && u->frame == 3u + kDelay);
+}
+
 /* A still capture on a stream run dry waits for the frame its settings
  * are on: a manual shot is taken as asked. */
 void testStillNotEarly() {
@@ -725,6 +737,7 @@ int main() {
     testCancel();
     testFirstFrameNotZero();
     testRestartAfterDrain();
+    testFreshStreamNotEarly();
     testStillNotEarly();
     testCancelEarly();
     testOutOfOrder();

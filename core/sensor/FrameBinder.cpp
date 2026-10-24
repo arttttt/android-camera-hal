@@ -48,6 +48,7 @@ void FrameBinder::reset(uint32_t l) {
     unserved.clear();
     catchingUp = false;
     filedBy.clear();
+    onRecord = controls->firstFileable();
 }
 
 uint32_t FrameBinder::frameOf(uint32_t sequence) const {
@@ -88,6 +89,8 @@ std::shared_ptr<FrameBinder::Ticket> FrameBinder::request(
         early = anyFrame ? lastFrame + 1 : 0;
         if (anyRequest && early <= lastAsked)
             early = lastAsked + 1;
+        if (early < onRecord)
+            early = onRecord;
         while (hidden(early) || unserved.count(early)) ++early;
     }
     catchingUp = early < frame;
@@ -163,8 +166,15 @@ FrameBinder::Start FrameBinder::start(uint32_t sequence) {
          * capture's first): what was asked for moves on by it. */
         controls->rebase(sequence);
         for (const std::weak_ptr<Ticket> &w : wanted)
-            if (std::shared_ptr<Ticket> t = w.lock()) t->frame += sequence;
+            if (std::shared_ptr<Ticket> t = w.lock()) {
+                t->frame    += sequence;
+                t->filedFor += sequence;
+            }
         if (anyRequest) lastAsked += sequence;
+        onRecord += sequence;
+        std::map<uint32_t, std::weak_ptr<Ticket>> moved;
+        for (const auto &[frame, ticket] : filedBy) moved[frame + sequence] = ticket;
+        filedBy.swap(moved);
     }
     const uint32_t frame = frameOf(sequence);
     bool hides = false;

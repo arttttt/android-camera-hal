@@ -67,7 +67,11 @@ struct SensorConfig;
  * its own frames, as above. Such a request's result says what its frame ran on (the
  * static metadata promise no per-frame latency:
  * android.sync.maxLatency is UNKNOWN). A still capture always waits
- * for its own frame.
+ * for its own frame. The stream's first frames are never given early:
+ * they run on what the sensor had before configure's writes took (the
+ * mode table's own exposure, a white flash on a dark scene), not on
+ * what the record says; from the first frame a request could be filed
+ * for at the stream's start, they run on the record.
  *
  * A request is given a frame only if the frame ran on its settings, by
  * the record of what was written (each control on the frame its delay
@@ -221,6 +225,9 @@ private:
     std::deque<std::weak_ptr<Ticket>> wanted;
     bool     anyRequest = false;
     uint32_t lastAsked  = 0;   /* the last frame a request was given */
+    /* The stream's first frame that runs on the record: none before it
+     * is given early. */
+    uint32_t onRecord   = 0;
     /* The last stream request's settings: what the frames after a still
      * capture go back to. */
     std::optional<DelayedControls::Batch> streamSettings;
