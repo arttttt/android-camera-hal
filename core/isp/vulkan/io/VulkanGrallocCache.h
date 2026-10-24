@@ -27,9 +27,6 @@ public:
         VkImage       image;
         VkImageView   view;
         VkFramebuffer framebuffer;
-        /* UNDEFINED → COLOR_ATTACHMENT_OPTIMAL barrier recorded once per
-         * entry; flipped by the caller after the first transition. */
-        bool          layoutReady;
         /* Stale-detection identity. Camera2's BufferQueue hands back the
          * same `native_handle_t *` pointer for buffers whose underlying
          * gralloc allocation has been replaced; the cached VkImage is
@@ -54,8 +51,7 @@ public:
 
     /* Look up or create the wrappers for this gralloc buffer. On cache
      * miss allocates image/view/framebuffer and stores them; `outEntry`
-     * points into the cache so the layoutReady flag can be flipped by
-     * the caller. Returns false on any Vulkan failure. */
+     * points into the cache. Returns false on any Vulkan failure. */
     bool getOrCreate(ANativeWindowBuffer *anwb,
                      unsigned width, unsigned height,
                      Entry **outEntry);

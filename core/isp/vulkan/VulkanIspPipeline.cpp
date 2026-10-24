@@ -324,7 +324,6 @@ void VulkanIspPipeline::recordRgbaBlitRenderPass(int slot,
 
     mDeviceState.pfn()->CmdDraw(cb, 3, 1, 0, 0);
     mDeviceState.pfn()->CmdEndRenderPass(cb);
-    entry->layoutReady = true;
 }
 
 void VulkanIspPipeline::recordYuvEncodeDispatch(int slot, unsigned width, unsigned height,

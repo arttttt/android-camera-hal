@@ -179,7 +179,6 @@ bool VulkanGrallocCache::getOrCreate(ANativeWindowBuffer *anwb,
         return false;
     }
 
-    entry.layoutReady = false;
     entry.handleHash  = curHash;
     entry.dmabufInode = curInode;
     entry.lastUsed    = mFrame;
