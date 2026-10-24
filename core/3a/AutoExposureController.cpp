@@ -11,6 +11,7 @@
 #include "sensor/DelayedControls.h"
 #include "sensor/SensorConfig.h"
 #include "sensor/SensorTuning.h"
+#include "util/Srgb.h"
 
 namespace android {
 
@@ -35,17 +36,17 @@ inline int32_t clampInt(int32_t v, int32_t lo, int32_t hi) {
 /* AE setpoint from the MeanAlg target pair. NVIDIA authors these in
  * the post-gamma 0..255 domain (so 110..120 sits around sRGB middle
  * grey 0.45 post-gamma); our histogram comes off the raw Bayer
- * green channel in linear pre-gamma [0, 1] space. Gamma-decode the
- * midpoint with the standard 2.2 exponent so the setpoint lands
- * near 18 % middle grey linear — (115/255)^2.2 ≈ 0.174 for IMX179,
- * (130/255)^2.2 ≈ 0.227 for OV5693 (different MeanAlg targets per
- * sensor). */
+ * green channel in linear pre-gamma [0, 1] space. Decode the
+ * midpoint with the same sRGB curve the gamma LUT encodes with, so
+ * the setpoint is the linear value the shader renders as the target
+ * — 115/255 → 0.171 for IMX179, 130/255 → 0.223 for OV5693
+ * (different MeanAlg targets per sensor). */
 float deriveAeSetpoint(const SensorTuning *t) {
     if (!t || !t->aeParams().loaded) return 0.f;
     const float mid = (t->aeParams().higherTarget
                      + t->aeParams().lowerTarget) * 0.5f;
     if (mid <= 0.f) return 0.f;
-    return powf(mid / 255.0f, 2.2f);
+    return srgbDecode(mid / 255.0f);
 }
 
 float deriveAeDamping(const SensorTuning *t) {

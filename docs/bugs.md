@@ -15,14 +15,16 @@ problem — see the AE section of
 [tier3_architecture.md](tier3_architecture.md) and the
 "gain-dependent colour cast" note below.
 
-**Current derivation (hal/3a/AutoExposureController.cpp):**
-`aeSetpoint = pow(mid / 255, 2.2)` where `mid = (HigherTarget +
-LowerTarget) / 2` from `active.ae.MeanAlg`. On the shipped tunings:
+**Current derivation (core/3a/AutoExposureController.cpp):**
+`aeSetpoint = srgbDecode(mid / 255)` where `mid = (HigherTarget +
+LowerTarget) / 2` from `active.ae.MeanAlg`, decoded with the same
+sRGB curve the gamma LUT encodes with (`core/util/Srgb.h`). On the
+shipped tunings:
 
-- IMX179: `mid = 115` → setpoint ≈ **0.174** linear
-- OV5693: `mid = 130` → setpoint ≈ **0.227** linear
+- IMX179: `mid = 115` → setpoint ≈ **0.171** linear
+- OV5693: `mid = 130` → setpoint ≈ **0.223** linear
 
-0.174 is the photographic 18 % middle-grey target. That's correct
+0.171 is about the photographic 18 % middle-grey target. That's correct
 for a scene whose gray-world average *is* 18 % reflectance; typical
 indoor shots average 10-15 %, so AE's ratio drive pushes one half-
 stop past where the scene would naturally land.
@@ -37,12 +39,12 @@ stop past where the scene would naturally land.
    pattern (IMX179's optics have stronger vignetting on this
    module).
 2. **Gamma exponent — REFUTED (24.10.2026).** The shader does not
-   use a power law: `buildGammaLut` is the piecewise sRGB encode, and
-   the `pow(x, 2.2)` decode is only 1.2 % above the LUT's inverse at
+   use a power law: `buildGammaLut` is the piecewise sRGB encode. The
+   old `pow(x, 2.2)` decode was only 1.2 % above the LUT's inverse at
    the rear's target (115/255: 0.1734 vs 0.1714) and 1.8 % at the
-   front's (130/255: 0.2271 vs 0.2232). The 0.147 / 0.195 figures
-   assumed a pure 2.4 exponent, which nothing uses. The setpoint is
-   within a grey code of what the shader renders.
+   front's (130/255: 0.2271 vs 0.2232); the 0.147 / 0.195 figures
+   assumed a pure 2.4 exponent, which nothing uses. Since 25.10.2026
+   the setpoint decodes with the LUT's own curve, so this gap is gone.
 3. **NVIDIA's MeanAlg target is in a domain other than sRGB.** If
    it's `Y = 0.3R + 0.6G + 0.1B` of post-WB raw, our linear G-only
    patch mean (`rgbMean[*][*][1]`) samples a different slice of the

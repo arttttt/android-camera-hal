@@ -165,7 +165,7 @@ the stats engine published (`Ipa3A::processStats`).
 - **AE** (`AutoExposureController`). State is `filteredTotalUs`
   (exposure × gain at unity, µs). Each frame two candidate ratios:
   `ratioMean = setpoint / lumaInRoi` (spot mean of the green channel
-  inside the metering ROI, setpoint `pow(MeanAlg.target/255, 2.2)`) and
+  inside the metering ROI, setpoint `srgbDecode(MeanAlg.target/255)`) and
   `ratioHighlight = highlightCap / IQM_top2%` (post-WB max-of-channels
   of the brightest ~2 % of patches). Strictest wins, clamped to the
   per-sensor `MaxFstopDelta` rate limit; a single-pole LPF moves
