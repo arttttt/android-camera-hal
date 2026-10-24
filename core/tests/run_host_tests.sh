@@ -100,5 +100,7 @@ run sensor_geometry_test core/tests/sensor_geometry_test.cpp \
                          core/sensor/SensorGeometry.cpp
 run region_patches_test  core/tests/region_patches_test.cpp \
                          core/3a/RegionPatches.cpp core/sensor/SensorGeometry.cpp
+run pipeline_cache_file_test core/tests/pipeline_cache_file_test.cpp \
+                         core/isp/vulkan/runtime/PipelineCacheFile.cpp
 
 exit $failed
