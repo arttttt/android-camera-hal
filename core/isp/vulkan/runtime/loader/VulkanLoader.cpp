@@ -106,6 +106,9 @@ void VulkanLoader::loadDevicePfns(VkDevice device, VulkanPfn *pfn) const {
     DEV(DestroyPipelineLayout);
     DEV(CreateComputePipelines);
     DEV(DestroyPipeline);
+    DEV(CreatePipelineCache);
+    DEV(DestroyPipelineCache);
+    DEV(GetPipelineCacheData);
 
     DEV(CreateDescriptorPool);
     DEV(DestroyDescriptorPool);

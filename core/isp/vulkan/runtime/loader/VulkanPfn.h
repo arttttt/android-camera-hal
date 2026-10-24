@@ -210,6 +210,9 @@ struct VulkanPfn {
     PFN_vkDestroyPipelineLayout                     DestroyPipelineLayout;
     PFN_vkCreateComputePipelines                    CreateComputePipelines;
     PFN_vkDestroyPipeline                           DestroyPipeline;
+    PFN_vkCreatePipelineCache                       CreatePipelineCache;
+    PFN_vkDestroyPipelineCache                      DestroyPipelineCache;
+    PFN_vkGetPipelineCacheData                      GetPipelineCacheData;
 
     PFN_vkCreateDescriptorPool                      CreateDescriptorPool;
     PFN_vkDestroyDescriptorPool                     DestroyDescriptorPool;

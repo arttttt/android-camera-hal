@@ -32,6 +32,16 @@ public:
     uint32_t         queueFamily() const { return mQueueFamily; }
     VulkanPfn       *pfn()         const { return mPfn; }
 
+    /* The pipeline cache every pipeline on this device is created
+     * through; VK_NULL_HANDLE when the driver gave none. It starts from
+     * what the process kept of the last device's: on this driver the
+     * GLSL is compiled when the pipeline is created, the bulk of a
+     * camera's first open. */
+    VkPipelineCache  pipelineCache() const { return mPipelineCache; }
+
+    /* Keeps the cache's contents for the next device in this process. */
+    void storePipelineCache() const;
+
     /* VK_ANDROID_native_buffer is filtered out of the app-side libvulkan
      * on Android 7, but the HAL-variant loader exposes it. Gralloc
      * zero-copy output depends on it. */
@@ -60,6 +70,7 @@ private:
     VkQueue          mQueue;
     uint32_t         mQueueFamily;
     bool             mNativeBufferAvail;
+    VkPipelineCache  mPipelineCache;
 };
 
 }; /* namespace android */

@@ -741,6 +741,10 @@ bool VulkanIspPipeline::init() {
                              " %s=%lldms", step.name, ms);
     }
 
+    /* Every pipeline is built: what they compiled to is kept for the
+     * other camera's device. */
+    mDeviceState.storePipelineCache();
+
     buildGammaLut();
 
     mReady = true;
@@ -863,7 +867,7 @@ bool VulkanIspPipeline::createComputePipeline() {
     cpci.layout       = mPipeLayout;
 
     if (mDeviceState.pfn()->CreateComputePipelines(
-            mDeviceState.device(), VK_NULL_HANDLE, 1, &cpci, NULL,
+            mDeviceState.device(), mDeviceState.pipelineCache(), 1, &cpci, NULL,
             mPipeline.receive(mDeviceState.device(), mDeviceState.pfn()->DestroyPipeline)) != VK_SUCCESS) {
         ALOGE("vkCreateComputePipelines failed");
         return false;
@@ -973,7 +977,7 @@ bool VulkanIspPipeline::createGraphicsPipeline() {
     gpci.subpass             = 0;
 
     if (mDeviceState.pfn()->CreateGraphicsPipelines(
-            mDeviceState.device(), VK_NULL_HANDLE, 1, &gpci, NULL,
+            mDeviceState.device(), mDeviceState.pipelineCache(), 1, &gpci, NULL,
             mBlitPipeline.receive(mDeviceState.device(), mDeviceState.pfn()->DestroyPipeline)) != VK_SUCCESS) {
         ALOGE("vkCreateGraphicsPipelines failed");
         return false;

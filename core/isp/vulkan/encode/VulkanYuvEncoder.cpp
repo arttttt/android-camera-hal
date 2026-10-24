@@ -119,7 +119,7 @@ bool VulkanYuvEncoder::createPipeline() {
     cpci.stage.module = mShader;
     cpci.stage.pName  = "main";
     cpci.layout       = mPipeLayout;
-    if (mDev.pfn()->CreateComputePipelines(mDev.device(), VK_NULL_HANDLE, 1, &cpci, NULL, &mPipeline) != VK_SUCCESS) {
+    if (mDev.pfn()->CreateComputePipelines(mDev.device(), mDev.pipelineCache(), 1, &cpci, NULL, &mPipeline) != VK_SUCCESS) {
         ALOGE("YuvEnc CreateComputePipelines failed");
         return false;
     }
