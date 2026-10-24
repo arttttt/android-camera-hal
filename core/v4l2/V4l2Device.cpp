@@ -77,6 +77,7 @@ V4l2Device::V4l2Device(const char *devNode)
     : mFd(-1)
     , mConnected(false)
     , mStreaming(false)
+    , mBuffersAllocated(false)
     , mDevNode(strdup(devNode))
     , mPixelFormat(0)
     , mMemoryType(V4L2_MEMORY_MMAP)
@@ -292,7 +293,8 @@ Resolution V4l2Device::sensorResolution() {
  * not, false is returned. Call only with disabled streaming.
  */
 bool V4l2Device::setResolution(unsigned width, unsigned height) {
-    if(mFormat.fmt.pix.width == width && mFormat.fmt.pix.height == height)
+    if(mBuffersAllocated &&
+       mFormat.fmt.pix.width == width && mFormat.fmt.pix.height == height)
         return true;
 
     ALOGD("New resolution: %dx%d", width, height);
@@ -400,7 +402,9 @@ bool V4l2Device::negotiatePixelFormat(int fd) {
 }
 
 /**
- * Connects to camera, allocates buffers, starts streaming
+ * Opens the camera and sets its default format. The buffers wait for
+ * setResolution(): only then is the memory type known, and a REQBUFS of
+ * MMAP buffers nobody uses costs most of the open.
  */
 bool V4l2Device::connect() {
     if(isConnected())
@@ -435,8 +439,8 @@ bool V4l2Device::connect() {
         height = resolutions[0].height;
         ALOGD("Using default resolution: %dx%d", defaultRes.width, defaultRes.height);
     }
-    if(!setResolutionAndAllocateBuffers(width, height)) {
-        ALOGE("Could not set resolution");
+    if(!iocSFmt(width, height)) {
+        ALOGE("Could not set pixel format to %dx%d: %s (%d)", width, height, strerror(errno), errno);
         closeFd(&mFd);
         return false;
     }
@@ -534,16 +538,11 @@ void V4l2Device::setDmaBufFds(const int *fds, int count) {
                               : V4L2_MEMORY_DMABUF;
 
     /* Switching memory type means the kernel-side buffers REQBUFS'd
-     * under the old type are no longer valid for QBUF. Wipe the
-     * cached format so the next setResolution() goes through
-     * setResolutionAndAllocateBuffers (which re-REQBUFS) instead of
-     * short-circuiting on a same-w-same-h match. Without this, the
-     * caller can land at the right resolution for the current session
-     * (connect()'s default == configureStreams target) and still hit
-     * Pre-STREAMON QBUF EINVAL because the kernel buffers are
-     * MMAP-bound while we're trying to bind dmabuf fds. */
+     * under the old type are no longer valid for QBUF, so the next
+     * setResolution() re-REQBUFS even at the same size. Without this,
+     * QBUF before STREAMON fails with EINVAL on MMAP-bound buffers. */
     if (newType != mMemoryType)
-        memset(&mFormat, 0, sizeof(mFormat));
+        mBuffersAllocated = false;
 
     if (newType == V4L2_MEMORY_MMAP) {
         mMemoryType = V4L2_MEMORY_MMAP;
@@ -850,6 +849,7 @@ bool V4l2Device::setResolutionAndAllocateBuffers(unsigned width, unsigned height
 
     /* Release kernel-side buffers before S_FMT — vb2 returns EBUSY otherwise */
     iocReleaseBufs();
+    mBuffersAllocated = false;
 
     if(!iocSFmt(width, height)) {
         ALOGE("Could not set pixel format to %dx%d: %s (%d)", width, height, strerror(errno), errno);
@@ -892,6 +892,7 @@ bool V4l2Device::setResolutionAndAllocateBuffers(unsigned width, unsigned height
          * setStreaming(). */
     }
 
+    mBuffersAllocated = true;
     return true;
 }
 
@@ -905,16 +906,14 @@ void V4l2Device::cleanup() {
 
     closeFd(&mFd);
     mConnected = false;
+    mBuffersAllocated = false;
 
-    /* Wipe the cached V4L2 format. The kernel-side state is gone with
-     * the fd, so the next connect() must run a fresh S_FMT + REQBUFS
-     * to bind buffers to whichever memory type the next session ends
-     * up using (DMABUF after configureStreams + setDmaBufFds, or MMAP
-     * for the bring-up default). Skipping this leaves a stale
-     * 1920×1080 cached from session 1; session 2's setResolution then
-     * sees "same as cached" and short-circuits, so REQBUFS never
-     * re-runs and QBUF EINVALs at the next STREAMON. mPixelFormat
-     * and mAvailableResolutions are sensor capabilities and stay. */
+    /* Wipe the cached V4L2 format: the kernel-side state is gone with
+     * the fd, and the next connect() starts from the default
+     * resolution, not the last session's. The buffers are reallocated
+     * by the next setResolution() (mBuffersAllocated is false).
+     * mPixelFormat and mAvailableResolutions are sensor capabilities
+     * and stay. */
     memset(&mFormat, 0, sizeof(mFormat));
 }
 

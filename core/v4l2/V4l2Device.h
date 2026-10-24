@@ -110,7 +110,7 @@ public:
     /* Switch capture memory model from the default V4L2_MEMORY_MMAP to
      * V4L2_MEMORY_DMABUF, using the caller-owned dma-buf fds as capture
      * targets. Each fd i is bound to V4L2 queue index i. Must be called
-     * BEFORE setResolution()/connect()'s buffer allocation; takes effect
+     * BEFORE setResolution(), which allocates the buffers; takes effect
      * the next time buffers are (re-)allocated. Pass count=0 to revert. */
     void setDmaBufFds(const int *fds, int count);
 
@@ -158,6 +158,7 @@ private:
     int mFd;
     bool mConnected;
     bool mStreaming;
+    bool mBuffersAllocated;                 /* REQBUFS done for mFormat and mMemoryType */
     const char *mDevNode;
     std::string mLensNode;
     bool mLensWalked = false;
