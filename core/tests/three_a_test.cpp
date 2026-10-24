@@ -384,12 +384,14 @@ void testFlickerSnap() {
 }
 
 /* Auto exposure under a 50 Hz mains settles on the same total as
- * without, its exposure on the grid. */
+ * without, its exposure on the grid. Indoors: a couple of half periods
+ * of exposure and some analog gain (settleAe's linear sensor takes in
+ * no digital gain). */
 void testAeAntibanding() {
     SensorTuning tuning;
     check(tuning.loadFile("tuning/imx179_primax.json"));
     const SensorConfig cfg = imx179();
-    const float dim = 1.f / 3000000.f;
+    const float dim = 1.f / 150000.f;
     bool converged = false;
 
     AutoExposureController aeOff(cfg, &tuning, kThirdStop);
