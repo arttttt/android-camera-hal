@@ -95,6 +95,7 @@ run three_a_test         core/tests/three_a_test.cpp \
                          core/3a/RegionPatches.cpp core/sensor/SensorGeometry.cpp \
                          core/3a/ThreeAReport.cpp core/sensor/DelayedControls.cpp \
                          "${TUNING[@]}" -- -ljsoncpp
+run ccm_saturation_test  core/tests/ccm_saturation_test.cpp core/3a/CcmSaturation.cpp
 run exif_test            core/tests/exif_test.cpp core/jpeg/Exif.cpp
 run sensor_geometry_test core/tests/sensor_geometry_test.cpp \
                          core/sensor/SensorGeometry.cpp

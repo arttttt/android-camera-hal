@@ -44,6 +44,22 @@ bool readJson(const std::string &path, Json::Value *out) {
     return true;
 }
 
+/* A [[x, y], ...] array, at least two points, into `out`; false (and
+ * `out` empty) when the array is anything else. */
+bool readPwl(const Json::Value &arr, Pwl *out) {
+    if (!arr.isArray() || arr.size() < 2) return false;
+    out->clear();
+    for (Json::Value::ArrayIndex i = 0; i < arr.size(); ++i) {
+        const Json::Value &row = arr[i];
+        if (!row.isArray() || row.size() != 2) {
+            out->clear();
+            return false;
+        }
+        out->addPoint(row[0].asFloat(), row[1].asFloat());
+    }
+    return true;
+}
+
 } /* namespace */
 
 SensorTuning::SensorTuning()
@@ -307,20 +323,6 @@ bool SensorTuning::loadFile(const std::string &path) {
     if (bayes.isObject()) {
         BayesParams bp;
 
-        auto readPwl = [](const Json::Value &arr, Pwl *out) -> bool {
-            if (!arr.isArray() || arr.size() < 2) return false;
-            out->clear();
-            for (Json::Value::ArrayIndex i = 0; i < arr.size(); ++i) {
-                const Json::Value &row = arr[i];
-                if (!row.isArray() || row.size() != 2) {
-                    out->clear();
-                    return false;
-                }
-                out->addPoint(row[0].asFloat(), row[1].asFloat());
-            }
-            return true;
-        };
-
         const bool ctR = readPwl(bayes["ctCurveR"], &bp.ctCurveR);
         const bool ctB = readPwl(bayes["ctCurveB"], &bp.ctCurveB);
 
@@ -435,6 +437,10 @@ bool SensorTuning::loadFile(const std::string &path) {
             mAeParams.closeSpeedZone = halAe["close_speed_zone"].asFloat();
         if (halAe.isObject() && halAe.isMember("min_metering_roi_patches"))
             mAeParams.minMeteringRoiPatches = halAe["min_metering_roi_patches"].asInt();
+        const Json::Value &satCurve = halOverrides["ccm"]["saturation_vs_total_us"];
+        if (!satCurve.isNull() && !readPwl(satCurve, &mCcmSaturation))
+            ALOGE("tuning %s: hal_overrides.ccm.saturation_vs_total_us malformed"
+                  " — no dark-scene desaturation", path.c_str());
     }
 
     ALOGD("tuning loaded: %s — %zu CCM sets, AF=%d, BL=(%d,%d,%d,%d)",

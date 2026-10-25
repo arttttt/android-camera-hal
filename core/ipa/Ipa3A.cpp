@@ -12,6 +12,7 @@
 #include "3a/Awb.h"
 #include "3a/AwbFactory.h"
 #include "3a/AwbResult.h"
+#include "3a/CcmSaturation.h"
 #include "3a/ThreeAReport.h"
 #include "IpaFrameMeta.h"
 #include "IpaStats.h"
@@ -97,6 +98,9 @@ Ipa3A::Ipa3A(const SensorConfig &cfg, IspControls *ispPipeline,
           sensorCfg.maxExposureUsDefault(),
           tuning ? (tuning->isLoaded() ? 1 : 0) : -1);
 
+    if (ccmBufferQ10)
+        std::copy(ccmBufferQ10, ccmBufferQ10 + 9, baseCcmQ10);
+
     /* Seed the shader immediately so the very first frame — before
      * any stats land — renders through the prior's WB gains instead
      * of the ISP's unity defaults. */
@@ -130,8 +134,17 @@ void Ipa3A::reset() {
     if (tuning && ccmBufferQ10 && tuning->awbParams().loaded) {
         const float U       = logf(mAwb->currentWbB());
         const int   estCctK = tuning->estimateCctFromU(U);
-        tuning->ccmForCctLerpQ10(estCctK, ccmBufferQ10);
+        tuning->ccmForCctLerpQ10(estCctK, baseCcmQ10);
     }
+    publishCcm();
+}
+
+void Ipa3A::publishCcm() {
+    if (!ccmBufferQ10) return;
+    ccmSaturation = 1.f;
+    if (tuning && !tuning->ccmSaturation().empty())
+        ccmSaturation = tuning->ccmSaturation().eval(mAe->currentFilteredTotalUs());
+    desaturateCcmQ10(baseCcmQ10, ccmSaturation, ccmBufferQ10);
 }
 
 bool Ipa3A::isAeConverged() const {
@@ -201,8 +214,8 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
                         awbResult.gains->g,
                         awbResult.gains->b);
     }
-    if (awbResult.ccm && ccmBufferQ10) {
-        for (int i = 0; i < 9; ++i) ccmBufferQ10[i] = awbResult.ccm->v[i];
+    if (awbResult.ccm) {
+        for (int i = 0; i < 9; ++i) baseCcmQ10[i] = awbResult.ccm->v[i];
     }
 
     /* The AF report as of the last tick, for the AF keys of the
@@ -273,6 +286,11 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
      * `active.ae.luxAnchor`. */
     if (aeResult.luxIndex > 0.f) lastLuxIndex = aeResult.luxIndex;
 
+    /* The CCM goes out on every tick, not only when AWB ran: below
+     * the AWB gate is exactly where the desaturation has to follow
+     * AE as the scene darkens. */
+    publishCcm();
+
     /* AE partial — sent at once. Apps watching the AE state see it as
      * soon as the IPA tick finishes, ahead of the buffer-bearing final
      * result. The exposure in it is what is physically in effect on
@@ -318,7 +336,7 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
         ALOGD("3A: frame=%u luma=%.3f iqmHi=%.3f nValid=%d awbRun=%d awbConv=%d "
               "lastWb=(%.3f,%.3f) Q8=(%u,%u) estCct=%d "
               "totalUs=%.0f exp=%d gain=%d digital=%d frameLen=%d evComp=%d "
-              "lux=%.0f",
+              "lux=%.0f sat=%.2f",
               frameCount, (double)sceneLuma, (double)aeResult.iqmHighlight,
               awbResult.validPatchCount, awbRun ? 1 : 0,
               mAwb->isConverged() ? 1 : 0,
@@ -327,7 +345,7 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
               mAwb->currentEstCct(), (double)totalUs, diag.exposureUs,
               diag.gain, diag.digitalGain, diag.frameLen,
               meta.aeExposureCompensation,
-              (double)lastLuxIndex);
+              (double)lastLuxIndex, (double)ccmSaturation);
     }
 
     return aeResult.batch;

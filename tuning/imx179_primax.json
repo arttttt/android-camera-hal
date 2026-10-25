@@ -35,6 +35,14 @@
         "_comment": "An AE region (a tap) meters over at least this many stats patches a side: the 5x5 AF has metered on since AE followed the AF region.",
         "min_metering_roi_patches": 5
       },
+      "ccm": {
+        "_comment": "Dark-scene desaturation: AE's filtered exposure x gain at unity gain (us) -> chroma scale folded into the CCM, luminance kept. Below the AWB dark gate the prior WB and the R/B noise show as a blue/purple cast; this trades the colour away, as rkaiq's gain_sat_curve and RPi's lux-keyed saturation do. Knots are a starting point, to be fitted on the owner's scenes (25.10.2026: the owner's dark room sits at ~300000).",
+        "saturation_vs_total_us": [
+          [60000, 1.0],
+          [150000, 0.6],
+          [300000, 0.25]
+        ]
+      },
       "af": {
         "_comment": "Contrast-detect AF. All required: a missing key disables AF. Values started from RPi libcamera's.",
         "step_coarse": 25,

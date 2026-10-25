@@ -332,6 +332,15 @@ public:
     const AeParams&             aeParams()      const { return mAeParams; }
     AwbAlgorithm                awbAlgorithm()  const { return mAwbAlgorithm; }
 
+    /* Dark-scene desaturation (HAL-specific, active.hal_overrides.ccm.
+     * saturation_vs_total_us): AE's filtered exposure × gain at unity
+     * gain, µs → the chroma scale desaturateCcmQ10 folds into the
+     * CCM. As the scene darkens the noise and a WB held below the AWB
+     * gate show as colour; the curve trades that colour away, as
+     * rkaiq's gain_sat_curve and RPi's lux-keyed saturation do. Empty
+     * when the tuning has none: the CCM is used as it is. */
+    const Pwl&                  ccmSaturation() const { return mCcmSaturation; }
+
     /* Optional surface — `engaged()` true iff the parser saw a
      * minimum-viable bayes block. Callers route by checking
      * presence: `if (auto &b = tuning->bayesParams()) { ... }`. */
@@ -421,6 +430,7 @@ private:
     AeParams     mAeParams;
     AwbAlgorithm                              mAwbAlgorithm = AwbAlgorithm::GrayWorld;
     Optional<BayesParams>  mBayesParams;
+    Pwl          mCcmSaturation;
     std::string  mBayerPattern;
 };
 

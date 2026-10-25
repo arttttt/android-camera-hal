@@ -80,6 +80,13 @@ private:
     const SensorTuning  *tuning;
     int16_t             *ccmBufferQ10;
 
+    /* The CCM AWB picked, before the dark-scene desaturation;
+     * ccmBufferQ10 carries it desaturated by the tuning's curve at
+     * AE's current exposure, rewritten every tick (publishCcm). */
+    int16_t              baseCcmQ10[9] = {1024, 0, 0, 0, 1024, 0, 0, 0, 1024};
+    float                ccmSaturation = 1.f;   /* last applied, for the log */
+    void publishCcm();
+
     /* Coordinator-side gating threshold — below this scene-luma
      * value the AWB controller is held (its patches are noise-
      * dominated). Pulled from tuning's awb.v4.cStatsDarkThreshold;
