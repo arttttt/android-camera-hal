@@ -333,9 +333,9 @@ public:
     AwbAlgorithm                awbAlgorithm()  const { return mAwbAlgorithm; }
 
     /* Dark-scene desaturation (HAL-specific, active.hal_overrides.ccm.
-     * saturation_vs_total_us): AE's filtered exposure × gain at unity
-     * gain, µs → the chroma scale desaturateCcmQ10 folds into the
-     * CCM. As the scene darkens the noise and a WB held below the AWB
+     * saturation_vs_gain): the total gain AE runs at (analog × the
+     * ISP's digital, 1 = none) → the chroma scale desaturateCcmQ10
+     * folds into the CCM. As the scene darkens the noise and a WB held below the AWB
      * gate show as colour; the curve trades that colour away, as
      * rkaiq's gain_sat_curve and RPi's lux-keyed saturation do. Empty
      * when the tuning has none: the CCM is used as it is. */

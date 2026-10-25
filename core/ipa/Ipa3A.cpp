@@ -136,14 +136,14 @@ void Ipa3A::reset() {
         const int   estCctK = tuning->estimateCctFromU(U);
         tuning->ccmForCctLerpQ10(estCctK, baseCcmQ10);
     }
-    publishCcm();
+    publishCcm(1.f);
 }
 
-void Ipa3A::publishCcm() {
+void Ipa3A::publishCcm(float totalGain) {
     if (!ccmBufferQ10) return;
     ccmSaturation = 1.f;
     if (tuning && !tuning->ccmSaturation().empty())
-        ccmSaturation = tuning->ccmSaturation().eval(mAe->currentFilteredTotalUs());
+        ccmSaturation = tuning->ccmSaturation().eval(totalGain);
     desaturateCcmQ10(baseCcmQ10, ccmSaturation, ccmBufferQ10);
 }
 
@@ -288,8 +288,19 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
 
     /* The CCM goes out on every tick, not only when AWB ran: below
      * the AWB gate is exactly where the desaturation has to follow
-     * AE as the scene darkens. */
-    publishCcm();
+     * AE as the scene darkens. Keyed on the gain, not the exposure
+     * total: AE spends exposure first, and 60 ms at 2x in a lit room
+     * is as clean as 30 ms at 1x — the noise comes with the gain. */
+    {
+        const SensorConfig::ExposureSplit split =
+            sensorCfg.splitExposure(mAe->currentFilteredTotalUs(),
+                                    sensorCfg.frameLimits(meta.aeFpsRange),
+                                    sensorCfg.flickerLines(meta.aeAntibanding));
+        const float analog = sensorCfg.gainUnit > 0
+                           ? (float)split.gain / (float)sensorCfg.gainUnit : 1.f;
+        publishCcm(analog * (float)split.digitalGain
+                          / (float)SensorConfig::kDigitalGainUnit);
+    }
 
     /* AE partial — sent at once. Apps watching the AE state see it as
      * soon as the IPA tick finishes, ahead of the buffer-bearing final

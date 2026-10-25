@@ -437,9 +437,9 @@ bool SensorTuning::loadFile(const std::string &path) {
             mAeParams.closeSpeedZone = halAe["close_speed_zone"].asFloat();
         if (halAe.isObject() && halAe.isMember("min_metering_roi_patches"))
             mAeParams.minMeteringRoiPatches = halAe["min_metering_roi_patches"].asInt();
-        const Json::Value &satCurve = halOverrides["ccm"]["saturation_vs_total_us"];
+        const Json::Value &satCurve = halOverrides["ccm"]["saturation_vs_gain"];
         if (!satCurve.isNull() && !readPwl(satCurve, &mCcmSaturation))
-            ALOGE("tuning %s: hal_overrides.ccm.saturation_vs_total_us malformed"
+            ALOGE("tuning %s: hal_overrides.ccm.saturation_vs_gain malformed"
                   " — no dark-scene desaturation", path.c_str());
     }
 

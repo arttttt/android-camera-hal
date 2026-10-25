@@ -82,10 +82,11 @@ private:
 
     /* The CCM AWB picked, before the dark-scene desaturation;
      * ccmBufferQ10 carries it desaturated by the tuning's curve at
-     * AE's current exposure, rewritten every tick (publishCcm). */
+     * the total gain (analog × digital) AE's exposure splits into,
+     * rewritten every tick (publishCcm). 1 = no gain, full colour. */
     int16_t              baseCcmQ10[9] = {1024, 0, 0, 0, 1024, 0, 0, 0, 1024};
     float                ccmSaturation = 1.f;   /* last applied, for the log */
-    void publishCcm();
+    void publishCcm(float totalGain);
 
     /* Coordinator-side gating threshold — below this scene-luma
      * value the AWB controller is held (its patches are noise-
