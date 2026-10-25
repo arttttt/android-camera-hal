@@ -209,7 +209,10 @@ the stats engine published (`Ipa3A::processStats`).
   state has one owner. Continuous-picture mode retriggers on scene
   change; a sweep samples only fresh statistics of a frame exposed
   after the lens settled. AE and AWB are held for the length of any
-  sweep (a level, not edges). Tap-to-focus takes the request's AF
+  sweep (a level, not edges), so a sweep starts only once AE holds
+  still: a passive one waits for it, a triggered one reports
+  ActiveScan at once and waits at most `trigger_ae_wait_ms` (a lock
+  taken mid-chase held a dark room's exposure low for a 6 s sweep). Tap-to-focus takes the request's AF
   region (one, `CONTROL_MAX_REGIONS = {1, 0, 1}`), grown to a minimum
   patch footprint; that ROI restricts the NEON focus metric. AE (and
   the AWB scene-light gate) meter over the request's AE region, grown
@@ -268,7 +271,9 @@ converted from the stock NVIDIA `.isp` overrides by
   measures 19-21, the stock says 15), and the contrast-AF knobs under `af` (`step_coarse`, `step_fine`,
   `contrast_ratio`, `retrigger_ratio`, `retrigger_delay_frames`,
   `pdaf_enabled`, `min_frames_between_sweeps`,
-  `min_focus_roi_patches`; all required -- a missing one disables AF).
+  `min_focus_roi_patches`; all required -- a missing one disables AF;
+  optional `trigger_ae_wait_ms`, without which a trigger does not wait
+  for AE).
 - `reserved` -- the rest of the stock tuning, kept 1:1 until a stage
   consumes it.
 - `module` -- datasheet values not in the `.isp` (focal length, min

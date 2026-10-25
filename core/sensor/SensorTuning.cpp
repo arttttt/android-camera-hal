@@ -147,6 +147,8 @@ bool SensorTuning::loadFile(const std::string &path) {
             mAf.pdafEnabled            = cdaf["pdaf_enabled"].asBool();
             mAf.minFramesBetweenSweeps = cdaf["min_frames_between_sweeps"].asInt();
             mAf.minFocusRoiPatches     = cdaf["min_focus_roi_patches"].asInt();
+            /* Optional: without it a trigger does not wait for AE. */
+            mAf.triggerAeWaitMs        = cdaf["trigger_ae_wait_ms"].asInt();
             mHasAf = true;
         }
     }

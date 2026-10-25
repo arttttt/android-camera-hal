@@ -323,9 +323,15 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
      * (going through DelayedControls like exposure would cost a
      * sweep step several frames). */
     if (af) {
+        /* What AF waits for is AE holding still. Manual exposure and
+         * the app's AE_LOCK hold it still by request; only the auto
+         * loop has a convergence to wait for. The lock AF itself
+         * holds doesn't count -- it's taken only once a sweep runs. */
+        const bool aeSettled = meta.aeMode == AeMode::Off || meta.aeLock
+                            || aeResult.converged;
         const AfResult afResult = af->process(stats, statsFresh,
                                               params.inputExposureStartNs,
-                                              aeResult.converged);
+                                              aeSettled);
         if (afResult.vcmPosition)
             lensWriter(*afResult.vcmPosition);
         if (afResult.sweeping != afHoldsLocks) {

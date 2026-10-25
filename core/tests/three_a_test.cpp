@@ -23,6 +23,7 @@
 
 #include <math.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include <cstdio>
 #include <cstring>
@@ -691,6 +692,66 @@ void testAfSweep() {
     check(af.report().afState == AfState::Inactive);
 }
 
+
+/* AF: a trigger while AE is still chasing answers ACTIVE_SCAN at once
+ * but leaves the lens and AE alone until AE converges -- the sweep
+ * locks AE, and a lock taken mid-chase would hold the wrong exposure
+ * for the whole sweep. The wait is capped, and CANCEL drops it. */
+void testAfTriggerWaitsForAe() {
+    SensorTuning tuning;
+    check(tuning.loadFile("tuning/imx179_primax.json"));
+    check(tuning.af().triggerAeWaitMs > 0);
+    const FrameMap frame = imx179Frame1080();
+    const int64_t later = systemTime() + 10000000000LL;
+    const IpaStats stats = uniformStats(0.4f, 0.4f, 0.4f, 50.f);
+
+    FrameSettings s;
+    s.af.mode = AfMode::Auto;
+    auto trigger = [&](AutoFocusController &af, AfTrigger t, uint32_t n) {
+        s.af.trigger = t;
+        af.onSettings(s, n);
+        s.af.trigger = AfTrigger::Idle;
+    };
+
+    {
+        AutoFocusController af(&tuning, &frame);
+        trigger(af, AfTrigger::Start, 0);
+        for (int tick = 0; tick < 5; ++tick) {
+            const AfResult r = af.process(stats, true, later, false);
+            check(r.state == AfState::ActiveScan);
+            check(!r.sweeping);
+            check(!r.vcmPosition);
+        }
+        /* A second START while waiting changes nothing. */
+        trigger(af, AfTrigger::Start, 1);
+        check(!af.process(stats, true, later, false).sweeping);
+
+        const AfResult r = af.process(stats, true, later, true);
+        check(r.state == AfState::ActiveScan);
+        check(r.sweeping);
+        check((bool)r.vcmPosition);
+    }
+
+    {
+        AutoFocusController af(&tuning, &frame);
+        trigger(af, AfTrigger::Start, 0);
+        check(!af.process(stats, true, later, false).sweeping);
+        trigger(af, AfTrigger::Cancel, 1);
+        check(af.process(stats, true, later, true).state == AfState::Inactive);
+        const AfResult r = af.process(stats, true, later, true);
+        check(r.state == AfState::Inactive);
+        check(!r.sweeping);
+    }
+
+    {
+        AutoFocusController af(&tuning, &frame);
+        trigger(af, AfTrigger::Start, 0);
+        check(!af.process(stats, true, later, false).sweeping);
+        usleep((tuning.af().triggerAeWaitMs + 50) * 1000);
+        check(af.process(stats, true, later, false).sweeping);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -710,5 +771,6 @@ int main() {
     testGrayWorld();
     testAfRegionWeight();
     testAfSweep();
+    testAfTriggerWaitsForAe();
     return finish("three_a_test");
 }

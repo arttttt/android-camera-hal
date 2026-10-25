@@ -54,7 +54,9 @@
         "retrigger_delay_frames": 10,
         "pdaf_enabled": false,
         "min_frames_between_sweeps": 30,
-        "min_focus_roi_patches": 5
+        "min_focus_roi_patches": 5,
+        "_trigger_ae_wait_comment": "A triggered sweep locks AE for its length, so it first waits for AE to converge, at most this long (ms). In a dark room AE needs ~1.6 s from the open-time trigger to reach its maximum (task-870 log); 2000 lets it get there.",
+        "trigger_ae_wait_ms": 2000
       }
     },
     "af": {

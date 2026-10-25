@@ -80,6 +80,11 @@ public:
          * is grown to: one patch is too little Sobel signal for a
          * stable peak. */
         int minFocusRoiPatches;
+
+        /* Longest a triggered sweep waits for AE to converge before
+         * it starts anyway, in ms. Optional: missing or 0, a trigger
+         * starts its sweep at once. */
+        int triggerAeWaitMs;
     };
 
     struct CcmSet {

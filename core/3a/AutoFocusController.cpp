@@ -98,6 +98,9 @@ AutoFocusController::AutoFocusController(const SensorTuning *tuning,
     , mSettleNs(0)
     , mMinFramesBetweenSweeps(0)
     , mMinFocusRoiPatches(0)
+    , mTriggerAeWaitNs(0)
+    , mTriggerWaiting(false)
+    , mTriggerWaitSinceNs(0)
     , mVcmPerDiopter(0.f)
     , mAfMode(AfMode::Off)
     , mFocusPosition(0)
@@ -141,6 +144,7 @@ AutoFocusController::AutoFocusController(const SensorTuning *tuning,
         mPdafEnabled        = af.pdafEnabled;
         mMinFramesBetweenSweeps = (uint32_t)af.minFramesBetweenSweeps;
         mMinFocusRoiPatches     = af.minFocusRoiPatches;
+        mTriggerAeWaitNs        = (int64_t)af.triggerAeWaitMs * 1000000LL;
 
         /* VCM units per diopter are derived from the calibrated VCM
          * range and the module's min focus distance. Doing it from
@@ -158,14 +162,14 @@ AutoFocusController::AutoFocusController(const SensorTuning *tuning,
 
         ALOGD("AF tuning: cal=%d inf=%d macro=%d auto_end=%d "
               "step=%d/%d settle=%lldms ratios=%.2f/%.2f delay=%d pdaf=%d "
-              "vcm_per_diopter=%.2f",
+              "vcm_per_diopter=%.2f trigger_ae_wait=%dms",
               af.moduleCalEnable ? 1 : 0,
               mVcmInfinity, mVcmMacroEnd, mVcmAutoEnd,
               mStepCoarse, mStepFine,
               (long long)(mSettleNs / 1000000),
               (double)mContrastRatio, (double)mRetriggerRatio, mRetriggerDelay,
               mPdafEnabled ? 1 : 0,
-              (double)mVcmPerDiopter);
+              (double)mVcmPerDiopter, af.triggerAeWaitMs);
 
         if (mPdafEnabled) {
             ALOGW("AF: pdaf_enabled=true but no PDAF state-machine wired; "
@@ -267,10 +271,26 @@ void AutoFocusController::startSweep(AfMode afMode, SweepKind kind) {
           mState == ScanState::Coarse1 ? "Coarse1" : "Coarse2");
 }
 
+void AutoFocusController::triggerSweep(AfMode afMode) {
+    if (mTriggerAeWaitNs <= 0) {
+        startSweep(afMode, SweepKind::Triggered);
+        return;
+    }
+    /* Camera2 puts no deadline on ACTIVE_SCAN, so the trigger is
+     * answered now and the sweep waits for AE in it. Nothing is
+     * locked while it waits: AE has to be free to get there. */
+    mSweepKind          = SweepKind::Triggered;
+    mAfState            = AfState::ActiveScan;
+    mTriggerWaiting     = true;
+    mTriggerWaitSinceNs = systemTime();
+}
+
 void AutoFocusController::cancelSweep() {
     /* Back to INACTIVE, sweep or no sweep: CANCEL also releases a
-     * lock (AUTO's locked result, CONTINUOUS_PICTURE's lock). */
-    mState       = ScanState::Idle;
+     * lock (AUTO's locked result, CONTINUOUS_PICTURE's lock), and
+     * drops a trigger still waiting for AE. */
+    mState          = ScanState::Idle;
+    mTriggerWaiting = false;
     mAfState     = AfState::Inactive;
     mCafLocked   = false;
     mLockPending = false;
@@ -552,21 +572,24 @@ void AutoFocusController::applyCommand(const Command &cmd) {
             mLockPending = true;
             return;
         }
+        if (mTriggerWaiting)
+            return;
         const FocusRoi roi = currentFocusRoi();
         const bool roiMoved =
             roi.pyLo != mLastSweepRoi.pyLo || roi.pyHi != mLastSweepRoi.pyHi ||
             roi.pxLo != mLastSweepRoi.pxLo || roi.pxHi != mLastSweepRoi.pxHi;
         if (roiMoved || !mHaveVerdict)
-            startSweep(cmd.afMode, SweepKind::Triggered);
+            triggerSweep(cmd.afMode);
         else
             lockOnVerdict();
         return;
     }
 
     /* AUTO / MACRO: START scans, from INACTIVE or from a previous
-     * locked result; one already scanning is left to finish. */
-    if (mState == ScanState::Idle)
-        startSweep(cmd.afMode, SweepKind::Triggered);
+     * locked result; one already scanning, or waiting to, is left to
+     * finish. */
+    if (mState == ScanState::Idle && !mTriggerWaiting)
+        triggerSweep(cmd.afMode);
 }
 
 AfResult AutoFocusController::process(const IpaStats &stats, bool fresh,
@@ -592,6 +615,21 @@ AfResult AutoFocusController::process(const IpaStats &stats, bool fresh,
      * for patches the encoder skipped. */
     const FocusRoi roi = currentFocusRoi();
     const float score = sumFocusInRoi(stats.focusMetric, roi);
+
+    /* A trigger waiting for AE: the sweep starts once AE has converged,
+     * or when the wait runs out -- a scene AE never settles on still
+     * gets focused. Until then no lens move and no locks. */
+    if (mTriggerWaiting) {
+        const int64_t waitedNs = systemTime() - mTriggerWaitSinceNs;
+        if (!aeConverged && waitedNs < mTriggerAeWaitNs)
+            goto finish;
+        mTriggerWaiting = false;
+        ALOGD("AF: trigger waited %lld ms for AE (%s)",
+              (long long)(waitedNs / 1000000),
+              aeConverged ? "converged" : "timed out");
+        startSweep(mAfMode, SweepKind::Triggered);
+        goto finish;
+    }
 
     if (mState == ScanState::Idle) {
         if (mFramesSinceLastSweep < UINT32_MAX) mFramesSinceLastSweep++;
@@ -757,6 +795,8 @@ void AutoFocusController::reset() {
     mState              = ScanState::Idle;
     mAfState            = AfState::Inactive;
     mSweepKind          = SweepKind::Passive;
+    mTriggerWaiting     = false;
+    mTriggerWaitSinceNs = 0;
     mCafLocked          = false;
     mLockPending        = false;
     mHaveVerdict        = false;

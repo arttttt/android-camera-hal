@@ -96,9 +96,13 @@ public:
      * exposing (systemTime, 0 = unknown). A sweep only samples fresh
      * stats of a frame exposed after the lens settled.
      *
-     * `aeConverged` gates continuous-AF retrigger — refuses to scan
-     * while AE is still chasing exposure (brightness changes from AE
-     * catching up would look like scene changes). The coordinator
+     * `aeConverged` gates the start of every sweep. Continuous-AF
+     * retrigger refuses to scan while AE is still chasing exposure
+     * (brightness changes from AE catching up would look like scene
+     * changes). A triggered sweep reports ACTIVE_SCAN at once but
+     * waits for it, at most the tuning's trigger_ae_wait_ms: the sweep
+     * locks AE, and a lock taken mid-chase holds the wrong exposure
+     * for the whole sweep -- seconds in a dark room. The coordinator
      * passes the AE controller's current convergence flag.
      *
      * Returned AfResult.sweeping tells the coordinator to hold AE / AWB
@@ -158,6 +162,9 @@ private:
     enum class SweepKind { Passive, Triggered };
 
     void   startSweep(mocha::camera::AfMode afMode, SweepKind kind);
+    /* A trigger's sweep: ACTIVE_SCAN now, the sweep itself once AE
+     * has converged or the wait ran out (process()). */
+    void   triggerSweep(mocha::camera::AfMode afMode);
     void   cancelSweep();
     /* CONTINUOUS_PICTURE lock: report the last sweep's verdict as
      * FOCUSED_LOCKED / NOT_FOCUSED_LOCKED and stop refocusing until
@@ -259,6 +266,12 @@ private:
     int64_t  mSettleNs;      /* VCM settle after a move (tuning settle_time) */
     uint32_t mMinFramesBetweenSweeps;   /* tuning */
     int      mMinFocusRoiPatches;       /* tuning */
+    int64_t  mTriggerAeWaitNs;          /* tuning; 0 = no wait */
+
+    /* A trigger waiting for AE before its sweep starts (ACTIVE_SCAN,
+     * the lens and AE left alone), since mTriggerWaitSinceNs. */
+    bool     mTriggerWaiting;
+    int64_t  mTriggerWaitSinceNs;
 
     /* VCM units per diopter, derived at construction from the
      * calibrated VCM range and SensorTuning's
