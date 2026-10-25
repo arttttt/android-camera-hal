@@ -8,7 +8,8 @@ how a frame travels and is owned, cancellation and shutdown -- is in
 [tier3_architecture.md](tier3_architecture.md).
 
 ```
- Android camera provider (HIDL 2.4)
+ Android camera provider (HIDL 2.4), provider/: the stock legacy service
+ on /dev/binder (android.hardware.camera.provider@2.4-service.mocha)
         │ dlopen camera.tegra.so, camera3_device ops
         ▼
  hal/  camera.tegra  ── Camera3 frontend ───────────────────────────────
@@ -88,6 +89,10 @@ The clocks behind each level are the power HAL's, in the device tree
 LOW (CPU >= 828 / GPU >= 396 MHz) 16-18, MID (828 / 468) ~15, HIGH
 (1044 / 540) ~12. EMC is the kernel's own.
 
+`IPower/default` lives on /dev/binder; the stock provider service puts
+its process on /dev/vndbinder, and libbinder takes one driver per
+process, so the HAL runs in its own provider binary (`provider/`), the
+stock one on /dev/binder, under the stock service's name.
 `IPower/default` is looked up with `AServiceManager_checkService`, which
 does not wait: with no service the hints are dropped (one log line).
 `setMode` and `setBoost` are oneway. A level on dies with a power HAL

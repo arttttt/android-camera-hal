@@ -131,6 +131,27 @@ cc_library_shared {
     ],
 }
 
+// The camera provider that loads camera.tegra: the stock legacy 2.4
+// service, on /dev/binder instead of /dev/vndbinder so the HAL reaches
+// the power HAL (see provider/service.cpp). It replaces the stock one.
+cc_binary {
+    name: "android.hardware.camera.provider@2.4-service.mocha",
+    overrides: ["android.hardware.camera.provider@2.4-service"],
+    defaults: ["hidl_defaults"],
+    proprietary: true,
+    relative_install_path: "hw",
+    compile_multilib: "32",
+    srcs: ["provider/service.cpp"],
+    init_rc: ["provider/android.hardware.camera.provider@2.4-service.mocha.rc"],
+    shared_libs: [
+        "android.hardware.camera.provider@2.4",
+        "libbinder",
+        "libhidlbase",
+        "liblog",
+        "libutils",
+    ],
+}
+
 // Per-sensor tuning profiles.
 prebuilt_etc {
     name: "imx179_primax.json",
