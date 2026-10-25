@@ -808,6 +808,23 @@ void testAfLowLightSkip() {
         check(af.process(statsAt(0), true, later, lit).sweeping);
     }
 
+    /* The scene goes dark under a running sweep: it stops there, as a
+     * skipped one would, instead of walking the rest of the range. */
+    {
+        AutoFocusController af(&tuning, &frame);
+        trigger(af, AfTrigger::Start, 0);
+        int lens = 0;
+        for (int tick = 0; tick < 3; ++tick) {
+            const AfResult r = af.process(statsAt(lens), true, later, lit);
+            check(r.sweeping);
+            if (r.vcmPosition) lens = *r.vcmPosition;
+        }
+        const AfResult r = af.process(statsAt(lens), true, later, dark);
+        check(!r.sweeping);
+        check(r.state == AfState::NotFocusedLocked);
+        check(r.vcmPosition && *r.vcmPosition == lowLightPos);
+    }
+
     /* After a focused sweep, the dark leaves the lens where it was
      * focused. */
     {

@@ -284,11 +284,15 @@ void AutoFocusController::startSweep(AfMode afMode, SweepKind kind) {
           mState == ScanState::Coarse1 ? "Coarse1" : "Coarse2");
 }
 
+bool AutoFocusController::isTooDark(const AeView &ae) const {
+    return mLowLightMinLevel > 0.f && ae.lightAtMax > 0.f
+        && ae.lightAtMax < mLowLightMinLevel;
+}
+
 void AutoFocusController::beginSweep(SweepKind kind, const AeView &ae) {
     /* Logged on every sweep, skipped or not: the level the skip
      * threshold is chosen from. */
-    const bool tooDark = mLowLightMinLevel > 0.f && ae.lightAtMax > 0.f
-                      && ae.lightAtMax < mLowLightMinLevel;
+    const bool tooDark = isTooDark(ae);
     ALOGD("AF: light at max %.3f (skip below %.3f)%s",
           (double)ae.lightAtMax, (double)mLowLightMinLevel,
           tooDark ? " -> too dark, no sweep" : "");
@@ -761,6 +765,17 @@ AfResult AutoFocusController::process(const IpaStats &stats, bool fresh,
      * right after a move still show the old position; a sample taken
      * from them would credit the old position's sharpness to the new
      * one and shift the whole score curve by a step. */
+    /* A scene gone too dark under a running sweep -- the camera turned
+     * away from what it was focusing on -- has nothing left to find:
+     * the sweep ends as a skipped one would, rather than walking the
+     * lens through the rest of its range on a black frame. */
+    if (isTooDark(ae)) {
+        ALOGD("AF: light at max %.3f under the sweep -> too dark, sweep stopped",
+              (double)ae.lightAtMax);
+        skipSweep(mSweepKind);
+        goto finish;
+    }
+
     if (!fresh || statsExposureStartNs <= 0 ||
         statsExposureStartNs < mLensMovedNs + mSettleNs)
         goto finish;

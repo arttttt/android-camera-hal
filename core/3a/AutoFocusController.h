@@ -178,6 +178,8 @@ private:
     void   startSweep(mocha::camera::AfMode afMode, SweepKind kind);
     /* A sweep a gate let through: started, or skipped in the dark. */
     void   beginSweep(SweepKind kind, const AeView &ae);
+    /* The scene under low_light_min_level at the longest exposure. */
+    bool   isTooDark(const AeView &ae) const;
     /* The low-light skip: the lens to where it can be trusted, the
      * verdict unfocused, as if a sweep had found nothing. */
     void   skipSweep(SweepKind kind);
