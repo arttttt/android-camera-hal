@@ -56,7 +56,10 @@
         "min_frames_between_sweeps": 30,
         "min_focus_roi_patches": 5,
         "_trigger_ae_wait_comment": "A triggered sweep locks AE for its length, so it first waits for AE to converge, at most this long (ms). In a dark room AE needs ~1.6 s from the open-time trigger to reach its maximum (task-870 log); 2000 lets it get there.",
-        "trigger_ae_wait_ms": 2000
+        "trigger_ae_wait_ms": 2000,
+        "_low_light_comment": "No sweep when the scene stays under its AE target even at the longest exposure and highest gain (AeResult::lightAtMax < 1): the 25.10 walk-through measured a dark room at 0.75 (sweep failed) and dim rooms at 16-25 (focused); bright 300-3400. The lens then goes to the last focused position, or 0.5 D: f 3.36 mm at f/2.0 with a ~3 um circle of confusion has its hyperfocal near 1.9 m, ~1 m to infinity acceptably sharp.",
+        "low_light_min_level": 1.0,
+        "low_light_focus_diopters": 0.5
       }
     },
     "af": {
