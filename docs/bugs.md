@@ -56,7 +56,7 @@ stop past where the scene would naturally land.
 **Planned work (TBD):** (1) lens shading is the biggest lever. The
 old candidate (2), sRGB-correct gamma, is refuted above.
 
-## Gain-dependent blue/green colour cast at high analog gain (IMX179)
+## Gain-dependent blue/green colour cast at high analog gain (IMX179) — fixed
 
 **Symptom:** In low-light scenes on the main camera, preview picks
 up a blue/green cast once Ipa3A drives `gain` to the top of the
@@ -74,28 +74,44 @@ the reachable range, so the black-level-drift hypothesis is
 assumed; past it the ISP's digital gain (up to ×4, Ipa3A /
 `SensorConfig::digitalGainMax`) takes over.
 
-**Remaining candidate:** AWB holds its prior in the dark rather than
-estimating. Below `awb.v4.CStatsDarkThreshold` (0.006 in both
-tunings) Ipa3A does not tick AWB, and a session that starts dark
-renders through the boot prior — on the rear (R 1.993, B 1.881,
-black level 64) that is ≈4743 K, visibly blue in a warm-lit room.
-Tracked in task-861; the dark-scene reproduction is still missing.
+**Cause (reproduced 25.10.2026, the owner's dark room):** AWB holds
+its prior in the dark rather than estimating. Below
+`awb.v4.CStatsDarkThreshold` (0.006 in both tunings) Ipa3A does not
+tick AWB, and a session that starts dark renders through the boot
+prior — on the rear (R 1.993, B 1.881) ≈4743 K. The scene sat at
+sceneLuma 0.002; `rawcap` at the same 60 ms / 5× read R 1.35 /
+G 2.54 / B 1.87 LSB over black, and the prior on those means gives
+B/G 1.38 with no noise at all — the preview showed 1.31. The light
+there is cooler than 4743 K; there is no colour left to estimate a
+white from, and nobody does at that level (NVIDIA, Qualcomm, RPi and
+IPU3 all drop such stats).
 
-**Planned fixes (TBD):**
+**Fix (`49f2f1c`, `ae81f51`, `66c6a1c`):** the CCM is desaturated as
+the gain rises, as rkaiq (`gain_sat_curve`) and RPi (lux-keyed
+`saturation`) do: `desaturateCcmQ10` folds s·rgb + (1 − s)·Y into the
+matrix (luminance and white kept), Ipa3A publishes it every tick,
+also below the AWB gate, with s from
+`hal_overrides.ccm.saturation_vs_gain` at the total gain (analog ×
+digital). Both sensors start at 1.0 to 2×, 0.8 at 4×, 0.55 at 8×,
+0.35 at 16×, 0.25 at 64×. Keyed on gain, not exposure × gain: AE
+spends exposure first, so a lit room at 60 ms / 2× must keep its
+colour. The 3A log line reports `sat=`.
 
-- **AWB in the dark** — the remaining candidate: let the
-  lux-conditioned Bayesian priors (or the last scene estimate) carry
-  the dark instead of a hard freeze. task-861.
+**Open:**
+
+- **The knots** are a starting point fitted by eye on two scenes; a
+  noise calibration per sensor (task-828) should replace them.
+- **A warmer dark anchor** — RPi's lux-conditioned prior pulls the
+  dark towards 2000-3000 K; ours needs `ae.luxAnchor` first (absent
+  in both tunings, so `luxIndex` is 0).
+- **Chroma noise reduction** — NVIDIA ships a gain-keyed chroma NR
+  (`reserved.noiseReduction.v6.Chroma`, 0.01 at 1× → 0.13 at 16×);
+  we have no such stage. Denoise epic (task-823).
 - **VFRTable** (`reserved.ae.VFRTable`) — let AE drop frame-rate to
   extend exposure in low light instead of reaching for max gain.
-  Standard NVIDIA behaviour; the table is already in the tuning.
 - **Gain-dependent optical black** — measured flat to 16× on this
-  module, so there is nothing to correct here; keep the
-  `hal_overrides.optical_black.level` knob for a module that needs
-  one (the OV5693 uses it, 20, commit `dbadef3`).
-- **Soft cap on max gain** — no longer aimed at the cause: a cap on
-  analog gain only moves the rest of the exposure to the ISP's
-  digital gain, and loses light.
+  module, nothing to correct; the OV5693 uses the
+  `hal_overrides.optical_black.level` knob (20, `dbadef3`).
 
 ## ISO sticks after manual → auto switch in Camera2 apps
 
