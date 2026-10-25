@@ -31,6 +31,7 @@
 namespace mocha::camera {
 
 class GrallocPort;
+class PowerPort;
 class ResultSink;
 
 /* A capture request as a frontend hands it in: its settings, parsed,
@@ -52,7 +53,8 @@ struct FrameRequest {
  * and feeds requests to. Everything behind it -- the sensor and its
  * lens, the ISP, 3A, JPEG, the engines -- is the core's own; what it
  * has to say comes back through the ResultSink, and it reaches the
- * frontend's buffers only through the GrallocPort.
+ * frontend's buffers only through the GrallocPort. How much work it is
+ * about to do goes out through the PowerPort, when there is one.
  *
  * Built once per camera and kept across open / close. Calls come from
  * the frontend's threads: open, close, configure and submit one at a
@@ -94,7 +96,9 @@ public:
         std::string model;
     };
 
-    Session(const Config &config, ResultSink *sink, GrallocPort *gralloc);
+    /* power may be null: then the core says nothing of its work. */
+    Session(const Config &config, ResultSink *sink, GrallocPort *gralloc,
+            PowerPort *power = nullptr);
     ~Session();
 
     Session(const Session &) = delete;

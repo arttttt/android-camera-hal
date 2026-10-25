@@ -56,6 +56,7 @@
 #include "ipa/Ipa3A.h"
 #include "jpeg/JpegEncoder.h"
 #include "mochacamera/ports/GrallocPort.h"
+#include "mochacamera/ports/PowerPort.h"
 #include "mochacamera/ports/ResultSink.h"
 #include "pipeline/BufferProcessor.h"
 #include "pipeline/stages/DemosaicBlitStage.h"
@@ -119,12 +120,14 @@ constexpr int kFlushTimeoutMs = 1000;
 } /* namespace */
 
 struct Session::Impl {
-    Impl(const Config &config, ResultSink *sink, GrallocPort *gralloc);
+    Impl(const Config &config, ResultSink *sink, GrallocPort *gralloc,
+         PowerPort *power);
     ~Impl();
 
     const Config  config;
     ResultSink   *sink;
     GrallocPort  *gralloc;
+    PowerPort    *power;
 
     SensorTuning tuning;
     SensorConfig sensorCfg;
@@ -190,8 +193,8 @@ struct Session::Impl {
     void cancelInFlight(const std::function<bool(const Frame &)> &which);
 };
 
-Session::Impl::Impl(const Config &c, ResultSink *s, GrallocPort *g)
-    : config(c), sink(s), gralloc(g) {
+Session::Impl::Impl(const Config &c, ResultSink *s, GrallocPort *g, PowerPort *p)
+    : config(c), sink(s), gralloc(g), power(p) {
     mocha::camera::setPerfLog(config.perfLog);
     tuning.load(config.sensorName.c_str(), config.integrator.c_str());
 
@@ -546,6 +549,7 @@ void Session::Impl::stopEngines() {
         resultEngine->dispatchFailed(*frame);
 
     frameSource->stop();
+    if (power) power->stopped();
 }
 
 bool Session::Impl::startEngines() {
@@ -573,8 +577,9 @@ bool Session::Impl::startEngines() {
 
 /* ------------------------------------------------------------------ */
 
-Session::Session(const Config &config, ResultSink *sink, GrallocPort *gralloc)
-    : impl(std::make_unique<Impl>(config, sink, gralloc)) {}
+Session::Session(const Config &config, ResultSink *sink, GrallocPort *gralloc,
+                 PowerPort *power)
+    : impl(std::make_unique<Impl>(config, sink, gralloc, power)) {}
 
 Session::~Session() = default;
 
@@ -590,6 +595,8 @@ int32_t Session::sensorOrientationDegrees() const {
 
 bool Session::open() {
     Impl &s = *impl;
+    /* Opening up to the first frames is the camera's own launch. */
+    if (s.power) s.power->opening();
     s.dev->connect();
 
     /* The lens, if the device has one: the media graph links it into
@@ -737,6 +744,17 @@ Session::ConfigureResult Session::configure(std::span<const StreamSpec> outputs)
         return ConfigureResult::Failed;
     }
     s.captureSize = capture;
+
+    /* The load is the sensor's pixels at the mode's own frame rate:
+     * what the ISP has to demosaic and the stats to read, whatever the
+     * outputs. A long exposure slows it; the hint stays the mode's. */
+    if (s.power) {
+        const int64_t frameNs = s.sensorCfg.frameDurationNs(
+            s.sensorCfg.frameLenDefault, s.sensorCfg.lineLengthDefault);
+        if (frameNs > 0)
+            s.power->streaming((uint64_t)capture.width * capture.height *
+                               1000000000ull / (uint64_t)frameNs);
+    }
     return ConfigureResult::Ok;
 }
 
@@ -775,6 +793,11 @@ void Session::submit(FrameRequest request) {
         });
     }
     s.lastAeMode = aeMode;
+
+    /* A still goes through the full-frame ISP pass and a JPEG encode:
+     * the frame the sensor gives, its size the capture's. */
+    if (s.power && frame->settings.stillCapture)
+        s.power->stillCapture((uint64_t)s.captureSize.width * s.captureSize.height);
 
     /* The frame's first token, taken before the result engine sees the
      * frame: it waits for the frame until the last token goes. */
