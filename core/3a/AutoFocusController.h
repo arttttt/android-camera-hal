@@ -60,6 +60,15 @@ public:
     /* AF region of interest in IpaStats patch grid coordinates. */
     using FocusRoi = PatchRoi;
 
+    /* What AF needs to know of AE on a tick. */
+    struct AeView {
+        /* AE holds still: converged, locked by the app, or manual. */
+        bool  settled;
+        /* AeResult::lightAtMax -- the scene's luma at the longest
+         * exposure, against the setpoint; 0 = not measured. */
+        float lightAtMax;
+    };
+
     /* `tuning` is optional — pass nullptr or a !isLoaded() instance and
      * the controller falls back to compile-time VCM defaults. When the
      * tuning provides AF data we consume it (inf/macro positions,
@@ -96,14 +105,19 @@ public:
      * exposing (systemTime, 0 = unknown). A sweep only samples fresh
      * stats of a frame exposed after the lens settled.
      *
-     * `aeConverged` gates the start of every sweep. Continuous-AF
+     * `ae.settled` gates the start of every sweep. Continuous-AF
      * retrigger refuses to scan while AE is still chasing exposure
      * (brightness changes from AE catching up would look like scene
      * changes). A triggered sweep reports ACTIVE_SCAN at once but
      * waits for it, at most the tuning's trigger_ae_wait_ms: the sweep
      * locks AE, and a lock taken mid-chase holds the wrong exposure
-     * for the whole sweep -- seconds in a dark room. The coordinator
-     * passes the AE controller's current convergence flag.
+     * for the whole sweep -- seconds in a dark room.
+     *
+     * `ae.lightAtMax` below the tuning's low_light_min_level skips the
+     * sweep a gate would start: a scene AE can't bring near its target
+     * has no contrast to find, and the sweep only walks the lens for
+     * seconds. The lens goes to the last focused position (or the
+     * tuning's low_light_focus_diopters) and the verdict is unfocused.
      *
      * Returned AfResult.sweeping tells the coordinator to hold AE / AWB
      * locked for as long as it is true. `vcmPosition`, when
@@ -111,7 +125,7 @@ public:
      * on this same tick, which keeps a sweep step on the frame the
      * state machine decided it. */
     AfResult process(const IpaStats &stats, bool fresh,
-                     int64_t statsExposureStartNs, bool aeConverged);
+                     int64_t statsExposureStartNs, const AeView &ae);
 
     /* The state as of the last process() tick. Safe from any thread. */
     Report report() const;
@@ -162,9 +176,14 @@ private:
     enum class SweepKind { Passive, Triggered };
 
     void   startSweep(mocha::camera::AfMode afMode, SweepKind kind);
+    /* A sweep a gate let through: started, or skipped in the dark. */
+    void   beginSweep(SweepKind kind, const AeView &ae);
+    /* The low-light skip: the lens to where it can be trusted, the
+     * verdict unfocused, as if a sweep had found nothing. */
+    void   skipSweep(SweepKind kind);
     /* A trigger's sweep: ACTIVE_SCAN now, the sweep itself once AE
      * has converged or the wait ran out (process()). */
-    void   triggerSweep(mocha::camera::AfMode afMode);
+    void   triggerSweep();
     void   cancelSweep();
     /* CONTINUOUS_PICTURE lock: report the last sweep's verdict as
      * FOCUSED_LOCKED / NOT_FOCUSED_LOCKED and stop refocusing until
@@ -185,6 +204,9 @@ private:
     void   advanceCoarse(float score);
     void   advanceFine(float score);
     void   commitSweep(bool focused);
+    /* The end of a sweep, run or skipped: the lens to `pos`, the
+     * verdict into the AF state, the scene watch restarted. */
+    void   settleVerdict(int32_t pos, bool focused);
     void   recordSample(int32_t pos, float score);
     /* Discrete argmax inside [start, end) over `mScanData`, plus a
      * parabolic refinement using the immediate neighbours when
@@ -267,6 +289,11 @@ private:
     uint32_t mMinFramesBetweenSweeps;   /* tuning */
     int      mMinFocusRoiPatches;       /* tuning */
     int64_t  mTriggerAeWaitNs;          /* tuning; 0 = no wait */
+    float    mLowLightMinLevel;         /* tuning; 0 = no skip */
+    int32_t  mLowLightPos;              /* tuning, as a VCM position */
+    /* Where the last focused sweep left the lens, this session. */
+    bool     mHaveFocusedPos;
+    int32_t  mLastFocusedPos;
 
     /* A trigger waiting for AE before its sweep starts (ACTIVE_SCAN,
      * the lens and AE left alone), since mTriggerWaitSinceNs. */

@@ -327,11 +327,13 @@ DelayedControls::Batch Ipa3A::processStats(const IpaProcessParams &params) {
          * the app's AE_LOCK hold it still by request; only the auto
          * loop has a convergence to wait for. The lock AF itself
          * holds doesn't count -- it's taken only once a sweep runs. */
-        const bool aeSettled = meta.aeMode == AeMode::Off || meta.aeLock
-                            || aeResult.converged;
+        AutoFocusController::AeView aeView;
+        aeView.settled    = meta.aeMode == AeMode::Off || meta.aeLock
+                         || aeResult.converged;
+        aeView.lightAtMax = aeResult.lightAtMax;
         const AfResult afResult = af->process(stats, statsFresh,
                                               params.inputExposureStartNs,
-                                              aeSettled);
+                                              aeView);
         if (afResult.vcmPosition)
             lensWriter(*afResult.vcmPosition);
         if (afResult.sweeping != afHoldsLocks) {

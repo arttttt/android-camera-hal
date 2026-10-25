@@ -99,6 +99,10 @@ AutoFocusController::AutoFocusController(const SensorTuning *tuning,
     , mMinFramesBetweenSweeps(0)
     , mMinFocusRoiPatches(0)
     , mTriggerAeWaitNs(0)
+    , mLowLightMinLevel(0.f)
+    , mLowLightPos(0)
+    , mHaveFocusedPos(false)
+    , mLastFocusedPos(0)
     , mTriggerWaiting(false)
     , mTriggerWaitSinceNs(0)
     , mVcmPerDiopter(0.f)
@@ -181,6 +185,15 @@ AutoFocusController::AutoFocusController(const SensorTuning *tuning,
 
     mFocusPosition = mVcmInfinity;
     mSweepBestPos  = mVcmInfinity;
+
+    if (tuning && tuning->isLoaded() && tuning->hasAf()) {
+        const SensorTuning::AfParams &af = tuning->af();
+        mLowLightMinLevel = af.lowLightMinLevel;
+        mLowLightPos = clampVcm(mVcmInfinity
+                                + (int32_t)lrintf(af.lowLightFocusDiopters * mVcmPerDiopter));
+        ALOGD("AF low light: min_level=%.3f focus=%.2f D -> pos=%d",
+              (double)mLowLightMinLevel, (double)af.lowLightFocusDiopters, mLowLightPos);
+    }
     publishReport();
 }
 
@@ -271,14 +284,36 @@ void AutoFocusController::startSweep(AfMode afMode, SweepKind kind) {
           mState == ScanState::Coarse1 ? "Coarse1" : "Coarse2");
 }
 
-void AutoFocusController::triggerSweep(AfMode afMode) {
-    if (mTriggerAeWaitNs <= 0) {
-        startSweep(afMode, SweepKind::Triggered);
-        return;
-    }
+void AutoFocusController::beginSweep(SweepKind kind, const AeView &ae) {
+    /* Logged on every sweep, skipped or not: the level the skip
+     * threshold is chosen from. */
+    const bool tooDark = mLowLightMinLevel > 0.f && ae.lightAtMax > 0.f
+                      && ae.lightAtMax < mLowLightMinLevel;
+    ALOGD("AF: light at max %.3f (skip below %.3f)%s",
+          (double)ae.lightAtMax, (double)mLowLightMinLevel,
+          tooDark ? " -> too dark, no sweep" : "");
+    if (tooDark)
+        skipSweep(kind);
+    else
+        startSweep(mAfMode, kind);
+}
+
+void AutoFocusController::skipSweep(SweepKind kind) {
+    /* A position a sweep found this session is the best guess left;
+     * without one the low-light focus, a near-hyperfocal distance
+     * that keeps most of a room acceptably sharp. */
+    mSweepKind    = kind;
+    mLastSweepRoi = currentFocusRoi();
+    const int32_t pos = mHaveFocusedPos ? mLastFocusedPos : mLowLightPos;
+    ALOGD("AF: lens to %d (%s)", pos, mHaveFocusedPos ? "last focused" : "low-light focus");
+    settleVerdict(pos, false);
+}
+
+void AutoFocusController::triggerSweep() {
     /* Camera2 puts no deadline on ACTIVE_SCAN, so the trigger is
      * answered now and the sweep waits for AE in it. Nothing is
-     * locked while it waits: AE has to be free to get there. */
+     * locked while it waits: AE has to be free to get there. Without
+     * a wait in the tuning, process() starts it on this same tick. */
     mSweepKind          = SweepKind::Triggered;
     mAfState            = AfState::ActiveScan;
     mTriggerWaiting     = true;
@@ -466,8 +501,20 @@ void AutoFocusController::commitSweep(bool focused) {
     const int32_t finalPos = (fineSamples >= 3)
                              ? mSweepPos
                              : mSweepBestPos;
-    moveLens(finalPos);
-    mFocusPosition = finalPos;
+    settleVerdict(finalPos, focused);
+
+    ALOGD("AF done: pos=%d (best=%d) score=%.0f result=%s",
+          finalPos, mSweepBestPos, (double)mSweepBestScore,
+          focused ? "Focused" : "Failed");
+}
+
+void AutoFocusController::settleVerdict(int32_t pos, bool focused) {
+    moveLens(pos);
+    mFocusPosition = pos;
+    if (focused) {
+        mHaveFocusedPos = true;
+        mLastFocusedPos = pos;
+    }
 
     /* The verdict goes into the state: a triggered sweep (or a passive
      * one a trigger is waiting on) ends locked, a passive one reports
@@ -497,10 +544,6 @@ void AutoFocusController::commitSweep(bool focused) {
     mSceneChangeCount   = 0;
     mFramesSinceLastSweep = 0;
     mState = ScanState::Idle;
-
-    ALOGD("AF done: pos=%d (best=%d) score=%.0f result=%s",
-          finalPos, mSweepBestPos, (double)mSweepBestScore,
-          focused ? "Focused" : "Failed");
 }
 
 void AutoFocusController::onSettings(const FrameSettings &settings,
@@ -579,7 +622,7 @@ void AutoFocusController::applyCommand(const Command &cmd) {
             roi.pyLo != mLastSweepRoi.pyLo || roi.pyHi != mLastSweepRoi.pyHi ||
             roi.pxLo != mLastSweepRoi.pxLo || roi.pxHi != mLastSweepRoi.pxHi;
         if (roiMoved || !mHaveVerdict)
-            triggerSweep(cmd.afMode);
+            triggerSweep();
         else
             lockOnVerdict();
         return;
@@ -589,12 +632,12 @@ void AutoFocusController::applyCommand(const Command &cmd) {
      * locked result; one already scanning, or waiting to, is left to
      * finish. */
     if (mState == ScanState::Idle && !mTriggerWaiting)
-        triggerSweep(cmd.afMode);
+        triggerSweep();
 }
 
 AfResult AutoFocusController::process(const IpaStats &stats, bool fresh,
                                       int64_t statsExposureStartNs,
-                                      bool aeConverged) {
+                                      const AeView &ae) {
     AfResult out;
 
     /* Apply what the requests since the last tick asked for, in
@@ -621,13 +664,13 @@ AfResult AutoFocusController::process(const IpaStats &stats, bool fresh,
      * gets focused. Until then no lens move and no locks. */
     if (mTriggerWaiting) {
         const int64_t waitedNs = systemTime() - mTriggerWaitSinceNs;
-        if (!aeConverged && waitedNs < mTriggerAeWaitNs)
+        if (!ae.settled && waitedNs < mTriggerAeWaitNs)
             goto finish;
         mTriggerWaiting = false;
         ALOGD("AF: trigger waited %lld ms for AE (%s)",
               (long long)(waitedNs / 1000000),
-              aeConverged ? "converged" : "timed out");
-        startSweep(mAfMode, SweepKind::Triggered);
+              ae.settled ? "settled" : "timed out");
+        beginSweep(SweepKind::Triggered, ae);
         goto finish;
     }
 
@@ -700,12 +743,12 @@ AfResult AutoFocusController::process(const IpaStats &stats, bool fresh,
          * keeps `mSceneChangeCount` at its current value, so once
          * AE settles the scan launches immediately rather than
          * having to wait `retriggerDelay` again. */
-        if (mSceneChangeCount >= mRetriggerDelay && aeConverged &&
+        if (mSceneChangeCount >= mRetriggerDelay && ae.settled &&
             sweepCooldownDone) {
             ALOGD("AF: scene stabilised after change, starting sweep "
                   "(snap_sh=%.0f cur_sh=%.0f)",
                   (double)mSceneFocusSnapshot, (double)score);
-            startSweep(mAfMode, SweepKind::Passive);
+            beginSweep(SweepKind::Passive, ae);
         }
         goto finish;
     }
@@ -797,6 +840,7 @@ void AutoFocusController::reset() {
     mSweepKind          = SweepKind::Passive;
     mTriggerWaiting     = false;
     mTriggerWaitSinceNs = 0;
+    mHaveFocusedPos     = false;
     mCafLocked          = false;
     mLockPending        = false;
     mHaveVerdict        = false;

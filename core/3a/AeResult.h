@@ -47,9 +47,18 @@ struct AeResult {
      * its lux-conditioned CT prior; gray-world ignores it. */
     float                   luxIndex;
 
+    /* The metered luma this scene would reach at the envelope's
+     * longest exposure and highest gain, as a fraction of the AE
+     * setpoint (below 1: AE cannot bring it up to the target). Scene
+     * light normalised by exposure, so it holds wherever AE is on its
+     * way. AF reads it to skip a sweep in a scene too dark to focus
+     * on. Zero when not measured on this tick (AE locked, no record
+     * of the applied exposure). */
+    float                   lightAtMax;
+
     AeResult()
         : batch{}, converged(false),
-          iqmHighlight(0.f), luxIndex(0.f) {}
+          iqmHighlight(0.f), luxIndex(0.f), lightAtMax(0.f) {}
 };
 
 } /* namespace android */

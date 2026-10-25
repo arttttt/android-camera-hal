@@ -149,6 +149,17 @@ bool SensorTuning::loadFile(const std::string &path) {
             mAf.minFocusRoiPatches     = cdaf["min_focus_roi_patches"].asInt();
             /* Optional: without it a trigger does not wait for AE. */
             mAf.triggerAeWaitMs        = cdaf["trigger_ae_wait_ms"].asInt();
+            /* Optional, as a pair: the skip needs a level to skip
+             * below and a place to leave the lens. */
+            if (cdaf.isMember("low_light_min_level") !=
+                cdaf.isMember("low_light_focus_diopters")) {
+                ALOGE("tuning %s: hal_overrides.af.low_light_min_level and "
+                      "low_light_focus_diopters go together — low-light skip disabled",
+                      path.c_str());
+            } else {
+                mAf.lowLightMinLevel      = cdaf["low_light_min_level"].asFloat();
+                mAf.lowLightFocusDiopters = cdaf["low_light_focus_diopters"].asFloat();
+            }
             mHasAf = true;
         }
     }

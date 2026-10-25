@@ -376,7 +376,8 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
      * Saturated patches still pull the metric toward 1.0 (and AE
      * backs off) via their own clipped patch mean; black patches
      * still pull toward 0 via the same mechanism. */
-    float meanLuma = meanLumaInRoi(stats, meta);
+    const float rawLuma = meanLumaInRoi(stats, meta);
+    float meanLuma = rawLuma;
     if (meanLuma < lumaNoiseFloor) meanLuma = lumaNoiseFloor;
 
     /* EMA the measured luma before the controller sees it. Static
@@ -443,6 +444,13 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
      * cannot (RPi AGC: "the statistics reflect the image without
      * digital gain"). The envelope includes it. */
     const float   maxTotal = sensorCfg.maxTotalUs(limits);
+    /* How bright this scene gets at the longest exposure and highest
+     * gain the envelope allows, against the setpoint without EV
+     * compensation: a property of the light, for AF to tell a scene
+     * too dark to focus on. The raw luma, not the floored one -- the
+     * floor is exactly where the dark scenes are. */
+    if (appliedTotalUs > 0.f && aeSetpoint > 0.f)
+        out.lightAtMax = rawLuma * maxTotal / (appliedTotalUs * aeSetpoint);
     const float   minTotal = (float)sensorCfg.lineTimeNs * 2.0f / 1000.0f;
     /* The correction was measured on a frame exposed at
      * `appliedTotalUs`, so it applies to that, not to whatever the

@@ -212,7 +212,13 @@ the stats engine published (`Ipa3A::processStats`).
   sweep (a level, not edges), so a sweep starts only once AE holds
   still: a passive one waits for it, a triggered one reports
   ActiveScan at once and waits at most `trigger_ae_wait_ms` (a lock
-  taken mid-chase held a dark room's exposure low for a 6 s sweep). Tap-to-focus takes the request's AF
+  taken mid-chase held a dark room's exposure low for a 6 s sweep).
+  A scene AE reports too dark to reach its target even at the longest
+  exposure (`AeResult::lightAtMax` under `low_light_min_level`) gets no
+  sweep: the lens goes to the last focused position, or to
+  `low_light_focus_diopters`, and the verdict is unfocused. The gate is
+  the scene's light, not the focus signal -- thresholds on the focus
+  metric misfired and were reverted. Tap-to-focus takes the request's AF
   region (one, `CONTROL_MAX_REGIONS = {1, 0, 1}`), grown to a minimum
   patch footprint; that ROI restricts the NEON focus metric. AE (and
   the AWB scene-light gate) meter over the request's AE region, grown
@@ -273,7 +279,8 @@ converted from the stock NVIDIA `.isp` overrides by
   `pdaf_enabled`, `min_frames_between_sweeps`,
   `min_focus_roi_patches`; all required -- a missing one disables AF;
   optional `trigger_ae_wait_ms`, without which a trigger does not wait
-  for AE).
+  for AE, and the optional pair `low_light_min_level` /
+  `low_light_focus_diopters`, without which a dark scene is swept).
 - `reserved` -- the rest of the stock tuning, kept 1:1 until a stage
   consumes it.
 - `module` -- datasheet values not in the `.isp` (focal length, min

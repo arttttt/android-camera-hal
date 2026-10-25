@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <cstring>
 #include <optional>
+#include <string>
 
 #include "3a/AutoExposureController.h"
 #include "3a/AutoFocusController.h"
@@ -588,6 +589,10 @@ void testAwbConvergence() {
     check(!c.update(1.f, 1.f, 1.f, 1.03f));
 }
 
+/* AE as AF sees it: holding still or not, the light not measured. */
+const AutoFocusController::AeView kAeSettled{true, 0.f};
+const AutoFocusController::AeView kAeChasing{false, 0.f};
+
 /* AF_REGIONS: a tap moves the focus ROI to it; the same rectangle at
  * weight 0 -- how apps drop a tap -- is no region, the centre default. */
 /* IMX179's 1080p frame, as mocha's driver reports its window: the
@@ -660,7 +665,7 @@ void testAfSweep() {
     FrameSettings s;
     s.af.mode = AfMode::Auto;
     af.onSettings(s, 0);
-    af.process(statsAt(0), true, systemTime() + 10000000000LL, true);
+    af.process(statsAt(0), true, systemTime() + 10000000000LL, kAeSettled);
     check(af.report().afState == AfState::Inactive);
 
     s.af.trigger = AfTrigger::Start;
@@ -671,7 +676,7 @@ void testAfSweep() {
     bool sweepHeld = false;
     for (int tick = 0; tick < 400; ++tick) {
         const AfResult r = af.process(statsAt(lens < 0 ? 0 : lens), true,
-                                      systemTime() + 10000000000LL, true);
+                                      systemTime() + 10000000000LL, kAeSettled);
         if (r.vcmPosition) lens = *r.vcmPosition;
         if (r.state == AfState::ActiveScan) {
             sawScan = true;
@@ -688,7 +693,7 @@ void testAfSweep() {
 
     s.af.trigger = AfTrigger::Cancel;
     af.onSettings(s, 2);
-    af.process(statsAt(lens), true, systemTime() + 10000000000LL, true);
+    af.process(statsAt(lens), true, systemTime() + 10000000000LL, kAeSettled);
     check(af.report().afState == AfState::Inactive);
 }
 
@@ -717,16 +722,16 @@ void testAfTriggerWaitsForAe() {
         AutoFocusController af(&tuning, &frame);
         trigger(af, AfTrigger::Start, 0);
         for (int tick = 0; tick < 5; ++tick) {
-            const AfResult r = af.process(stats, true, later, false);
+            const AfResult r = af.process(stats, true, later, kAeChasing);
             check(r.state == AfState::ActiveScan);
             check(!r.sweeping);
             check(!r.vcmPosition);
         }
         /* A second START while waiting changes nothing. */
         trigger(af, AfTrigger::Start, 1);
-        check(!af.process(stats, true, later, false).sweeping);
+        check(!af.process(stats, true, later, kAeChasing).sweeping);
 
-        const AfResult r = af.process(stats, true, later, true);
+        const AfResult r = af.process(stats, true, later, kAeSettled);
         check(r.state == AfState::ActiveScan);
         check(r.sweeping);
         check((bool)r.vcmPosition);
@@ -735,10 +740,10 @@ void testAfTriggerWaitsForAe() {
     {
         AutoFocusController af(&tuning, &frame);
         trigger(af, AfTrigger::Start, 0);
-        check(!af.process(stats, true, later, false).sweeping);
+        check(!af.process(stats, true, later, kAeChasing).sweeping);
         trigger(af, AfTrigger::Cancel, 1);
-        check(af.process(stats, true, later, true).state == AfState::Inactive);
-        const AfResult r = af.process(stats, true, later, true);
+        check(af.process(stats, true, later, kAeSettled).state == AfState::Inactive);
+        const AfResult r = af.process(stats, true, later, kAeSettled);
         check(r.state == AfState::Inactive);
         check(!r.sweeping);
     }
@@ -746,9 +751,102 @@ void testAfTriggerWaitsForAe() {
     {
         AutoFocusController af(&tuning, &frame);
         trigger(af, AfTrigger::Start, 0);
-        check(!af.process(stats, true, later, false).sweeping);
+        check(!af.process(stats, true, later, kAeChasing).sweeping);
         usleep((tuning.af().triggerAeWaitMs + 50) * 1000);
-        check(af.process(stats, true, later, false).sweeping);
+        check(af.process(stats, true, later, kAeChasing).sweeping);
+    }
+}
+
+
+/* AF in a scene too dark to focus on: no sweep, the lens to the
+ * low-light focus -- or to where the last focused sweep left it -- and
+ * the verdict unfocused. The rear tuning with the skip switched on. */
+void testAfLowLightSkip() {
+    std::string json;
+    {
+        FILE *f = fopen("tuning/imx179_primax.json", "rb");
+        check(f != nullptr);
+        if (!f) return;
+        char buf[4096];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof buf, f)) > 0) json.append(buf, n);
+        fclose(f);
+    }
+    const std::string anchor = "\"trigger_ae_wait_ms\": 2000";
+    const size_t at = json.find(anchor);
+    check(at != std::string::npos);
+    if (at == std::string::npos) return;
+    json.insert(at + anchor.size(),
+                ", \"low_light_min_level\": 0.1, \"low_light_focus_diopters\": 0.5");
+    char path[] = "/tmp/three_a_lowlight_XXXXXX";
+    const int fd = mkstemp(path);
+    check(fd >= 0);
+    if (fd < 0) return;
+    check(write(fd, json.data(), json.size()) == (ssize_t)json.size());
+    close(fd);
+    SensorTuning tuning;
+    check(tuning.loadFile(path));
+    unlink(path);
+    check(tuning.af().lowLightMinLevel > 0.09f);
+
+    const FrameMap frame = imx179Frame1080();
+    const int64_t later = systemTime() + 10000000000LL;
+    const AutoFocusController::AeView dark{true, 0.05f};
+    const AutoFocusController::AeView lit{true, 0.5f};
+    const int peak = 400;
+    auto statsAt = [&](int pos) {
+        const float d = (float)(pos - peak) / 60.f;
+        return uniformStats(0.4f, 0.4f, 0.4f, 50.f / (1.f + d * d));
+    };
+
+    FrameSettings s;
+    s.af.mode = AfMode::Auto;
+    auto trigger = [&](AutoFocusController &af, AfTrigger t, uint32_t n) {
+        s.af.trigger = t;
+        af.onSettings(s, n);
+        s.af.trigger = AfTrigger::Idle;
+    };
+
+    /* No focused position yet: the low-light focus, about 0.5 D past
+     * infinity. */
+    int lowLightPos = -1;
+    {
+        AutoFocusController af(&tuning, &frame);
+        trigger(af, AfTrigger::Start, 0);
+        const AfResult r = af.process(statsAt(0), true, later, dark);
+        check(!r.sweeping);
+        check(r.state == AfState::NotFocusedLocked);
+        check((bool)r.vcmPosition);
+        if (r.vcmPosition) lowLightPos = *r.vcmPosition;
+        check(lowLightPos > 138 && lowLightPos < 200);
+    }
+
+    /* Light enough: the sweep runs. */
+    {
+        AutoFocusController af(&tuning, &frame);
+        trigger(af, AfTrigger::Start, 0);
+        check(af.process(statsAt(0), true, later, lit).sweeping);
+    }
+
+    /* After a focused sweep, the dark leaves the lens where it was
+     * focused. */
+    {
+        AutoFocusController af(&tuning, &frame);
+        trigger(af, AfTrigger::Start, 0);
+        int lens = -1;
+        for (int tick = 0; tick < 400; ++tick) {
+            const AfResult r = af.process(statsAt(lens < 0 ? 0 : lens), true, later, lit);
+            if (r.vcmPosition) lens = *r.vcmPosition;
+            if (af.report().afState == AfState::FocusedLocked) break;
+        }
+        check(af.report().afState == AfState::FocusedLocked);
+        const int focused = lens;
+        trigger(af, AfTrigger::Cancel, 1);
+        trigger(af, AfTrigger::Start, 2);
+        const AfResult r = af.process(statsAt(lens), true, later, dark);
+        check(!r.sweeping);
+        check(r.state == AfState::NotFocusedLocked);
+        check(r.vcmPosition && *r.vcmPosition == focused);
     }
 }
 
@@ -772,5 +870,6 @@ int main() {
     testAfRegionWeight();
     testAfSweep();
     testAfTriggerWaitsForAe();
+    testAfLowLightSkip();
     return finish("three_a_test");
 }

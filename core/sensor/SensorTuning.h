@@ -85,6 +85,14 @@ public:
          * it starts anyway, in ms. Optional: missing or 0, a trigger
          * starts its sweep at once. */
         int triggerAeWaitMs;
+
+        /* Low-light skip, optional, both or neither: when AE says the
+         * scene stays below lowLightMinLevel of its setpoint even at
+         * the longest exposure (AeResult::lightAtMax), no sweep runs
+         * and the lens goes to the last focused position, or to
+         * lowLightFocusDiopters without one. 0 = no skip. */
+        float lowLightMinLevel;
+        float lowLightFocusDiopters;
     };
 
     struct CcmSet {
