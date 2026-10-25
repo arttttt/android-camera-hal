@@ -760,39 +760,19 @@ void testAfTriggerWaitsForAe() {
 
 /* AF in a scene too dark to focus on: no sweep, the lens to the
  * low-light focus -- or to where the last focused sweep left it -- and
- * the verdict unfocused. The rear tuning with the skip switched on. */
+ * the verdict unfocused. The rear tuning, which switches the skip on;
+ * the scenes are lit relative to its level. */
 void testAfLowLightSkip() {
-    std::string json;
-    {
-        FILE *f = fopen("tuning/imx179_primax.json", "rb");
-        check(f != nullptr);
-        if (!f) return;
-        char buf[4096];
-        size_t n;
-        while ((n = fread(buf, 1, sizeof buf, f)) > 0) json.append(buf, n);
-        fclose(f);
-    }
-    const std::string anchor = "\"trigger_ae_wait_ms\": 2000";
-    const size_t at = json.find(anchor);
-    check(at != std::string::npos);
-    if (at == std::string::npos) return;
-    json.insert(at + anchor.size(),
-                ", \"low_light_min_level\": 0.1, \"low_light_focus_diopters\": 0.5");
-    char path[] = "/tmp/three_a_lowlight_XXXXXX";
-    const int fd = mkstemp(path);
-    check(fd >= 0);
-    if (fd < 0) return;
-    check(write(fd, json.data(), json.size()) == (ssize_t)json.size());
-    close(fd);
     SensorTuning tuning;
-    check(tuning.loadFile(path));
-    unlink(path);
-    check(tuning.af().lowLightMinLevel > 0.09f);
+    check(tuning.loadFile("tuning/imx179_primax.json"));
+    const float minLevel = tuning.af().lowLightMinLevel;
+    check(minLevel > 0.f);
+    if (minLevel <= 0.f) return;
 
     const FrameMap frame = imx179Frame1080();
     const int64_t later = systemTime() + 10000000000LL;
-    const AutoFocusController::AeView dark{true, 0.05f};
-    const AutoFocusController::AeView lit{true, 0.5f};
+    const AutoFocusController::AeView dark{true, minLevel * 0.1f};
+    const AutoFocusController::AeView lit{true, minLevel * 10.f};
     const int peak = 400;
     auto statsAt = [&](int pos) {
         const float d = (float)(pos - peak) / 60.f;
