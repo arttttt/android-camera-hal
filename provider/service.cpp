@@ -30,6 +30,7 @@
 #include <binder/ProcessState.h>
 #include <hidl/LegacySupport.h>
 #include <log/log.h>
+#include <signal.h>
 
 using android::hardware::defaultPassthroughServiceImplementation;
 using android::hardware::camera::provider::V2_4::ICameraProvider;
@@ -37,6 +38,11 @@ using android::hardware::camera::provider::V2_4::ICameraProvider;
 int main() {
     ALOGI("CameraProvider@2.4 legacy service is starting, on /dev/binder");
     android::ProcessState::initWithDriver("/dev/binder");
+
+    /* A dump writes into the pipe dumpsys reads; a reader gone early
+     * (dumpsys media.camera | head) must not kill the camera with
+     * SIGPIPE. The write fails instead, as in cameraserver. */
+    signal(SIGPIPE, SIG_IGN);
 
     /* hwbinder's thread pool, as the stock service runs it. */
     return defaultPassthroughServiceImplementation<ICameraProvider>("legacy/0",
