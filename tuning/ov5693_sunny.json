@@ -38,6 +38,16 @@
       "optical_black": {
         "_comment": "Measured 24.10.2026 with tools/rawcap, lens covered, 1920x1080 BGGR10 on the SmokeR24.1 kernel: the pedestal is 18.6-19.2 at 1x and 19.4-20.9 at 16x analog gain, the four Bayer phases within 1 LSB. The stock .isp's 15 (opticalBlack, kept verbatim) under-subtracted 4-5 LSB: a magenta fog in the shadows once the digital gain and the WB lift it. 20 is the high-gain pedestal, where the shadows show it.",
         "level": 20
+      },
+      "ccm": {
+        "_comment": "Dark-scene desaturation, see imx179_primax.json. Same starting knots as the rear: both reach 16x analog + 4x digital, and no per-sensor noise calibration exists yet (task-828). 25.10.2026: a lit room sits at 2x (full colour), the dark room at 64.",
+        "saturation_vs_gain": [
+          [2, 1.0],
+          [4, 0.8],
+          [8, 0.55],
+          [16, 0.35],
+          [64, 0.25]
+        ]
       }
     },
     "mwbCCT": {
