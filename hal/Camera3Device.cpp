@@ -102,7 +102,7 @@ Camera3Device::Camera3Device(const char *devNode, int facing)
 
     mResultSink.reset(new Camera3ResultSink(&mCallbackOps));
     mSession.reset(new mocha::camera::Session(sessionConfig(devNode, facing),
-                                              mResultSink.get(), &mGralloc));
+                                              mResultSink.get(), &mGralloc, &mPower));
 }
 
 Camera3Device::~Camera3Device() {
@@ -323,6 +323,7 @@ void Camera3Device::dump(int fd) {
         dprintf(fd, "  stream %u: %ux%u format %d\n", s.second.id,
                 s.second.width, s.second.height, (int)s.second.format);
     }
+    mPower.dump(fd);
     mSession->dump(fd);
 }
 

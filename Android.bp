@@ -118,6 +118,9 @@ cc_library_shared {
         "libyuv_static",
     ],
     shared_libs: [
+        // The camera's power hints: AIDL IPower, through the NDK binder.
+        "android.hardware.power-V2-ndk_platform",
+        "libbinder_ndk",
         "libcamera_metadata",
         "libcutils",
         "libjpeg",

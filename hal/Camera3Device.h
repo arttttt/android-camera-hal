@@ -28,6 +28,7 @@
 
 #include "CameraMetadataCompat.h"
 #include "Camera3GrallocPort.h"
+#include "Camera3PowerPort.h"
 #include "mochacamera/Buffers.h"
 #include "mochacamera/Session.h"
 
@@ -80,6 +81,10 @@ private:
     std::vector<std::pair<camera3_stream_t *, mocha::camera::StreamSpec>> mStreams;
 
     Camera3GrallocPort                         mGralloc;
+    /* One per camera: the module's cameras conflict, so one streams at
+     * a time and its level is the only one on. Before mSession, which
+     * reports to it until it goes. */
+    Camera3PowerPort                           mPower;
     std::unique_ptr<Camera3ResultSink>         mResultSink;
     std::unique_ptr<mocha::camera::Session>    mSession;
 

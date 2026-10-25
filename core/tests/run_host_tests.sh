@@ -14,7 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# The core's host tests, on a Linux host (the build server), under
+# The core's host tests, and the frontend's parts that need no Android
+# (hal/tests), on a Linux host (the build server), under
 # ThreadSanitizer. Run from the repository root:
 #
 #   core/tests/run_host_tests.sh [out-dir]
@@ -103,5 +104,8 @@ run region_patches_test  core/tests/region_patches_test.cpp \
                          core/3a/RegionPatches.cpp core/sensor/SensorGeometry.cpp
 run pipeline_cache_file_test core/tests/pipeline_cache_file_test.cpp \
                          core/isp/vulkan/runtime/PipelineCacheFile.cpp
+
+# The frontend's: Check.h is the core tests'.
+run power_hint_policy_test -Ihal -Icore/tests hal/tests/power_hint_policy_test.cpp
 
 exit $failed
