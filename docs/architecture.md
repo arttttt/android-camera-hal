@@ -17,9 +17,10 @@ how a frame travels and is owned, cancellation and shutdown -- is in
    Camera3Request     metadata → FrameSettings (once, on acceptance)
    Camera3ResultSink  ResultSink → notify / process_capture_result
    Camera3GrallocPort GrallocPort → GraphicBufferMapper
+   Camera3PowerPort   PowerPort → AIDL IPower hints (PowerHintPolicy)
    StreamConfig, metadata/ (static characteristics, templates, results)
         │ mochacamera/*.h only: Session, FrameRequest, FrameSettings,
-        │ Capability, ResultSink, GrallocPort, NativeBuffer
+        │ Capability, ResultSink, GrallocPort, PowerPort, NativeBuffer
         ▼
  core/ libmochacamera  ── the camera core ─────────────────────────────
    session/   Session (facade), CapabilityProbe
@@ -58,8 +59,41 @@ The core speaks its own vocabulary, in `core/include/mochacamera/`:
   `running`, `submit(FrameRequest)`, `flush`, `dump`, `capability`.
 - **ports/** -- what the core calls out through: `ResultSink`
   (shutter, partial, frame, deviceError), `GrallocPort` (CPU lock /
-  unlock of output buffers), and `FrameSource` + `BayerLease` +
-  `BayerFrame` (the capture source, implemented by `v4l2/`).
+  unlock of output buffers), `PowerPort` (the work ahead, for the
+  clocks; optional), and `FrameSource` + `BayerLease` + `BayerFrame`
+  (the capture source, implemented by `v4l2/`).
+
+### Power hints
+
+The core says how much work is coming and when; `PowerPort` carries it
+in the core's terms, and with no port it says nothing:
+
+| Event | From | `Camera3PowerPort` sends |
+|---|---|---|
+| `opening()` | `Session::open` | `setBoost(CAMERA_LAUNCH, 500)` |
+| `streaming(px/s)` | `configure`, the engines started | `setMode(CAMERA_STREAMING_LOW / MID / HIGH, true)` |
+| `stillCapture(px)` | `submit` of a still | `setBoost(CAMERA_SHOT, ms)` |
+| `stopped()` | the engines stopping (close, a new mode) | `setMode(<level on>, false)` |
+
+The load is the sensor's pixel rate at the mode's own frame rate: up to
+40 Mpx/s LOW (720p30), up to 100 MID (1080p30, 720p60), above HIGH. A
+level change takes the old one off first; the same level is not sent
+again. A still's burst is 300 ms for a 1080p frame, scaled by its
+pixels, at most 1000. `PowerHintPolicy` decides all that, apart from
+the binder, and is tested on the host.
+
+The clocks behind each level are the power HAL's, in the device tree
+(`hidl/power`, `CameraHints`), from the camera's measurements
+(25.10.2026, 1080p30 preview, GPU time per frame): no hint 20-25 ms,
+LOW (CPU >= 828 / GPU >= 396 MHz) 16-18, MID (828 / 468) ~15, HIGH
+(1044 / 540) ~12. EMC is the kernel's own.
+
+`IPower/default` is looked up with `AServiceManager_checkService`, which
+does not wait: with no service the hints are dropped (one log line).
+`setMode` and `setBoost` are oneway. A level on dies with a power HAL
+that restarts; the next event finds the new one. A camera provider that
+dies is the power HAL's to clean up after (it watches the provider's
+init service).
 
 Two invariants keep the boundary honest:
 
@@ -302,7 +336,7 @@ mmm hardware/camera
 
 The core's host tests (JobQueue, Engine, PermitPool, Frame and its
 holders, DelayedControls, the result engine on a fake sink, 3A on
-synthetic statistics) run under ThreadSanitizer from the repository
+synthetic statistics), and the frontend's `PowerHintPolicy`, run under ThreadSanitizer from the repository
 root, in the build tree:
 
 ```
