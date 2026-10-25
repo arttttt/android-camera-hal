@@ -52,8 +52,8 @@ struct AeResult {
      * setpoint (below 1: AE cannot bring it up to the target). Scene
      * light normalised by exposure, so it holds wherever AE is on its
      * way. AF reads it to skip a sweep in a scene too dark to focus
-     * on. Zero when not measured on this tick (AE locked, no record
-     * of the applied exposure). */
+     * on, and to stop one the scene goes dark under. Measured locked
+     * or not; zero with no record of the applied exposure. */
     float                   lightAtMax;
 
     AeResult()

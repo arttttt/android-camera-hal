@@ -332,6 +332,18 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
                                                    currentWbR, currentWbB);
     out.iqmHighlight = iqmHighlight;
 
+    /* How bright this scene gets at the longest exposure and highest
+     * gain the envelope allows, against the setpoint without EV
+     * compensation: a property of the light, for AF to tell a scene
+     * too dark to focus on. The raw luma, not the floored one -- the
+     * floor is exactly where the dark scenes are. Every frame, locked
+     * or not: the frame's own exposure is `appliedTotalUs` either way,
+     * and AF watches it across its sweep, under AF's own lock. */
+    const float rawLuma  = meanLumaInRoi(stats, meta);
+    const float maxTotal = sensorCfg.maxTotalUs(limits);
+    if (appliedTotalUs > 0.f && aeSetpoint > 0.f)
+        out.lightAtMax = rawLuma * maxTotal / (appliedTotalUs * aeSetpoint);
+
     /* AE locked — by the framework's AE_LOCK or by AF (across a
      * sweep). Hold the converged operating point: keep
      * `filteredTotalUs` untouched, but **re-publish the held
@@ -376,7 +388,6 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
      * Saturated patches still pull the metric toward 1.0 (and AE
      * backs off) via their own clipped patch mean; black patches
      * still pull toward 0 via the same mechanism. */
-    const float rawLuma = meanLumaInRoi(stats, meta);
     float meanLuma = rawLuma;
     if (meanLuma < lumaNoiseFloor) meanLuma = lumaNoiseFloor;
 
@@ -443,14 +454,6 @@ AeResult AutoExposureController::process(const IpaStats     &stats,
      * the same terms and the digital gain makes up what the analog
      * cannot (RPi AGC: "the statistics reflect the image without
      * digital gain"). The envelope includes it. */
-    const float   maxTotal = sensorCfg.maxTotalUs(limits);
-    /* How bright this scene gets at the longest exposure and highest
-     * gain the envelope allows, against the setpoint without EV
-     * compensation: a property of the light, for AF to tell a scene
-     * too dark to focus on. The raw luma, not the floored one -- the
-     * floor is exactly where the dark scenes are. */
-    if (appliedTotalUs > 0.f && aeSetpoint > 0.f)
-        out.lightAtMax = rawLuma * maxTotal / (appliedTotalUs * aeSetpoint);
     const float   minTotal = (float)sensorCfg.lineTimeNs * 2.0f / 1000.0f;
     /* The correction was measured on a frame exposed at
      * `appliedTotalUs`, so it applies to that, not to whatever the
